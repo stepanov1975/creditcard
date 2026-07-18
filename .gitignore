@@ -1,0 +1,22 @@
+# Private inputs and generated financial data
+documents/
+unrelated/
+output/
+artifacts/
+
+# Isolated development and local state
+.worktrees/
+.superpowers/
+.cache/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
