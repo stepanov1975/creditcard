@@ -5,6 +5,7 @@ from __future__ import annotations
 import statistics
 import unicodedata
 from collections.abc import Sequence
+from itertools import combinations
 
 from ccparser.evidence.models import BBox, Word
 from ccparser.layout.models import Cell, Row
@@ -93,6 +94,20 @@ def _cluster_word_lines(words: Sequence[Word]) -> list[list[Word]]:
     return sorted(lines, key=lambda line: _union_bbox(tuple(word.bbox for word in line))[1])
 
 
+def _vertical_coherence(words: Sequence[Word]) -> float:
+    if len(words) < 2:
+        return 1.0
+    pairwise_overlap = statistics.mean(
+        _vertical_overlap(first.bbox, second.bbox) for first, second in combinations(words, 2)
+    )
+    typical_height = statistics.median(_height(word.bbox) for word in words)
+    if typical_height <= 0:
+        return 0.0
+    centers = tuple(_center_y(word.bbox) for word in words)
+    center_coherence = max(0.0, 1.0 - (max(centers) - min(centers)) / typical_height)
+    return min(pairwise_overlap, center_coherence)
+
+
 def _words_to_cells(words: Sequence[Word], page_number: int) -> tuple[Cell, ...]:
     ordered = sorted(words, key=lambda word: (word.bbox[0], word.bbox[1], word.text))
     typical_height = statistics.median(_height(word.bbox) for word in ordered)
@@ -135,7 +150,7 @@ def cluster_rows(words: Sequence[Word], page_number: int) -> tuple[Row, ...]:
         bbox = _union_bbox(tuple(word.bbox for word in geometric_words))
         cells = _words_to_cells(geometric_words, page_number)
         direction = _dominant_direction(tuple(cell.text for cell in cells))
-        alignment = min(_vertical_overlap(word.bbox, bbox) for word in geometric_words)
+        coherence = _vertical_coherence(geometric_words)
         rows.append(
             Row(
                 page_number=page_number,
@@ -143,7 +158,7 @@ def cluster_rows(words: Sequence[Word], page_number: int) -> tuple[Row, ...]:
                 cells=cells,
                 words=geometric_words,
                 confidence=min(
-                    statistics.mean(word.confidence for word in geometric_words), alignment
+                    statistics.mean(word.confidence for word in geometric_words), coherence
                 ),
                 diagnostics=(f"dominant_direction:{direction}",),
             )

@@ -166,7 +166,7 @@ def test_infer_column_roles_uses_profiles_but_retains_ambiguous_unknown_column()
     samples = (
         _cell("2026-03-04", (0.0, 30.0, 20.0, 40.0)),
         _cell("EUR", (30.0, 30.0, 50.0, 40.0)),
-        _cell("2/12", (60.0, 30.0, 80.0, 40.0)),
+        _cell("14/24", (60.0, 30.0, 80.0, 40.0)),
         _cell("A7X9", (90.0, 30.0, 120.0, 40.0)),
     )
 
@@ -197,3 +197,58 @@ def test_infer_column_roles_distinguishes_original_and_billed_amount_headers() -
         ColumnRole.ORIGINAL_AMOUNT,
         ColumnRole.AMOUNT,
     )
+
+
+def test_short_slash_value_remains_ambiguous_when_date_and_installment_are_plausible() -> None:
+    schema = infer_column_roles(
+        (_cell("Reference", (0.0, 10.0, 30.0, 20.0)),),
+        (_cell("2/12", (0.0, 30.0, 30.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.UNKNOWN
+    assert "ambiguous_role" in schema.columns[0].diagnostics
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    (("Date", ColumnRole.DATE), ("Installment", ColumnRole.INSTALLMENT)),
+)
+def test_exact_header_disambiguates_short_date_or_installment(
+    header: str, expected: ColumnRole
+) -> None:
+    schema = infer_column_roles(
+        (_cell(header, (0.0, 10.0, 30.0, 20.0)),),
+        (_cell("2/12", (0.0, 30.0, 30.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is expected
+
+
+@pytest.mark.parametrize("value", ("0/12", "32/13/2026", "31/02/2026"))
+def test_date_profile_rejects_out_of_range_numeric_components(value: str) -> None:
+    schema = infer_column_roles(
+        (_cell("Reference", (0.0, 10.0, 30.0, 20.0)),),
+        (_cell(value, (0.0, 30.0, 30.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.UNKNOWN
+
+
+@pytest.mark.parametrize("symbol", ("$", "€", "£", "₪"))
+def test_currency_profile_recognizes_standalone_symbols(symbol: str) -> None:
+    schema = infer_column_roles(
+        (_cell("Reference", (0.0, 10.0, 30.0, 20.0)),),
+        (_cell(symbol, (0.0, 30.0, 30.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.CURRENCY
+
+
+def test_header_phrase_matches_contiguous_tokens_inside_longer_heading() -> None:
+    schema = infer_column_roles(
+        (_cell("Transaction date (local time)", (0.0, 10.0, 50.0, 20.0)),),
+        (_cell("01/02/2026", (0.0, 30.0, 50.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.DATE
+    assert "role_evidence:header" in schema.columns[0].diagnostics

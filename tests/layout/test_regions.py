@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from ccparser.evidence import ExtractionQuality, PageEvidence, Word
+import pytest
+
+from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.models import ColumnRole
 from ccparser.layout.regions import detect_table_regions
 
@@ -14,15 +16,16 @@ def _word(text: str, x0: float, x1: float, y: float) -> Word:
     )
 
 
-def _page(words: tuple[Word, ...]) -> PageEvidence:
+def _page(words: tuple[Word, ...], glyphs: tuple[Glyph, ...] = ()) -> PageEvidence:
     return PageEvidence(
         page_number=1,
         width=130.0,
         height=180.0,
+        glyphs=glyphs,
         words=words,
         quality=ExtractionQuality(
-            character_count=0,
-            usable_character_count=0,
+            character_count=len(glyphs),
+            usable_character_count=len(glyphs),
             word_count=len(words),
             replacement_character_ratio=0.0,
             control_character_ratio=0.0,
@@ -30,6 +33,27 @@ def _page(words: tuple[Word, ...]) -> PageEvidence:
             requires_ocr=False,
         ),
     )
+
+
+def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
+    glyphs: list[Glyph] = []
+    cursor = right
+    for token in text.split():
+        for char in token:
+            glyphs.append(
+                Glyph(
+                    char=char,
+                    bbox=(cursor - 2.0, y, cursor, y + 10.0),
+                    origin=(cursor, y + 9.0),
+                    font="SyntheticHebrew",
+                    size=10.0,
+                    source="digital",
+                    confidence=1.0,
+                )
+            )
+            cursor -= 3.0
+        cursor -= 6.0
+    return tuple(glyphs)
 
 
 def _header(y: float) -> tuple[Word, ...]:
@@ -73,6 +97,26 @@ def test_detect_table_regions_requires_header_and_repeated_rows_and_stops_at_tot
     )
     assert "stopped_at_total" in region.diagnostics
     assert "repeated_rows:2" in region.diagnostics
+
+
+@pytest.mark.parametrize("marker", ('סה"כ', "סה״כ"))
+def test_detect_table_regions_stops_at_quoted_hebrew_total_acronym(marker: str) -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            *_data(50.0, "03/02/2026", "Cafe", "18.60"),
+            _word(marker, 45.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_total" in regions[0].diagnostics
+    assert all(marker not in cell.text for row in regions[0].rows for cell in row.cells)
 
 
 def test_detect_table_regions_stops_at_new_header_and_detects_next_table() -> None:
@@ -150,3 +194,47 @@ def test_detect_table_regions_rejects_prose_and_single_unrepeated_row() -> None:
 
     assert detect_table_regions(prose) == ()
     assert detect_table_regions(single_row) == ()
+
+
+def test_detect_table_regions_does_not_match_date_inside_update_header() -> None:
+    page = _page(
+        (
+            _word("Update", 0.0, 30.0, 10.0),
+            _word("Amount", 92.0, 120.0, 10.0),
+            _word("Active", 0.0, 30.0, 30.0),
+            _word("10.00", 92.0, 120.0, 30.0),
+            _word("Pending", 0.0, 30.0, 50.0),
+            _word("20.00", 92.0, 120.0, 50.0),
+        )
+    )
+
+    assert detect_table_regions(page) == ()
+
+
+def test_detect_table_regions_rebuilds_backwards_hebrew_words_from_glyph_geometry() -> None:
+    words = (
+        _word("ךיראת", 90.0, 120.0, 10.0),
+        _word("קסע תיב", 40.0, 75.0, 10.0),
+        _word("םוכס", 0.0, 25.0, 10.0),
+        _word("01/02/2026", 90.0, 120.0, 30.0),
+        _word("חנות", 40.0, 75.0, 30.0),
+        _word("10.00", 0.0, 25.0, 30.0),
+        _word("02/02/2026", 90.0, 120.0, 50.0),
+        _word("קפה", 40.0, 75.0, 50.0),
+        _word("20.00", 0.0, 25.0, 50.0),
+    )
+    glyphs = (
+        *_rtl_glyphs("סכום", 23.0, 10.0),
+        *_rtl_glyphs("בית עסק", 73.0, 10.0),
+        *_rtl_glyphs("תאריך", 118.0, 10.0),
+    )
+
+    regions = detect_table_regions(_page(words, tuple(reversed(glyphs))))
+
+    assert len(regions) == 1
+    assert tuple(cell.text for cell in regions[0].header.cells) == (
+        "תאריך",
+        "בית עסק",
+        "סכום",
+    )
+    assert all(cell.glyphs for cell in regions[0].header.cells)

@@ -10,6 +10,7 @@ from ccparser.evidence.models import BBox, PageEvidence
 from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
+from ccparser.layout.text import logical_text_for_bbox, positioned_evidence_for_bbox
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -21,6 +22,7 @@ _TOTAL_MARKERS = frozenset(
         "סכום כולל",
     }
 )
+_ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 
 
 def _height(bbox: BBox) -> float:
@@ -42,7 +44,17 @@ def _union_bbox(boxes: Sequence[BBox]) -> BBox:
 
 def _normalized_marker(text: str) -> str:
     normalized = unicodedata.normalize("NFC", text).casefold()
-    return " ".join("".join(char if char.isalnum() else " " for char in normalized).split())
+    canonical: list[str] = []
+    for index, char in enumerate(normalized):
+        between_letters = (
+            0 < index < len(normalized) - 1
+            and normalized[index - 1].isalpha()
+            and normalized[index + 1].isalpha()
+        )
+        if char in _ACRONYM_QUOTES and between_letters:
+            continue
+        canonical.append(char if char.isalnum() else " ")
+    return " ".join("".join(canonical).split())
 
 
 def _is_total_row(row: Row) -> bool:
@@ -187,10 +199,33 @@ def _detect_from_header(rows: Sequence[Row], header_index: int) -> tuple[TableRe
     return region, stop_index
 
 
+def _logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
+    geometric_rows = cluster_rows(page_evidence.words, page_evidence.page_number)
+    logical_rows: list[Row] = []
+    for row in geometric_rows:
+        logical_cells = []
+        for cell in row.cells:
+            glyphs, words = positioned_evidence_for_bbox(page_evidence, cell.bbox)
+            logical_cells.append(
+                cell.model_copy(
+                    update={
+                        "text": logical_text_for_bbox(page_evidence, cell.bbox) or cell.text,
+                        "glyphs": glyphs,
+                        "words": words,
+                    }
+                )
+            )
+        _, row_words = positioned_evidence_for_bbox(page_evidence, row.bbox)
+        logical_rows.append(
+            row.model_copy(update={"cells": tuple(logical_cells), "words": row_words})
+        )
+    return tuple(logical_rows)
+
+
 def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]:
     """Detect plausible repeated transaction tables without document identity rules."""
 
-    rows = cluster_rows(page_evidence.words, page_evidence.page_number)
+    rows = _logical_rows(page_evidence)
     regions: list[TableRegion] = []
     index = 0
     while index < len(rows):

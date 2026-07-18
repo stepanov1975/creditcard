@@ -6,6 +6,7 @@ import math
 import re
 import statistics
 import unicodedata
+from calendar import monthrange
 from collections import defaultdict
 from collections.abc import Sequence
 from itertools import pairwise
@@ -13,8 +14,8 @@ from itertools import pairwise
 from ccparser.evidence.models import BBox, VectorRule
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 
-_DATE_PATTERN = re.compile(r"\d{1,4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,4}")
-_INSTALLMENT_PATTERN = re.compile(r"\d{1,3}\s*/\s*\d{1,3}")
+_THREE_COMPONENT_DATE_PATTERN = re.compile(r"(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})")
+_TWO_COMPONENT_SLASH_PATTERN = re.compile(r"(\d{1,3})\s*/\s*(\d{1,3})")
 _MONEY_PATTERN = re.compile(
     r"(?:[-+]?\s*(?:[$€£₪]\s*)?|\(\s*)(?:\d{1,3}(?:[, ]\d{3})+|\d+)"
     r"(?:[.,]\d{2,3})(?:\s*[$€£₪])?\s*\)?"
@@ -272,6 +273,16 @@ def _normalized_header(text: str) -> str:
     return " ".join("".join(char if char.isalnum() else " " for char in normalized).split())
 
 
+def _contains_token_phrase(text: str, phrase: str) -> bool:
+    text_tokens = text.split()
+    phrase_tokens = phrase.split()
+    phrase_length = len(phrase_tokens)
+    return any(
+        text_tokens[index : index + phrase_length] == phrase_tokens
+        for index in range(len(text_tokens) - phrase_length + 1)
+    )
+
+
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     scores: dict[ColumnRole, float] = {}
     for text in texts:
@@ -280,9 +291,45 @@ def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
             for term in terms:
                 if normalized == term:
                     scores[role] = max(scores.get(role, 0.0), 1.0)
-                elif len(term) >= 4 and term in normalized:
+                elif _contains_token_phrase(normalized, term):
                     scores[role] = max(scores.get(role, 0.0), 0.82)
     return scores
+
+
+def _valid_calendar_day(day: int, month: int, year: int | None = None) -> bool:
+    if not 1 <= month <= 12 or day < 1:
+        return False
+    maximum = (
+        monthrange(year, month)[1]
+        if year is not None
+        else (29 if month == 2 else monthrange(2001, month)[1])
+    )
+    return day <= maximum
+
+
+def _is_date_value(text: str) -> bool:
+    short_match = _TWO_COMPONENT_SLASH_PATTERN.fullmatch(text)
+    if short_match is not None:
+        day, month = (int(component) for component in short_match.groups())
+        return _valid_calendar_day(day, month)
+
+    match = _THREE_COMPONENT_DATE_PATTERN.fullmatch(text)
+    if match is None:
+        return False
+    first, _, second, third = match.groups()
+    if len(first) == 4:
+        year, month, day = int(first), int(second), int(third)
+    else:
+        day, month, year = int(first), int(second), int(third)
+    return 1 <= year <= 9999 and _valid_calendar_day(day, month, year)
+
+
+def _is_installment_value(text: str) -> bool:
+    match = _TWO_COMPONENT_SLASH_PATTERN.fullmatch(text)
+    if match is None:
+        return False
+    current, total = (int(component) for component in match.groups())
+    return 1 <= current <= total
 
 
 def _profile_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
@@ -291,12 +338,13 @@ def _profile_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     matches: defaultdict[ColumnRole, int] = defaultdict(int)
     for text in texts:
         stripped = unicodedata.normalize("NFC", text).strip()
+        raw_currency = stripped.upper()
         compact_currency = _normalized_header(stripped).upper()
-        if _DATE_PATTERN.fullmatch(stripped):
+        if _is_date_value(stripped):
             matches[ColumnRole.DATE] += 1
-        if compact_currency in _CURRENCY_VALUES:
+        if raw_currency in _CURRENCY_VALUES or compact_currency in _CURRENCY_VALUES:
             matches[ColumnRole.CURRENCY] += 1
-        if _INSTALLMENT_PATTERN.fullmatch(stripped):
+        if _is_installment_value(stripped):
             matches[ColumnRole.INSTALLMENT] += 1
         if _MONEY_PATTERN.fullmatch(stripped):
             matches[ColumnRole.AMOUNT] += 1

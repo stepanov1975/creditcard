@@ -86,3 +86,24 @@ def test_cluster_rows_deduplicates_overlapping_digital_and_ocr_words() -> None:
 
     assert tuple(cell.text for cell in rows[0].cells) == ("Amount",)
     assert rows[0].words == (words[0],)
+
+
+def test_cluster_rows_confidence_measures_vertical_coherence_within_cluster() -> None:
+    aligned = cluster_rows(
+        (
+            _word("Date", (0.0, 10.0, 25.0, 20.0)),
+            _word("Amount", (70.0, 10.0, 100.0, 20.0)),
+        ),
+        page_number=1,
+    )
+    incoherent = cluster_rows(
+        (
+            _word("Date", (0.0, 10.0, 25.0, 20.0)),
+            _word("Amount", (70.0, 14.0, 100.0, 24.0)),
+        ),
+        page_number=1,
+    )
+
+    assert len(aligned) == len(incoherent) == 1
+    assert aligned[0].confidence == 1.0
+    assert 0.0 < incoherent[0].confidence < aligned[0].confidence

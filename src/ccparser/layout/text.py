@@ -223,11 +223,39 @@ def _text_from_words(words: Sequence[Word]) -> str:
     return _normalized(" ".join(rendered_lines))
 
 
+def positioned_evidence_for_bbox(
+    page_evidence: PageEvidence, bbox: BBox
+) -> tuple[tuple[Glyph, ...], tuple[Word, ...]]:
+    """Return deterministic raw provenance whose centers fall inside ``bbox``."""
+
+    glyphs = tuple(
+        sorted(
+            (glyph for glyph in page_evidence.glyphs if _inside_bbox(glyph.bbox, bbox)),
+            key=lambda glyph: (
+                glyph.bbox[1],
+                glyph.bbox[0],
+                glyph.origin,
+                glyph.char,
+                glyph.font,
+                glyph.source,
+            ),
+        )
+    )
+    words = tuple(
+        sorted(
+            _deduplicated_words(
+                tuple(word for word in page_evidence.words if _inside_bbox(word.bbox, bbox))
+            ),
+            key=lambda word: (word.bbox[1], word.bbox[0], word.text, word.source),
+        )
+    )
+    return glyphs, words
+
+
 def logical_text_for_bbox(page_evidence: PageEvidence, bbox: BBox) -> str:
     """Return logical NFC text for positioned evidence whose centers are in ``bbox``."""
 
-    glyphs = tuple(glyph for glyph in page_evidence.glyphs if _inside_bbox(glyph.bbox, bbox))
+    glyphs, words = positioned_evidence_for_bbox(page_evidence, bbox)
     if glyphs:
         return _text_from_glyphs(glyphs)
-    words = tuple(word for word in page_evidence.words if _inside_bbox(word.bbox, bbox))
     return _text_from_words(words)
