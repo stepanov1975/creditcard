@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
+from ccparser.layout.text import logical_text_for_bbox
+
+
+def _quality(*, glyph_count: int, word_count: int) -> ExtractionQuality:
+    return ExtractionQuality(
+        character_count=glyph_count,
+        usable_character_count=glyph_count,
+        word_count=word_count,
+        replacement_character_ratio=0.0,
+        control_character_ratio=0.0,
+        image_area_ratio=0.0,
+        requires_ocr=False,
+    )
+
+
+def _glyph(char: str, x: float, y: float = 10.0) -> Glyph:
+    return Glyph(
+        char=char,
+        bbox=(x, y, x + 4.0, y + 10.0),
+        origin=(x, y + 9.0),
+        font="Synthetic",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+
+
+def test_logical_text_orders_each_script_run_and_rtl_word_groups_from_geometry() -> None:
+    glyphs = (
+        _glyph("B", 15.0),
+        _glyph("ם", 60.0),
+        _glyph("A", 10.0),
+        _glyph("\u05d5", 65.0),
+        _glyph("C", 20.0),
+        _glyph("ל", 70.0),
+        _glyph("ש", 75.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=100.0,
+        height=100.0,
+        glyphs=glyphs,
+        quality=_quality(glyph_count=len(glyphs), word_count=0),
+    )
+
+    assert logical_text_for_bbox(page, (0.0, 0.0, 90.0, 30.0)) == "שלום ABC"
+
+
+def test_logical_text_uses_numeric_ltr_run_inside_dominant_hebrew_cell() -> None:
+    glyphs = (
+        _glyph("2", 30.0),
+        _glyph("ם", 70.0),
+        _glyph("1", 25.0),
+        _glyph("\u05d5", 75.0),
+        _glyph(".", 35.0),
+        _glyph("ל", 80.0),
+        _glyph("5", 40.0),
+        _glyph("ש", 85.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=100.0,
+        height=100.0,
+        glyphs=glyphs,
+        quality=_quality(glyph_count=len(glyphs), word_count=0),
+    )
+
+    assert logical_text_for_bbox(page, (0.0, 0.0, 100.0, 30.0)) == "שלום 12.5"
+
+
+def test_logical_text_attaches_hebrew_combining_marks_to_their_positioned_base() -> None:
+    glyphs = (
+        _glyph("ל", 75.0),
+        _glyph("\u05c1", 82.0),
+        _glyph("ש", 80.0),
+        _glyph("\u05b8", 81.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=100.0,
+        height=100.0,
+        glyphs=glyphs,
+        quality=_quality(glyph_count=len(glyphs), word_count=0),
+    )
+
+    assert logical_text_for_bbox(page, (60.0, 0.0, 90.0, 30.0)) == "שָׁל"
+
+
+def test_logical_text_falls_back_to_deduplicated_positioned_words_and_normalizes() -> None:
+    words = (
+        Word(
+            text="12.50",
+            bbox=(15.0, 10.0, 35.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="שָׁלוֹם",
+            bbox=(60.0, 10.0, 90.0, 20.0),
+            source="ocr",
+            confidence=0.93,
+        ),
+        Word(
+            text="שָׁלוֹם",
+            bbox=(60.2, 10.0, 90.2, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="outside",
+            bbox=(110.0, 10.0, 140.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=150.0,
+        height=100.0,
+        words=words,
+        quality=_quality(glyph_count=0, word_count=len(words)),
+    )
+
+    assert logical_text_for_bbox(page, (0.0, 0.0, 100.0, 30.0)) == "שָׁלוֹם 12.50"
+
+
+def test_logical_text_orders_lines_top_to_bottom_and_returns_empty_without_evidence() -> None:
+    glyphs = (*(_glyph(char, 10.0 + index * 5.0, 10.0) for index, char in enumerate("Top")),)
+    words = (
+        Word(
+            text="Bottom",
+            bbox=(10.0, 40.0, 45.0, 50.0),
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=100.0,
+        height=100.0,
+        glyphs=glyphs,
+        words=words,
+        quality=_quality(glyph_count=len(glyphs), word_count=len(words)),
+    )
+
+    assert logical_text_for_bbox(page, (0.0, 0.0, 80.0, 30.0)) == "Top"
+    assert logical_text_for_bbox(page, (80.0, 60.0, 100.0, 90.0)) == ""
