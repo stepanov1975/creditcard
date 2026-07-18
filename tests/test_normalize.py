@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from ccparser.discovery import (
+    DiscoveredPrintedTotal,
+    DocumentClassification,
+    StatementDiscovery,
+    StatementGroupDiscovery,
+)
+from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
+from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
+from ccparser.normalize import normalize_statement, parse_amount
+
+
+def _cell(text: str, column: int, y: float, *, page: int = 1) -> Cell:
+    x0 = float(column * 50)
+    return Cell(
+        page_number=page,
+        bbox=(x0, y, x0 + 40.0, y + 10.0),
+        text=text,
+        confidence=1.0,
+    )
+
+
+def _row(*cells: Cell) -> Row:
+    return Row(
+        page_number=cells[0].page_number,
+        bbox=(
+            min(cell.bbox[0] for cell in cells),
+            min(cell.bbox[1] for cell in cells),
+            max(cell.bbox[2] for cell in cells),
+            max(cell.bbox[3] for cell in cells),
+        ),
+        cells=cells,
+        confidence=1.0,
+    )
+
+
+def _region(
+    roles: tuple[ColumnRole, ...],
+    rows: tuple[Row, ...],
+    *,
+    headers: tuple[str, ...] | None = None,
+) -> TableRegion:
+    header_texts = headers or tuple(role.value for role in roles)
+    header_cells = tuple(_cell(text, index, 10.0) for index, text in enumerate(header_texts))
+    columns = tuple(
+        ColumnSpec(
+            index=index,
+            page_number=1,
+            bbox=(index * 50.0, 10.0, index * 50.0 + 40.0, 200.0),
+            relative_x0=index / len(roles),
+            relative_x1=(index + 1) / len(roles),
+            role=role,
+            source_cells=(header_cells[index],),
+            confidence=1.0,
+        )
+        for index, role in enumerate(roles)
+    )
+    header = _row(*header_cells)
+    schema = TableSchema(
+        page_number=1,
+        bbox=(0.0, 10.0, len(roles) * 50.0 - 10.0, 200.0),
+        columns=columns,
+        header_cells=header_cells,
+        sample_cells=tuple(cell for row in rows for cell in row.cells),
+        confidence=1.0,
+    )
+    return TableRegion(
+        page_number=1,
+        bbox=(0.0, 10.0, len(roles) * 50.0 - 10.0, max(row.bbox[3] for row in rows)),
+        header=header,
+        rows=rows,
+        table_schema=schema,
+        confidence=1.0,
+    )
+
+
+def _discovery(
+    region: TableRegion,
+    total: str,
+    currency: str,
+) -> StatementDiscovery:
+    total_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(100.0, 210.0, 140.0, 220.0),
+        raw_text=total,
+    )
+    discovered_total = DiscoveredPrintedTotal(
+        amount_text=total,
+        currency=currency,
+        label_evidence=EvidenceReference(
+            page_number=1,
+            bbox=(50.0, 210.0, 90.0, 220.0),
+            raw_text="Total",
+        ),
+        value_evidence=total_evidence,
+        confidence=1.0,
+    )
+    group = StatementGroupDiscovery(
+        group_id="group-0001",
+        table_regions=(region,),
+        printed_total=discovered_total,
+        confidence=1.0,
+    )
+    return StatementDiscovery(
+        classification=DocumentClassification.STATEMENT,
+        groups=(group,),
+        table_regions=(region,),
+        confidence=1.0,
+        reason_codes=("transaction_table_with_compatible_total",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "hint", "expected", "currency"),
+    (
+        ("$1,234.56", None, Decimal("1234.56"), "USD"),
+        ("1.234,56 EUR", None, Decimal("1234.56"), "EUR"),
+        ("₪ 1 234,56-", None, Decimal("-1234.56"), "ILS"),
+        ("(£2,50)", None, Decimal("-2.50"), "GBP"),
+        ("100.00 credit", "USD", Decimal("-100.00"), "USD"),
+        ("100.00 זיכוי", "ILS", Decimal("-100.00"), "ILS"),
+        ("10.00 ש״ח", None, Decimal("10.00"), "ILS"),
+    ),
+)
+def test_parse_amount_supports_structurally_unambiguous_formats_and_credit_markers(
+    raw: str,
+    hint: str | None,
+    expected: Decimal,
+    currency: str,
+) -> None:
+    result = parse_amount(raw, currency_hint=hint)
+
+    assert result.amount == expected
+    assert result.currency == currency
+    assert result.diagnostics == ()
+    assert result.confidence >= 0.9
+
+
+@pytest.mark.parametrize(
+    ("raw", "hint", "reason"),
+    (
+        ("1,234", "ILS", "ambiguous_decimal_separator"),
+        ("10.00 USD EUR", None, "conflicting_currency"),
+        ("-10.00 charge", "ILS", "conflicting_sign_marker"),
+        ("12 apples", "ILS", "invalid_amount_text"),
+        ("10.00 USD", "EUR", "currency_hint_conflict"),
+    ),
+)
+def test_parse_amount_rejects_ambiguous_sign_separator_currency_or_text(
+    raw: str,
+    hint: str | None,
+    reason: str,
+) -> None:
+    result = parse_amount(raw, currency_hint=hint)
+
+    assert result.amount is None
+    assert reason in result.diagnostics
+
+
+def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconciles() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(_cell("01/02/2026", 0, 30.0), _cell("Market", 1, 30.0), _cell("10.00", 2, 30.0)),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Customer refund", 1, 50.0),
+                _cell("5.00 credit", 2, 50.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "5.00", "ILS"))
+
+    assert tuple(transaction.transaction_id for transaction in result.transactions) == (
+        "group-0001-p001-r0001",
+        "group-0001-p001-r0002",
+    )
+    purchase, refund = result.transactions
+    assert purchase.kind is TransactionKind.CHARGE
+    assert purchase.category is TransactionCategory.PURCHASE
+    assert purchase.billed_amount == Decimal("10.00")
+    assert purchase.transaction_date == date(2026, 2, 1)
+    assert refund.kind is TransactionKind.CREDIT
+    assert refund.category is TransactionCategory.REFUND
+    assert refund.billed_amount == Decimal("-5.00")
+    assert all(transaction.billing_currency == "ILS" for transaction in result.transactions)
+    assert result.reconciliation.status is Status.RECONCILED
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+
+
+def test_normalize_statement_preserves_foreign_installment_and_wrapped_description() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+        ColumnRole.INSTALLMENT,
+    )
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("2026-02-01", 0, 30.0),
+                _cell("Monthly", 1, 30.0),
+                _cell("USD 3.00", 2, 30.0),
+                _cell("ILS 11.00", 3, 30.0),
+                _cell("2/6", 4, 30.0),
+            ),
+            _row(_cell("installment plan", 1, 41.0)),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "ILS 11.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    transaction = result.transactions[0]
+    assert transaction.description == "Monthly installment plan"
+    assert transaction.category is TransactionCategory.INSTALLMENT
+    assert transaction.original_amount == Decimal("3.00")
+    assert transaction.original_currency == "USD"
+    assert (transaction.installment_current, transaction.installment_total) == (2, 6)
+    assert len(transaction.evidence) == 6
+    assert result.row_results[1].diagnostics == ("merged_description_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    (
+        ("Regular merchant", TransactionCategory.PURCHASE),
+        ("Service fee", TransactionCategory.FEE),
+        ("ריבית חודשית", TransactionCategory.INTEREST),
+        ("Account adjustment", TransactionCategory.ADJUSTMENT),
+        ("החזר", TransactionCategory.REFUND),
+    ),
+)
+def test_normalize_statement_uses_general_category_vocabulary(
+    description: str,
+    expected: TransactionCategory,
+) -> None:
+    amount = "1.00 credit" if expected is TransactionCategory.REFUND else "1.00"
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(_cell("01/02/2026", 0, 30.0), _cell(description, 1, 30.0), _cell(amount, 2, 30.0)),),
+    )
+    total = "-1.00" if expected is TransactionCategory.REFUND else "1.00"
+
+    result = normalize_statement(_discovery(region, total, "ILS"))
+
+    assert result.transactions[0].category is expected
+
+
+def test_normalize_statement_keeps_critical_and_noncritical_row_ambiguities_explicit() -> None:
+    roles = (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT)
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("31/02/2026", 0, 30.0),
+                _cell("Invalid date", 1, 30.0),
+                _cell("2.00", 2, 30.0),
+            ),
+            _row(
+                _cell("01/02/2026", 0, 50.0),
+                _cell("Duplicate amount", 1, 50.0),
+                _cell("1.00", 2, 50.0),
+                Cell(
+                    page_number=1,
+                    bbox=(102.0, 50.0, 138.0, 60.0),
+                    text="3.00",
+                    confidence=1.0,
+                ),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "2.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert "invalid_transaction_date" in result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+    assert result.row_results[1].transaction is None
+    assert "multiple_amount_cells" in result.row_results[1].diagnostics
+    assert "rows_not_emitted:1" in result.diagnostics
+
+
+def test_normalize_statement_distinguishes_labeled_transaction_and_posting_dates() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("03/02/2026", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("4.00", 3, 30.0),
+            ),
+        ),
+        headers=("Transaction date", "Posting date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.posting_date == date(2026, 2, 3)
+    assert transaction.ambiguities == ()
+
+
+def test_normalize_statement_marks_reconciliation_unreconciled_when_a_row_is_not_emitted() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Clean", 1, 30.0),
+                _cell("2.00", 2, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Ambiguous", 1, 50.0),
+                _cell("1.00", 2, 50.0),
+                Cell(
+                    page_number=1,
+                    bbox=(102.0, 50.0, 138.0, 60.0),
+                    text="3.00",
+                    confidence=1.0,
+                ),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "2.00", "ILS"))
+
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
+    assert "rows_not_emitted:1" in result.reconciliation.diagnostics

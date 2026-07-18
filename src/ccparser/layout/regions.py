@@ -19,7 +19,9 @@ _TOTAL_MARKERS = frozenset(
         "total",
         "סהכ",
         "סך הכל",
+        "סךהכל",
         "סכום כולל",
+        "סכוםכולל",
     }
 )
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
@@ -199,7 +201,9 @@ def _detect_from_header(rows: Sequence[Row], header_index: int) -> tuple[TableRe
     return region, stop_index
 
 
-def _logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
+def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
+    """Return every page row with glyph-corrected logical cell text and provenance."""
+
     geometric_rows = cluster_rows(page_evidence.words, page_evidence.page_number)
     logical_rows: list[Row] = []
     for row in geometric_rows:
@@ -225,7 +229,7 @@ def _logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
 def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]:
     """Detect plausible repeated transaction tables without document identity rules."""
 
-    rows = _logical_rows(page_evidence)
+    rows = logical_rows(page_evidence)
     regions: list[TableRegion] = []
     index = 0
     while index < len(rows):

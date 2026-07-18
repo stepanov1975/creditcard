@@ -1,3 +1,5 @@
+import unicodedata
+from datetime import date
 from decimal import Decimal, localcontext
 
 import pytest
@@ -126,3 +128,54 @@ def test_monetary_serialization_never_uses_decimal_context_rounding() -> None:
         ).model_dump(mode="json")
 
     assert payload["amount"] == "123456789012345678901234567890.12"
+
+
+def test_extended_transaction_fields_are_optional_immutable_and_nfc() -> None:
+    from ccparser.models import (
+        EvidenceReference,
+        Transaction,
+        TransactionCategory,
+        TransactionKind,
+    )
+
+    decomposed = "Cafe\N{COMBINING ACUTE ACCENT}"
+    evidence = EvidenceReference(page_number=1, bbox=(1.0, 2.0, 3.0, 4.0), raw_text=decomposed)
+    transaction = Transaction(
+        transaction_id="group-0001-p001-r0001",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("12.34"),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+        transaction_date=date(2026, 2, 1),
+        posting_date=date(2026, 2, 2),
+        description=decomposed,
+        category=TransactionCategory.PURCHASE,
+        original_amount=Decimal("3.25"),
+        original_currency="USD",
+        installment_current=2,
+        installment_total=6,
+        evidence=(evidence,),
+    )
+
+    assert transaction.description == unicodedata.normalize("NFC", decomposed)
+    assert transaction.category is TransactionCategory.PURCHASE
+    assert transaction.evidence == (evidence,)
+    assert transaction.model_dump(mode="json")["original_amount"] == "3.25"
+    with pytest.raises(ValidationError, match="frozen"):
+        transaction.description = "changed"
+
+
+def test_existing_transaction_constructor_remains_valid_after_extension() -> None:
+    from ccparser.models import Transaction, TransactionCategory, TransactionKind
+
+    transaction = Transaction(
+        transaction_id="legacy",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("1.00"),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+    )
+
+    assert transaction.category is TransactionCategory.UNKNOWN
+    assert transaction.description is None
+    assert transaction.evidence == ()
