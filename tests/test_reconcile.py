@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -241,3 +241,55 @@ def test_reconcile_requires_at_least_one_printed_total() -> None:
 
     assert result.status is Status.UNRECONCILED
     assert result.diagnostics == ("no printed reconciliation totals found",)
+
+
+def test_reconcile_arithmetic_is_independent_of_decimal_context() -> None:
+    from ccparser.models import PrintedTotal, Status, Transaction, TransactionKind
+    from ccparser.reconcile import reconcile
+
+    with localcontext() as context:
+        context.prec = 5
+        result = reconcile(
+            (
+                Transaction(
+                    transaction_id="large",
+                    kind=TransactionKind.CHARGE,
+                    billed_amount=Decimal("1234.56"),
+                    billing_currency="ILS",
+                    reconciliation_group_ids=("card-1",),
+                ),
+                Transaction(
+                    transaction_id="small",
+                    kind=TransactionKind.CHARGE,
+                    billed_amount=Decimal("0.01"),
+                    billing_currency="ILS",
+                    reconciliation_group_ids=("card-1",),
+                ),
+            ),
+            (PrintedTotal(group_id="card-1", amount=Decimal("1234.57"), currency="ILS"),),
+        )
+
+    assert result.status is Status.RECONCILED
+    assert result.groups[0].calculated_total == Decimal("1234.57")
+
+
+def test_reconcile_preserves_amounts_larger_than_default_context() -> None:
+    from ccparser.models import PrintedTotal, Status, Transaction, TransactionKind
+    from ccparser.reconcile import reconcile
+
+    amount = Decimal("123456789012345678901234567890.12")
+    result = reconcile(
+        (
+            Transaction(
+                transaction_id="very-large",
+                kind=TransactionKind.CHARGE,
+                billed_amount=amount,
+                billing_currency="ILS",
+                reconciliation_group_ids=("card-1",),
+            ),
+        ),
+        (PrintedTotal(group_id="card-1", amount=amount, currency="ILS"),),
+    )
+
+    assert result.status is Status.RECONCILED
+    assert result.groups[0].calculated_total == amount
