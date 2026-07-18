@@ -238,3 +238,41 @@ def test_detect_table_regions_rebuilds_backwards_hebrew_words_from_glyph_geometr
         "סכום",
     )
     assert all(cell.glyphs for cell in regions[0].header.cells)
+
+
+def test_detect_table_regions_retains_adjacent_description_continuation() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Long merchant", "10.00"),
+            _word("continued name", 35.0, 72.0, 41.0),
+            *_data(60.0, "02/02/2026", "Cafe", "20.00"),
+            _word("Total", 45.0, 72.0, 80.0),
+            _word("30.00", 92.0, 120.0, 80.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(tuple(cell.text for cell in row.cells) for row in regions[0].rows) == (
+        ("01/02/2026", "Long merchant", "10.00"),
+        ("continued name",),
+        ("02/02/2026", "Cafe", "20.00"),
+    )
+    assert "repeated_rows:2" in regions[0].diagnostics
+    assert "continuation_rows:1" in regions[0].diagnostics
+
+
+def test_description_continuation_does_not_make_one_transaction_row_a_table() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Only merchant", "10.00"),
+            _word("continued name", 35.0, 72.0, 41.0),
+            _word("Total", 45.0, 72.0, 60.0),
+            _word("10.00", 92.0, 120.0, 60.0),
+        )
+    )
+
+    assert detect_table_regions(page) == ()

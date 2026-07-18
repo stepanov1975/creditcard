@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import statistics
 import unicodedata
 from collections.abc import Iterable, Sequence
@@ -12,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ccparser.evidence.models import BBox, DocumentEvidence
 from ccparser.layout import TableRegion, detect_table_regions, logical_rows
-from ccparser.layout.models import Cell, Row
+from ccparser.layout.models import Cell, ColumnRole, Row
 from ccparser.models import EvidenceReference
+from ccparser.money import currencies_in_text, parse_amount
 
 
 class _ImmutableDiscoveryModel(BaseModel):
@@ -92,33 +92,6 @@ _TOTAL_MARKERS = frozenset(
         "סכוםלחיוב",
     }
 )
-_CURRENCY_ALIASES = {
-    "₪": "ILS",
-    "ILS": "ILS",
-    "NIS": "ILS",
-    "שח": "ILS",
-    "ש ח": "ILS",
-    "$": "USD",
-    "USD": "USD",
-    "€": "EUR",
-    "EUR": "EUR",
-    "£": "GBP",
-    "GBP": "GBP",
-    "JPY": "JPY",
-    "CHF": "CHF",
-    "AUD": "AUD",
-    "CAD": "CAD",
-}
-_CURRENCY_PATTERN = re.compile(
-    r"(?<![A-Z])(?:ILS|NIS|USD|EUR|GBP|JPY|CHF|AUD|CAD)(?![A-Z])|[₪$€£]|ש[\s\"״']*ח",
-    re.IGNORECASE,
-)
-_AMOUNT_PATTERN = re.compile(
-    r"(?<![\d])(?:[₪$€£]\s*)?(?:[-+]?\s*|\(\s*)"
-    r"(?:\d{1,3}(?:[ ,.']\d{3})+|\d+)(?:[.,]\d{1,3})?"
-    r"(?:\s*(?:ILS|NIS|USD|EUR|GBP|JPY|CHF|AUD|CAD|[₪$€£]))?\s*\)?(?![\d])",
-    re.IGNORECASE,
-)
 _FORM_TITLES = frozenset(
     {
         "application form",
@@ -181,29 +154,25 @@ def _evidence(cell: Cell) -> EvidenceReference:
     return EvidenceReference(page_number=cell.page_number, bbox=cell.bbox, raw_text=cell.text)
 
 
-def _currency_tokens(text: str) -> tuple[str, ...]:
-    currencies: list[str] = []
-    for match in _CURRENCY_PATTERN.finditer(unicodedata.normalize("NFC", text)):
-        normalized = _normalized_phrase(match.group()).upper()
-        key = match.group() if match.group() in _CURRENCY_ALIASES else normalized
-        currency = _CURRENCY_ALIASES.get(key)
-        if currency is not None and currency not in currencies:
-            currencies.append(currency)
-    return tuple(currencies)
-
-
-def _amount_matches(text: str) -> tuple[str, ...]:
-    return tuple(match.group().strip() for match in _AMOUNT_PATTERN.finditer(text))
-
-
-def _table_currency(region: TableRegion) -> str | None:
+def _table_currencies(region: TableRegion) -> tuple[str, ...]:
+    roles = {column.role for column in region.table_schema.columns}
+    billing_roles = {ColumnRole.AMOUNT, ColumnRole.BILLING_CURRENCY}
+    if ColumnRole.CURRENCY in roles:
+        if ColumnRole.ORIGINAL_AMOUNT in roles:
+            return ()
+        billing_roles.add(ColumnRole.CURRENCY)
+    billing_columns = tuple(
+        column for column in region.table_schema.columns if column.role in billing_roles
+    )
     currencies = {
         currency
         for row in region.rows
+        for column in billing_columns
         for cell in row.cells
-        for currency in _currency_tokens(cell.text)
+        if column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= column.bbox[2]
+        for currency in currencies_in_text(cell.text)
     }
-    return next(iter(currencies)) if len(currencies) == 1 else None
+    return tuple(sorted(currencies))
 
 
 def _reading_key_bbox(page_number: int, bbox: BBox) -> tuple[int, float, float]:
@@ -217,22 +186,16 @@ def _total_from_row(
     label_cells = tuple(cell for cell in row.cells if _contains_phrase(cell.text, _TOTAL_MARKERS))
     if not label_cells:
         return None, ()
-    amount_cells: list[tuple[Cell, str]] = []
-    for cell in row.cells:
-        matches = _amount_matches(cell.text)
-        amount_cells.extend((cell, match) for match in matches)
     diagnostics: list[str] = []
-    if len(amount_cells) != 1:
-        diagnostics.append("ambiguous_total_value")
-
     explicit_currencies = {
-        currency for cell in row.cells for currency in _currency_tokens(cell.text)
+        currency for cell in row.cells for currency in currencies_in_text(cell.text)
     }
     inferred_currencies = {
         currency
         for region in preceding_regions
-        for currency in (_table_currency(region),)
-        if currency is not None
+        for currencies in (_table_currencies(region),)
+        if len(currencies) == 1
+        for currency in currencies
     }
     if len(explicit_currencies) == 1:
         currency = next(iter(explicit_currencies))
@@ -243,6 +206,23 @@ def _total_from_row(
         diagnostics.append("unknown_total_currency")
     if len(explicit_currencies) > 1:
         diagnostics.append("conflicting_total_currency")
+    amount_cells: list[tuple[Cell, str]] = []
+    if currency is not None:
+        for cell in row.cells:
+            candidate_text = cell.text
+            if cell in label_cells:
+                normalized = _normalized_phrase(candidate_text)
+                if normalized in _TOTAL_MARKERS:
+                    continue
+                for marker in sorted(_TOTAL_MARKERS, key=len, reverse=True):
+                    if candidate_text.casefold().startswith(marker.casefold()):
+                        candidate_text = candidate_text[len(marker) :].strip(" :")
+                        break
+            parsed = parse_amount(candidate_text, currency_hint=currency)
+            if parsed.amount is not None:
+                amount_cells.append((cell, candidate_text))
+    if len(amount_cells) != 1:
+        diagnostics.append("ambiguous_total_value")
     if len(amount_cells) != 1 or currency is None:
         return None, tuple(diagnostics)
     value_cell, amount_text = amount_cells[0]
@@ -294,6 +274,77 @@ def _deduplicated(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
+    first_columns = first.table_schema.columns
+    second_columns = second.table_schema.columns
+    if len(first_columns) != len(second_columns):
+        return False
+    return all(
+        first_column.role is second_column.role
+        and abs(first_column.relative_x0 - second_column.relative_x0) <= 0.08
+        and abs(first_column.relative_x1 - second_column.relative_x1) <= 0.08
+        for first_column, second_column in zip(first_columns, second_columns, strict=True)
+    )
+
+
+def _associate_regions(
+    *,
+    total_row: Row,
+    total: DiscoveredPrintedTotal,
+    regions: Sequence[TableRegion],
+    used_region_indexes: set[int],
+) -> tuple[tuple[TableRegion, ...], tuple[str, ...]]:
+    preceding_indexes = tuple(
+        index
+        for index, region in enumerate(regions)
+        if index not in used_region_indexes
+        and _reading_key_bbox(region.page_number, region.bbox)
+        < _reading_key_bbox(total_row.page_number, total_row.bbox)
+    )
+    if not preceding_indexes:
+        return (), ("total_without_table",)
+    same_page = tuple(
+        index for index in preceding_indexes if regions[index].page_number == total_row.page_number
+    )
+    if len(same_page) > 1:
+        return (), ("ambiguous_group_region_association",)
+    if same_page:
+        base_index = same_page[0]
+    else:
+        latest_page = max(regions[index].page_number for index in preceding_indexes)
+        latest = tuple(
+            index for index in preceding_indexes if regions[index].page_number == latest_page
+        )
+        if len(latest) != 1:
+            return (), ("ambiguous_group_region_association",)
+        base_index = latest[0]
+
+    base = regions[base_index]
+    if _table_currencies(base) != (total.currency,):
+        return (), ("ambiguous_table_currency",)
+    chain_indexes = [base_index]
+    expected_page = base.page_number - 1
+    current = base
+    while expected_page > 0:
+        candidates = tuple(
+            index for index in preceding_indexes if regions[index].page_number == expected_page
+        )
+        if not candidates:
+            break
+        if len(candidates) != 1:
+            return (), ("ambiguous_group_region_association",)
+        candidate_index = candidates[0]
+        candidate = regions[candidate_index]
+        if _table_currencies(candidate) != (total.currency,) or not _schemas_compatible(
+            candidate, current
+        ):
+            break
+        chain_indexes.append(candidate_index)
+        current = candidate
+        expected_page -= 1
+    return tuple(regions[index] for index in reversed(chain_indexes)), ()
+
+
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     """Discover statement groups and classify only from positive semantic evidence."""
 
@@ -332,25 +383,28 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         diagnostics.extend(total_diagnostics)
         if total is None or not preceding:
             continue
-        compatible = tuple(
-            region for region in preceding if _table_currency(region) in {None, total.currency}
+        associated, association_diagnostics = _associate_regions(
+            total_row=total_row,
+            total=total,
+            regions=regions,
+            used_region_indexes=used_region_indexes,
         )
-        if not compatible:
-            diagnostics.append("total_without_compatible_table")
+        diagnostics.extend(association_diagnostics)
+        if not associated:
             continue
         group_id = f"group-{len(groups) + 1:04d}"
         confidence = statistics.mean(
-            (total.confidence, *(region.confidence for region in compatible))
+            (total.confidence, *(region.confidence for region in associated))
         )
         groups.append(
             StatementGroupDiscovery(
                 group_id=group_id,
-                table_regions=compatible,
+                table_regions=associated,
                 printed_total=total,
                 confidence=confidence,
             )
         )
-        used_region_indexes.update(regions.index(region) for region in compatible)
+        used_region_indexes.update(regions.index(region) for region in associated)
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
     if groups:

@@ -11,6 +11,7 @@ from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
 from ccparser.layout.text import logical_text_for_bbox, positioned_evidence_for_bbox
+from ccparser.money import is_currency_shaped, is_money_shaped
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -86,7 +87,14 @@ def _plausible_header(schema: TableSchema) -> bool:
     }
     amount_role = bool(header_roles & {ColumnRole.AMOUNT, ColumnRole.ORIGINAL_AMOUNT})
     context_role = bool(
-        header_roles & {ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.CURRENCY}
+        header_roles
+        & {
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.CURRENCY,
+            ColumnRole.BILLING_CURRENCY,
+            ColumnRole.ORIGINAL_CURRENCY,
+        }
     )
     return len(schema.columns) >= 2 and len(header_roles) >= 2 and amount_role and context_role
 
@@ -132,6 +140,36 @@ def _preview_rows(rows: Sequence[Row], header_index: int) -> tuple[Row, ...]:
     return tuple(preview)
 
 
+def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -> bool:
+    if len(row.cells) != 1 or _is_total_row(row) or _literal_header_role_count(row) >= 2:
+        return False
+    description_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.DESCRIPTION
+    )
+    if len(description_columns) != 1:
+        return False
+    cell = row.cells[0]
+    column = description_columns[0]
+    center = _center_x(cell.bbox)
+    tolerance = (column.bbox[2] - column.bbox[0]) * 0.15
+    if not column.bbox[0] - tolerance <= center <= column.bbox[2] + tolerance:
+        return False
+    if (
+        any(char.isdigit() for char in cell.text)
+        or is_money_shaped(cell.text)
+        or is_currency_shaped(cell.text)
+    ):
+        return False
+    minimum_alignment = max(2 / len(schema.columns), 0.6)
+    if _row_alignment(previous, schema) < minimum_alignment:
+        return False
+    typical_height = statistics.median(
+        _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
+    )
+    gap = max(0.0, row.bbox[1] - previous.bbox[3])
+    return gap <= typical_height * 1.5
+
+
 def _candidate_schema(rows: Sequence[Row], header_index: int) -> TableSchema:
     header = rows[header_index]
     preview = _preview_rows(rows, header_index)
@@ -146,6 +184,8 @@ def _detect_from_header(rows: Sequence[Row], header_index: int) -> tuple[TableRe
         return None, header_index + 1
 
     accepted: list[Row] = []
+    regular_rows: list[Row] = []
+    continuation_count = 0
     stop_reason: str | None = None
     stop_index = len(rows)
     previous = header
@@ -162,6 +202,11 @@ def _detect_from_header(rows: Sequence[Row], header_index: int) -> tuple[TableRe
             stop_reason = "stopped_at_new_header"
             stop_index = index
             break
+        if _is_description_continuation(row, previous, schema):
+            accepted.append(row)
+            continuation_count += 1
+            previous = row
+            continue
         alignment = _row_alignment(row, schema)
         minimum_alignment = max(2 / len(schema.columns), 0.6)
         if alignment < minimum_alignment:
@@ -169,16 +214,19 @@ def _detect_from_header(rows: Sequence[Row], header_index: int) -> tuple[TableRe
             stop_index = index
             break
         accepted.append(row)
+        regular_rows.append(row)
         previous = row
 
-    if len(accepted) < 2:
+    if len(regular_rows) < 2:
         return None, header_index + 1
 
     sample_cells = tuple(cell for row in accepted for cell in row.cells)
     final_schema = infer_column_roles(header.cells, sample_cells)
     bbox = _union_bbox((header.bbox, *(row.bbox for row in accepted)))
-    alignments = tuple(_row_alignment(row, final_schema) for row in accepted)
-    diagnostics = [f"repeated_rows:{len(accepted)}"]
+    alignments = tuple(_row_alignment(row, final_schema) for row in regular_rows)
+    diagnostics = [f"repeated_rows:{len(regular_rows)}"]
+    if continuation_count:
+        diagnostics.append(f"continuation_rows:{continuation_count}")
     if stop_reason is not None:
         diagnostics.append(stop_reason)
     diagnostics.extend(f"schema:{diagnostic}" for diagnostic in final_schema.diagnostics)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ccparser.discovery import DocumentClassification, discover_statement
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 
@@ -178,3 +180,111 @@ def test_discover_statement_reconstructs_backwards_hebrew_total_from_glyphs() ->
 
     assert result.classification is DocumentClassification.STATEMENT
     assert result.groups[0].printed_total.label_evidence.raw_text == "סך הכל"
+
+
+def test_discover_statement_preserves_negative_trailing_sign_total() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00-", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.amount_text == "₪30.00-"
+
+
+@pytest.mark.parametrize("malformed", ("₪30.00--", "₪-+30.00", "₪30.00- text"))
+def test_discover_statement_rejects_malformed_or_residual_total_text(malformed: str) -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word(malformed, 110.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_total_value" in result.diagnostics
+
+
+def test_same_currency_multi_card_tables_each_pair_with_their_adjacent_total() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            *_table(110.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 170.0),
+            _word("₪12.00", 118.0, 155.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert tuple(group.group_id for group in result.groups) == ("group-0001", "group-0002")
+    assert all(len(group.table_regions) == 1 for group in result.groups)
+
+
+def test_totals_after_multiple_same_currency_tables_remain_unassigned() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            *_table(90.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 150.0),
+            _word("₪30.00", 118.0, 155.0, 150.0),
+            _word("Total", 50.0, 95.0, 170.0),
+            _word("₪12.00", 118.0, 155.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics
+
+
+def test_mixed_currency_table_is_not_compatible_with_billing_total() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "", "$10.00", "₪20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_table_currency" in result.diagnostics
+
+
+def test_consecutive_pages_with_compatible_schema_form_proven_continuation_chain() -> None:
+    first_page = _page(1, _table(20.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(20.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪42.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)

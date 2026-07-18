@@ -252,3 +252,21 @@ def test_header_phrase_matches_contiguous_tokens_inside_longer_heading() -> None
 
     assert schema.columns[0].role is ColumnRole.DATE
     assert "role_evidence:header" in schema.columns[0].diagnostics
+
+
+def test_currency_headers_distinguish_billing_from_original_transaction_currency() -> None:
+    headers = (
+        _cell("Transaction currency", (0.0, 10.0, 40.0, 20.0)),
+        _cell("Billing currency", (60.0, 10.0, 100.0, 20.0)),
+    )
+    samples = (
+        _cell("USD", (0.0, 30.0, 40.0, 40.0)),
+        _cell("ILS", (60.0, 30.0, 100.0, 40.0)),
+    )
+
+    schema = infer_column_roles(headers, samples)
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.ORIGINAL_CURRENCY,
+        ColumnRole.BILLING_CURRENCY,
+    )

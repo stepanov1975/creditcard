@@ -85,7 +85,24 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "סכום עסקה מקורי",
         }
     ),
-    ColumnRole.CURRENCY: frozenset({"currency", "currency code", "מטבע", "מטבע עסקה"}),
+    ColumnRole.CURRENCY: frozenset({"currency", "currency code", "מטבע"}),
+    ColumnRole.BILLING_CURRENCY: frozenset(
+        {
+            "billed currency",
+            "billing currency",
+            "charge currency",
+            "מטבע חיוב",
+        }
+    ),
+    ColumnRole.ORIGINAL_CURRENCY: frozenset(
+        {
+            "original currency",
+            "purchase currency",
+            "transaction currency",
+            "מטבע עסקה",
+            "מטבע מקור",
+        }
+    ),
     ColumnRole.INSTALLMENT: frozenset(
         {"installment", "installments", "payment number", "מספר תשלום", "תשלומים"}
     ),

@@ -22,6 +22,8 @@ class ColumnRole(StrEnum):
     AMOUNT = "amount"
     ORIGINAL_AMOUNT = "original_amount"
     CURRENCY = "currency"
+    BILLING_CURRENCY = "billing_currency"
+    ORIGINAL_CURRENCY = "original_currency"
     INSTALLMENT = "installment"
 
 

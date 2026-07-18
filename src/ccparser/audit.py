@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
-import shutil
+import stat
 import tempfile
 from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -25,7 +24,6 @@ from ccparser.evidence import DocumentEvidence, extract_pdf
 HIGH_CONFIDENCE_NON_STATEMENT = 0.9
 MANIFEST_NAME = "manifest.json"
 MANIFEST_VERSION = 1
-_POSITIVE_NON_STATEMENT_REASONS = frozenset({"positive_non_statement_form_evidence"})
 
 
 class AuditApplyError(RuntimeError):
@@ -52,6 +50,24 @@ class AuditAction(StrEnum):
     REVIEW = "review"
 
 
+class AuditReasonCode(StrEnum):
+    """Closed privacy-safe audit vocabulary allowed in reports and manifests."""
+
+    TRANSACTION_TABLE_WITH_COMPATIBLE_TOTAL = "transaction_table_with_compatible_total"
+    POSITIVE_NON_STATEMENT_FORM_EVIDENCE = "positive_non_statement_form_evidence"
+    STATEMENT_EVIDENCE_INCOMPLETE = "statement_evidence_incomplete"
+    INSUFFICIENT_POSITIVE_EVIDENCE = "insufficient_positive_evidence"
+    EXTRACTION_ERROR = "extraction_error"
+    CLASSIFICATION_ERROR = "classification_error"
+    EXTRACTION_SOURCE_HASH_MISMATCH = "extraction_source_hash_mismatch"
+    NON_STATEMENT_CONFIDENCE_BELOW_THRESHOLD = "non_statement_confidence_below_threshold"
+    NON_STATEMENT_POSITIVE_EVIDENCE_MISSING = "non_statement_positive_evidence_missing"
+    CLASSIFIER_REASON_REDACTED = "classifier_reason_redacted"
+
+
+_POSITIVE_NON_STATEMENT_REASONS = frozenset({AuditReasonCode.POSITIVE_NON_STATEMENT_FORM_EVIDENCE})
+
+
 class AuditDecision(_ImmutableAuditModel):
     """One privacy-safe decision containing reason codes rather than raw text."""
 
@@ -61,7 +77,7 @@ class AuditDecision(_ImmutableAuditModel):
     classification: DocumentClassification
     confidence: float = Field(ge=0, le=1)
     action: AuditAction
-    reason_codes: tuple[str, ...]
+    reason_codes: tuple[AuditReasonCode, ...]
 
 
 class AuditReport(_ImmutableAuditModel):
@@ -78,7 +94,23 @@ class _ManifestEntry(_ImmutableAuditModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     classification: DocumentClassification
     confidence: float = Field(ge=0, le=1)
-    reason_codes: tuple[str, ...]
+    reason_codes: tuple[AuditReasonCode, ...]
+
+
+def _safe_classifier_reasons(values: Iterable[str]) -> tuple[AuditReasonCode, ...]:
+    reasons: list[AuditReasonCode] = []
+    redacted = False
+    for value in values:
+        try:
+            reason = AuditReasonCode(value)
+        except ValueError:
+            redacted = True
+            continue
+        if reason not in reasons:
+            reasons.append(reason)
+    if redacted:
+        reasons.append(AuditReasonCode.CLASSIFIER_REASON_REDACTED)
+    return tuple(reasons)
 
 
 def _sha256_file(path: Path) -> str:
@@ -167,18 +199,16 @@ def _decision_for_discovery(
     discovery: StatementDiscovery,
     quarantine_dir: Path,
 ) -> AuditDecision:
-    reasons = list(discovery.reason_codes)
+    reasons = list(_safe_classifier_reasons(discovery.reason_codes))
     if discovery.classification is DocumentClassification.STATEMENT:
         action = AuditAction.KEEP
     elif discovery.classification is DocumentClassification.NOT_STATEMENT:
-        has_positive_reason = bool(
-            _POSITIVE_NON_STATEMENT_REASONS.intersection(discovery.reason_codes)
-        )
+        has_positive_reason = bool(_POSITIVE_NON_STATEMENT_REASONS.intersection(reasons))
         if discovery.confidence < HIGH_CONFIDENCE_NON_STATEMENT:
-            reasons.append("non_statement_confidence_below_threshold")
+            reasons.append(AuditReasonCode.NON_STATEMENT_CONFIDENCE_BELOW_THRESHOLD)
             action = AuditAction.REVIEW
         elif not has_positive_reason:
-            reasons.append("non_statement_positive_evidence_missing")
+            reasons.append(AuditReasonCode.NON_STATEMENT_POSITIVE_EVIDENCE_MISSING)
             action = AuditAction.REVIEW
         else:
             action = AuditAction.QUARANTINE
@@ -200,7 +230,11 @@ def _decision_for_discovery(
     )
 
 
-def _error_decision(relative_path: str, source_sha256: str, reason: str) -> AuditDecision:
+def _error_decision(
+    relative_path: str,
+    source_sha256: str,
+    reason: AuditReasonCode,
+) -> AuditDecision:
     return AuditDecision(
         original_relative_path=relative_path,
         sha256=source_sha256,
@@ -301,44 +335,50 @@ def _write_manifest_atomic(quarantine_dir: Path, entries: Iterable[_ManifestEntr
             temporary_path.unlink(missing_ok=True)
 
 
-def _copy_exclusive(source: Path, destination: Path) -> None:
-    with source.open("rb") as source_file, destination.open("xb") as destination_file:
-        shutil.copyfileobj(source_file, destination_file)
-        destination_file.flush()
-        os.fsync(destination_file.fileno())
+def _copy_and_hash(source_file: BinaryIO, destination_file: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    while chunk := source_file.read(1024 * 1024):
+        digest.update(chunk)
+        destination_file.write(chunk)
+    destination_file.flush()
+    os.fsync(destination_file.fileno())
+    return digest.hexdigest()
 
 
-def _move_file(source: Path, destination: Path) -> None:
-    """Move without ever replacing an existing destination."""
+def _move_file(source: Path, destination: Path, expected_sha256: str) -> None:
+    """Copy a stable verified snapshot, then unlink its unchanged source path."""
 
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.link(source, destination, follow_symlinks=False)
-    except OSError as error:
-        if error.errno != errno.EXDEV:
-            raise
-        try:
-            _copy_exclusive(source, destination)
-        except Exception:
-            destination.unlink(missing_ok=True)
-            raise
-    try:
+        with source.open("rb") as source_file:
+            opened_stat = os.fstat(source_file.fileno())
+            if not stat.S_ISREG(opened_stat.st_mode):
+                raise AuditApplyError("source is not a regular file")
+            with destination.open("xb") as destination_file:
+                copied_sha256 = _copy_and_hash(source_file, destination_file)
+        if copied_sha256 != expected_sha256 or _sha256_file(destination) != expected_sha256:
+            raise AuditApplyError("source bytes do not match decision hash")
+        current_stat = source.stat()
+        if (current_stat.st_dev, current_stat.st_ino) != (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+        ) or _sha256_file(source) != expected_sha256:
+            raise AuditApplyError("source changed during move")
         source.unlink()
     except Exception:
         destination.unlink(missing_ok=True)
         raise
 
 
-def _rollback_moves(moves: Iterable[tuple[Path, Path]]) -> None:
+def _rollback_moves(moves: Iterable[tuple[Path, Path, str]]) -> None:
     failures: list[OSError] = []
-    for source, destination in reversed(tuple(moves)):
+    for source, destination, source_sha256 in reversed(tuple(moves)):
         try:
             if source.exists() or source.is_symlink():
                 raise FileExistsError(source)
-            source.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(destination, source)
+            _move_file(destination, source, source_sha256)
         except OSError as error:
             failures.append(error)
     if failures:
@@ -356,7 +396,7 @@ def _apply_quarantine(
     )
     if not current_quarantine:
         return 0
-    moved: list[tuple[Path, Path]] = []
+    moved: list[tuple[Path, Path, str]] = []
     new_entries: list[_ManifestEntry] = []
     try:
         for decision in current_quarantine:
@@ -371,8 +411,8 @@ def _apply_quarantine(
                 quarantine_dir,
                 decision.quarantine_relative_path,
             )
-            _move_file(source, destination)
-            moved.append((source, destination))
+            _move_file(source, destination, decision.sha256)
+            moved.append((source, destination, decision.sha256))
             new_entries.append(_manifest_entry(decision))
         _write_manifest_atomic(quarantine_dir, (*historical_entries, *new_entries))
     except Exception as error:
@@ -413,21 +453,35 @@ def audit_directory(
         try:
             evidence = extract(source)
         except Exception:
-            decisions.append(_error_decision(relative_path, source_sha256, "extraction_error"))
-            continue
-        if evidence.source_sha256 != source_sha256:
             decisions.append(
                 _error_decision(
                     relative_path,
                     source_sha256,
-                    "extraction_source_hash_mismatch",
+                    AuditReasonCode.EXTRACTION_ERROR,
+                )
+            )
+            continue
+        if evidence.source_sha256 != source_sha256:
+            if apply:
+                raise AuditApplyError("extraction source hash mismatch")
+            decisions.append(
+                _error_decision(
+                    relative_path,
+                    source_sha256,
+                    AuditReasonCode.EXTRACTION_SOURCE_HASH_MISMATCH,
                 )
             )
             continue
         try:
             discovery = classify(evidence)
         except Exception:
-            decisions.append(_error_decision(relative_path, source_sha256, "classification_error"))
+            decisions.append(
+                _error_decision(
+                    relative_path,
+                    source_sha256,
+                    AuditReasonCode.CLASSIFICATION_ERROR,
+                )
+            )
             continue
         decisions.append(
             _decision_for_discovery(
@@ -458,6 +512,7 @@ __all__ = [
     "AuditAction",
     "AuditApplyError",
     "AuditDecision",
+    "AuditReasonCode",
     "AuditReport",
     "audit_directory",
 ]

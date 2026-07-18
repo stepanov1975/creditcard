@@ -10,7 +10,9 @@ from ccparser.discovery import (
     DocumentClassification,
     StatementDiscovery,
     StatementGroupDiscovery,
+    discover_statement,
 )
+from ccparser.evidence import DocumentEvidence, ExtractionQuality, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
 from ccparser.normalize import normalize_statement, parse_amount
@@ -150,6 +152,11 @@ def test_parse_amount_supports_structurally_unambiguous_formats_and_credit_marke
         ("-10.00 charge", "ILS", "conflicting_sign_marker"),
         ("12 apples", "ILS", "invalid_amount_text"),
         ("10.00 USD", "EUR", "currency_hint_conflict"),
+        ("--10.00", "ILS", "invalid_sign_syntax"),
+        ("-+10.00", "ILS", "invalid_sign_syntax"),
+        ("10.00--", "ILS", "invalid_sign_syntax"),
+        ("1-0.00", "ILS", "invalid_sign_syntax"),
+        ("10.00 trailing text", "ILS", "invalid_amount_text"),
     ),
 )
 def test_parse_amount_rejects_ambiguous_sign_separator_currency_or_text(
@@ -161,6 +168,14 @@ def test_parse_amount_rejects_ambiguous_sign_separator_currency_or_text(
 
     assert result.amount is None
     assert reason in result.diagnostics
+
+
+@pytest.mark.parametrize("raw", ("-10.00", "10.00-", "(10.00)"))
+def test_parse_amount_preserves_each_single_negative_sign_form(raw: str) -> None:
+    result = parse_amount(raw, currency_hint="ILS")
+
+    assert result.amount == Decimal("-10.00")
+    assert result.diagnostics == ()
 
 
 def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconciles() -> None:
@@ -184,7 +199,7 @@ def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconci
     )
     purchase, refund = result.transactions
     assert purchase.kind is TransactionKind.CHARGE
-    assert purchase.category is TransactionCategory.PURCHASE
+    assert purchase.category is TransactionCategory.UNKNOWN
     assert purchase.billed_amount == Decimal("10.00")
     assert purchase.transaction_date == date(2026, 2, 1)
     assert refund.kind is TransactionKind.CREDIT
@@ -234,7 +249,8 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
 @pytest.mark.parametrize(
     ("description", "expected"),
     (
-        ("Regular merchant", TransactionCategory.PURCHASE),
+        ("Regular merchant", TransactionCategory.UNKNOWN),
+        ("Purchase at merchant", TransactionCategory.PURCHASE),
         ("Service fee", TransactionCategory.FEE),
         ("ריבית חודשית", TransactionCategory.INTEREST),
         ("Account adjustment", TransactionCategory.ADJUSTMENT),
@@ -341,3 +357,149 @@ def test_normalize_statement_marks_reconciliation_unreconciled_when_a_row_is_not
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
     assert result.reconciliation.status is Status.UNRECONCILED
     assert "rows_not_emitted:1" in result.reconciliation.diagnostics
+
+
+def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("99.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_distinct_original_and_billing_currency_columns_normalize_foreign_purchase() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+            ColumnRole.BILLING_CURRENCY,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Purchase abroad", 1, 30.0),
+                _cell("3.00", 2, 30.0),
+                _cell("USD", 3, 30.0),
+                _cell("11.00", 4, 30.0),
+                _cell("ILS", 5, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "11.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount == Decimal("3.00")
+    assert transaction.original_currency == "USD"
+    assert transaction.billed_amount == Decimal("11.00")
+    assert transaction.billing_currency == "ILS"
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_generic_currency_with_original_and_billed_amounts_blocks_emission() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.CURRENCY,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("3.00", 2, 30.0),
+                _cell("USD", 3, 30.0),
+                _cell("11.00", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "11.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "ambiguous_generic_currency_association" in result.row_results[0].diagnostics
+
+
+def test_refund_category_with_positive_billed_sign_is_authoritative_but_ambiguous() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Customer refund", 1, 30.0),
+                _cell("5.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "5.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.kind is TransactionKind.CHARGE
+    assert transaction.category is TransactionCategory.REFUND
+    assert "category_sign_contradiction" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_page_evidence_discovery_and_normalization_merge_wrapped_merchant() -> None:
+    def word(text: str, x0: float, x1: float, y: float) -> Word:
+        return Word(text=text, bbox=(x0, y, x1, y + 10.0), source="digital", confidence=1.0)
+
+    words = (
+        word("Date", 0.0, 22.0, 10.0),
+        word("Description", 35.0, 72.0, 10.0),
+        word("Amount", 92.0, 120.0, 10.0),
+        word("01/02/2026", 0.0, 22.0, 30.0),
+        word("Long merchant", 35.0, 72.0, 30.0),
+        word("₪10.00", 92.0, 120.0, 30.0),
+        word("continued name", 35.0, 72.0, 41.0),
+        word("02/02/2026", 0.0, 22.0, 60.0),
+        word("Cafe", 35.0, 72.0, 60.0),
+        word("₪20.00", 92.0, 120.0, 60.0),
+        word("Total", 35.0, 72.0, 80.0),
+        word("₪30.00", 92.0, 120.0, 80.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=130.0,
+        height=120.0,
+        words=words,
+        quality=ExtractionQuality(
+            character_count=0,
+            usable_character_count=0,
+            word_count=len(words),
+            replacement_character_ratio=0.0,
+            control_character_ratio=0.0,
+            image_area_ratio=0.0,
+            requires_ocr=False,
+        ),
+    )
+    discovery = discover_statement(DocumentEvidence(source_sha256="b" * 64, pages=(page,)))
+
+    result = normalize_statement(discovery)
+
+    assert len(result.transactions) == 2
+    assert result.transactions[0].description == "Long merchant continued name"
+    assert result.reconciliation.status is Status.RECONCILED

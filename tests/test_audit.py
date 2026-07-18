@@ -262,12 +262,12 @@ def test_audit_apply_rolls_back_all_moves_from_call_on_failure(
     real_move = audit_module._move_file
     calls = 0
 
-    def failing_move(source: Path, destination: Path) -> None:
+    def failing_move(source: Path, destination: Path, expected_sha256: str) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise OSError("synthetic move failure")
-        real_move(source, destination)
+        real_move(source, destination, expected_sha256)
 
     monkeypatch.setattr(audit_module, "_move_file", failing_move)
 
@@ -308,6 +308,132 @@ def test_audit_apply_aborts_if_source_mutates_after_classification(tmp_path: Pat
 
     assert source.read_bytes() == b"form-after"
     assert not (quarantine_dir / "manifest.json").exists()
+
+
+def test_apply_source_hash_mismatch_is_fatal_before_any_move(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    quarantine_dir = tmp_path / "quarantine"
+    _write(input_dir / "a-mismatch.pdf", b"mismatch")
+    _write(input_dir / "b-form.pdf", b"form")
+
+    def mismatching_extractor(path: Path) -> DocumentEvidence:
+        content = path.read_bytes()
+        source_hash = "0" * 64 if content == b"mismatch" else hashlib.sha256(content).hexdigest()
+        return DocumentEvidence(source_sha256=source_hash, pages=())
+
+    with pytest.raises(AuditApplyError, match="extraction source hash mismatch"):
+        audit_directory(
+            input_dir,
+            quarantine_dir,
+            apply=True,
+            extractor=mismatching_extractor,
+            classifier=lambda evidence: _FORM,
+        )
+
+    assert (input_dir / "a-mismatch.pdf").is_file()
+    assert (input_dir / "b-form.pdf").is_file()
+    assert not quarantine_dir.exists()
+
+
+def test_mutation_after_pre_move_hash_is_detected_before_source_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    quarantine_dir = tmp_path / "quarantine"
+    source = input_dir / "form.pdf"
+    _write(source, b"stable-form")
+    extractor, classifier = _dependencies({b"stable-form": _FORM})
+    real_copy = audit_module._copy_and_hash
+
+    def mutating_copy(source_file: object, destination_file: object) -> str:
+        copied_hash = real_copy(source_file, destination_file)
+        source.write_bytes(b"mutated-during-move")
+        return copied_hash
+
+    monkeypatch.setattr(audit_module, "_copy_and_hash", mutating_copy)
+
+    with pytest.raises(AuditApplyError, match="source changed during move"):
+        audit_directory(
+            input_dir,
+            quarantine_dir,
+            apply=True,
+            extractor=extractor,
+            classifier=classifier,
+        )
+
+    assert source.read_bytes() == b"mutated-during-move"
+    assert not (quarantine_dir / "form.pdf").exists()
+
+
+def test_rollback_does_not_depend_on_cross_filesystem_os_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    quarantine_dir = tmp_path / "quarantine"
+    _write(input_dir / "a.pdf", b"form-a")
+    _write(input_dir / "b.pdf", b"form-b")
+    extractor, classifier = _dependencies({b"form-a": _FORM, b"form-b": _FORM})
+    real_move = audit_module._move_file
+    real_replace = audit_module.os.replace
+    calls = 0
+
+    def failing_second_move(source: Path, destination: Path, expected_sha256: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic second move failure")
+        real_move(source, destination, expected_sha256)
+
+    def exdev_for_pdf(source: Path | str, destination: Path | str) -> None:
+        if Path(source).suffix.casefold() == ".pdf":
+            raise OSError(18, "cross-device link")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(audit_module, "_move_file", failing_second_move)
+    monkeypatch.setattr(audit_module.os, "replace", exdev_for_pdf)
+
+    with pytest.raises(AuditApplyError, match="audit apply failed"):
+        audit_directory(
+            input_dir,
+            quarantine_dir,
+            apply=True,
+            extractor=extractor,
+            classifier=classifier,
+        )
+
+    assert (input_dir / "a.pdf").read_bytes() == b"form-a"
+    assert (input_dir / "b.pdf").read_bytes() == b"form-b"
+    assert not (quarantine_dir / "a.pdf").exists()
+
+
+def test_sensitive_classifier_reason_is_redacted_from_report_and_manifest(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    quarantine_dir = tmp_path / "quarantine"
+    _write(input_dir / "form.pdf", b"form")
+    extractor, _ = _dependencies({b"form": _FORM})
+    sensitive = "private-account-123456"
+    discovery = _discovery(
+        DocumentClassification.NOT_STATEMENT,
+        0.99,
+        "positive_non_statement_form_evidence",
+        sensitive,
+    )
+
+    report = audit_directory(
+        input_dir,
+        quarantine_dir,
+        apply=True,
+        extractor=extractor,
+        classifier=lambda evidence: discovery,
+    )
+
+    reasons = tuple(str(reason) for reason in report.decisions[0].reason_codes)
+    manifest_bytes = (quarantine_dir / "manifest.json").read_bytes()
+    assert sensitive not in reasons
+    assert sensitive.encode() not in manifest_bytes
+    assert "classifier_reason_redacted" in reasons
 
 
 def test_audit_rejects_unsafe_containment_and_skips_quarantine_tree(tmp_path: Path) -> None:
