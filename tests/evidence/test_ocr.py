@@ -37,6 +37,10 @@ def _save_rotated_partial_pdf(path: Path) -> None:
     document.close()
 
 
+def _source_sha256(pdf_bytes: bytes) -> str:
+    return hashlib.sha256(pdf_bytes).hexdigest()
+
+
 def test_tesseract_command_is_deterministic_and_local() -> None:
     assert tesseract_command() == (
         "tesseract",
@@ -63,10 +67,10 @@ def test_ocr_uses_named_version_and_recognition_timeouts() -> None:
     assert getattr(ocr_module, "TESSERACT_RECOGNITION_TIMEOUT_SECONDS", None) == 120.0
 
 
-def test_ocr_exposes_command_configuration_and_pipeline_version() -> None:
+def test_ocr_constructor_has_no_command_override() -> None:
     constructor = inspect.signature(TesseractOcr)
 
-    assert "command" in constructor.parameters
+    assert "command" not in constructor.parameters
     assert getattr(ocr_module, "OCR_PIPELINE_VERSION", None) == "tesseract-tsv-v1"
 
 
@@ -75,12 +79,13 @@ def test_ocr_exposes_command_configuration_and_pipeline_version() -> None:
     (
         subprocess.TimeoutExpired(("tesseract", "--version"), timeout=10.0),
         subprocess.CalledProcessError(2, ("tesseract", "--version")),
+        OSError("synthetic version launch failure"),
     ),
 )
 def test_version_detection_wraps_subprocess_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: subprocess.SubprocessError,
+    failure: subprocess.SubprocessError | OSError,
 ) -> None:
     observed_timeouts: list[float | None] = []
 
@@ -103,12 +108,13 @@ def test_version_detection_wraps_subprocess_failures(
     (
         subprocess.TimeoutExpired(tesseract_command(), timeout=120.0),
         subprocess.CalledProcessError(2, tesseract_command()),
+        OSError("synthetic recognition launch failure"),
     ),
 )
 def test_recognition_wraps_subprocess_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: subprocess.SubprocessError,
+    failure: subprocess.SubprocessError | OSError,
 ) -> None:
     path = tmp_path / "recognition.pdf"
     _save_blank_pdf(path)
@@ -122,9 +128,10 @@ def test_recognition_wraps_subprocess_failures(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     provider = TesseractOcr(tmp_path / "cache")
+    pdf_bytes = path.read_bytes()
 
     with pytest.raises(ocr_module.OcrError, match="recognition failed") as caught:
-        provider.extract_words(path.read_bytes(), "f" * 64, page_index=0)
+        provider.extract_words(pdf_bytes, _source_sha256(pdf_bytes), page_index=0)
 
     assert caught.value.__cause__ is failure
     assert observed_timeouts == [10.0, 120.0]
@@ -178,7 +185,7 @@ def test_cache_key_contains_every_extraction_dimension(
     assert key == hashlib.sha256(serialized).hexdigest()
 
 
-def test_cache_key_changes_with_configured_ocr_command(
+def test_cache_key_changes_when_internal_ocr_command_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run(command: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[bytes]:
@@ -187,7 +194,8 @@ def test_cache_key_changes_with_configured_ocr_command(
     monkeypatch.setattr(subprocess, "run", fake_run)
     default = TesseractOcr(tmp_path / "default")
     alternate_command = (*tesseract_command()[:-2], "11", "tsv")
-    alternate = TesseractOcr(tmp_path / "alternate", command=alternate_command)
+    monkeypatch.setattr(ocr_module, "tesseract_command", lambda: alternate_command)
+    alternate = TesseractOcr(tmp_path / "alternate")
 
     default_key = default.cache_key("1" * 64, page_index=0)
     alternate_key = alternate.cache_key("1" * 64, page_index=0)
@@ -195,7 +203,7 @@ def test_cache_key_changes_with_configured_ocr_command(
     assert default_key != alternate_key
 
 
-def test_configured_ocr_command_is_used_for_recognition(
+def test_internal_ocr_command_snapshot_is_used_for_recognition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "configured.pdf"
@@ -213,9 +221,11 @@ def test_configured_ocr_command_is_used_for_recognition(
         return subprocess.CompletedProcess(command, 0, output, b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    provider = TesseractOcr(tmp_path / "cache", command=alternate_command)
+    monkeypatch.setattr(ocr_module, "tesseract_command", lambda: alternate_command)
+    provider = TesseractOcr(tmp_path / "cache")
+    pdf_bytes = path.read_bytes()
 
-    words = provider.extract_words(path.read_bytes(), "2" * 64, page_index=0)
+    words = provider.extract_words(pdf_bytes, _source_sha256(pdf_bytes), page_index=0)
 
     assert words[0].text == "Configured"
     assert commands == [("tesseract", "--version"), alternate_command]
@@ -247,14 +257,13 @@ def test_ocr_renders_requested_clip_runs_tesseract_and_reuses_cache(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     clip = (12.0, 24.0, 132.0, 192.0)
-    source_sha256 = "c" * 64
+    pdf_bytes = path.read_bytes()
+    source_sha256 = _source_sha256(pdf_bytes)
     first_provider = TesseractOcr(tmp_path / "cache")
 
-    first = first_provider.extract_words(path.read_bytes(), source_sha256, page_index=0, clip=clip)
+    first = first_provider.extract_words(pdf_bytes, source_sha256, page_index=0, clip=clip)
     second_provider = TesseractOcr(tmp_path / "cache")
-    second = second_provider.extract_words(
-        path.read_bytes(), source_sha256, page_index=0, clip=clip
-    )
+    second = second_provider.extract_words(pdf_bytes, source_sha256, page_index=0, clip=clip)
 
     assert first == second
     assert first[0].bbox == pytest.approx((18.0, 36.0, 36.0, 42.0))
@@ -291,11 +300,65 @@ def test_ocr_maps_words_from_actual_rendered_origin(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     provider = TesseractOcr(tmp_path / "cache")
+    pdf_bytes = path.read_bytes()
 
-    words = provider.extract_words(path.read_bytes(), "d" * 64, page_index=0, clip=clip)
+    words = provider.extract_words(
+        pdf_bytes,
+        _source_sha256(pdf_bytes),
+        page_index=0,
+        clip=clip,
+    )
 
     assert words[0].bbox == pytest.approx(
         (*expected_origin, expected_origin[0] + 6.0, expected_origin[1] + 6.0)
+    )
+
+
+def test_ocr_rejects_source_hash_mismatch_before_any_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "mismatch.pdf"
+    _save_blank_pdf(path)
+    pdf_bytes = path.read_bytes()
+    cache_dir = tmp_path / "cache"
+    provider = TesseractOcr(cache_dir)
+    render_count = 0
+    subprocess_commands: list[tuple[str, ...]] = []
+    original_render = provider._render
+
+    def recording_render(
+        source_bytes: bytes,
+        page_index: int,
+        clip: tuple[float, float, float, float] | None,
+    ) -> tuple[bytes, tuple[float, float]]:
+        nonlocal render_count
+        render_count += 1
+        return original_render(source_bytes, page_index, clip)
+
+    def fake_run(command: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[bytes]:
+        subprocess_commands.append(command)
+        output = b"tesseract 5.7.1\n" if command == ("tesseract", "--version") else b""
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr(provider, "_render", recording_render)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    error_message: str | None = None
+
+    try:
+        provider.extract_words(pdf_bytes, "0" * 64, page_index=0)
+    except ValueError as error:
+        error_message = str(error)
+
+    assert (
+        error_message,
+        render_count,
+        subprocess_commands,
+        cache_dir.exists(),
+    ) == (
+        "source SHA-256 does not match PDF bytes",
+        0,
+        [],
+        False,
     )
 
 

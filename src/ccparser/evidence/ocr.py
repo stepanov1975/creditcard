@@ -90,31 +90,25 @@ def parse_tesseract_tsv(
 class TesseractOcr:
     """Render PDF pages or clips and cache Tesseract TSV output by all inputs."""
 
-    def __init__(
-        self,
-        cache_dir: str | Path,
-        dpi: int = 300,
-        *,
-        command: tuple[str, ...] | None = None,
-    ) -> None:
+    def __init__(self, cache_dir: str | Path, dpi: int = 300) -> None:
         if dpi <= 0:
             raise ValueError("dpi must be positive")
         self.cache_dir = Path(cache_dir)
         self.dpi = dpi
-        self.command = command or tesseract_command()
+        self._command = tesseract_command()
         self._version: str | None = None
 
     def _tesseract_version(self) -> str:
         if self._version is None:
             try:
                 completed = subprocess.run(
-                    (self.command[0], "--version"),
+                    (self._command[0], "--version"),
                     check=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
                 )
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as error:
                 raise OcrError("Tesseract version detection failed") from error
             first_line = completed.stdout.decode("utf-8", errors="replace").splitlines()
             self._version = first_line[0].strip() if first_line else "unknown"
@@ -125,7 +119,7 @@ class TesseractOcr:
 
         payload = {
             "clip": list(clip) if clip is not None else None,
-            "command": list(self.command),
+            "command": list(self._command),
             "dpi": self.dpi,
             "languages": OCR_LANGUAGES,
             "page_index": page_index,
@@ -152,13 +146,13 @@ class TesseractOcr:
     def _recognize(self, image: bytes) -> bytes:
         try:
             completed = subprocess.run(
-                self.command,
+                self._command,
                 input=image,
                 check=True,
                 capture_output=True,
                 timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
             )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as error:
             raise OcrError("Tesseract recognition failed") from error
         return completed.stdout
 
@@ -188,6 +182,8 @@ class TesseractOcr:
     ) -> tuple[Word, ...]:
         """OCR an explicitly requested zero-based page or clip and return word boxes."""
 
+        if hashlib.sha256(pdf_bytes).hexdigest() != source_sha256:
+            raise ValueError("source SHA-256 does not match PDF bytes")
         image, origin = self._render(pdf_bytes, page_index, clip)
         cache_path = self.cache_dir / f"{self.cache_key(source_sha256, page_index, clip)}.tsv"
         if cache_path.is_file():
