@@ -12,9 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_valid
 def _decimal_string(value: Decimal) -> str:
     """Return a canonical plain-decimal representation for financial output."""
 
-    if value == 0:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if text in {"-0", ""}:
         return "0"
-    return format(value.normalize(), "f")
+    return text
 
 
 class TransactionKind(StrEnum):

@@ -140,6 +140,7 @@ def test_reconcile_fails_when_membership_is_not_exactly_one_group(
         "transaction 'unassigned' must belong to exactly one reconciliation group; "
         f"found {membership_count}",
     )
+    assert result.transactions == ()
 
 
 def test_reconcile_reports_ambiguity_even_when_amounts_balance() -> None:
@@ -169,8 +170,7 @@ def test_reconcile_reports_ambiguity_even_when_amounts_balance() -> None:
     assert result.status is Status.UNRECONCILED
     assert result.groups[0].status is Status.UNRECONCILED
     assert result.diagnostics == (
-        "transaction 'ambiguous-row' has unresolved ambiguity: "
-        "two billing-amount candidates",
+        "transaction 'ambiguous-row' has unresolved ambiguity: two billing-amount candidates",
     )
 
 
@@ -200,7 +200,12 @@ def test_reconcile_rejects_unknown_group_and_currency_mismatch() -> None:
 
     assert result.status is Status.UNRECONCILED
     assert any("unknown reconciliation group 'missing'" in item for item in result.diagnostics)
-    assert any("currency USD does not match group currency ILS" in item for item in result.diagnostics)
+    assert any(
+        "currency USD does not match group currency ILS" in item for item in result.diagnostics
+    )
+    assert tuple(item.transaction_id for item in result.transactions) == ("wrong-currency",)
+    assert result.groups[0].status is Status.UNRECONCILED
+    assert any("currency USD does not match" in item for item in result.groups[0].diagnostics)
 
 
 def test_reconcile_rejects_duplicate_transaction_and_total_identifiers() -> None:
@@ -225,6 +230,7 @@ def test_reconcile_rejects_duplicate_transaction_and_total_identifiers() -> None
     assert result.status is Status.UNRECONCILED
     assert "duplicate transaction id 'duplicate'" in result.diagnostics
     assert "duplicate printed total group id 'card-1'" in result.diagnostics
+    assert tuple(item.transaction_id for item in result.transactions) == ("duplicate",)
 
 
 def test_reconcile_requires_at_least_one_printed_total() -> None:

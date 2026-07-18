@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable
 
 from ccparser.models import (
     PrintedTotal,
@@ -24,6 +24,8 @@ def reconcile(
     transaction_tuple = tuple(transactions)
     printed_total_tuple = tuple(printed_totals)
     members: dict[str, list[Transaction]] = defaultdict(list)
+    group_diagnostics: dict[str, list[str]] = defaultdict(list)
+    emitted_transactions: list[Transaction] = []
     statement_diagnostics = []
     if not printed_total_tuple:
         statement_diagnostics.append("no printed reconciliation totals found")
@@ -40,14 +42,12 @@ def reconcile(
     seen_transaction_ids: set[str] = set()
     for transaction in transaction_tuple:
         if transaction.transaction_id in seen_transaction_ids:
-            statement_diagnostics.append(
-                f"duplicate transaction id {transaction.transaction_id!r}"
-            )
+            statement_diagnostics.append(f"duplicate transaction id {transaction.transaction_id!r}")
+            continue
         seen_transaction_ids.add(transaction.transaction_id)
         for ambiguity in transaction.ambiguities:
             statement_diagnostics.append(
-                f"transaction {transaction.transaction_id!r} has unresolved "
-                f"ambiguity: {ambiguity}"
+                f"transaction {transaction.transaction_id!r} has unresolved ambiguity: {ambiguity}"
             )
         membership_count = len(transaction.reconciliation_group_ids)
         if membership_count != 1:
@@ -57,20 +57,23 @@ def reconcile(
             )
             continue
         group_id = transaction.reconciliation_group_ids[0]
-        printed_total = total_by_group.get(group_id)
-        if printed_total is None:
+        matched_total = total_by_group.get(group_id)
+        if matched_total is None:
             statement_diagnostics.append(
                 f"transaction {transaction.transaction_id!r} references unknown "
                 f"reconciliation group {group_id!r}"
             )
             continue
-        if transaction.billing_currency != printed_total.currency:
-            statement_diagnostics.append(
+        if transaction.billing_currency != matched_total.currency:
+            diagnostic = (
                 f"transaction {transaction.transaction_id!r} currency "
                 f"{transaction.billing_currency} does not match group currency "
-                f"{printed_total.currency}"
+                f"{matched_total.currency}"
             )
+            statement_diagnostics.append(diagnostic)
+            group_diagnostics[group_id].append(diagnostic)
         members[group_id].append(transaction)
+        emitted_transactions.append(transaction)
 
     groups = []
     for printed_total in sorted(printed_total_tuple, key=lambda total: total.group_id):
@@ -79,7 +82,7 @@ def reconcile(
             (transaction.billed_amount for transaction in group_transactions),
             start=Decimal("0"),
         )
-        diagnostics = []
+        diagnostics = list(group_diagnostics[printed_total.group_id])
         if printed_total.amount % printed_total.minor_unit != 0:
             diagnostics.append(
                 f"printed total is not representable at currency minor unit "
@@ -118,13 +121,12 @@ def reconcile(
 
     statement_status = (
         Status.RECONCILED
-        if all(group.status is Status.RECONCILED for group in groups)
-        and not statement_diagnostics
+        if all(group.status is Status.RECONCILED for group in groups) and not statement_diagnostics
         else Status.UNRECONCILED
     )
     return StatementResult(
         status=statement_status,
-        transactions=transaction_tuple,
+        transactions=tuple(emitted_transactions),
         groups=tuple(groups),
         diagnostics=tuple(statement_diagnostics),
     )

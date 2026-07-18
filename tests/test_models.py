@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 from pydantic import ValidationError
@@ -111,3 +111,18 @@ def test_batch_result_is_immutable_and_uses_public_statuses() -> None:
     assert batch.statements == (statement,)
     with pytest.raises(ValidationError, match="frozen"):
         batch.status = Status.RECONCILED
+
+
+def test_monetary_serialization_never_uses_decimal_context_rounding() -> None:
+    from ccparser.models import PrintedTotal
+
+    amount = Decimal("123456789012345678901234567890.1200")
+    with localcontext() as context:
+        context.prec = 5
+        payload = PrintedTotal(
+            group_id="large",
+            amount=amount,
+            currency="ILS",
+        ).model_dump(mode="json")
+
+    assert payload["amount"] == "123456789012345678901234567890.12"
