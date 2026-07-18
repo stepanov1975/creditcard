@@ -15,6 +15,7 @@ from ccparser.evidence.models import (
 def test_evidence_models_are_immutable() -> None:
     quality = ExtractionQuality(
         character_count=1,
+        usable_character_count=1,
         word_count=1,
         replacement_character_ratio=0.0,
         control_character_ratio=0.0,

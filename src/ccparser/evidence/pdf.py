@@ -23,7 +23,7 @@ from ccparser.evidence.models import (
 )
 from ccparser.evidence.provider import OcrProvider
 
-NEARLY_EMPTY_CHARACTER_COUNT = 8
+NEARLY_EMPTY_USABLE_CHARACTER_COUNT = 8
 EXCESSIVE_REPLACEMENT_CHARACTER_RATIO = 0.05
 EXCESSIVE_CONTROL_CHARACTER_RATIO = 0.02
 IMAGE_DOMINANT_AREA_RATIO = 0.5
@@ -51,6 +51,28 @@ def _point(value: object) -> Point:
     return (_number(value[0]), _number(value[1]))
 
 
+def _transform_point(point: Point, matrix: fitz.Matrix) -> Point:
+    transformed = fitz.Point(point) * matrix
+    return (float(transformed.x), float(transformed.y))
+
+
+def _transform_bbox(bbox: BBox, matrix: fitz.Matrix) -> BBox:
+    transformed = (
+        _transform_point((bbox[0], bbox[1]), matrix),
+        _transform_point((bbox[2], bbox[1]), matrix),
+        _transform_point((bbox[2], bbox[3]), matrix),
+        _transform_point((bbox[0], bbox[3]), matrix),
+    )
+    x_coordinates = tuple(point[0] for point in transformed)
+    y_coordinates = tuple(point[1] for point in transformed)
+    return (
+        min(x_coordinates),
+        min(y_coordinates),
+        max(x_coordinates),
+        max(y_coordinates),
+    )
+
+
 def _mapping(value: object) -> Mapping[str, object] | None:
     if not isinstance(value, Mapping):
         return None
@@ -66,7 +88,7 @@ def _sequence(value: object) -> Sequence[object]:
 
 
 def _extract_text_blocks(
-    raw: Mapping[str, object],
+    raw: Mapping[str, object], rotation_matrix: fitz.Matrix
 ) -> tuple[tuple[Glyph, ...], tuple[ImageEvidence, ...]]:
     glyphs: list[Glyph] = []
     images: list[ImageEvidence] = []
@@ -79,7 +101,11 @@ def _extract_text_blocks(
             height = block.get("height")
             if isinstance(width, int) and isinstance(height, int):
                 images.append(
-                    ImageEvidence(bbox=_bbox(block.get("bbox")), width=width, height=height)
+                    ImageEvidence(
+                        bbox=_transform_bbox(_bbox(block.get("bbox")), rotation_matrix),
+                        width=width,
+                        height=height,
+                    )
                 )
             continue
         if block.get("type") != 0:
@@ -106,8 +132,10 @@ def _extract_text_blocks(
                     glyphs.append(
                         Glyph(
                             char=char,
-                            bbox=_bbox(character.get("bbox")),
-                            origin=_point(character.get("origin")),
+                            bbox=_transform_bbox(_bbox(character.get("bbox")), rotation_matrix),
+                            origin=_transform_point(
+                                _point(character.get("origin")), rotation_matrix
+                            ),
                             font=font,
                             size=float(size),
                             source="digital",
@@ -117,7 +145,7 @@ def _extract_text_blocks(
     return tuple(glyphs), tuple(images)
 
 
-def _extract_words(page: fitz.Page) -> tuple[Word, ...]:
+def _extract_words(page: fitz.Page, rotation_matrix: fitz.Matrix) -> tuple[Word, ...]:
     words: list[Word] = []
     for value in _sequence(page.get_text("words", sort=False)):
         fields = _sequence(value)
@@ -126,11 +154,14 @@ def _extract_words(page: fitz.Page) -> tuple[Word, ...]:
         words.append(
             Word(
                 text=fields[4],
-                bbox=(
-                    _number(fields[0]),
-                    _number(fields[1]),
-                    _number(fields[2]),
-                    _number(fields[3]),
+                bbox=_transform_bbox(
+                    (
+                        _number(fields[0]),
+                        _number(fields[1]),
+                        _number(fields[2]),
+                        _number(fields[3]),
+                    ),
+                    rotation_matrix,
                 ),
                 source="digital",
                 confidence=1.0,
@@ -139,7 +170,7 @@ def _extract_words(page: fitz.Page) -> tuple[Word, ...]:
     return tuple(words)
 
 
-def _extract_vector_rules(page: fitz.Page) -> tuple[VectorRule, ...]:
+def _extract_vector_rules(page: fitz.Page, rotation_matrix: fitz.Matrix) -> tuple[VectorRule, ...]:
     rules: list[VectorRule] = []
     for value in page.get_drawings():
         drawing = _mapping(value)
@@ -148,7 +179,12 @@ def _extract_vector_rules(page: fitz.Page) -> tuple[VectorRule, ...]:
         width = drawing.get("width")
         if not isinstance(width, int | float):
             continue
-        rules.append(VectorRule(bbox=_bbox(drawing.get("rect")), width=float(width)))
+        rules.append(
+            VectorRule(
+                bbox=_transform_bbox(_bbox(drawing.get("rect")), rotation_matrix),
+                width=float(width),
+            )
+        )
     return tuple(rules)
 
 
@@ -166,6 +202,14 @@ def assess_extraction_quality(
     """Measure digital extraction quality with named, issuer-independent thresholds."""
 
     character_count = len(glyphs)
+    usable_character_count = sum(
+        1
+        for glyph in glyphs
+        for char in glyph.char
+        if not char.isspace()
+        and char != "\ufffd"
+        and not unicodedata.category(char).startswith("C")
+    )
     denominator = max(character_count, 1)
     replacement_count = sum(glyph.char.count("\ufffd") for glyph in glyphs)
     control_count = sum(
@@ -178,7 +222,7 @@ def assess_extraction_quality(
     image_ratio = min(image_area / page_area, 1.0) if page_area else 0.0
 
     reasons: list[str] = []
-    if character_count < NEARLY_EMPTY_CHARACTER_COUNT:
+    if usable_character_count < NEARLY_EMPTY_USABLE_CHARACTER_COUNT:
         reasons.append("nearly_empty_text")
     if replacement_ratio > EXCESSIVE_REPLACEMENT_CHARACTER_RATIO:
         reasons.append("excessive_replacement_characters")
@@ -189,6 +233,7 @@ def assess_extraction_quality(
 
     return ExtractionQuality(
         character_count=character_count,
+        usable_character_count=usable_character_count,
         word_count=len(words),
         replacement_character_ratio=replacement_ratio,
         control_character_ratio=control_ratio,
@@ -198,12 +243,8 @@ def assess_extraction_quality(
     )
 
 
-def _source_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _source_sha256(source_bytes: bytes) -> str:
+    return hashlib.sha256(source_bytes).hexdigest()
 
 
 def _metadata(document: fitz.Document) -> tuple[tuple[str, str], ...]:
@@ -217,18 +258,20 @@ def _metadata(document: fitz.Document) -> tuple[tuple[str, str], ...]:
 
 
 def extract_pdf(path: str | Path, ocr_provider: OcrProvider | None = None) -> DocumentEvidence:
-    """Extract deterministic, top-left PDF-point evidence in page order."""
+    """Extract deterministic, rotated top-left display-point evidence in page order."""
 
     source_path = Path(path)
-    source_sha256 = _source_sha256(source_path)
+    source_bytes = source_path.read_bytes()
+    source_sha256 = _source_sha256(source_bytes)
     pages: list[PageEvidence] = []
-    with fitz.open(source_path) as document:
+    with fitz.open(stream=source_bytes, filetype="pdf") as document:
         metadata = _metadata(document)
         for page_index, page in enumerate(document):
+            rotation_matrix = page.rotation_matrix
             raw = cast(Mapping[str, object], page.get_text("rawdict"))
-            glyphs, images = _extract_text_blocks(raw)
-            digital_words = _extract_words(page)
-            rules = _extract_vector_rules(page)
+            glyphs, images = _extract_text_blocks(raw, rotation_matrix)
+            digital_words = _extract_words(page, rotation_matrix)
+            rules = _extract_vector_rules(page, rotation_matrix)
             page_bbox = _bbox(page.rect)
             quality = assess_extraction_quality(
                 glyphs=glyphs,
@@ -238,10 +281,13 @@ def extract_pdf(path: str | Path, ocr_provider: OcrProvider | None = None) -> Do
             )
             words = digital_words
             if quality.requires_ocr and ocr_provider is not None:
-                words = ocr_provider.extract_words(
-                    source_path,
-                    source_sha256,
-                    page_index,
+                words = (
+                    *digital_words,
+                    *ocr_provider.extract_words(
+                        source_bytes,
+                        source_sha256,
+                        page_index,
+                    ),
                 )
             pages.append(
                 PageEvidence(

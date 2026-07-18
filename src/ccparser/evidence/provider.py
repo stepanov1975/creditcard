@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
 from ccparser.evidence.models import BBox, Word
 
 
 class OcrProvider(Protocol):
-    """Return OCR words in PDF point coordinates for one zero-based page."""
+    """Read an immutable PDF snapshot into display-space words for one zero-based page."""
 
     def extract_words(
         self,
-        path: Path,
+        pdf_bytes: bytes,
         source_sha256: str,
         page_index: int,
         clip: BBox | None = None,

@@ -9,7 +9,7 @@ from ccparser.evidence.models import (
     VectorRule,
     Word,
 )
-from ccparser.evidence.ocr import TesseractOcr
+from ccparser.evidence.ocr import OcrError, TesseractOcr
 from ccparser.evidence.pdf import extract_pdf
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "ExtractionQuality",
     "Glyph",
     "ImageEvidence",
+    "OcrError",
     "PageEvidence",
     "TesseractOcr",
     "VectorRule",

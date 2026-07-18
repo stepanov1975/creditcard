@@ -55,6 +55,7 @@ class ExtractionQuality(_ImmutableEvidenceModel):
     """Measured digital-text quality and issuer-neutral OCR decision."""
 
     character_count: int = Field(ge=0)
+    usable_character_count: int = Field(ge=0)
     word_count: int = Field(ge=0)
     replacement_character_ratio: float = Field(ge=0, le=1)
     control_character_ratio: float = Field(ge=0, le=1)
@@ -64,7 +65,7 @@ class ExtractionQuality(_ImmutableEvidenceModel):
 
 
 class PageEvidence(_ImmutableEvidenceModel):
-    """All raw evidence retained for one one-based PDF page."""
+    """All raw evidence for one page in rotated top-left display coordinates."""
 
     page_number: int = Field(gt=0)
     width: float = Field(gt=0)
