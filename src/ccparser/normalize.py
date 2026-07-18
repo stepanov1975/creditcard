@@ -157,6 +157,29 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
     return tuple(dict.fromkeys(diagnostics))
 
 
+def _role_contract_diagnostics(region: TableRegion) -> tuple[str, ...]:
+    role_columns: dict[ColumnRole, tuple[ColumnSpec, ...]] = {
+        role: _role_columns(region, role) for role in ColumnRole if role is not ColumnRole.UNKNOWN
+    }
+    diagnostics: list[str] = []
+    maximums = {
+        ColumnRole.DATE: 2,
+        ColumnRole.DESCRIPTION: 1,
+        ColumnRole.AMOUNT: 1,
+        ColumnRole.ORIGINAL_AMOUNT: 1,
+        ColumnRole.CURRENCY: 1,
+        ColumnRole.BILLING_CURRENCY: 1,
+        ColumnRole.ORIGINAL_CURRENCY: 1,
+        ColumnRole.INSTALLMENT: 1,
+    }
+    for role, maximum in maximums.items():
+        if len(role_columns[role]) > maximum:
+            diagnostics.append(f"unsupported_role_cardinality:{role.value}")
+    if role_columns[ColumnRole.ORIGINAL_CURRENCY] and not role_columns[ColumnRole.ORIGINAL_AMOUNT]:
+        diagnostics.append("original_currency_without_original_amount")
+    return tuple(diagnostics)
+
+
 def _row_evidence(rows: Sequence[Row]) -> tuple[EvidenceReference, ...]:
     return tuple(
         EvidenceReference(page_number=cell.page_number, bbox=cell.bbox, raw_text=cell.text)
@@ -255,6 +278,8 @@ def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, 
     cells = tuple(cell for row in rows for cell in _role_cells(row, region, ColumnRole.DESCRIPTION))
     diagnostics: list[str] = []
     if not cells:
+        if _role_columns(region, ColumnRole.DESCRIPTION):
+            diagnostics.append("missing_description_cell")
         return None, diagnostics
     if len(cells) > len(rows):
         diagnostics.append("multiple_description_cells")
@@ -310,7 +335,9 @@ def _normalize_row(
     rows = (row, *continuation_rows)
     evidence = _row_evidence(rows)
     diagnostics = list(_assignment_diagnostics(row, region))
-    if "unresolved_relevant_cell" in diagnostics:
+    role_contract_diagnostics = _role_contract_diagnostics(region)
+    diagnostics.extend(role_contract_diagnostics)
+    if "unresolved_relevant_cell" in diagnostics or role_contract_diagnostics:
         return RowNormalizationResult(
             page_number=row.page_number,
             bbox=row.bbox,
@@ -356,6 +383,8 @@ def _normalize_row(
     currency_cells = _role_cells(row, region, currency_role)
     if len(currency_cells) > 1:
         diagnostics.append("multiple_currency_cells")
+    elif _role_columns(region, currency_role) and not currency_cells:
+        diagnostics.append("missing_currency_cell")
     elif len(currency_cells) == 1:
         row_currency = canonical_currency(currency_cells[0].text)
         if row_currency is None:
@@ -367,6 +396,7 @@ def _normalize_row(
     critical_currency_diagnostics = {
         "ambiguous_generic_currency_association",
         "billing_currency_conflict",
+        "missing_currency_cell",
         "multiple_currency_cells",
         "unknown_billing_currency",
     }
@@ -464,6 +494,28 @@ def _normalize_row(
                 diagnostics.append(installment_diagnostic)
             elif installment is not None:
                 installment_current, installment_total = installment
+
+    unconsumed_role_diagnostics = {
+        "missing_date_cell",
+        "multiple_date_cells",
+        "missing_description_cell",
+        "multiple_description_cells",
+        "missing_original_amount_cell",
+        "multiple_original_amount_cells",
+        "missing_original_currency_cell",
+        "multiple_original_currency_cells",
+        "missing_installment_cell",
+        "multiple_installment_cells",
+    }
+    if unconsumed_role_diagnostics.intersection(diagnostics):
+        return RowNormalizationResult(
+            page_number=row.page_number,
+            bbox=row.bbox,
+            raw_text=_row_text(rows),
+            evidence=evidence,
+            confidence=0.0,
+            diagnostics=tuple(diagnostics),
+        )
 
     kind = TransactionKind.CREDIT if billed.amount < 0 else TransactionKind.CHARGE
     category = _category(description, installment_current is not None)

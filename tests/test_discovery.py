@@ -273,13 +273,13 @@ def test_mixed_currency_table_is_not_compatible_with_billing_total() -> None:
 
 
 def test_consecutive_pages_with_compatible_schema_form_proven_continuation_chain() -> None:
-    first_page = _page(1, _table(20.0, "₪", "10.00", "20.00"))
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
     second_page = _page(
         2,
         (
-            *_table(20.0, "₪", "5.00", "7.00"),
-            _word("Total", 50.0, 95.0, 80.0),
-            _word("₪42.00", 118.0, 155.0, 80.0),
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪42.00", 118.0, 155.0, 70.0),
         ),
     )
 
@@ -288,3 +288,23 @@ def test_consecutive_pages_with_compatible_schema_form_proven_continuation_chain
     assert result.classification is DocumentClassification.STATEMENT
     assert len(result.groups) == 1
     assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)
+
+
+def test_consecutive_tables_with_two_later_totals_do_not_collapse_into_chain() -> None:
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪30.00", 118.0, 155.0, 70.0),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪12.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics

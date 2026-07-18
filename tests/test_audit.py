@@ -408,6 +408,45 @@ def test_rollback_does_not_depend_on_cross_filesystem_os_replace(
     assert not (quarantine_dir / "a.pdf").exists()
 
 
+def test_rollback_continues_after_audit_apply_error_restoring_earlier_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    quarantine_dir = tmp_path / "quarantine"
+    _write(input_dir / "a.pdf", b"form-a")
+    _write(input_dir / "b.pdf", b"form-b")
+    _write(input_dir / "c.pdf", b"form-c")
+    extractor, classifier = _dependencies({b"form-a": _FORM, b"form-b": _FORM, b"form-c": _FORM})
+    real_move = audit_module._move_file
+    calls = 0
+
+    def failing_move(source: Path, destination: Path, expected_sha256: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("synthetic forward failure")
+        if calls == 4:
+            raise AuditApplyError("synthetic first restoration failure")
+        real_move(source, destination, expected_sha256)
+
+    monkeypatch.setattr(audit_module, "_move_file", failing_move)
+
+    with pytest.raises(AuditApplyError, match="rollback could not restore every source"):
+        audit_directory(
+            input_dir,
+            quarantine_dir,
+            apply=True,
+            extractor=extractor,
+            classifier=classifier,
+        )
+
+    assert (input_dir / "a.pdf").read_bytes() == b"form-a"
+    assert not (quarantine_dir / "a.pdf").exists()
+    assert (quarantine_dir / "b.pdf").read_bytes() == b"form-b"
+    assert (input_dir / "c.pdf").read_bytes() == b"form-c"
+
+
 def test_sensitive_classifier_reason_is_redacted_from_report_and_manifest(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     quarantine_dir = tmp_path / "quarantine"

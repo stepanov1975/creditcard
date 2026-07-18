@@ -373,13 +373,13 @@ def _move_file(source: Path, destination: Path, expected_sha256: str) -> None:
 
 
 def _rollback_moves(moves: Iterable[tuple[Path, Path, str]]) -> None:
-    failures: list[OSError] = []
+    failures: list[OSError | AuditApplyError] = []
     for source, destination, source_sha256 in reversed(tuple(moves)):
         try:
             if source.exists() or source.is_symlink():
                 raise FileExistsError(source)
             _move_file(destination, source, source_sha256)
-        except OSError as error:
+        except (OSError, AuditApplyError) as error:
             failures.append(error)
     if failures:
         raise AuditApplyError("audit apply failed and rollback could not restore every source")

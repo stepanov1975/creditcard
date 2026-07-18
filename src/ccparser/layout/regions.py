@@ -7,7 +7,7 @@ import unicodedata
 from collections.abc import Sequence
 
 from ccparser.evidence.models import BBox, PageEvidence
-from ccparser.layout.columns import infer_column_roles
+from ccparser.layout.columns import infer_column_roles, is_date_shaped, is_installment_shaped
 from ccparser.layout.models import ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
 from ccparser.layout.text import logical_text_for_bbox, positioned_evidence_for_bbox
@@ -154,10 +154,16 @@ def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -
     tolerance = (column.bbox[2] - column.bbox[0]) * 0.15
     if not column.bbox[0] - tolerance <= center <= column.bbox[2] + tolerance:
         return False
+    normalized_text = unicodedata.normalize("NFC", cell.text).strip()
+    numeric_only = bool(normalized_text) and all(
+        char.isdigit() or char.isspace() for char in normalized_text
+    )
     if (
-        any(char.isdigit() for char in cell.text)
-        or is_money_shaped(cell.text)
+        is_date_shaped(normalized_text)
+        or is_installment_shaped(normalized_text)
+        or is_money_shaped(normalized_text)
         or is_currency_shaped(cell.text)
+        or numeric_only
     ):
         return False
     minimum_alignment = max(2 / len(schema.columns), 0.6)

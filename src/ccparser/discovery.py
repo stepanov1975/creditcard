@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import statistics
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
+from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -279,12 +280,42 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
     second_columns = second.table_schema.columns
     if len(first_columns) != len(second_columns):
         return False
-    return all(
+    columns_compatible = all(
         first_column.role is second_column.role
         and abs(first_column.relative_x0 - second_column.relative_x0) <= 0.08
         and abs(first_column.relative_x1 - second_column.relative_x1) <= 0.08
         for first_column, second_column in zip(first_columns, second_columns, strict=True)
     )
+    first_header = tuple(
+        _normalized_phrase(cell.text)
+        for cell in sorted(first.header.cells, key=lambda cell: (cell.bbox[0], cell.bbox[1]))
+    )
+    second_header = tuple(
+        _normalized_phrase(cell.text)
+        for cell in sorted(second.header.cells, key=lambda cell: (cell.bbox[0], cell.bbox[1]))
+    )
+    return columns_compatible and first_header == second_header
+
+
+def _proven_page_continuation(
+    regions: Sequence[TableRegion], page_heights: Mapping[int, float]
+) -> bool:
+    if len(regions) < 2 or len({region.page_number for region in regions}) != len(regions):
+        return False
+    for previous, following in pairwise(regions):
+        previous_height = page_heights.get(previous.page_number)
+        following_height = page_heights.get(following.page_number)
+        if previous_height is None or following_height is None:
+            return False
+        if following.page_number != previous.page_number + 1:
+            return False
+        if not _schemas_compatible(previous, following):
+            return False
+        if previous.bbox[3] < previous_height * 0.75:
+            return False
+        if following.header.bbox[1] > following_height * 0.25:
+            return False
+    return True
 
 
 def _associate_regions(
@@ -292,57 +323,36 @@ def _associate_regions(
     total_row: Row,
     total: DiscoveredPrintedTotal,
     regions: Sequence[TableRegion],
-    used_region_indexes: set[int],
+    previous_total_row: Row | None,
+    remaining_totals: Sequence[DiscoveredPrintedTotal],
+    page_heights: Mapping[int, float],
 ) -> tuple[tuple[TableRegion, ...], tuple[str, ...]]:
-    preceding_indexes = tuple(
-        index
-        for index, region in enumerate(regions)
-        if index not in used_region_indexes
-        and _reading_key_bbox(region.page_number, region.bbox)
-        < _reading_key_bbox(total_row.page_number, total_row.bbox)
+    total_key = _reading_key_bbox(total_row.page_number, total_row.bbox)
+    previous_total_key = (
+        _reading_key_bbox(previous_total_row.page_number, previous_total_row.bbox)
+        if previous_total_row is not None
+        else None
     )
-    if not preceding_indexes:
+    section = tuple(
+        region
+        for region in regions
+        if _reading_key_bbox(region.page_number, region.bbox) < total_key
+        and (
+            previous_total_key is None
+            or _reading_key_bbox(region.page_number, region.bbox) > previous_total_key
+        )
+    )
+    if not section:
         return (), ("total_without_table",)
-    same_page = tuple(
-        index for index in preceding_indexes if regions[index].page_number == total_row.page_number
-    )
-    if len(same_page) > 1:
-        return (), ("ambiguous_group_region_association",)
-    if same_page:
-        base_index = same_page[0]
-    else:
-        latest_page = max(regions[index].page_number for index in preceding_indexes)
-        latest = tuple(
-            index for index in preceding_indexes if regions[index].page_number == latest_page
-        )
-        if len(latest) != 1:
-            return (), ("ambiguous_group_region_association",)
-        base_index = latest[0]
-
-    base = regions[base_index]
-    if _table_currencies(base) != (total.currency,):
+    if any(_table_currencies(region) != (total.currency,) for region in section):
         return (), ("ambiguous_table_currency",)
-    chain_indexes = [base_index]
-    expected_page = base.page_number - 1
-    current = base
-    while expected_page > 0:
-        candidates = tuple(
-            index for index in preceding_indexes if regions[index].page_number == expected_page
-        )
-        if not candidates:
-            break
-        if len(candidates) != 1:
-            return (), ("ambiguous_group_region_association",)
-        candidate_index = candidates[0]
-        candidate = regions[candidate_index]
-        if _table_currencies(candidate) != (total.currency,) or not _schemas_compatible(
-            candidate, current
-        ):
-            break
-        chain_indexes.append(candidate_index)
-        current = candidate
-        expected_page -= 1
-    return tuple(regions[index] for index in reversed(chain_indexes)), ()
+    if len(section) == 1:
+        return section, ()
+    if sum(candidate.currency == total.currency for candidate in remaining_totals) > 1:
+        return (), ("ambiguous_group_region_association",)
+    if _proven_page_continuation(section, page_heights):
+        return section, ()
+    return (), ("ambiguous_group_region_association",)
 
 
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
@@ -368,27 +378,33 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         for row in page_rows
         if any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
     )
-    used_region_indexes: set[int] = set()
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
+    total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
         preceding = tuple(
             region
-            for index, region in enumerate(regions)
-            if index not in used_region_indexes
-            and _reading_key_bbox(region.page_number, region.bbox)
+            for region in regions
+            if _reading_key_bbox(region.page_number, region.bbox)
             < _reading_key_bbox(total_row.page_number, total_row.bbox)
         )
         total, total_diagnostics = _total_from_row(total_row, preceding)
         diagnostics.extend(total_diagnostics)
-        if total is None or not preceding:
-            continue
+        if total is not None and preceding:
+            total_candidates.append((total_row, total))
+
+    page_heights = {page.page_number: page.height for page in evidence.pages}
+    previous_total_row: Row | None = None
+    for total_index, (total_row, total) in enumerate(total_candidates):
         associated, association_diagnostics = _associate_regions(
             total_row=total_row,
             total=total,
             regions=regions,
-            used_region_indexes=used_region_indexes,
+            previous_total_row=previous_total_row,
+            remaining_totals=tuple(candidate for _, candidate in total_candidates[total_index:]),
+            page_heights=page_heights,
         )
+        previous_total_row = total_row
         diagnostics.extend(association_diagnostics)
         if not associated:
             continue
@@ -404,7 +420,6 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
                 confidence=confidence,
             )
         )
-        used_region_indexes.update(regions.index(region) for region in associated)
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
     if groups:

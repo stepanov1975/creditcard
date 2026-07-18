@@ -442,6 +442,31 @@ def test_generic_currency_with_original_and_billed_amounts_blocks_emission() -> 
     assert "ambiguous_generic_currency_association" in result.row_results[0].diagnostics
 
 
+def test_original_currency_without_original_amount_blocks_emission() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Foreign merchant", 1, 30.0),
+                _cell("USD", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "original_currency_without_original_amount" in result.row_results[0].diagnostics
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_refund_category_with_positive_billed_sign_is_authoritative_but_ambiguous() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -502,4 +527,113 @@ def test_page_evidence_discovery_and_normalization_merge_wrapped_merchant() -> N
 
     assert len(result.transactions) == 2
     assert result.transactions[0].description == "Long merchant continued name"
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize("continuation", ("Store 24", "7 Eleven"))
+def test_page_evidence_keeps_digit_bearing_merchant_continuation(
+    continuation: str,
+) -> None:
+    def word(text: str, x0: float, x1: float, y: float) -> Word:
+        return Word(text=text, bbox=(x0, y, x1, y + 10.0), source="digital", confidence=1.0)
+
+    words = (
+        word("Date", 0.0, 22.0, 10.0),
+        word("Description", 35.0, 72.0, 10.0),
+        word("Amount", 92.0, 120.0, 10.0),
+        word("01/02/2026", 0.0, 22.0, 30.0),
+        word("Long merchant", 35.0, 72.0, 30.0),
+        word("₪10.00", 92.0, 120.0, 30.0),
+        word(continuation, 35.0, 72.0, 41.0),
+        word("02/02/2026", 0.0, 22.0, 60.0),
+        word("Cafe", 35.0, 72.0, 60.0),
+        word("₪20.00", 92.0, 120.0, 60.0),
+        word("Total", 35.0, 72.0, 80.0),
+        word("₪30.00", 92.0, 120.0, 80.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=130.0,
+        height=120.0,
+        words=words,
+        quality=ExtractionQuality(
+            character_count=0,
+            usable_character_count=0,
+            word_count=len(words),
+            replacement_character_ratio=0.0,
+            control_character_ratio=0.0,
+            image_area_ratio=0.0,
+            requires_ocr=False,
+        ),
+    )
+
+    discovery = discover_statement(DocumentEvidence(source_sha256="d" * 64, pages=(page,)))
+    result = normalize_statement(discovery)
+
+    assert len(result.transactions) == 2
+    assert result.transactions[0].description == f"Long merchant {continuation}"
+    assert result.transactions[1].description == "Cafe"
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_inferred_specific_foreign_purchase_headers_reconcile_end_to_end() -> None:
+    def word(text: str, x0: float, x1: float, y: float) -> Word:
+        return Word(text=text, bbox=(x0, y, x1, y + 10.0), source="digital", confidence=1.0)
+
+    words = (
+        word("Date", 0.0, 35.0, 10.0),
+        word("Description", 50.0, 105.0, 10.0),
+        word("Transaction amount", 120.0, 180.0, 10.0),
+        word("Transaction currency", 195.0, 245.0, 10.0),
+        word("Billed amount", 260.0, 305.0, 10.0),
+        word("Billing currency", 320.0, 365.0, 10.0),
+        word("01/02/2026", 0.0, 35.0, 30.0),
+        word("Purchase abroad", 50.0, 105.0, 30.0),
+        word("3.00", 120.0, 180.0, 30.0),
+        word("USD", 195.0, 245.0, 30.0),
+        word("11.00", 260.0, 305.0, 30.0),
+        word("ILS", 320.0, 365.0, 30.0),
+        word("02/02/2026", 0.0, 35.0, 50.0),
+        word("Foreign cafe", 50.0, 105.0, 50.0),
+        word("4.00", 120.0, 180.0, 50.0),
+        word("USD", 195.0, 245.0, 50.0),
+        word("14.00", 260.0, 305.0, 50.0),
+        word("ILS", 320.0, 365.0, 50.0),
+        word("Total", 50.0, 105.0, 70.0),
+        word("₪25.00", 260.0, 305.0, 70.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=380.0,
+        height=100.0,
+        words=words,
+        quality=ExtractionQuality(
+            character_count=0,
+            usable_character_count=0,
+            word_count=len(words),
+            replacement_character_ratio=0.0,
+            control_character_ratio=0.0,
+            image_area_ratio=0.0,
+            requires_ocr=False,
+        ),
+    )
+
+    discovery = discover_statement(DocumentEvidence(source_sha256="c" * 64, pages=(page,)))
+    result = normalize_statement(discovery)
+
+    assert tuple(
+        column.role for column in discovery.groups[0].table_regions[0].table_schema.columns
+    ) == (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.ORIGINAL_CURRENCY,
+        ColumnRole.AMOUNT,
+        ColumnRole.BILLING_CURRENCY,
+    )
+    assert len(result.transactions) == 2
+    assert result.transactions[0].original_amount == Decimal("3.00")
+    assert result.transactions[0].original_currency == "USD"
+    assert result.transactions[0].billed_amount == Decimal("11.00")
+    assert result.transactions[0].billing_currency == "ILS"
     assert result.reconciliation.status is Status.RECONCILED

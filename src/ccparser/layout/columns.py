@@ -108,6 +108,18 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
     ),
 }
 
+_SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
+    frozenset({ColumnRole.AMOUNT, ColumnRole.ORIGINAL_AMOUNT}),
+    frozenset(
+        {
+            ColumnRole.CURRENCY,
+            ColumnRole.BILLING_CURRENCY,
+            ColumnRole.ORIGINAL_CURRENCY,
+        }
+    ),
+)
+_GENERIC_FAMILY_ROLES = frozenset({ColumnRole.AMOUNT, ColumnRole.CURRENCY})
+
 
 def _width(bbox: BBox) -> float:
     return max(0.0, bbox[2] - bbox[0])
@@ -300,15 +312,44 @@ def _contains_token_phrase(text: str, phrase: str) -> bool:
     )
 
 
+def _same_semantic_family(first: ColumnRole, second: ColumnRole) -> bool:
+    return any(first in family and second in family for family in _SEMANTIC_FAMILIES)
+
+
+def _compatible_profile_alternative(
+    selected: ColumnRole,
+    alternative: ColumnRole,
+    header_scores: dict[ColumnRole, float],
+    profile_scores: dict[ColumnRole, float],
+) -> bool:
+    return (
+        _same_semantic_family(selected, alternative)
+        and header_scores.get(alternative, 0.0) < 0.65
+        and profile_scores.get(alternative, 0.0) >= 0.65
+    )
+
+
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     scores: dict[ColumnRole, float] = {}
     for text in texts:
         normalized = _normalized_header(text)
+        exact_roles = {role for role, terms in _HEADER_VOCABULARY.items() if normalized in terms}
+        exact_specific_role = (
+            next(iter(exact_roles))
+            if len(exact_roles) == 1 and next(iter(exact_roles)) not in _GENERIC_FAMILY_ROLES
+            else None
+        )
         for role, terms in _HEADER_VOCABULARY.items():
             for term in terms:
                 if normalized == term:
                     scores[role] = max(scores.get(role, 0.0), 1.0)
                 elif _contains_token_phrase(normalized, term):
+                    if (
+                        exact_specific_role is not None
+                        and role in _GENERIC_FAMILY_ROLES
+                        and _same_semantic_family(exact_specific_role, role)
+                    ):
+                        continue
                     scores[role] = max(scores.get(role, 0.0), 0.82)
     return scores
 
@@ -324,7 +365,9 @@ def _valid_calendar_day(day: int, month: int, year: int | None = None) -> bool:
     return day <= maximum
 
 
-def _is_date_value(text: str) -> bool:
+def is_date_shaped(text: str) -> bool:
+    """Return whether the complete text is a valid supported calendar date."""
+
     short_match = _TWO_COMPONENT_SLASH_PATTERN.fullmatch(text)
     if short_match is not None:
         day, month = (int(component) for component in short_match.groups())
@@ -341,7 +384,9 @@ def _is_date_value(text: str) -> bool:
     return 1 <= year <= 9999 and _valid_calendar_day(day, month, year)
 
 
-def _is_installment_value(text: str) -> bool:
+def is_installment_shaped(text: str) -> bool:
+    """Return whether the complete text is a valid current/total installment pair."""
+
     match = _TWO_COMPONENT_SLASH_PATTERN.fullmatch(text)
     if match is None:
         return False
@@ -357,11 +402,11 @@ def _profile_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
         stripped = unicodedata.normalize("NFC", text).strip()
         raw_currency = stripped.upper()
         compact_currency = _normalized_header(stripped).upper()
-        if _is_date_value(stripped):
+        if is_date_shaped(stripped):
             matches[ColumnRole.DATE] += 1
         if raw_currency in _CURRENCY_VALUES or compact_currency in _CURRENCY_VALUES:
             matches[ColumnRole.CURRENCY] += 1
-        if _is_installment_value(stripped):
+        if is_installment_shaped(stripped):
             matches[ColumnRole.INSTALLMENT] += 1
         if _MONEY_PATTERN.fullmatch(stripped):
             matches[ColumnRole.AMOUNT] += 1
@@ -446,18 +491,37 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
             top_role = exact_header_roles[0]
             top_score = 1.0
             alternatives = tuple(
-                (role, score) for role, score in ranked if role is not top_role and score >= 0.65
+                (role, score)
+                for role, score in ranked
+                if role is not top_role
+                and score >= 0.65
+                and not _compatible_profile_alternative(
+                    top_role,
+                    role,
+                    header_scores,
+                    profile_scores,
+                )
             )
             if alternatives:
                 diagnostics.append(f"alternative_role:{alternatives[0][0].value}")
         elif ranked:
             candidate, candidate_score = ranked[0]
-            second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+            competing = tuple(
+                (role, score)
+                for role, score in ranked[1:]
+                if not _compatible_profile_alternative(
+                    candidate,
+                    role,
+                    header_scores,
+                    profile_scores,
+                )
+            )
+            second_score = competing[0][1] if competing else 0.0
             if candidate_score >= 0.65 and candidate_score - second_score >= 0.13:
                 top_role = candidate
                 top_score = candidate_score
                 if second_score >= 0.65:
-                    diagnostics.append(f"alternative_role:{ranked[1][0].value}")
+                    diagnostics.append(f"alternative_role:{competing[0][0].value}")
             else:
                 diagnostics.append("ambiguous_role")
         else:

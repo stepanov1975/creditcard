@@ -222,6 +222,9 @@ def test_exact_header_disambiguates_short_date_or_installment(
     )
 
     assert schema.columns[0].role is expected
+    assert any(
+        diagnostic.startswith("alternative_role:") for diagnostic in schema.columns[0].diagnostics
+    )
 
 
 @pytest.mark.parametrize("value", ("0/12", "32/13/2026", "31/02/2026"))
