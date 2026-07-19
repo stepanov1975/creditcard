@@ -541,6 +541,110 @@ def test_total_in_explicitly_points_denominated_ledger_is_not_a_monetary_candida
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
+def test_totals_in_explicitly_percentage_denominated_rate_ledger_are_not_candidates() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("ריביות", 0.0, 50.0, 110.0),
+            _word("Nominal", 70.0, 115.0, 110.0),
+            _word("Effective", 125.0, 158.0, 110.0),
+            _word("Total interest", 0.0, 50.0, 130.0),
+            _word("₪5.00", 118.0, 155.0, 130.0),
+            _word("Total amount", 0.0, 50.0, 150.0),
+            _word("₪5.00", 55.0, 80.0, 150.0),
+            _word("₪6.00", 90.0, 115.0, 150.0),
+            _word("Credit", 0.0, 50.0, 170.0),
+            _word("8.00%", 70.0, 115.0, 170.0),
+            _word("9.00%", 125.0, 158.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].printed_total.amount_text == "₪30.00"
+    assert result.rejected_total_candidates == ()
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+def test_rate_header_without_two_percentage_fields_does_not_exempt_later_total() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Interest rate", 0.0, 50.0, 110.0),
+            _word("Annual rate", 70.0, 115.0, 110.0),
+            _word("Total", 0.0, 50.0, 130.0),
+            _word("5.00", 55.0, 80.0, 130.0),
+            _word("6.00", 90.0, 115.0, 130.0),
+            _word("Credit", 0.0, 50.0, 150.0),
+            _word("8.00%", 70.0, 115.0, 150.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert len(result.rejected_total_candidates) == 1
+    assert "ambiguous_total_value" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_rate_ledger_total_cannot_claim_preceding_transaction_table() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Interest rates", 0.0, 50.0, 90.0),
+            _word("Nominal", 70.0, 115.0, 90.0),
+            _word("Effective", 125.0, 158.0, 90.0),
+            _word("Total interest", 0.0, 50.0, 110.0),
+            _word("₪5.00", 118.0, 155.0, 110.0),
+            _word("Credit", 0.0, 50.0, 130.0),
+            _word("8.00%", 70.0, 115.0, 130.0),
+            _word("9.00%", 125.0, 158.0, 130.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.groups == ()
+    assert len(result.table_regions) == 1
+    assert result.rejected_total_candidates == ()
+    assert "unclaimed_table_region" in result.diagnostics
+
+
+def test_rate_ledger_does_not_exempt_total_after_intervening_financial_table() -> None:
+    page = _page(
+        1,
+        (
+            _word("Interest rate", 0.0, 50.0, 10.0),
+            _word("Annual rate", 70.0, 115.0, 10.0),
+            _word("Credit", 0.0, 50.0, 30.0),
+            _word("8.00%", 70.0, 115.0, 30.0),
+            _word("9.00%", 125.0, 158.0, 30.0),
+            *_table(60.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 120.0),
+            _word("₪30.00", 118.0, 155.0, 120.0),
+            _word("Total", 0.0, 50.0, 140.0),
+            _word("5.00", 55.0, 80.0, 140.0),
+            _word("6.00", 90.0, 115.0, 140.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert len(result.rejected_total_candidates) == 1
+    assert "ambiguous_total_value" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
 def test_points_marker_outside_bounded_section_does_not_exempt_later_ambiguous_total() -> None:
     page = _page(
         1,

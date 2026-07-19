@@ -172,7 +172,28 @@ _POINTS_UNIT_MARKERS = frozenset(
         "נקודות",
     }
 )
+_RATE_HEADER_MARKERS = frozenset(
+    {
+        "annual percentage rate",
+        "annual rate",
+        "apr",
+        "effective rate",
+        "interest rate",
+        "interest rates",
+        "nominal rate",
+        "rate",
+        "rates",
+        "ריבית",
+        "ריביות",
+        "ריבית אפקטיבית",
+        "ריבית מתואמת",
+        "ריבית נומינלית",
+        "שיעור ריבית",
+        "שיעור הריבית",
+    }
+)
 _COUNT_VALUE_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
+_PERCENT_VALUE_PATTERN = re.compile(r"^[+-]?\d+(?:[.,]\d+)?\s*%$")
 _FORM_TITLES = frozenset(
     {
         "application form",
@@ -568,6 +589,70 @@ def _is_points_ledger_total(
         for row in section_rows
         for cell in row.cells
     )
+
+
+def _is_rate_ledger_header(row: Row) -> bool:
+    return any(_contains_phrase(cell.text, _RATE_HEADER_MARKERS) for cell in row.cells)
+
+
+def _is_percentage_value(text: str) -> bool:
+    return _PERCENT_VALUE_PATTERN.fullmatch(" ".join(text.split())) is not None
+
+
+def _contiguous_rate_section(
+    header: Row,
+    rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+) -> tuple[Row, ...]:
+    header_key = _reading_key_bbox(header.page_number, header.bbox)
+    table_header_keys = {
+        _page_row_key(region.header)
+        for region in regions
+        if region.page_number == header.page_number
+        and _reading_key_bbox(region.header.page_number, region.header.bbox) > header_key
+    }
+    ordered = tuple(
+        row
+        for row in rows
+        if row.page_number == header.page_number
+        and _reading_key_bbox(row.page_number, row.bbox) >= header_key
+    )
+    section: list[Row] = []
+    for row in ordered:
+        if section:
+            previous = section[-1]
+            gap_scale = max(_row_height(previous), _row_height(row))
+            if gap_scale <= 0 or _vertical_gap(previous.bbox, row.bbox) > gap_scale * 1.5:
+                break
+            if _page_row_key(row) in table_header_keys or _is_financial_header_row(row):
+                break
+        section.append(row)
+    return tuple(section)
+
+
+def _is_rate_ledger_total(
+    candidate: Row,
+    rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+) -> bool:
+    candidate_key = _reading_key_bbox(candidate.page_number, candidate.bbox)
+    preceding_headers = tuple(
+        row
+        for row in rows
+        if row.page_number == candidate.page_number
+        and _reading_key_bbox(row.page_number, row.bbox) < candidate_key
+        and _is_rate_ledger_header(row)
+    )
+    for header in reversed(preceding_headers):
+        section = _contiguous_rate_section(header, rows, regions)
+        if candidate not in section:
+            continue
+        percentage_cells = tuple(
+            cell for row in section for cell in row.cells if _is_percentage_value(cell.text)
+        )
+        if len(percentage_cells) >= 2:
+            return True
+    return False
 
 
 def _amount_cells_in_nearest_billed_band(
@@ -1090,6 +1175,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         for row in observed_total_marker_rows
         if _page_row_key(row) not in proven_total_overlay_keys
         and not _is_points_ledger_total(row, page_rows, regions)
+        and not _is_rate_ledger_total(row, page_rows, regions)
     )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
