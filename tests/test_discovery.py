@@ -730,6 +730,77 @@ def test_discover_statement_matches_stable_table_suffix_to_one_full_year_anchor(
     )
 
 
+def test_discover_statement_infers_missing_suffix_year_from_unique_adjacent_bracket() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Prior 03/02/2024", 0.0, 70.0, 2.0),
+            _word("Next 03/02/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2025
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert result.date_year_context.year_by_suffix == ((25, 2025),)
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Prior 03/02/2024",
+        "Next 03/02/2026",
+    )
+
+
+def test_discover_statement_rejects_adjacent_brackets_in_two_centuries() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Archive start 03/02/1924", 0.0, 70.0, 2.0),
+            _word("Archive end 03/02/1926", 80.0, 155.0, 2.0),
+            _word("Prior 03/02/2024", 0.0, 70.0, 12.0),
+            _word("Next 03/02/2026", 80.0, 155.0, 12.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    assert discover_statement(_document(page)).date_year_context is None
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    (
+        "Only prior 03/02/2024",
+        "Remote 03/02/2022",
+    ),
+)
+def test_discover_statement_rejects_one_sided_or_remote_year_anchor(anchor: str) -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word(anchor, 0.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    assert discover_statement(_document(page)).date_year_context is None
+
+
 def test_discover_statement_rejects_multiple_full_years_matching_table_suffix() -> None:
     words = list(_table(20.0, "₪", "10.00", "20.00"))
     words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
