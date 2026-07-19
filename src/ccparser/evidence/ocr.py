@@ -14,6 +14,7 @@ from typing import cast
 
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 
+from ccparser.evidence.currency import CURRENCY_OCR_SYMBOLS
 from ccparser.evidence.models import BBox, Point, Word
 
 OCR_LANGUAGES = "heb+eng"
@@ -78,6 +79,23 @@ def numeric_tesseract_command() -> tuple[str, ...]:
         "6",
         "-c",
         "tessedit_char_whitelist=0123456789.,/-+()",
+        "tsv",
+    )
+
+
+def currency_tesseract_command() -> tuple[str, ...]:
+    """Return the isolated English pass for a suspected currency symbol glyph."""
+
+    return (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "10",
         "tsv",
     )
 
@@ -249,6 +267,7 @@ class TesseractOcr:
         self._command = tesseract_command()
         self._supplemental_command = supplemental_tesseract_command()
         self._numeric_command = numeric_tesseract_command()
+        self._currency_command = currency_tesseract_command()
         self._version: str | None = None
 
     def _tesseract_version(self) -> str:
@@ -301,6 +320,15 @@ class TesseractOcr:
         payload = {
             "command": list(self._numeric_command),
             "recognition_cache_version": OCR_NUMERIC_RECOGNITION_CACHE_VERSION,
+            "recognition_key": recognition_key,
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(serialized).hexdigest()
+
+    def _currency_cache_key(self, recognition_key: str) -> str:
+        payload = {
+            "command": list(self._currency_command),
+            "recognition_cache_version": "tesseract-isolated-currency-v1",
             "recognition_key": recognition_key,
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -382,3 +410,39 @@ class TesseractOcr:
             parse_tesseract_tsv(supplemental_tsv, dpi=self.dpi, origin=origin),
             parse_tesseract_tsv(numeric_tsv, dpi=self.dpi, origin=origin),
         )
+
+    def extract_currency_symbol(
+        self,
+        pdf_bytes: bytes,
+        source_sha256: str,
+        page_index: int,
+        clip: BBox,
+    ) -> Word | None:
+        """OCR one geometry-proven custom glyph without forcing a symbol whitelist."""
+
+        if hashlib.sha256(pdf_bytes).hexdigest() != source_sha256:
+            raise ValueError("source SHA-256 does not match PDF bytes")
+        image, origin = self._render(pdf_bytes, page_index, clip)
+        recognition_key = self.cache_key(source_sha256, page_index, clip)
+        currency_key = self._currency_cache_key(recognition_key)
+        tsv = self._cached_recognition(
+            self.cache_dir / f"{currency_key}.currency.tsv",
+            image,
+            self._currency_command,
+        )
+        candidates: list[Word] = []
+        for word in parse_tesseract_tsv(tsv, dpi=self.dpi, origin=origin):
+            symbols = tuple(char for char in word.text if char in CURRENCY_OCR_SYMBOLS)
+            residual = tuple(
+                char
+                for char in word.text
+                if not char.isspace()
+                and char not in CURRENCY_OCR_SYMBOLS
+                and unicodedata.category(char)[0] not in {"M", "P"}
+            )
+            if len(symbols) == 1 and not residual:
+                candidates.append(word.model_copy(update={"text": symbols[0]}))
+        distinct_symbols = {word.text for word in candidates}
+        if len(distinct_symbols) != 1:
+            return None
+        return max(candidates, key=lambda word: (word.confidence, word.bbox))

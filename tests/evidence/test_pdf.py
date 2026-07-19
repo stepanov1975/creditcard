@@ -7,7 +7,12 @@ import fitz
 import pytest
 
 from ccparser.evidence.models import Glyph, ImageEvidence, Word
-from ccparser.evidence.pdf import _extract_text_blocks, assess_extraction_quality, extract_pdf
+from ccparser.evidence.pdf import (
+    _custom_currency_glyph_clips,
+    _extract_text_blocks,
+    assess_extraction_quality,
+    extract_pdf,
+)
 
 
 def _save_digital_pdf(path: Path) -> None:
@@ -130,6 +135,51 @@ def test_quality_requires_ocr_for_excessive_unmapped_glyphs() -> None:
     assert quality.requires_ocr is True
     assert quality.replacement_character_ratio == 0.1
     assert "excessive_replacement_characters" in quality.reasons
+
+
+def test_custom_currency_glyph_clip_requires_distinct_wide_prefix_geometry() -> None:
+    glyphs = (
+        Glyph(
+            char="3",
+            bbox=(10.0, 10.0, 16.0, 20.0),
+            origin=(10.0, 19.0),
+            font="CustomCurrency",
+            size=10.0,
+            source="digital",
+            confidence=1.0,
+        ),
+        Glyph(
+            char="5",
+            bbox=(16.2, 10.0, 20.2, 20.0),
+            origin=(16.2, 19.0),
+            font="Digits",
+            size=10.0,
+            source="digital",
+            confidence=1.0,
+        ),
+        Glyph(
+            char="9",
+            bbox=(20.2, 10.0, 24.2, 20.0),
+            origin=(20.2, 19.0),
+            font="Digits",
+            size=10.0,
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+    words = (
+        Word(text="3", bbox=(10.0, 10.0, 16.0, 20.0), source="digital", confidence=1.0),
+        Word(text="59", bbox=(16.2, 10.0, 24.2, 20.0), source="digital", confidence=1.0),
+    )
+
+    assert _custom_currency_glyph_clips(glyphs, words) == ((7.0, 7.0, 18.4, 23.0),)
+    assert (
+        _custom_currency_glyph_clips(
+            tuple(glyph.model_copy(update={"font": "Digits"}) for glyph in glyphs),
+            words,
+        )
+        == ()
+    )
 
 
 def _positioned_glyphs(text: str) -> tuple[Glyph, ...]:

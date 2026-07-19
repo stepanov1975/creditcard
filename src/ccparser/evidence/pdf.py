@@ -10,6 +10,7 @@ from typing import cast
 
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 
+from ccparser.evidence.currency import custom_currency_glyph_candidates
 from ccparser.evidence.models import (
     BBox,
     DocumentEvidence,
@@ -21,12 +22,31 @@ from ccparser.evidence.models import (
     VectorRule,
     Word,
 )
-from ccparser.evidence.provider import OcrProvider
+from ccparser.evidence.provider import CurrencySymbolOcrProvider, OcrProvider
 
 NEARLY_EMPTY_USABLE_CHARACTER_COUNT = 8
 EXCESSIVE_REPLACEMENT_CHARACTER_RATIO = 0.05
 EXCESSIVE_CONTROL_CHARACTER_RATIO = 0.02
 IMAGE_DOMINANT_AREA_RATIO = 0.5
+
+
+def _custom_currency_glyph_clips(
+    glyphs: Sequence[Glyph],
+    words: Sequence[Word],
+) -> tuple[BBox, ...]:
+    clips = []
+    for glyph in custom_currency_glyph_candidates(glyphs, words):
+        padding = max(0.0, glyph.bbox[3] - glyph.bbox[1]) * 0.3
+        right_padding = max(0.0, glyph.bbox[3] - glyph.bbox[1]) * 0.24
+        clips.append(
+            (
+                glyph.bbox[0] - padding,
+                glyph.bbox[1] - padding,
+                glyph.bbox[2] + right_padding,
+                glyph.bbox[3] + padding,
+            )
+        )
+    return tuple(clips)
 
 
 def _number(value: object) -> float:
@@ -279,10 +299,25 @@ def extract_pdf(path: str | Path, ocr_provider: OcrProvider | None = None) -> Do
                 images=images,
                 page_bbox=page_bbox,
             )
-            words = digital_words
+            currency_words: tuple[Word, ...] = ()
+            if isinstance(ocr_provider, CurrencySymbolOcrProvider):
+                currency_words = tuple(
+                    word
+                    for clip in _custom_currency_glyph_clips(glyphs, digital_words)
+                    if (
+                        word := ocr_provider.extract_currency_symbol(
+                            source_bytes,
+                            source_sha256,
+                            page_index,
+                            clip,
+                        )
+                    )
+                    is not None
+                )
+            words = (*digital_words, *currency_words)
             if quality.requires_ocr and ocr_provider is not None:
                 words = (
-                    *digital_words,
+                    *words,
                     *ocr_provider.extract_words(
                         source_bytes,
                         source_sha256,

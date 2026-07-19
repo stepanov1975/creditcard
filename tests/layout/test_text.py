@@ -121,6 +121,34 @@ def test_logical_text_keeps_numeric_punctuation_joined_from_glyph_geometry() -> 
     assert logical_text_for_evidence(glyphs, words) == "12.40"
 
 
+def test_logical_text_uses_ocr_corroborated_custom_currency_glyph() -> None:
+    glyphs = (
+        _glyph("3", 10.0).model_copy(
+            update={"bbox": (10.0, 10.0, 16.0, 20.0), "font": "CustomCurrency"}
+        ),
+        *(
+            _glyph(char, 16.2 + index * 4.1).model_copy(update={"font": "Digits"})
+            for index, char in enumerate("59.92")
+        ),
+    )
+    words = (
+        Word(text="3", bbox=(10.0, 10.0, 16.0, 20.0), source="digital", confidence=1.0),
+        Word(text="59", bbox=(16.2, 10.0, 24.2, 20.0), source="digital", confidence=1.0),
+        Word(text=".", bbox=(24.4, 10.0, 28.4, 20.0), source="digital", confidence=1.0),
+        Word(text="92", bbox=(28.5, 10.0, 36.5, 20.0), source="digital", confidence=1.0),
+        Word(text="€", bbox=(8.0, 8.0, 18.0, 22.0), source="ocr", confidence=0.2),
+    )
+
+    assert logical_text_for_evidence(glyphs, words) == "€59.92"
+
+
+def test_logical_text_rejects_currency_ocr_without_custom_glyph_geometry() -> None:
+    glyphs = tuple(_glyph(char, 10.0 + index * 4.1) for index, char in enumerate("359.92"))
+    words = (Word(text="€", bbox=(8.0, 8.0, 16.0, 22.0), source="ocr", confidence=0.9),)
+
+    assert logical_text_for_evidence(glyphs, words) == "359.92"
+
+
 def test_logical_text_attaches_hebrew_combining_marks_to_their_positioned_base() -> None:
     glyphs = (
         _glyph("ל", 75.0),

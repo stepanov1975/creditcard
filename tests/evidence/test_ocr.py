@@ -17,6 +17,7 @@ from ccparser.evidence.ocr import (
     OCR_PREPROCESSING_VERSION,
     OCR_RECOGNITION_CACHE_VERSION,
     TesseractOcr,
+    currency_tesseract_command,
     fuse_ocr_words,
     numeric_tesseract_command,
     parse_tesseract_tsv,
@@ -91,6 +92,52 @@ def test_numeric_tesseract_command_is_deterministic_whitelisted_pass() -> None:
         "tessedit_char_whitelist=0123456789.,/-+()",
         "tsv",
     )
+
+
+def test_currency_tesseract_command_is_isolated_english_symbol_pass() -> None:
+    assert currency_tesseract_command() == (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "10",
+        "tsv",
+    )
+
+
+def test_currency_ocr_accepts_one_symbol_with_punctuation_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "blank.pdf"
+    _save_blank_pdf(path)
+    tsv = (
+        b"level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+        b"5\t1\t1\t1\t1\t1\t0\t0\t25\t25\t24\t_\xe2\x82\xac\n"
+    )
+
+    def fake_run(command: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[bytes]:
+        output = b"tesseract 5.7.1\n" if command == ("tesseract", "--version") else tsv
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    pdf_bytes = path.read_bytes()
+    provider = TesseractOcr(tmp_path / "cache")
+
+    word = provider.extract_currency_symbol(
+        pdf_bytes,
+        _source_sha256(pdf_bytes),
+        page_index=0,
+        clip=(10.0, 20.0, 30.0, 40.0),
+    )
+
+    assert word is not None
+    assert word.text == "€"
+    assert word.source == "ocr"
 
 
 def test_fuse_ocr_words_replaces_only_overlapping_truncated_numeric_token() -> None:

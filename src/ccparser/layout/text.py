@@ -6,6 +6,7 @@ import statistics
 import unicodedata
 from collections.abc import Sequence
 
+from ccparser.evidence.currency import CURRENCY_OCR_SYMBOLS, custom_currency_glyph_candidates
 from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
 
 
@@ -249,6 +250,35 @@ def _text_from_words(words: Sequence[Word]) -> str:
     return _normalized(" ".join(rendered_lines))
 
 
+def _ocr_corroborated_currency_glyphs(
+    glyphs: Sequence[Glyph],
+    words: Sequence[Word],
+) -> tuple[Glyph, ...]:
+    candidates = custom_currency_glyph_candidates(glyphs, words)
+    if not candidates:
+        return tuple(glyphs)
+    replacements: dict[Glyph, str] = {}
+    for candidate in candidates:
+        center_x = _center_x(candidate.bbox)
+        center_y = _center_y(candidate.bbox)
+        symbols = tuple(
+            word.text
+            for word in words
+            if word.source == "ocr"
+            and word.text in CURRENCY_OCR_SYMBOLS
+            and word.bbox[0] <= center_x <= word.bbox[2]
+            and word.bbox[1] <= center_y <= word.bbox[3]
+        )
+        if len(symbols) == 1:
+            replacements[candidate] = symbols[0]
+    return tuple(
+        glyph.model_copy(update={"char": replacements[glyph], "source": "ocr"})
+        if glyph in replacements
+        else glyph
+        for glyph in glyphs
+    )
+
+
 def _character_signature(text: str) -> tuple[str, ...]:
     return tuple(sorted(char for char in _normalized(text) if not char.isspace()))
 
@@ -336,5 +366,6 @@ def logical_text_for_evidence(
     """Return logical NFC text derived from the exact supplied provenance."""
 
     if glyphs:
-        return _lossless_word_text(glyphs, words) or _text_from_glyphs(glyphs)
+        canonical_glyphs = _ocr_corroborated_currency_glyphs(glyphs, words)
+        return _lossless_word_text(canonical_glyphs, words) or _text_from_glyphs(canonical_glyphs)
     return _text_from_words(words)
