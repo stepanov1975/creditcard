@@ -417,25 +417,7 @@ def _contains_header_concept(text: str, terms: Iterable[str]) -> bool:
 
 
 def _header_evidence_texts(cells: Sequence[Cell]) -> tuple[str, ...]:
-    texts: list[str] = []
-    for cell in cells:
-        logical_words = cell.text.split()
-        texts.append(cell.text)
-        if _is_hebrew_phrase(cell.text):
-            texts.extend(
-                (
-                    cell.text[::-1],
-                    " ".join(word[::-1] for word in logical_words),
-                    " ".join(reversed(logical_words)),
-                )
-            )
-        if cell.words:
-            source_words = tuple(word.text for word in cell.words)
-            source_text = " ".join(source_words)
-            texts.append(source_text)
-            if _is_hebrew_phrase(source_text):
-                texts.append(" ".join(reversed(source_words)))
-    return tuple(dict.fromkeys(text for text in texts if text.strip()))
+    return tuple(dict.fromkeys(cell.text for cell in cells if cell.text.strip()))
 
 
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
@@ -724,6 +706,59 @@ def _header_anchored_columns(
     return tuple(columns)
 
 
+def _disambiguate_qualified_original_amount(
+    columns: Sequence[ColumnSpec],
+    header_cells: Sequence[Cell],
+) -> tuple[ColumnSpec, ...]:
+    original_columns = tuple(
+        column for column in columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    billed_columns = tuple(
+        column
+        for column in columns
+        if column.role is ColumnRole.AMOUNT
+        and any(
+            _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
+            for text in _header_evidence_texts(_cells_for_column(header_cells, column))
+        )
+    )
+    if len(original_columns) != 2 or len(billed_columns) != 1:
+        return tuple(columns)
+    qualified = tuple(
+        column
+        for column in original_columns
+        if any(
+            _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
+            for text in _header_evidence_texts(_cells_for_column(header_cells, column))
+        )
+    )
+    if len(qualified) != 1:
+        return tuple(columns)
+    intermediate = next(column for column in original_columns if column is not qualified[0])
+    intermediate_texts = _header_evidence_texts(_cells_for_column(header_cells, intermediate))
+    if not any(
+        _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
+        and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
+        for text in intermediate_texts
+    ):
+        return tuple(columns)
+    return tuple(
+        column.model_copy(
+            update={
+                "role": ColumnRole.AUXILIARY_AMOUNT,
+                "diagnostics": tuple(
+                    dict.fromkeys((*column.diagnostics, "role_evidence:qualified_original_peer"))
+                ),
+            }
+        )
+        if column is intermediate
+        else column
+        for column in columns
+    )
+
+
 def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell]) -> TableSchema:
     """Combine general financial header vocabulary with typed value profiles."""
 
@@ -827,6 +862,8 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
                 }
             )
         )
+
+    semantic_columns = list(_disambiguate_qualified_original_amount(semantic_columns, header_cells))
 
     bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
     known_fraction = (

@@ -81,6 +81,7 @@ class DiscoveredDateYearContext(_ImmutableDiscoveryModel):
     year_by_suffix: tuple[tuple[int, int], ...] = ()
     style: DateTokenStyle
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    metadata_evidence: tuple[tuple[str, str], ...] = ()
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
 
@@ -197,6 +198,20 @@ _POINTS_UNIT_MARKERS = frozenset(
         "נקודות",
     }
 )
+_FEE_SUMMARY_MARKERS = frozenset(
+    {
+        "commission",
+        "commissions",
+        "fee",
+        "fees",
+        "עמלה",
+        "העמלה",
+        "עמלות",
+        "העמלות",
+        "סך העמלות",
+    }
+)
+_TAX_SUMMARY_MARKERS = frozenset({"tax", "vat", "מס", "מעמ"})
 _RATE_HEADER_MARKERS = frozenset(
     {
         "annual percentage rate",
@@ -295,6 +310,11 @@ _SHORT_DATE_TOKEN_PATTERNS = {
     style: _styled_date_pattern(separator, year_first=year_first, year_digits=2)
     for style, (separator, year_first) in _DATE_STYLE_CONFIGURATION.items()
 }
+_YEAR_MONTH_TOKEN_PATTERN = re.compile(
+    r"(?<!\d)(?P<year>(?:19|20)\d{2})\s*[/\-]\s*"
+    r"(?P<month>0?[1-9]|1[0-2])(?!\s*[/\-]\s*\d)(?!\d)"
+)
+_PDF_METADATA_DATE_PATTERN = re.compile(r"^D:(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})")
 
 
 def _normalized_phrase(text: str) -> str:
@@ -695,6 +715,22 @@ def _is_rate_ledger_total(
     return False
 
 
+def _is_fee_tax_summary_total(candidate: Row) -> bool:
+    text = " ".join(cell.text for cell in candidate.cells)
+    currency_evidence_count = sum(
+        bool(currencies_in_text(value))
+        for value in (
+            tuple(word.text for word in candidate.words)
+            or tuple(cell.text for cell in candidate.cells)
+        )
+    )
+    return (
+        _contains_phrase(text, _FEE_SUMMARY_MARKERS)
+        and _contains_phrase(text, _TAX_SUMMARY_MARKERS)
+        and currency_evidence_count >= 2
+    )
+
+
 def _amount_cells_in_nearest_billed_band(
     row: Row,
     amount_cells: Sequence[tuple[Cell, str]],
@@ -899,8 +935,55 @@ def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
     return tuple(cells)
 
 
+def _cross_style_year_anchors(cells: Sequence[Cell]) -> dict[int, tuple[Cell, ...]]:
+    supporting: dict[int, list[Cell]] = {}
+    for cell in cells:
+        years: set[int] = set()
+        for full_pattern in _FULL_DATE_TOKEN_PATTERNS.values():
+            for match in full_pattern.finditer(cell.text):
+                year = int(match.group("year"))
+                if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+                    continue
+                try:
+                    date(year, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                years.add(year)
+        for match in _YEAR_MONTH_TOKEN_PATTERN.finditer(cell.text):
+            years.add(int(match.group("year")))
+        for year in years:
+            supporting.setdefault(year, []).append(cell)
+    return {year: tuple(values) for year, values in supporting.items()}
+
+
+def _agreeing_pdf_date_metadata(
+    metadata: Sequence[tuple[str, str]],
+) -> tuple[int, tuple[tuple[str, str], ...]] | None:
+    selected = tuple(item for item in metadata if item[0].casefold() in {"creationdate", "moddate"})
+    if {key.casefold() for key, _ in selected} != {"creationdate", "moddate"}:
+        return None
+    parsed_years: set[int] = set()
+    for _, value in selected:
+        match = _PDF_METADATA_DATE_PATTERN.match(value)
+        if match is None:
+            return None
+        year = int(match.group("year"))
+        try:
+            date(year, int(match.group("month")), int(match.group("day")))
+        except ValueError:
+            return None
+        if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+            return None
+        parsed_years.add(year)
+    if len(parsed_years) != 1:
+        return None
+    return next(iter(parsed_years)), selected
+
+
 def _date_year_context(
-    rows: Sequence[Row], regions: Sequence[TableRegion]
+    rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+    metadata: Sequence[tuple[str, str]],
 ) -> DiscoveredDateYearContext | None:
     cells = tuple(cell for row in rows for cell in row.cells)
     table_date_cells = _table_date_cells(regions)
@@ -921,23 +1004,40 @@ def _date_year_context(
         table_short_years_by_style[style] = years
         table_short_months_by_style[style] = months_by_year
     has_table_short_dates = any(table_short_years_by_style.values())
-    candidates: list[tuple[DateTokenStyle, tuple[tuple[int, int], ...], tuple[Cell, ...]]] = []
+    cross_style_anchors = _cross_style_year_anchors(cells)
+    pdf_date_metadata = _agreeing_pdf_date_metadata(metadata)
+    metadata_year = pdf_date_metadata[0] if pdf_date_metadata is not None else None
+    candidates: list[
+        tuple[
+            DateTokenStyle,
+            tuple[tuple[int, int], ...],
+            tuple[Cell, ...],
+            tuple[tuple[str, str], ...],
+        ]
+    ] = []
     for style, full_pattern in _FULL_DATE_TOKEN_PATTERNS.items():
         short_pattern = _SHORT_DATE_TOKEN_PATTERNS[style]
-        full_years: set[int] = set()
-        supporting_cells_by_year: dict[int, list[Cell]] = {}
+        full_years: set[int] = set(cross_style_anchors) if has_table_short_dates else set()
+        if has_table_short_dates and metadata_year is not None:
+            full_years.add(metadata_year)
+        supporting_cells_by_year: dict[int, list[Cell]] = (
+            {year: list(values) for year, values in cross_style_anchors.items()}
+            if has_table_short_dates
+            else {}
+        )
         short_years: set[int] = set()
         for cell in cells:
-            for match in full_pattern.finditer(cell.text):
-                year = int(match.group("year"))
-                if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
-                    continue
-                try:
-                    date(year, int(match.group("month")), int(match.group("day")))
-                except ValueError:
-                    continue
-                full_years.add(year)
-                supporting_cells_by_year.setdefault(year, []).append(cell)
+            if not has_table_short_dates:
+                for match in full_pattern.finditer(cell.text):
+                    year = int(match.group("year"))
+                    if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+                        continue
+                    try:
+                        date(year, int(match.group("month")), int(match.group("day")))
+                    except ValueError:
+                        continue
+                    full_years.add(year)
+                    supporting_cells_by_year.setdefault(year, []).append(cell)
             for match in short_pattern.finditer(cell.text):
                 try:
                     date(2000, int(match.group("month")), int(match.group("day")))
@@ -950,6 +1050,7 @@ def _date_year_context(
                 continue
             year_by_suffix: list[tuple[int, int]] = []
             context_supporting_cells: list[Cell] = []
+            used_evidence_years: set[int] = set()
             for short_year in sorted(table_short_years):
                 matching_years = tuple(
                     sorted(year for year in full_years if year % 100 == short_year)
@@ -984,9 +1085,14 @@ def _date_year_context(
                             if inferred_year < anchor_year
                             else (anchor_suffix, short_year)
                         )
-                        if months_by_year.get(earlier_suffix) == {12} and months_by_year.get(
-                            later_suffix
-                        ) == {1}:
+                        earlier_months = months_by_year.get(earlier_suffix, set())
+                        later_months = months_by_year.get(later_suffix, set())
+                        if (
+                            earlier_months
+                            and later_months
+                            and all(month >= 10 for month in earlier_months)
+                            and all(month <= 3 for month in later_months)
+                        ):
                             candidate_evidence_years.setdefault(inferred_year, set()).add(
                                 anchor_year
                             )
@@ -994,8 +1100,9 @@ def _date_year_context(
                     break
                 selected_suffix_year, evidence_years = next(iter(candidate_evidence_years.items()))
                 year_by_suffix.append((short_year, selected_suffix_year))
+                used_evidence_years.update(evidence_years)
                 for evidence_year in evidence_years:
-                    for cell in supporting_cells_by_year[evidence_year]:
+                    for cell in supporting_cells_by_year.get(evidence_year, ()):
                         if not any(existing is cell for existing in context_supporting_cells):
                             context_supporting_cells.append(cell)
             if len(year_by_suffix) != len(table_short_years):
@@ -1005,28 +1112,43 @@ def _date_year_context(
                 for cell in cells
                 if any(cell is supporting for supporting in context_supporting_cells)
             )
-            candidates.append((style, tuple(year_by_suffix), ordered_supporting_cells))
+            if not ordered_supporting_cells:
+                selected_suffixes = {suffix for suffix, _ in year_by_suffix}
+                ordered_supporting_cells = tuple(
+                    cell
+                    for cell in table_date_cells
+                    if any(
+                        int(match.group("year")) in selected_suffixes
+                        for match in short_pattern.finditer(cell.text)
+                    )
+                )
+            selected_metadata = (
+                pdf_date_metadata[1]
+                if pdf_date_metadata is not None and metadata_year in used_evidence_years
+                else ()
+            )
+            candidates.append(
+                (style, tuple(year_by_suffix), ordered_supporting_cells, selected_metadata)
+            )
             continue
         if len(full_years) == 1:
             year = next(iter(full_years))
             if short_years == {year % 100}:
                 candidates.append(
-                    (
-                        style,
-                        ((year % 100, year),),
-                        tuple(supporting_cells_by_year[year]),
-                    )
+                    (style, ((year % 100, year),), tuple(supporting_cells_by_year[year]), ())
                 )
     if len(candidates) != 1:
         return None
-    style, selected_year_by_suffix, supporting_cells = candidates[0]
+    style, selected_year_by_suffix, supporting_cells, metadata_evidence = candidates[0]
     selected_year = selected_year_by_suffix[0][1] if len(selected_year_by_suffix) == 1 else None
     return DiscoveredDateYearContext(
         year=selected_year,
         year_by_suffix=selected_year_by_suffix,
         style=style,
         evidence=tuple(_evidence(cell) for cell in supporting_cells),
+        metadata_evidence=metadata_evidence,
         confidence=statistics.mean(cell.confidence for cell in supporting_cells),
+        diagnostics=("pdf_metadata_year_anchor",) if metadata_evidence else (),
     )
 
 
@@ -1291,6 +1413,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         if _page_row_key(row) not in proven_total_overlay_keys
         and not _is_points_ledger_total(row, page_rows, regions)
         and not _is_rate_ledger_total(row, page_rows, regions)
+        and not _is_fee_tax_summary_total(row)
     )
     observed_document_currencies = {
         currency
@@ -1393,7 +1516,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         diagnostics.append("unclaimed_table_region")
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
-    date_year_context = _date_year_context(page_rows, regions)
+    date_year_context = _date_year_context(page_rows, regions, evidence.metadata)
     diagnostics.extend(
         diagnostic for _, candidate in rejected_total_rows for diagnostic in candidate.diagnostics
     )

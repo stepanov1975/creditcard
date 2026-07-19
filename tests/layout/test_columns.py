@@ -294,7 +294,7 @@ def test_infer_column_roles_uses_explicit_auxiliary_amount_header(header: str) -
     assert "role_evidence:header" in schema.columns[0].diagnostics
 
 
-def test_infer_column_roles_recovers_fee_qualifier_from_source_words() -> None:
+def test_infer_column_roles_uses_canonical_cell_text_not_extra_source_words() -> None:
     words = tuple(
         Word(
             text=text,
@@ -317,7 +317,7 @@ def test_infer_column_roles_recovers_fee_qualifier_from_source_words() -> None:
         (_cell("0.00", (0.0, 32.0, 40.0, 42.0)),),
     )
 
-    assert schema.columns[0].role is ColumnRole.AUXILIARY_AMOUNT
+    assert schema.columns[0].role is ColumnRole.AMOUNT
     assert "role_evidence:header" in schema.columns[0].diagnostics
 
 
@@ -453,6 +453,31 @@ def test_infer_column_roles_composes_original_modifier_with_generic_amount_heade
     assert schema.columns[0].role is ColumnRole.ORIGINAL_AMOUNT
 
 
+def test_infer_column_roles_separates_intermediate_amount_from_qualified_original() -> None:
+    schema = infer_column_roles(
+        (
+            _cell("סכום חיוב", (0.0, 10.0, 30.0, 20.0)),
+            _cell("סכום העסקה", (40.0, 10.0, 70.0, 20.0)),
+            _cell("סכום העסקה במטבע המקור", (80.0, 10.0, 120.0, 20.0)),
+        ),
+        (
+            _cell("₪20.00", (0.0, 30.0, 30.0, 40.0)),
+            _cell("₪18.00", (40.0, 30.0, 70.0, 40.0)),
+            _cell("$5.00", (80.0, 30.0, 120.0, 40.0)),
+            _cell("₪40.00", (0.0, 50.0, 30.0, 60.0)),
+            _cell("₪36.00", (40.0, 50.0, 70.0, 60.0)),
+            _cell("$10.00", (80.0, 50.0, 120.0, 60.0)),
+        ),
+    )
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.AMOUNT,
+        ColumnRole.AUXILIARY_AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+    )
+    assert "role_evidence:qualified_original_peer" in schema.columns[1].diagnostics
+
+
 @pytest.mark.parametrize(
     "header",
     ("Exchange rate", "Exchange rate used for billing", "שערההמרה", "שערהמרהלדולר"),
@@ -481,7 +506,7 @@ def test_infer_column_roles_keeps_exchange_rate_numeric_profile_nonfinancial(
         ("ךיראתהרמה", ("המרה", "תאריך")),
     ),
 )
-def test_infer_column_roles_recovers_compact_reversed_conversion_date_headers(
+def test_infer_column_roles_does_not_use_reversed_hebrew_without_geometric_proof(
     logical_text: str,
     word_texts: tuple[str, ...],
 ) -> None:
@@ -510,8 +535,5 @@ def test_infer_column_roles_recovers_compact_reversed_conversion_date_headers(
         ),
     )
 
-    assert schema.columns[0].role is ColumnRole.CONVERSION_DATE
-    assert "role_evidence:header" in schema.columns[0].diagnostics
-    assert not any(
-        diagnostic.startswith("alternative_role:") for diagnostic in schema.columns[0].diagnostics
-    )
+    assert schema.columns[0].role is not ColumnRole.CONVERSION_DATE
+    assert "role_evidence:header" not in schema.columns[0].diagnostics

@@ -56,6 +56,7 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "fee",
         "surcharge",
         "עמלה",
+        "הערה",
         "המרה",
         "הומר",
         "שער המרה",
@@ -735,6 +736,14 @@ def _has_subordinate_detail_marker(row: Row) -> bool:
     return False
 
 
+def _has_proper_hebrew_note_marker(row: Row) -> bool:
+    return any(
+        normalized == "הערה" or normalized.startswith("הערה ")
+        for cell in row.cells
+        for normalized in (_normalized_marker(cell.text),)
+    )
+
+
 def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema) -> bool:
     if (
         len(row.cells) < 2
@@ -751,7 +760,11 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
         amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2] for cell in row.cells
     ):
         return False
-    minimum_alignment = max(2 / len(schema.columns), 0.5)
+    minimum_alignment = (
+        min(2 / len(schema.columns), 1.0)
+        if _has_proper_hebrew_note_marker(row)
+        else max(2 / len(schema.columns), 0.5)
+    )
     if _row_alignment(row, schema) < minimum_alignment:
         return False
     typical_height = statistics.median(
@@ -1051,6 +1064,74 @@ def _bounded_auxiliary_fragment(
         update={
             "diagnostics": tuple(
                 dict.fromkeys((*projected.diagnostics, "subordinate_auxiliary_continuation"))
+            )
+        }
+    )
+
+
+def _bounded_hebrew_note_detail(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+    previous: Row,
+) -> Row | None:
+    if start_index + 1 >= len(rows):
+        return None
+    billed_column = proven_billed_amount_column(schema, (previous,))
+    original_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    if (
+        billed_column is None
+        or len(original_columns) != 1
+        or original_columns[0].index == billed_column.index
+    ):
+        return None
+    source = rows[start_index]
+    following_source = rows[start_index + 1]
+    if (
+        _is_total_row(source)
+        or _literal_header_role_count(source) >= 2
+        or not _detail_rows_are_adjacent(previous, source)
+        or not _row_intersects_horizontal_band(following_source, header.bbox)
+        or _is_total_row(following_source)
+        or _literal_header_role_count(following_source) >= 2
+        or not _detail_rows_are_adjacent(source, following_source)
+    ):
+        return None
+    projected = _project_row_to_header_bands(page_evidence, source, header)
+    if (
+        not projected.cells
+        or not _has_proper_hebrew_note_marker(projected)
+        or any(is_date_shaped(cell.text) for cell in projected.cells)
+        or _transaction_shape_count(projected) > 1
+        or _row_alignment(projected, schema) <= 0
+        or _projection_preserves_table_band_evidence(source, projected, header, schema) is None
+        or any(
+            billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+            for cell in projected.cells
+        )
+    ):
+        return None
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    if (
+        not following.cells
+        or not _has_valid_billed_amount(following, schema)
+        or _row_alignment(following, schema) < _minimum_row_alignment(schema)
+    ):
+        return None
+    return projected.model_copy(
+        update={
+            "diagnostics": tuple(
+                dict.fromkeys(
+                    (
+                        *projected.diagnostics,
+                        "subordinate_detail_continuation",
+                        "bounded_hebrew_note_detail",
+                    )
+                )
             )
         }
     )
@@ -1374,6 +1455,21 @@ def _detect_from_header(
                 detail_continuation_count += len(details)
                 detail_continuation_allowed = False
                 previous = details[-1]
+                continue
+        if detail_continuation_allowed:
+            note_detail = _bounded_hebrew_note_detail(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+                previous,
+            )
+            if note_detail is not None:
+                accepted.append(note_detail)
+                detail_continuation_count += 1
+                detail_continuation_allowed = False
+                previous = note_detail
                 continue
         if (
             detail_continuation_allowed

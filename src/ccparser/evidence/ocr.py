@@ -60,9 +60,7 @@ def supplemental_tesseract_command() -> tuple[str, ...]:
     )
 
 
-_NUMERIC_TOKEN_PATTERN = re.compile(
-    r"^[+-]?(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[,.]\d{1,2})?$"
-)
+_NUMERIC_TOKEN_PATTERN = re.compile(r"^[+-]?(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[,.]\d{1,2})?$")
 
 
 def _overlap_over_smaller(first: BBox, second: BBox) -> float:

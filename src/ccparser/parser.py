@@ -239,6 +239,7 @@ def _discovery_summary(discovery: StatementDiscovery) -> StatementDiscoverySumma
                 ),
                 style=date_year_context.style.value,
                 evidence=date_year_context.evidence,
+                metadata_evidence=date_year_context.metadata_evidence,
                 confidence=date_year_context.confidence,
                 diagnostics=date_year_context.diagnostics,
             )

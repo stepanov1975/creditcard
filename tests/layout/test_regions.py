@@ -1089,6 +1089,52 @@ def test_marked_detail_may_populate_secondary_amount_when_billed_band_is_empty()
     assert "stopped_at_total" in regions[0].diagnostics
 
 
+def test_sparse_wide_table_retains_proper_hebrew_note_detail() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=True),
+            _word("USD", 18.0, 28.0, 41.0),
+            _word("הערה", 90.0, 100.0, 41.0),
+            *_wide_sparse_data(52.0, include_conversion_date=True),
+            _word("USD", 18.0, 28.0, 63.0),
+            _word("הערה", 90.0, 100.0, 63.0),
+            _word("Total", 90.0, 100.0, 83.0),
+            _word("24.80", 0.0, 10.0, 83.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert all(
+        "subordinate_detail_continuation" in row.diagnostics
+        for row in (regions[0].rows[1], regions[0].rows[3])
+    )
+    assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
+def test_sparse_wide_table_bridges_single_band_hebrew_note_before_next_row() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=True),
+            _word("הערה USD", 90.0, 100.0, 41.0),
+            *_wide_sparse_data(52.0, include_conversion_date=True),
+            _word("Total", 90.0, 100.0, 72.0),
+            _word("24.80", 0.0, 10.0, 72.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 3
+    assert "subordinate_detail_continuation" in regions[0].rows[1].diagnostics
+    assert "bounded_hebrew_note_detail" in regions[0].rows[1].diagnostics
+
+
 def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() -> None:
     page = _page(
         (

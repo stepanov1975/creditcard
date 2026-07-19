@@ -195,6 +195,7 @@ class DiscoveryDateYearContextSummary(BaseModel):
     year_by_suffix: tuple[tuple[int, int], ...] = ()
     style: str
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    metadata_evidence: tuple[tuple[str, str], ...] = ()
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
 

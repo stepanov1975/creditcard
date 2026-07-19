@@ -304,6 +304,49 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_recovers_money_before_geometrically_adjacent_description_spill() -> (
+    None
+):
+    original_cell = _cell("$3.00MERCHANT", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("$", 55.0, 58.0, 30.0),
+                _word("3.00", 59.0, 70.0, 30.0),
+                _word("MERCHANT", 80.0, 89.0, 30.0),
+            )
+        }
+    )
+    description_cell = _cell("DETAILS", 2, 30.0).model_copy(
+        update={"words": (_word("DETAILS", 91.0, 110.0, 30.0),)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount == Decimal("3.00")
+    assert transaction.original_currency == "USD"
+    assert transaction.description == "MERCHANT DETAILS"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 @pytest.mark.parametrize(
     ("raw", "amount_word", "currency_word"),
     (
@@ -1158,6 +1201,100 @@ def test_normalize_statement_falls_back_to_positioned_words_for_invalid_glyph_da
     assert transaction.transaction_date == date(2026, 2, 1)
     assert transaction.ambiguities == ()
     assert transaction.evidence[0].raw_text == "01/02/266"
+
+
+def test_normalize_statement_recovers_date_from_overlapping_boundary_cell() -> None:
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 100.0, 40.0),
+        text="MERCHANT01/02/2026",
+        words=(_word("MERCHANT01/02/2026", 0.0, 100.0, 30.0),),
+        confidence=1.0,
+    )
+    damaged_date = Cell(
+        page_number=1,
+        bbox=(60.0, 30.0, 100.0, 40.0),
+        text="0 0/1 2/2 0 2 6",
+        confidence=1.0,
+    )
+    amount = Cell(
+        page_number=1,
+        bbox=(120.0, 30.0, 160.0, 40.0),
+        text="4.00",
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(compound, damaged_date, amount),),
+    )
+    columns = tuple(
+        column.model_copy(update={"bbox": bbox})
+        for column, bbox in zip(
+            region.table_schema.columns,
+            (
+                (0.0, 10.0, 59.0, 200.0),
+                (60.0, 10.0, 100.0, 200.0),
+                (110.0, 10.0, 160.0, 200.0),
+            ),
+            strict=True,
+        )
+    )
+    region = region.model_copy(
+        update={"table_schema": region.table_schema.model_copy(update={"columns": columns})}
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_rejects_date_from_barely_overlapping_boundary_cell() -> None:
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 62.0, 40.0),
+        text="MERCHANT01/02/2026",
+        words=(_word("MERCHANT01/02/2026", 0.0, 62.0, 30.0),),
+        confidence=1.0,
+    )
+    damaged_date = Cell(
+        page_number=1,
+        bbox=(60.0, 30.0, 100.0, 40.0),
+        text="0 0/1 2/2 0 2 6",
+        confidence=1.0,
+    )
+    amount = Cell(
+        page_number=1,
+        bbox=(120.0, 30.0, 160.0, 40.0),
+        text="4.00",
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(compound, damaged_date, amount),),
+    )
+    columns = tuple(
+        column.model_copy(update={"bbox": bbox})
+        for column, bbox in zip(
+            region.table_schema.columns,
+            (
+                (0.0, 10.0, 59.0, 200.0),
+                (60.0, 10.0, 100.0, 200.0),
+                (110.0, 10.0, 160.0, 200.0),
+            ),
+            strict=True,
+        )
+    )
+    region = region.model_copy(
+        update={"table_schema": region.table_schema.model_copy(update={"columns": columns})}
+    )
+
+    transaction = normalize_statement(_discovery(region, "4.00", "ILS")).transactions[0]
+
+    assert transaction.transaction_date is None
+    assert "invalid_transaction_date" in transaction.ambiguities
 
 
 def test_normalize_statement_extracts_unique_full_date_at_alphabetic_cell_boundary() -> None:

@@ -17,7 +17,7 @@ from ccparser.discovery import (
     StatementDiscovery,
     StatementGroupDiscovery,
 )
-from ccparser.evidence.models import BBox
+from ccparser.evidence.models import BBox, Word
 from ccparser.layout.columns import isolated_date_token, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
@@ -359,6 +359,41 @@ def _parse_cell_date(
     return word_candidates[0] if len(word_candidates) == 1 else parsed
 
 
+def _parse_overlapping_boundary_date(
+    row: Row,
+    column: ColumnSpec,
+    assigned_cell: Cell,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[date | None, str | None]:
+    column_width = column.bbox[2] - column.bbox[0]
+    if column_width <= 0:
+        return None, "invalid_date"
+    column_center = _center_x(column.bbox)
+    candidates: dict[date, tuple[date, None]] = {}
+    for cell in row.cells:
+        if cell is assigned_cell:
+            continue
+        overlap = max(0.0, min(cell.bbox[2], column.bbox[2]) - max(cell.bbox[0], column.bbox[0]))
+        if overlap / column_width < 0.8:
+            continue
+        cell_center = _center_x(cell.bbox)
+        if column.bbox[0] <= cell_center <= column.bbox[2]:
+            continue
+        normalized = _normalized_text(cell.text)
+        matches = tuple(_DATE_TOKEN_PATTERN.finditer(normalized))
+        if len(matches) != 1:
+            continue
+        match = matches[0]
+        if cell_center < column_center and match.end() != len(normalized):
+            continue
+        if cell_center > column_center and match.start() != 0:
+            continue
+        parsed_date, diagnostic = _parse_date(match.group(0), year_context)
+        if parsed_date is not None and diagnostic is None:
+            candidates[parsed_date] = (parsed_date, None)
+    return next(iter(candidates.values())) if len(candidates) == 1 else (None, "invalid_date")
+
+
 def _parse_installment(text: str) -> tuple[tuple[int, int] | None, str | None]:
     match = _INSTALLMENT_PATTERN.fullmatch(_normalized_text(text))
     if match is None:
@@ -580,6 +615,71 @@ def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, 
     return _normalized_text(" ".join(cell.text for cell in cells)), diagnostics
 
 
+def _word_height(word: Word) -> float:
+    return max(0.0, word.bbox[3] - word.bbox[1])
+
+
+def _original_amount_with_description_spill(
+    row: Row,
+    region: TableRegion,
+    original_cell: Cell,
+    currency_hint: str | None,
+) -> tuple[AmountParseResult, str, bool] | None:
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
+    if len(description_columns) != 1 or len(original_columns) != 1:
+        return None
+    description_cells = _cells_for_column(row, description_columns[0])
+    if len(description_cells) != 1 or not original_cell.words or not description_cells[0].words:
+        return None
+    words = tuple(sorted(original_cell.words, key=lambda word: word.bbox[0]))
+    description_words = tuple(sorted(description_cells[0].words, key=lambda word: word.bbox[0]))
+    if any(word.source != "digital" for word in (*words, *description_words)):
+        return None
+    description_on_right = _center_x(description_columns[0].bbox) > _center_x(
+        original_columns[0].bbox
+    )
+    candidates: list[tuple[AmountParseResult, str, bool]] = []
+    for split in range(1, len(words)):
+        amount_words, residual_words = (
+            (words[:split], words[split:])
+            if description_on_right
+            else (words[split:], words[:split])
+        )
+        amount_text = " ".join(word.text for word in amount_words)
+        parsed = parse_amount(amount_text, currency_hint=currency_hint)
+        residual_text = _normalized_text(" ".join(word.text for word in residual_words))
+        if (
+            parsed.amount is None
+            or parsed.currency is None
+            or not any(char.isalpha() for char in residual_text)
+            or is_money_shaped(residual_text)
+            or is_currency_shaped(residual_text)
+            or _DATE_PATTERN.fullmatch(residual_text) is not None
+            or _INSTALLMENT_PATTERN.fullmatch(residual_text) is not None
+        ):
+            continue
+        if description_on_right:
+            residual_edge = max(word.bbox[2] for word in residual_words)
+            description_edge = min(word.bbox[0] for word in description_words)
+            gap = description_edge - residual_edge
+        else:
+            residual_edge = min(word.bbox[0] for word in residual_words)
+            description_edge = max(word.bbox[2] for word in description_words)
+            gap = residual_edge - description_edge
+        typical_height = statistics.median(
+            _word_height(word) for word in (*residual_words, *description_words)
+        )
+        if typical_height <= 0 or not 0 <= gap <= typical_height * 0.6:
+            continue
+        candidates.append((parsed, residual_text, description_on_right))
+    unique = {
+        (candidate[0].amount, candidate[0].currency, candidate[1], candidate[2]): candidate
+        for candidate in candidates
+    }
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
 def _dates(
     row: Row,
     region: TableRegion,
@@ -598,6 +698,13 @@ def _dates(
                 diagnostics.append("missing_date_cell")
             continue
         parsed_date, date_diagnostic = _parse_cell_date(cells[0], year_context)
+        if date_diagnostic == "invalid_date":
+            parsed_date, date_diagnostic = _parse_overlapping_boundary_date(
+                row,
+                column,
+                cells[0],
+                year_context,
+            )
         parsed.append(
             (
                 _header_kind(column) or structural_kinds.get(column.index),
@@ -639,6 +746,13 @@ def _dates(
             parsed_conversion_date, conversion_diagnostic = _parse_cell_date(
                 conversion_cells[0], year_context
             )
+            if conversion_diagnostic == "invalid_date":
+                parsed_conversion_date, conversion_diagnostic = _parse_overlapping_boundary_date(
+                    row,
+                    conversion_columns[0],
+                    conversion_cells[0],
+                    year_context,
+                )
             if conversion_diagnostic is None:
                 conversion_date = parsed_conversion_date
     return transaction_date, posting_date, conversion_date, diagnostics
@@ -795,6 +909,22 @@ def _normalize_row(
                 original_cells[0].text,
                 currency_hint=original_currency_hint,
             )
+            spill = None
+            if original.amount is None or original.currency is None:
+                spill = _original_amount_with_description_spill(
+                    row,
+                    region,
+                    original_cells[0],
+                    original_currency_hint,
+                )
+                if spill is not None:
+                    original, spill_text, description_on_right = spill
+                    if description is None:
+                        description = spill_text
+                    elif description_on_right:
+                        description = _normalized_text(f"{spill_text} {description}")
+                    else:
+                        description = _normalized_text(f"{description} {spill_text}")
             if original.amount is None or original.currency is None:
                 diagnostics.extend(
                     f"original_amount:{diagnostic}" for diagnostic in original.diagnostics

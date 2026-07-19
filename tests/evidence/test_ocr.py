@@ -130,10 +130,7 @@ def test_ocr_constructor_has_no_command_override() -> None:
     constructor = inspect.signature(TesseractOcr)
 
     assert "command" not in constructor.parameters
-    assert (
-        getattr(ocr_module, "OCR_PIPELINE_VERSION", None)
-        == "tesseract-tsv-fused-numeric-v2"
-    )
+    assert getattr(ocr_module, "OCR_PIPELINE_VERSION", None) == "tesseract-tsv-fused-numeric-v2"
 
 
 @pytest.mark.parametrize(

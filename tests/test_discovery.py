@@ -716,6 +716,29 @@ def test_totals_in_explicitly_percentage_denominated_rate_ledger_are_not_candida
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
+def test_total_in_explicit_fee_tax_summary_is_not_a_statement_total() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("סך העמלות: ₪1.00", 0.0, 38.0, 120.0),
+            _word('מע"מ: 0%', 42.0, 72.0, 120.0),
+            _word("₪0.00", 78.0, 100.0, 120.0),
+            _word('סך הכל כולל מע"מ: ₪1.00', 105.0, 158.0, 120.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ()
+    assert result.rejected_total_candidates == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
 def test_rate_header_without_two_percentage_fields_does_not_exempt_later_total() -> None:
     page = _page(
         1,
@@ -1123,6 +1146,62 @@ def test_discover_statement_requires_a_matching_short_date_style_for_year_contex
     assert result.date_year_context is None
 
 
+def test_discover_statement_uses_agreeing_pdf_dates_for_short_date_century() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    document = _document(
+        _page(
+            1,
+            (
+                *words,
+                _word("Total", 50.0, 95.0, 80.0),
+                _word("₪30.00", 118.0, 155.0, 80.0),
+            ),
+        )
+    ).model_copy(
+        update={
+            "metadata": (
+                ("creationDate", "D:20260203120000+02'00'"),
+                ("modDate", "D:20260204120000+02'00'"),
+            )
+        }
+    )
+
+    result = discover_statement(document)
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+    assert result.date_year_context.year_by_suffix == ((26, 2026),)
+    assert result.date_year_context.metadata_evidence == document.metadata
+    assert result.date_year_context.evidence
+
+
+def test_discover_statement_rejects_disagreeing_pdf_date_years() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    document = _document(
+        _page(
+            1,
+            (
+                *words,
+                _word("Total", 50.0, 95.0, 80.0),
+                _word("₪30.00", 118.0, 155.0, 80.0),
+            ),
+        )
+    ).model_copy(
+        update={
+            "metadata": (
+                ("creationDate", "D:19260203120000+02'00'"),
+                ("modDate", "D:20260204120000+02'00'"),
+            )
+        }
+    )
+
+    assert discover_statement(document).date_year_context is None
+
+
 def test_discover_statement_preserves_year_first_dash_context_for_matching_style() -> None:
     page = _page(
         1,
@@ -1366,6 +1445,69 @@ def test_discover_statement_bridges_adjacent_suffix_at_december_january_boundary
     assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
         "Cycle closes 03/01/2026",
     )
+
+
+def test_discover_statement_uses_full_date_anchor_with_a_different_separator() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Cycle closes 03.02.2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Cycle closes 03.02.2026",
+    )
+
+
+def test_discover_statement_uses_explicit_year_month_anchor_across_new_year() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("31/12/25", 0.0, 28.0, 40.0)
+    words[6] = _word("01/01/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Cycle 2025/12", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year_by_suffix == ((25, 2025), (26, 2026))
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == ("Cycle 2025/12",)
+
+
+def test_discover_statement_rejects_year_month_anchors_in_two_centuries() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Archive 1925/02", 0.0, 70.0, 2.0),
+            _word("Cycle 2025/02", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    assert discover_statement(_document(page)).date_year_context is None
 
 
 def test_discover_statement_rejects_incomplete_table_suffix_year_mapping() -> None:
