@@ -950,6 +950,39 @@ def test_unclaimed_detected_table_region_is_always_reconciliation_fatal() -> Non
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 
+@pytest.mark.parametrize(
+    "heading",
+    (
+        "Future billing transaction details",
+        "פירוט עסקות לחיוב עתידי",
+    ),
+)
+def test_explicit_future_billing_table_is_outside_current_cycle_scope(heading: str) -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word(heading, 20.0, 105.0, 105.0),
+            *_table(120.0, "₪", "5.00", "7.00"),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+    normalized = normalize_statement(result)
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert len(result.table_regions) == 1
+    assert result.diagnostics == ()
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert tuple(transaction.billed_amount for transaction in normalized.transactions) == (
+        10,
+        20,
+    )
+
+
 def test_rejected_total_marker_remains_fatal_when_a_table_is_unclaimed() -> None:
     page = _page(
         1,

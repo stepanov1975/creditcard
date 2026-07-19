@@ -190,6 +190,17 @@ _CONTINUATION_HEADING_MARKERS = frozenset(
         "המשך פירוט עסקות",
     }
 )
+_FUTURE_BILLING_HEADING_MARKERS = frozenset(
+    {
+        "future billing transaction details",
+        "future billing transactions",
+        "future charges",
+        "transactions for future billing",
+        "פירוט עסקאות לחיוב עתידי",
+        "פירוט עסקות לחיוב עתידי",
+        "חיובים עתידיים",
+    }
+)
 _POINTS_UNIT_MARKERS = frozenset(
     {
         "loyalty points",
@@ -364,6 +375,26 @@ def _positive_zero_activity_evidence(rows: Sequence[Row]) -> Cell | None:
             if _contains_phrase(cell.text, _NO_ACTIVITY_MARKERS)
         ),
         None,
+    )
+
+
+def _is_future_billing_region(region: TableRegion, rows: Sequence[Row]) -> bool:
+    preceding = tuple(
+        row
+        for row in rows
+        if row.page_number == region.page_number and row.bbox[3] <= region.header.bbox[1]
+    )
+    if not preceding:
+        return False
+    heading = max(preceding, key=lambda row: row.bbox[3])
+    heading_height = max(0.0, heading.bbox[3] - heading.bbox[1])
+    gap = region.header.bbox[1] - heading.bbox[3]
+    return (
+        heading_height > 0
+        and gap <= heading_height * 2
+        and any(
+            _contains_phrase(cell.text, _FUTURE_BILLING_HEADING_MARKERS) for cell in heading.cells
+        )
     )
 
 
@@ -1552,6 +1583,9 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             ),
             key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
         )
+    )
+    regions = tuple(
+        region for region in regions if not _is_future_billing_region(region, page_rows)
     )
     total_marker_rows = tuple(
         row
