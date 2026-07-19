@@ -362,6 +362,89 @@ def test_normalize_statement_recovers_money_before_geometrically_adjacent_descri
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_recovers_money_before_description_band_spill() -> None:
+    original_cell = _cell("$3.00MERCHANT", 1, 30.0).model_copy(
+        update={
+            "bbox": (50.0, 30.0, 108.0, 40.0),
+            "words": (
+                _word("$", 55.0, 58.0, 30.0),
+                _word("3.00", 59.0, 70.0, 30.0),
+                _word("MERCHANT", 85.0, 108.0, 30.0),
+            ),
+        }
+    )
+    description_cell = _cell("DETAILS", 2, 30.0).model_copy(
+        update={"words": (_word("DETAILS", 130.0, 138.0, 30.0),)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount == Decimal("3.00")
+    assert transaction.original_currency == "USD"
+    assert transaction.description == "MERCHANT DETAILS"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_recovers_money_before_exact_distant_description_duplicate() -> None:
+    original_cell = _cell("$3.00MERCHANT", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("$", 55.0, 58.0, 30.0),
+                _word("3.00", 59.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0),
+            )
+        }
+    )
+    description_cell = _cell("MERCHANT", 2, 30.0).model_copy(
+        update={"words": (_word("MERCHANT", 120.0, 138.0, 30.0),)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount == Decimal("3.00")
+    assert transaction.original_currency == "USD"
+    assert transaction.description == "MERCHANT"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 @pytest.mark.parametrize(
     ("raw", "amount_word", "currency_word"),
     (

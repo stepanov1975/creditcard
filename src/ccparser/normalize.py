@@ -103,6 +103,7 @@ _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
 }
 _INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
 _LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
+_MIN_DESCRIPTION_SPILL_OVERLAP = 0.2
 
 
 def _normalized_text(text: str) -> str:
@@ -742,7 +743,7 @@ def _original_amount_with_description_spill(
     region: TableRegion,
     original_cell: Cell,
     currency_hint: str | None,
-) -> tuple[AmountParseResult, str, bool] | None:
+) -> tuple[AmountParseResult, str, bool, bool] | None:
     description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
     original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
     if len(description_columns) != 1 or len(original_columns) != 1:
@@ -757,7 +758,7 @@ def _original_amount_with_description_spill(
     description_on_right = _center_x(description_columns[0].bbox) > _center_x(
         original_columns[0].bbox
     )
-    candidates: list[tuple[AmountParseResult, str, bool]] = []
+    candidates: list[tuple[AmountParseResult, str, bool, bool]] = []
     for split in range(1, len(words)):
         amount_words, residual_words = (
             (words[:split], words[split:])
@@ -788,11 +789,63 @@ def _original_amount_with_description_spill(
         typical_height = statistics.median(
             _word_height(word) for word in (*residual_words, *description_words)
         )
-        if typical_height <= 0 or not 0 <= gap <= typical_height * 0.6:
+        residual_left = min(word.bbox[0] for word in residual_words)
+        residual_right = max(word.bbox[2] for word in residual_words)
+        residual_width = residual_right - residual_left
+        description_band = description_columns[0].bbox
+        overlap = max(
+            0.0,
+            min(residual_right, description_band[2]) - max(residual_left, description_band[0]),
+        )
+        spills_into_description_band = (
+            residual_width > 0 and overlap / residual_width >= _MIN_DESCRIPTION_SPILL_OVERLAP
+        )
+        is_geometrically_adjacent = typical_height > 0 and 0 <= gap <= typical_height * 0.6
+        residual_signature = tuple(
+            (
+                unicodedata.normalize("NFC", word.text).casefold(),
+                word.source,
+                word.confidence,
+            )
+            for word in residual_words
+            if any(char.isalnum() for char in word.text)
+        )
+        description_signature = tuple(
+            (
+                unicodedata.normalize("NFC", word.text).casefold(),
+                word.source,
+                word.confidence,
+            )
+            for word in description_words
+            if any(char.isalnum() for char in word.text)
+        )
+        duplicate_is_separate = (
+            residual_right < min(word.bbox[0] for word in description_words)
+            if description_on_right
+            else residual_left > max(word.bbox[2] for word in description_words)
+        )
+        has_exact_distant_duplicate = (
+            bool(residual_signature)
+            and residual_signature == description_signature
+            and duplicate_is_separate
+        )
+        if (
+            not is_geometrically_adjacent
+            and not spills_into_description_band
+            and not has_exact_distant_duplicate
+        ):
             continue
-        candidates.append((parsed, residual_text, description_on_right))
+        candidates.append(
+            (parsed, residual_text, description_on_right, has_exact_distant_duplicate)
+        )
     unique = {
-        (candidate[0].amount, candidate[0].currency, candidate[1], candidate[2]): candidate
+        (
+            candidate[0].amount,
+            candidate[0].currency,
+            candidate[1],
+            candidate[2],
+            candidate[3],
+        ): candidate
         for candidate in candidates
     }
     return next(iter(unique.values())) if len(unique) == 1 else None
@@ -1052,13 +1105,14 @@ def _normalize_row(
                     original_currency_hint,
                 )
                 if spill is not None:
-                    original, spill_text, description_on_right = spill
-                    if description is None:
-                        description = spill_text
-                    elif description_on_right:
-                        description = _normalized_text(f"{spill_text} {description}")
-                    else:
-                        description = _normalized_text(f"{description} {spill_text}")
+                    original, spill_text, description_on_right, already_in_description = spill
+                    if not already_in_description:
+                        if description is None:
+                            description = spill_text
+                        elif description_on_right:
+                            description = _normalized_text(f"{spill_text} {description}")
+                        else:
+                            description = _normalized_text(f"{description} {spill_text}")
             if original.amount is None or original.currency is None:
                 diagnostics.extend(
                     f"original_amount:{diagnostic}" for diagnostic in original.diagnostics
