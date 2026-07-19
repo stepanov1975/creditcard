@@ -746,18 +746,18 @@ def _inherited_region_after_total(
         if not _row_intersects_horizontal_band(row, header.bbox):
             ignored_outside_band_count += 1
             continue
-        if _is_total_row(row):
-            if _page_row_key(row) in proven_total_overlay_keys:
-                continue
-            stop_reason = "stopped_at_total"
-            stop_index = index
-            break
         if _structural_gap(previous, row, (header, *accepted)):
             stop_reason = "stopped_at_structural_gap"
             stop_index = index
             break
         if _literal_header_role_count(row) >= 2:
             stop_reason = "stopped_at_new_header"
+            stop_index = index
+            break
+        if _is_total_row(row):
+            if _page_row_key(row) in proven_total_overlay_keys:
+                continue
+            stop_reason = "stopped_at_total"
             stop_index = index
             break
         projected = _project_row_to_header_bands(page_evidence, row, header)
@@ -808,7 +808,7 @@ def _inherited_region_after_total(
     if not (strong_single_row or repeated_rows_with_total or continued_to_page_end):
         return (
             None,
-            stop_index if stop_reason == "stopped_at_total" else total_index + 1,
+            stop_index if stop_reason == "stopped_at_total" else total_index,
         )
 
     alignments = tuple(_row_alignment(row, schema) for row in regular_rows)
