@@ -151,6 +151,17 @@ _TOTAL_MARKERS = frozenset(
         "סכוםלחיוב",
     }
 )
+_POINTS_UNIT_MARKERS = frozenset(
+    {
+        "loyalty points",
+        "points",
+        "reward points",
+        "rewards points",
+        "נקודה",
+        "נקודות",
+    }
+)
+_COUNT_VALUE_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _FORM_TITLES = frozenset(
     {
         "application form",
@@ -292,6 +303,118 @@ def _table_currencies(region: TableRegion) -> tuple[str, ...]:
 
 def _reading_key_bbox(page_number: int, bbox: BBox) -> tuple[int, float, float]:
     return (page_number, bbox[1], bbox[0])
+
+
+def _center_x(bbox: BBox) -> float:
+    return (bbox[0] + bbox[2]) / 2
+
+
+def _row_height(row: Row) -> float:
+    return max(0.0, row.bbox[3] - row.bbox[1])
+
+
+def _row_alphanumeric_inventory(row: Row) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            char
+            for cell in row.cells
+            for char in unicodedata.normalize("NFC", cell.text).casefold()
+            if char.isalnum()
+        )
+    )
+
+
+def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            marker
+            for marker in _TOTAL_MARKERS
+            if any(_contains_phrase(cell.text, (marker,)) for cell in row.cells)
+        )
+    )
+
+
+def _horizontal_containment_fraction(candidate: BBox, reference: BBox) -> float:
+    overlap = max(0.0, min(candidate[2], reference[2]) - max(candidate[0], reference[0]))
+    candidate_width = candidate[2] - candidate[0]
+    return overlap / candidate_width if candidate_width > 0 else 0.0
+
+
+def _is_lossless_total_overlay_artifact(
+    candidate: Row,
+    total_marker_rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+) -> bool:
+    if len(candidate.cells) != 1:
+        return False
+    for reference in total_marker_rows:
+        if reference is candidate or reference.page_number != candidate.page_number:
+            continue
+        if len(reference.cells) < 2 or _row_height(reference) <= 0:
+            continue
+        if _row_height(candidate) > _row_height(reference) * 0.2:
+            continue
+        if _horizontal_containment_fraction(candidate.bbox, reference.bbox) < 0.9:
+            continue
+        if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
+            continue
+        if _row_alphanumeric_inventory(candidate) != _row_alphanumeric_inventory(reference):
+            continue
+        preceding = tuple(
+            region
+            for region in regions
+            if _reading_key_bbox(region.page_number, region.bbox)
+            < _reading_key_bbox(reference.page_number, reference.bbox)
+        )
+        reference_total, _ = _total_from_row(reference, preceding)
+        if reference_total is not None:
+            return True
+    return False
+
+
+def _is_count_value(text: str) -> bool:
+    return _COUNT_VALUE_PATTERN.fullmatch(" ".join(text.split())) is not None
+
+
+def _is_points_ledger_total(candidate: Row, rows: Sequence[Row]) -> bool:
+    if any(currency for cell in candidate.cells for currency in currencies_in_text(cell.text)):
+        return False
+    count_cells = tuple(cell for cell in candidate.cells if _is_count_value(cell.text))
+    if not count_cells:
+        return False
+    candidate_key = _reading_key_bbox(candidate.page_number, candidate.bbox)
+    preceding_headers = tuple(
+        (row, cell)
+        for row in rows
+        if row.page_number == candidate.page_number
+        and _reading_key_bbox(row.page_number, row.bbox) < candidate_key
+        for cell in row.cells
+        if _contains_phrase(cell.text, _POINTS_UNIT_MARKERS)
+        and any(cell.bbox[0] <= _center_x(count.bbox) <= cell.bbox[2] for count in count_cells)
+    )
+    if not preceding_headers:
+        return False
+    header_row, header_cell = max(
+        preceding_headers,
+        key=lambda item: _reading_key_bbox(item[0].page_number, item[0].bbox),
+    )
+    header_key = _reading_key_bbox(header_row.page_number, header_row.bbox)
+    section_rows = tuple(
+        row
+        for row in rows
+        if row.page_number == candidate.page_number
+        and header_key < _reading_key_bbox(row.page_number, row.bbox) < candidate_key
+    )
+    if any(
+        _contains_phrase(cell.text, _TOTAL_MARKERS) for row in section_rows for cell in row.cells
+    ):
+        return False
+    return any(
+        _is_count_value(cell.text)
+        and header_cell.bbox[0] <= _center_x(cell.bbox) <= header_cell.bbox[2]
+        for row in section_rows
+        for cell in row.cells
+    )
 
 
 def _total_from_row(
@@ -589,30 +712,6 @@ def _associate_regions(
     return (), ("ambiguous_group_region_association",)
 
 
-def _rejected_total_is_eligible_for_claimed_region(
-    rejected_row: Row,
-    valid_total_rows: Sequence[Row],
-    regions: Sequence[TableRegion],
-    claimed_regions: Sequence[TableRegion],
-) -> bool:
-    rejected_key = _reading_key_bbox(rejected_row.page_number, rejected_row.bbox)
-    preceding_total_keys = tuple(
-        _reading_key_bbox(row.page_number, row.bbox)
-        for row in valid_total_rows
-        if _reading_key_bbox(row.page_number, row.bbox) < rejected_key
-    )
-    previous_total_key = max(preceding_total_keys, default=None)
-    return any(
-        any(region is claimed for claimed in claimed_regions)
-        and _reading_key_bbox(region.page_number, region.bbox) < rejected_key
-        and (
-            previous_total_key is None
-            or _reading_key_bbox(region.page_number, region.bbox) > previous_total_key
-        )
-        for region in regions
-    )
-
-
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     """Discover statement groups and classify only from positive semantic evidence."""
 
@@ -631,10 +730,16 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
         )
     )
-    total_marker_rows = tuple(
+    observed_total_marker_rows = tuple(
         row
         for row in page_rows
         if any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
+    )
+    total_marker_rows = tuple(
+        row
+        for row in observed_total_marker_rows
+        if not _is_lossless_total_overlay_artifact(row, observed_total_marker_rows, regions)
+        and not _is_points_ledger_total(row, page_rows)
     )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
@@ -692,23 +797,8 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
     date_year_context = _date_year_context(page_rows, regions)
-    claimed_regions = tuple(region for group in groups for region in group.table_regions)
-    has_unclaimed_regions = any(
-        not any(region is claimed for claimed in claimed_regions) for region in regions
-    )
-    valid_total_rows = tuple(row for row, _ in total_candidates)
     diagnostics.extend(
-        diagnostic
-        for rejected_row, candidate in rejected_total_rows
-        if not groups
-        or has_unclaimed_regions
-        or _rejected_total_is_eligible_for_claimed_region(
-            rejected_row,
-            valid_total_rows,
-            regions,
-            claimed_regions,
-        )
-        for diagnostic in candidate.diagnostics
+        diagnostic for _, candidate in rejected_total_rows for diagnostic in candidate.diagnostics
     )
     if groups:
         classification = DocumentClassification.STATEMENT

@@ -270,6 +270,15 @@ def logical_text_for_bbox(page_evidence: PageEvidence, bbox: BBox) -> str:
     """Return logical NFC text for positioned evidence whose centers are in ``bbox``."""
 
     glyphs, words = positioned_evidence_for_bbox(page_evidence, bbox)
+    return logical_text_for_evidence(glyphs, words)
+
+
+def logical_text_for_evidence(
+    glyphs: Sequence[Glyph],
+    words: Sequence[Word],
+) -> str:
+    """Return logical NFC text derived from the exact supplied provenance."""
+
     if glyphs:
         return _text_from_glyphs(glyphs)
     return _text_from_words(words)

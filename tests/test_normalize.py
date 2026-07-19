@@ -340,6 +340,21 @@ def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_ba
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     assert len(result.transactions) == 1
+    transaction = result.transactions[0]
+    assert transaction.description == "Market"
+    assert transaction.category is TransactionCategory.UNKNOWN
+    assert tuple(reference.raw_text for reference in transaction.evidence) == (
+        "01/02/2026",
+        "Market",
+        "10.00",
+        "USD 3.00",
+        "Fee detail",
+        "Conversion note",
+    )
+    assert tuple(reference.raw_text for reference in result.row_results[1].evidence) == (
+        "Fee detail",
+        "Conversion note",
+    )
     assert result.row_results[1].diagnostics == ("merged_subordinate_detail_continuation",)
     assert result.reconciliation.status is Status.RECONCILED
 

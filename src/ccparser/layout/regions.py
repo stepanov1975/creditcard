@@ -19,7 +19,11 @@ from ccparser.layout.columns import (
 )
 from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
-from ccparser.layout.text import logical_text_for_bbox, positioned_evidence_for_bbox
+from ccparser.layout.text import (
+    logical_text_for_bbox,
+    logical_text_for_evidence,
+    positioned_evidence_for_bbox,
+)
 from ccparser.money import is_currency_shaped, is_money_shaped
 
 _TOTAL_MARKERS = frozenset(
@@ -172,7 +176,7 @@ def _split_header_fragment(
     fragment: Cell,
     header_cells: Sequence[Cell],
 ) -> tuple[tuple[int, Cell], ...]:
-    if len(fragment.words) < 2 or len(header_cells) < 2:
+    if (not fragment.words and not fragment.glyphs) or len(header_cells) < 2:
         return ()
 
     def nearest_header_index(bbox: BBox) -> int:
@@ -185,15 +189,17 @@ def _split_header_fragment(
     words_by_header: dict[int, list[Word]] = {}
     for word in fragment.words:
         words_by_header.setdefault(nearest_header_index(word.bbox), []).append(word)
-    if len(words_by_header) < 2:
-        return ()
 
     glyphs_by_header: dict[int, list[Glyph]] = {}
     for glyph in fragment.glyphs:
         glyphs_by_header.setdefault(nearest_header_index(glyph.bbox), []).append(glyph)
+    assigned_indexes = tuple(sorted(set(words_by_header) | set(glyphs_by_header)))
+    if len(assigned_indexes) < 2:
+        return ()
 
     split_fragments: list[tuple[int, Cell]] = []
-    for index, words in words_by_header.items():
+    for index in assigned_indexes:
+        words = words_by_header.get(index, [])
         glyphs = glyphs_by_header.get(index, [])
         evidence_boxes = tuple((*[word.bbox for word in words], *[glyph.bbox for glyph in glyphs]))
         confidence_values = tuple(
@@ -205,7 +211,7 @@ def _split_header_fragment(
                 Cell(
                     page_number=fragment.page_number,
                     bbox=_union_bbox(evidence_boxes),
-                    text=" ".join(word.text for word in words),
+                    text=logical_text_for_evidence(glyphs, words),
                     glyphs=tuple(glyphs),
                     words=tuple(words),
                     confidence=statistics.mean(confidence_values),
@@ -273,7 +279,7 @@ def _split_compound_header_cell(cell: Cell) -> tuple[Cell, Cell] | None:
                 Cell(
                     page_number=cell.page_number,
                     bbox=_union_bbox(evidence_boxes),
-                    text=" ".join(word.text for word in words),
+                    text=logical_text_for_evidence(glyphs, words),
                     glyphs=glyphs,
                     words=words,
                     confidence=statistics.mean(confidence_values),

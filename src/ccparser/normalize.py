@@ -422,13 +422,20 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
 
 
 def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, list[str]]:
-    cells = tuple(cell for row in rows for cell in _role_cells(row, region, ColumnRole.DESCRIPTION))
+    description_rows = tuple(
+        row for row in rows if "subordinate_detail_continuation" not in row.diagnostics
+    )
+    cells = tuple(
+        cell
+        for row in description_rows
+        for cell in _role_cells(row, region, ColumnRole.DESCRIPTION)
+    )
     diagnostics: list[str] = []
     if not cells:
         if _role_columns(region, ColumnRole.DESCRIPTION):
             diagnostics.append("missing_description_cell")
         return None, diagnostics
-    if len(cells) > len(rows):
+    if len(cells) > len(description_rows):
         diagnostics.append("multiple_description_cells")
     return _normalized_text(" ".join(cell.text for cell in cells)), diagnostics
 

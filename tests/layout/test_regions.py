@@ -5,7 +5,13 @@ import pytest
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import Cell, ColumnRole, Row
-from ccparser.layout.regions import _merge_header_rows, _merged_header_bands, detect_table_regions
+from ccparser.layout.regions import (
+    _merge_header_rows,
+    _merged_header_bands,
+    _split_compound_header_cell,
+    _split_header_fragment,
+    detect_table_regions,
+)
 
 
 def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) -> Word:
@@ -55,6 +61,18 @@ def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
             cursor -= 3.0
         cursor -= 6.0
     return tuple(glyphs)
+
+
+def _assert_lossless_split_provenance(
+    source: Cell,
+    split_cells: tuple[Cell, ...],
+) -> None:
+    output_words = tuple(word for cell in split_cells for word in cell.words)
+    output_glyphs = tuple(glyph for cell in split_cells for glyph in cell.glyphs)
+    assert len(output_words) == len(source.words)
+    assert len(output_glyphs) == len(source.glyphs)
+    assert all(output_words.count(word) == 1 for word in source.words)
+    assert all(output_glyphs.count(glyph) == 1 for glyph in source.glyphs)
 
 
 def _header(y: float) -> tuple[Word, ...]:
@@ -494,6 +512,37 @@ def test_merge_header_rows_splits_compound_fragment_evidence_between_bands() -> 
     assert all("split_header_fragment" in cell.diagnostics for cell in merged.cells)
 
 
+def test_split_header_fragment_preserves_glyph_corrected_rtl_text_and_all_provenance() -> None:
+    header_cells = (
+        Cell(page_number=1, bbox=(0.0, 10.0, 55.0, 20.0), text="Left", confidence=1.0),
+        Cell(page_number=1, bbox=(65.0, 10.0, 120.0, 20.0), text="Right", confidence=1.0),
+    )
+    words = (
+        _word("בויח", 5.0, 30.0, 21.0),
+        _word("הלמע", 90.0, 115.0, 21.0),
+    )
+    glyphs = (
+        *_rtl_glyphs("חיוב", 28.0, 21.0),
+        *_rtl_glyphs("סכום", 50.0, 21.0),
+        *_rtl_glyphs("עמלה", 112.0, 21.0),
+    )
+    fragment = Cell(
+        page_number=1,
+        bbox=(5.0, 21.0, 115.0, 31.0),
+        text="בויח הלמע",
+        glyphs=glyphs,
+        words=words,
+        confidence=1.0,
+    )
+
+    indexed_splits = _split_header_fragment(fragment, header_cells)
+    split_cells = tuple(cell for _, cell in indexed_splits)
+
+    assert tuple(index for index, _ in indexed_splits) == (0, 1)
+    assert tuple(cell.text for cell in split_cells) == ("סכום חיוב", "עמלה")
+    _assert_lossless_split_provenance(fragment, split_cells)
+
+
 def test_merged_header_bands_splits_two_strong_amount_phrases_in_one_base_cell() -> None:
     words = (
         _word("Amount", 0.0, 16.0, 10.0),
@@ -548,6 +597,45 @@ def test_merged_header_bands_splits_two_strong_amount_phrases_in_one_base_cell()
         ColumnRole.AMOUNT,
         ColumnRole.AUXILIARY_AMOUNT,
     )
+
+
+def test_split_compound_header_preserves_glyph_corrected_rtl_text_and_all_provenance() -> None:
+    words = (
+        _word("הלמע", 5.0, 19.0, 10.0),
+        _word("םוכס", 25.0, 39.0, 10.0),
+        _word("בויחל", 54.0, 71.0, 10.0),
+        _word("םוכס", 80.0, 93.0, 10.0),
+    )
+    extra_glyph = Glyph(
+        char="*",
+        bbox=(-12.0, 10.0, -10.0, 20.0),
+        origin=(-10.0, 19.0),
+        font="SyntheticHebrew",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    glyphs = (
+        extra_glyph,
+        *_rtl_glyphs("עמלה", 18.0, 10.0),
+        *_rtl_glyphs("סכום", 38.0, 10.0),
+        *_rtl_glyphs("לחיוב", 70.0, 10.0),
+        *_rtl_glyphs("סכום", 92.0, 10.0),
+    )
+    compound = Cell(
+        page_number=1,
+        bbox=(-12.0, 10.0, 93.0, 20.0),
+        text="הלמע םוכס בויחל םוכס",
+        glyphs=glyphs,
+        words=words,
+        confidence=1.0,
+    )
+
+    split = _split_compound_header_cell(compound)
+
+    assert split is not None
+    assert tuple(cell.text for cell in split) == ("סכום עמלה *", "סכום לחיוב")
+    _assert_lossless_split_provenance(compound, split)
 
 
 @pytest.mark.parametrize(
