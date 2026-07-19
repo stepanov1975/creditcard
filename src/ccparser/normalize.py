@@ -305,6 +305,22 @@ def _parse_date(
         return None, "invalid_date"
 
 
+def _parse_cell_date(
+    cell: Cell,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[date | None, str | None]:
+    parsed = _parse_date(cell.text, year_context)
+    if parsed[1] != "invalid_date":
+        return parsed
+    word_candidates = tuple(
+        candidate
+        for word in cell.words
+        if (candidate := _parse_date(word.text, year_context))[0] is not None
+        and candidate[1] is None
+    )
+    return word_candidates[0] if len(word_candidates) == 1 else parsed
+
+
 def _parse_installment(text: str) -> tuple[tuple[int, int] | None, str | None]:
     match = _INSTALLMENT_PATTERN.fullmatch(_normalized_text(text))
     if match is None:
@@ -356,7 +372,7 @@ def _structural_date_column_kinds(
             if not cells:
                 parsed_values.append(None)
                 continue
-            parsed_date, diagnostic = _parse_date(cells[0].text, year_context)
+            parsed_date, diagnostic = _parse_cell_date(cells[0], year_context)
             if diagnostic is not None or parsed_date is None:
                 return {}
             parsed_values.append(parsed_date)
@@ -512,7 +528,7 @@ def _dates(
             elif structural_kinds.get(column.index) != "posting":
                 diagnostics.append("missing_date_cell")
             continue
-        parsed_date, date_diagnostic = _parse_date(cells[0].text, year_context)
+        parsed_date, date_diagnostic = _parse_cell_date(cells[0], year_context)
         parsed.append(
             (
                 _header_kind(column) or structural_kinds.get(column.index),
@@ -551,8 +567,8 @@ def _dates(
     if len(conversion_columns) == 1:
         conversion_cells = _cells_for_column(row, conversion_columns[0])
         if len(conversion_cells) == 1:
-            parsed_conversion_date, conversion_diagnostic = _parse_date(
-                conversion_cells[0].text, year_context
+            parsed_conversion_date, conversion_diagnostic = _parse_cell_date(
+                conversion_cells[0], year_context
             )
             if conversion_diagnostic is None:
                 conversion_date = parsed_conversion_date

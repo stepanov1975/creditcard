@@ -1107,6 +1107,36 @@ def test_normalize_statement_extracts_one_context_matched_short_date_token_from_
     assert transaction.evidence[0].raw_text == "17 01/02/26"
 
 
+def test_normalize_statement_falls_back_to_positioned_words_for_invalid_glyph_date() -> None:
+    date_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 40.0, 40.0),
+        text="01/02/266",
+        words=(
+            _word("01/02/26", 0.0, 28.0, 30.0),
+            _word("6", 30.0, 34.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                date_cell,
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.ambiguities == ()
+    assert transaction.evidence[0].raw_text == "01/02/266"
+
+
 def test_normalize_statement_extracts_unique_full_date_at_alphabetic_cell_boundary() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
