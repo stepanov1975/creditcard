@@ -390,6 +390,18 @@ def _parse_overlapping_boundary_date(
         cell_center = _center_x(cell.bbox)
         if column.bbox[0] <= cell_center <= column.bbox[2]:
             continue
+        clipped_glyphs = tuple(
+            glyph
+            for glyph in cell.glyphs
+            if column.bbox[0] <= _center_x(glyph.bbox) <= column.bbox[2]
+        )
+        if clipped_glyphs:
+            clipped_date, clipped_diagnostic = _parse_date(
+                logical_text_for_evidence(clipped_glyphs, ()),
+                year_context,
+            )
+            if clipped_date is not None and clipped_diagnostic is None:
+                candidates[clipped_date] = (clipped_date, None)
         normalized = _normalized_text(cell.text)
         matches = tuple(_DATE_TOKEN_PATTERN.finditer(normalized))
         if len(matches) != 1:

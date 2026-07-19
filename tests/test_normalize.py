@@ -1289,6 +1289,49 @@ def test_normalize_statement_recovers_date_from_overlapping_boundary_cell() -> N
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_clips_joined_numeric_merchant_from_date_column() -> None:
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 100.0, 40.0),
+        text="MERCHANT401/02/2026",
+        glyphs=(*_glyphs("MERCHANT4", 0.0, 30.0), *_glyphs("01/02/2026", 60.0, 30.0)),
+        words=(_word("MERCHANT401/02/2026", 0.0, 100.0, 30.0),),
+        confidence=1.0,
+    )
+    damaged_date = Cell(
+        page_number=1,
+        bbox=(60.0, 30.0, 100.0, 40.0),
+        text="0 0/1 2/2 0 2 6",
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(compound, damaged_date, _cell("4.00", 2, 30.0)),),
+    )
+    columns = tuple(
+        column.model_copy(update={"bbox": bbox})
+        for column, bbox in zip(
+            region.table_schema.columns,
+            (
+                (0.0, 10.0, 59.0, 200.0),
+                (60.0, 10.0, 100.0, 200.0),
+                (110.0, 10.0, 160.0, 200.0),
+            ),
+            strict=True,
+        )
+    )
+    region = region.model_copy(
+        update={"table_schema": region.table_schema.model_copy(update={"columns": columns})}
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_rejects_date_from_barely_overlapping_boundary_cell() -> None:
     compound = Cell(
         page_number=1,
