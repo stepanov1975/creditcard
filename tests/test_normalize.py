@@ -1560,6 +1560,78 @@ def test_location_identifier_does_not_override_alignment_conflict() -> None:
     assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
 
 
+def test_repeated_equal_original_values_inherit_proven_billing_currency() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("First", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Second", 1, 50.0),
+                _cell("20.00", 2, 50.0),
+                _cell("20.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert tuple(transaction.original_amount for transaction in result.transactions) == (
+        Decimal("10.00"),
+        Decimal("20.00"),
+    )
+    assert all(transaction.original_currency == "ILS" for transaction in result.transactions)
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_mixed_original_values_do_not_inherit_billing_currency() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Equal", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Different", 1, 50.0),
+                _cell("3.00", 2, 50.0),
+                _cell("20.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert all(transaction.original_amount is None for transaction in result.transactions)
+    assert all(transaction.original_currency is None for transaction in result.transactions)
+    assert all(
+        "original_amount:unknown_currency" in transaction.ambiguities
+        for transaction in result.transactions
+    )
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_distinct_original_and_billing_currency_columns_normalize_foreign_purchase() -> None:
     region = _region(
         (

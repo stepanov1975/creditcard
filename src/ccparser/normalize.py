@@ -32,6 +32,7 @@ from ccparser.models import (
 from ccparser.money import (
     AmountParseResult,
     canonical_currency,
+    currencies_in_text,
     is_currency_shaped,
     is_money_shaped,
     parse_amount,
@@ -150,6 +151,43 @@ def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
         row for row in region.rows if "subordinate_detail_continuation" not in row.diagnostics
     )
     return proven_billed_amount_column(region.table_schema, transaction_rows)
+
+
+def _proven_implicit_original_currency(
+    region: TableRegion,
+    billing_currency: str,
+) -> str | None:
+    original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
+    if (
+        len(original_columns) != 1
+        or _role_columns(region, ColumnRole.ORIGINAL_CURRENCY)
+        or (billed_column := _proven_billed_amount_column(region)) is None
+    ):
+        return None
+    transaction_rows = tuple(
+        row
+        for row in region.rows
+        if "subordinate_detail_continuation" not in row.diagnostics
+        and len(_cells_for_column(row, billed_column)) == 1
+    )
+    if len(transaction_rows) < 2:
+        return None
+    for row in transaction_rows:
+        original_cells = _cells_for_column(row, original_columns[0])
+        billed_cells = _cells_for_column(row, billed_column)
+        if len(original_cells) != 1 or currencies_in_text(original_cells[0].text):
+            return None
+        original = parse_amount(original_cells[0].text, currency_hint=billing_currency)
+        billed = parse_amount(billed_cells[0].text, currency_hint=billing_currency)
+        if (
+            original.amount is None
+            or original.currency is None
+            or billed.amount is None
+            or billed.currency is None
+            or original.amount != billed.amount
+        ):
+            return None
+    return canonical_currency(billing_currency)
 
 
 def _is_relevant_cell(cell: Cell) -> bool:
@@ -706,7 +744,7 @@ def _normalize_row(
                 else "multiple_original_amount_cells"
             )
         else:
-            original_currency_hint: str | None = None
+            original_currency_hint = _proven_implicit_original_currency(region, currency_hint)
             original_currency_columns = _role_columns(region, ColumnRole.ORIGINAL_CURRENCY)
             if len(original_currency_columns) > 1:
                 diagnostics.append("multiple_original_currency_columns")
