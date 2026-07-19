@@ -1169,6 +1169,195 @@ def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity()
     assert result.reconciliation.status is Status.RECONCILED
 
 
+@pytest.mark.parametrize("header", ("City", "Location", "עיר"))
+def test_location_text_and_plain_identifier_are_preserved_as_evidence(
+    header: str,
+) -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("First merchant", 1, 30.0),
+                _cell("London", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Second merchant", 1, 50.0),
+                _cell("1234567890", 2, 50.0),
+                _cell("20.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Description", header, "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "First merchant",
+        "Second merchant",
+    )
+    assert tuple(transaction.evidence[2].raw_text for transaction in result.transactions) == (
+        "London",
+        "1234567890",
+    )
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "99.00",
+        "1,234.56",
+        "-99.00",
+        "₪99.00",
+        "-1234567890",
+        "1,234,567,890",
+        "₪1234567890",
+        "01/02/2026",
+        "1/3",
+    ),
+)
+def test_location_band_rejects_financial_date_and_installment_shapes(value: str) -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell(value, 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "City", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_plain_identifier_in_unknown_header_remains_fatal() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("1234567890", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "Reference", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+
+
+def test_location_identifier_does_not_override_missing_billed_cell() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("1234567890", 2, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "City", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "missing_amount_cell" in result.row_results[0].diagnostics
+
+
+def test_location_identifier_does_not_override_multiple_billed_cells() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("1234567890", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+                _cell("11.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "City", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "multiple_amount_cells" in result.row_results[0].diagnostics
+
+
+def test_location_identifier_does_not_override_alignment_conflict() -> None:
+    unmatched_identifier = Cell(
+        page_number=1,
+        bbox=(195.0, 30.0, 215.0, 40.0),
+        text="1234567890",
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("London", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+                unmatched_identifier,
+            ),
+        ),
+        headers=("Date", "Description", "City", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "unmatched_cell" in result.row_results[0].diagnostics
+    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+
+
 def test_distinct_original_and_billing_currency_columns_normalize_foreign_purchase() -> None:
     region = _region(
         (

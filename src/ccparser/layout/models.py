@@ -20,6 +20,7 @@ class ColumnRole(StrEnum):
     DATE = "date"
     CONVERSION_DATE = "conversion_date"
     DESCRIPTION = "description"
+    LOCATION = "location"
     AMOUNT = "amount"
     AUXILIARY_AMOUNT = "auxiliary_amount"
     EXCHANGE_RATE = "exchange_rate"

@@ -76,6 +76,7 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "תיאור",
         }
     ),
+    ColumnRole.LOCATION: frozenset({"city", "location", "עיר"}),
     ColumnRole.AMOUNT: frozenset(
         {
             "amount",

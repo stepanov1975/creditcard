@@ -100,6 +100,7 @@ _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
     ),
 }
 _INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
+_LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 
 
 def _normalized_text(text: str) -> str:
@@ -173,19 +174,29 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
                 diagnostics.append("unresolved_relevant_cell")
             continue
         column = columns[0]
+        safe_location_identifier = (
+            column.role is ColumnRole.LOCATION
+            and _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
+        )
         has_alternative = any(
             value == "ambiguous_role" or value.startswith("alternative_role:")
             for value in column.diagnostics
         )
         if relevant and column.role is ColumnRole.UNKNOWN:
             diagnostics.append(f"column:{column.index}:role_unknown")
+        if relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier:
+            diagnostics.append(f"column:{column.index}:unexpected_location_value")
         if relevant and has_alternative:
             diagnostics.extend(
                 f"column:{column.index}:{value}"
                 for value in column.diagnostics
                 if value == "ambiguous_role" or value.startswith("alternative_role:")
             )
-        if relevant and (column.role is ColumnRole.UNKNOWN or has_alternative):
+        if relevant and (
+            column.role is ColumnRole.UNKNOWN
+            or has_alternative
+            or (column.role is ColumnRole.LOCATION and not safe_location_identifier)
+        ):
             diagnostics.append("unresolved_relevant_cell")
     return tuple(dict.fromkeys(diagnostics))
 
@@ -199,6 +210,7 @@ def _role_contract_diagnostics(region: TableRegion) -> tuple[str, ...]:
         ColumnRole.DATE: 2,
         ColumnRole.CONVERSION_DATE: 1,
         ColumnRole.DESCRIPTION: 1,
+        ColumnRole.LOCATION: 1,
         ColumnRole.AMOUNT: 1,
         ColumnRole.ORIGINAL_AMOUNT: 1,
         ColumnRole.CURRENCY: 1,
