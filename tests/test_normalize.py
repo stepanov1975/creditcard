@@ -319,6 +319,75 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_merges_description_continuation_across_column_boundary() -> None:
+    merchant = _cell("Merchant", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
+    continuation = _cell("IRELAND", 1, 41.0).model_copy(update={"bbox": (60.0, 41.0, 88.0, 51.0)})
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("$3.00", 1, 30.0),
+                merchant,
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(continuation),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].description == "Merchant IRELAND"
+    assert result.row_results[1].diagnostics == ("merged_description_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("text", "bbox"),
+    (
+        ("IRELAND", (10.0, 41.0, 38.0, 51.0)),
+        ("5.00", (60.0, 41.0, 88.0, 51.0)),
+        ("02/02/2026", (60.0, 41.0, 88.0, 51.0)),
+    ),
+)
+def test_normalize_statement_rejects_unproven_boundary_continuation(
+    text: str,
+    bbox: tuple[float, float, float, float],
+) -> None:
+    merchant = _cell("Merchant", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
+    candidate = _cell(text, 1, 41.0).model_copy(update={"bbox": bbox})
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("$3.00", 1, 30.0),
+                merchant,
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(candidate),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].description == "Merchant"
+    assert result.row_results[1].transaction is None
+    assert "rows_not_emitted:1" in result.diagnostics
+
+
 def test_normalize_statement_recovers_money_before_geometrically_adjacent_description_spill() -> (
     None
 ):

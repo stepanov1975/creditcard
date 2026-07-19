@@ -654,6 +654,55 @@ def _category_sign_contradiction(category: TransactionCategory, kind: Transactio
     return False
 
 
+def _horizontal_coverage(candidate: BBox, container: BBox) -> float:
+    width = candidate[2] - candidate[0]
+    if width <= 0:
+        return 0.0
+    overlap = max(0.0, min(candidate[2], container[2]) - max(candidate[0], container[0]))
+    return overlap / width
+
+
+def _is_boundary_description_continuation(
+    row: Row,
+    previous: Row,
+    region: TableRegion,
+) -> bool:
+    if len(row.cells) != 1 or row.page_number != previous.page_number:
+        return False
+    cell = row.cells[0]
+    text = _normalized_text(cell.text)
+    if (
+        not any(char.isalpha() for char in text)
+        or is_money_shaped(text)
+        or is_currency_shaped(text)
+        or isolated_date_token(text) is not None
+        or _INSTALLMENT_PATTERN.fullmatch(text) is not None
+    ):
+        return False
+    billed_column = _proven_billed_amount_column(region)
+    if billed_column is None:
+        return False
+    billed_cells = _cells_for_column(previous, billed_column)
+    if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
+        return False
+    merchant_cells = tuple(
+        candidate
+        for candidate in previous.cells
+        if any(char.isalpha() for char in candidate.text)
+        and not is_money_shaped(candidate.text)
+        and not is_currency_shaped(candidate.text)
+    )
+    if not any(
+        _horizontal_coverage(cell.bbox, candidate.bbox) >= 0.9 for candidate in merchant_cells
+    ):
+        return False
+    typical_height = statistics.median(
+        _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
+    )
+    gap = max(0.0, row.bbox[1] - previous.bbox[3])
+    return gap <= typical_height * 1.5
+
+
 def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
     if "subordinate_auxiliary_continuation" in row.diagnostics:
         billed_column = _proven_billed_amount_column(region)
@@ -692,6 +741,8 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
         )
         gap = max(0.0, row.bbox[1] - previous.bbox[3])
         return gap <= typical_height * 1.5
+    if _is_boundary_description_continuation(row, previous, region):
+        return True
     description_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
     has_transaction_fields = any(
         _role_cells(row, region, role)
@@ -719,11 +770,20 @@ def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, 
         if "subordinate_detail_continuation" not in row.diagnostics
         and "subordinate_auxiliary_continuation" not in row.diagnostics
     )
-    cells = tuple(
-        cell
-        for row in description_rows
-        for cell in _role_cells(row, region, ColumnRole.DESCRIPTION)
-    )
+    cells: list[Cell] = []
+    for index, row in enumerate(description_rows):
+        row_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
+        if (
+            not row_cells
+            and index > 0
+            and _is_boundary_description_continuation(
+                row,
+                description_rows[index - 1],
+                region,
+            )
+        ):
+            row_cells = row.cells
+        cells.extend(row_cells)
     diagnostics: list[str] = []
     if not cells:
         if _role_columns(region, ColumnRole.DESCRIPTION):
