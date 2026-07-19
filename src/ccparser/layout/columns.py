@@ -8,7 +8,7 @@ import statistics
 import unicodedata
 from calendar import monthrange
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from itertools import pairwise
 
 from ccparser.evidence.models import BBox, VectorRule
@@ -53,6 +53,15 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "תאריך עסקה",
         }
     ),
+    ColumnRole.CONVERSION_DATE: frozenset(
+        {
+            "conversion date",
+            "date of conversion",
+            "exchange date",
+            "תאריך המרה",
+            "תאריך ההמרה",
+        }
+    ),
     ColumnRole.DESCRIPTION: frozenset(
         {
             "description",
@@ -62,6 +71,7 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "בית עסק",
             "פרטי עסקה",
             "שם בית עסק",
+            "שם בית העסק",
             "תיאור",
         }
     ),
@@ -73,6 +83,7 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "charge amount",
             "סכום",
             "סכום חיוב",
+            "סכום החיוב",
             "סכום לחיוב",
         }
     ),
@@ -82,7 +93,16 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "transaction amount",
             "סכום במקור",
             "סכום עסקה",
+            "סכום העסקה",
             "סכום עסקה מקורי",
+        }
+    ),
+    ColumnRole.EXCHANGE_RATE: frozenset(
+        {
+            "conversion rate",
+            "exchange rate",
+            "שער המרה",
+            "שער ההמרה",
         }
     ),
     ColumnRole.CURRENCY: frozenset({"currency", "currency code", "מטבע"}),
@@ -109,7 +129,8 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
 }
 
 _SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
-    frozenset({ColumnRole.AMOUNT, ColumnRole.ORIGINAL_AMOUNT}),
+    frozenset({ColumnRole.DATE, ColumnRole.CONVERSION_DATE}),
+    frozenset({ColumnRole.AMOUNT, ColumnRole.EXCHANGE_RATE, ColumnRole.ORIGINAL_AMOUNT}),
     frozenset(
         {
             ColumnRole.CURRENCY,
@@ -118,7 +139,13 @@ _SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
         }
     ),
 )
-_GENERIC_FAMILY_ROLES = frozenset({ColumnRole.AMOUNT, ColumnRole.CURRENCY})
+_GENERIC_FAMILY_ROLES = frozenset({ColumnRole.AMOUNT, ColumnRole.CURRENCY, ColumnRole.DATE})
+_GENERIC_AMOUNT_HEADER_TERMS = frozenset({"amount", "סכום"})
+_ORIGINAL_AMOUNT_MODIFIERS = frozenset({"original", "מקור", "מקורי"})
+_EXCHANGE_RATE_HEADER_TERMS = tuple(_HEADER_VOCABULARY[ColumnRole.EXCHANGE_RATE])
+_CONVERSION_DATE_HEADER_TERMS = tuple(
+    (*_HEADER_VOCABULARY[ColumnRole.CONVERSION_DATE], "conversion", "exchange", "המרה")
+)
 
 
 def _width(bbox: BBox) -> float:
@@ -316,24 +343,94 @@ def _same_semantic_family(first: ColumnRole, second: ColumnRole) -> bool:
     return any(first in family and second in family for family in _SEMANTIC_FAMILIES)
 
 
+def _is_hebrew_phrase(text: str) -> bool:
+    return any("\u0590" <= char <= "\u05ff" for char in text)
+
+
+def _header_match_score(text: str, term: str) -> float:
+    if text == term:
+        return 1.0
+    if _is_hebrew_phrase(term):
+        compact_text = text.replace(" ", "")
+        compact_term = term.replace(" ", "")
+        if compact_text == compact_term:
+            return 1.0
+        if compact_term in compact_text:
+            return 0.82
+    if _contains_token_phrase(text, term):
+        return 0.82
+    return 0.0
+
+
 def _compatible_profile_alternative(
     selected: ColumnRole,
     alternative: ColumnRole,
     header_scores: dict[ColumnRole, float],
     profile_scores: dict[ColumnRole, float],
 ) -> bool:
-    return (
-        _same_semantic_family(selected, alternative)
-        and header_scores.get(alternative, 0.0) < 0.65
-        and profile_scores.get(alternative, 0.0) >= 0.65
+    return _same_semantic_family(selected, alternative) and (
+        (
+            header_scores.get(selected, 0.0) == 1.0
+            and alternative in _GENERIC_FAMILY_ROLES
+            and header_scores.get(alternative, 0.0) <= 0.82
+        )
+        or (
+            header_scores.get(alternative, 0.0) < 0.65
+            and profile_scores.get(alternative, 0.0) >= 0.65
+        )
     )
+
+
+def _contains_header_concept(text: str, terms: Iterable[str]) -> bool:
+    compact_text = text.replace(" ", "")
+    return any(
+        _contains_token_phrase(text, term) or term.replace(" ", "") in compact_text
+        for term in terms
+    )
+
+
+def _header_evidence_texts(cells: Sequence[Cell]) -> tuple[str, ...]:
+    texts: list[str] = []
+    for cell in cells:
+        logical_words = cell.text.split()
+        texts.append(cell.text)
+        if _is_hebrew_phrase(cell.text):
+            texts.extend(
+                (
+                    cell.text[::-1],
+                    " ".join(word[::-1] for word in logical_words),
+                    " ".join(reversed(logical_words)),
+                )
+            )
+        if cell.words:
+            source_words = tuple(word.text for word in cell.words)
+            source_text = " ".join(source_words)
+            texts.append(source_text)
+            if _is_hebrew_phrase(source_text):
+                texts.append(" ".join(reversed(source_words)))
+    return tuple(dict.fromkeys(text for text in texts if text.strip()))
 
 
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     scores: dict[ColumnRole, float] = {}
     for text in texts:
         normalized = _normalized_header(text)
-        exact_roles = {role for role, terms in _HEADER_VOCABULARY.items() if normalized in terms}
+        composed_roles: set[ColumnRole] = set()
+        if _contains_header_concept(
+            normalized, _GENERIC_AMOUNT_HEADER_TERMS
+        ) and _contains_header_concept(normalized, _ORIGINAL_AMOUNT_MODIFIERS):
+            composed_roles.add(ColumnRole.ORIGINAL_AMOUNT)
+        if _contains_header_concept(normalized, _EXCHANGE_RATE_HEADER_TERMS):
+            composed_roles.add(ColumnRole.EXCHANGE_RATE)
+        if _contains_header_concept(
+            normalized, _HEADER_VOCABULARY[ColumnRole.DATE]
+        ) and _contains_header_concept(normalized, _CONVERSION_DATE_HEADER_TERMS):
+            composed_roles.add(ColumnRole.CONVERSION_DATE)
+        exact_roles = {
+            role
+            for role, terms in _HEADER_VOCABULARY.items()
+            if any(_header_match_score(normalized, term) == 1.0 for term in terms)
+        } | composed_roles
         exact_specific_role = (
             next(iter(exact_roles))
             if len(exact_roles) == 1 and next(iter(exact_roles)) not in _GENERIC_FAMILY_ROLES
@@ -341,16 +438,19 @@ def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
         )
         for role, terms in _HEADER_VOCABULARY.items():
             for term in terms:
-                if normalized == term:
+                match_score = _header_match_score(normalized, term)
+                if match_score == 1.0:
                     scores[role] = max(scores.get(role, 0.0), 1.0)
-                elif _contains_token_phrase(normalized, term):
+                elif match_score:
                     if (
                         exact_specific_role is not None
                         and role in _GENERIC_FAMILY_ROLES
                         and _same_semantic_family(exact_specific_role, role)
                     ):
                         continue
-                    scores[role] = max(scores.get(role, 0.0), 0.82)
+                    scores[role] = max(scores.get(role, 0.0), match_score)
+        for role in composed_roles:
+            scores[role] = 1.0
     return scores
 
 
@@ -461,6 +561,81 @@ def _cells_for_column(cells: Sequence[Cell], column: ColumnSpec) -> tuple[Cell, 
     return tuple(cell for cell in cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2])
 
 
+def _has_specific_billing_header(header_cells: Sequence[Cell], column: ColumnSpec) -> bool:
+    specific_terms = _HEADER_VOCABULARY[ColumnRole.AMOUNT] - _GENERIC_AMOUNT_HEADER_TERMS
+    return any(
+        _header_match_score(_normalized_header(cell.text), term) >= 0.82
+        for cell in _cells_for_column(header_cells, column)
+        for term in specific_terms
+    )
+
+
+def _resolve_contextual_amount_roles(
+    columns: Sequence[ColumnSpec], header_cells: Sequence[Cell]
+) -> tuple[ColumnSpec, ...]:
+    billed_indexes = tuple(
+        column.index
+        for column in columns
+        if column.role is ColumnRole.AMOUNT and _has_specific_billing_header(header_cells, column)
+    )
+    has_original_amount = any(column.role is ColumnRole.ORIGINAL_AMOUNT for column in columns)
+    if len(billed_indexes) != 1 or not has_original_amount:
+        return tuple(columns)
+    billed_index = billed_indexes[0]
+    return tuple(
+        column.model_copy(
+            update={
+                "role": ColumnRole.AUXILIARY_AMOUNT,
+                "diagnostics": tuple(
+                    dict.fromkeys((*column.diagnostics, "role_evidence:table_amount_context"))
+                ),
+            }
+        )
+        if column.role is ColumnRole.AMOUNT and column.index != billed_index
+        else column
+        for column in columns
+    )
+
+
+def _header_anchored_columns(
+    header_cells: Sequence[Cell],
+    sample_cells: Sequence[Cell],
+) -> tuple[ColumnSpec, ...]:
+    ordered_headers = tuple(sorted(header_cells, key=lambda cell: _center_x(cell.bbox)))
+    all_cells = (*header_cells, *sample_cells)
+    table_bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
+    table_width = _width(table_bbox)
+    boundaries = [table_bbox[0]]
+    boundaries.extend(
+        (_center_x(first.bbox) + _center_x(second.bbox)) / 2
+        for first, second in pairwise(ordered_headers)
+    )
+    boundaries.append(table_bbox[2])
+    columns: list[ColumnSpec] = []
+    for index, (header, left, right) in enumerate(
+        zip(ordered_headers, boundaries[:-1], boundaries[1:], strict=True)
+    ):
+        samples = tuple(
+            cell
+            for cell in sample_cells
+            if left <= _center_x(cell.bbox) < right
+            or (index == len(ordered_headers) - 1 and _center_x(cell.bbox) == right)
+        )
+        columns.append(
+            ColumnSpec(
+                index=index,
+                page_number=header.page_number,
+                bbox=(left, table_bbox[1], right, table_bbox[3]),
+                relative_x0=(left - table_bbox[0]) / table_width,
+                relative_x1=(right - table_bbox[0]) / table_width,
+                source_cells=(header, *samples),
+                confidence=1.0,
+                diagnostics=("header_anchor_support",),
+            )
+        )
+    return tuple(columns)
+
+
 def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell]) -> TableSchema:
     """Combine general financial header vocabulary with typed value profiles."""
 
@@ -470,14 +645,13 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
     page_numbers = {cell.page_number for cell in all_cells}
     if len(page_numbers) != 1:
         raise ValueError("semantic inference requires cells from one page")
-    rows = (*_cells_to_rows(header_cells), *_cells_to_rows(sample_cells))
-    bands = infer_column_bands(rows)
+    bands = _header_anchored_columns(header_cells, sample_cells)
     semantic_columns: list[ColumnSpec] = []
     ambiguous_indexes: list[int] = []
     for column in bands:
         headers = _cells_for_column(header_cells, column)
         samples = _cells_for_column(sample_cells, column)
-        header_scores = _header_scores(tuple(cell.text for cell in headers))
+        header_scores = _header_scores(_header_evidence_texts(headers))
         profile_scores = _profile_scores(tuple(cell.text for cell in samples))
         scores = dict(header_scores)
         exact_header_roles = tuple(role for role, score in header_scores.items() if score == 1.0)
@@ -542,6 +716,8 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
                 }
             )
         )
+
+    semantic_columns = list(_resolve_contextual_amount_roles(semantic_columns, header_cells))
 
     bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
     known_fraction = (

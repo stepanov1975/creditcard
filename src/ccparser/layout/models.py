@@ -18,8 +18,11 @@ class ColumnRole(StrEnum):
 
     UNKNOWN = "unknown"
     DATE = "date"
+    CONVERSION_DATE = "conversion_date"
     DESCRIPTION = "description"
     AMOUNT = "amount"
+    AUXILIARY_AMOUNT = "auxiliary_amount"
+    EXCHANGE_RATE = "exchange_rate"
     ORIGINAL_AMOUNT = "original_amount"
     CURRENCY = "currency"
     BILLING_CURRENCY = "billing_currency"

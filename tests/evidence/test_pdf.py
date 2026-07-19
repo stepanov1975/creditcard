@@ -7,7 +7,7 @@ import fitz
 import pytest
 
 from ccparser.evidence.models import Glyph, ImageEvidence, Word
-from ccparser.evidence.pdf import assess_extraction_quality, extract_pdf
+from ccparser.evidence.pdf import _extract_text_blocks, assess_extraction_quality, extract_pdf
 
 
 def _save_digital_pdf(path: Path) -> None:
@@ -210,6 +210,20 @@ def test_extract_pdf_marks_image_dominant_page_without_words_for_ocr(tmp_path: P
     assert page.quality.image_area_ratio == 0.81
     assert page.quality.requires_ocr is True
     assert "image_dominant_without_words" in page.quality.reasons
+
+
+def test_extract_text_blocks_ignores_zero_dimension_image_placeholders() -> None:
+    raw = {
+        "blocks": [
+            {"type": 1, "bbox": (10, 10, 20, 20), "width": 0, "height": 0},
+            {"type": 1, "bbox": (30, 30, 50, 50), "width": 12, "height": 8},
+        ]
+    }
+
+    glyphs, images = _extract_text_blocks(raw, fitz.Matrix(1, 1))
+
+    assert glyphs == ()
+    assert images == (ImageEvidence(bbox=(30.0, 30.0, 50.0, 50.0), width=12, height=8),)
 
 
 class _RecordingOcrProvider:

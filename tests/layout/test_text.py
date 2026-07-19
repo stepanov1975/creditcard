@@ -148,3 +148,18 @@ def test_logical_text_orders_lines_top_to_bottom_and_returns_empty_without_evide
 
     assert logical_text_for_bbox(page, (0.0, 0.0, 80.0, 30.0)) == "Top"
     assert logical_text_for_bbox(page, (80.0, 60.0, 100.0, 90.0)) == ""
+
+
+def test_logical_text_assigns_numeric_glyph_groups_whole_across_a_bbox_boundary() -> None:
+    first = tuple(_glyph(char, 10.0 + index * 5.0) for index, char in enumerate("12.40"))
+    second = tuple(_glyph(char, 42.0 + index * 5.0) for index, char in enumerate("0.00"))
+    page = PageEvidence(
+        page_number=1,
+        width=100.0,
+        height=100.0,
+        glyphs=(*first, *second),
+        quality=_quality(glyph_count=len(first) + len(second), word_count=0),
+    )
+
+    assert logical_text_for_bbox(page, (0.0, 0.0, 46.0, 30.0)) == "12.40"
+    assert logical_text_for_bbox(page, (46.0, 0.0, 80.0, 30.0)) == "0.00"

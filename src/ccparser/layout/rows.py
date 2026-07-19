@@ -10,6 +10,8 @@ from itertools import combinations
 from ccparser.evidence.models import BBox, Word
 from ccparser.layout.models import Cell, Row
 
+MAX_LINE_HEIGHT_RATIO = 2.5
+
 
 def _height(bbox: BBox) -> float:
     return max(0.0, bbox[3] - bbox[1])
@@ -32,6 +34,25 @@ def _vertical_overlap(first: BBox, second: BBox) -> float:
     overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
     smaller_height = min(_height(first), _height(second))
     return overlap / smaller_height if smaller_height else 0.0
+
+
+def _height_compatible(word: Word, line: Sequence[Word]) -> bool:
+    word_height = _height(word.bbox)
+    typical_height = statistics.median(_height(item.bbox) for item in line)
+    smaller_height = min(word_height, typical_height)
+    larger_height = max(word_height, typical_height)
+    return smaller_height > 0 and larger_height / smaller_height <= MAX_LINE_HEIGHT_RATIO
+
+
+def _line_reference_bbox(line: Sequence[Word]) -> BBox:
+    center = statistics.median(_center_y(item.bbox) for item in line)
+    typical_height = statistics.median(_height(item.bbox) for item in line)
+    return (
+        min(item.bbox[0] for item in line),
+        center - typical_height / 2,
+        max(item.bbox[2] for item in line),
+        center + typical_height / 2,
+    )
 
 
 def _intersection_over_union(first: BBox, second: BBox) -> float:
@@ -79,12 +100,14 @@ def _cluster_word_lines(words: Sequence[Word]) -> list[list[Word]]:
         best: list[Word] | None = None
         best_distance = float("inf")
         for line in lines:
-            line_bbox = _union_bbox(tuple(item.bbox for item in line))
+            line_bbox = _line_reference_bbox(line)
             distance = abs(_center_y(word.bbox) - _center_y(line_bbox))
             tolerance = 0.45 * max(_height(word.bbox), _height(line_bbox))
             if (
-                _vertical_overlap(word.bbox, line_bbox) >= 0.3 or distance <= tolerance
-            ) and distance < best_distance:
+                _height_compatible(word, line)
+                and (_vertical_overlap(word.bbox, line_bbox) >= 0.3 or distance <= tolerance)
+                and distance < best_distance
+            ):
                 best = line
                 best_distance = distance
         if best is None:

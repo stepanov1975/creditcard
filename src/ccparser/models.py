@@ -102,6 +102,7 @@ class Transaction(BaseModel):
     ambiguities: tuple[str, ...] = ()
     transaction_date: date | None = None
     posting_date: date | None = None
+    conversion_date: date | None = None
     description: str | None = None
     category: TransactionCategory = TransactionCategory.UNKNOWN
     original_amount: FiniteDecimal | None = None
@@ -183,6 +184,49 @@ class DiscoveryMetadataSummary(BaseModel):
     evidence: EvidenceReference
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
+
+
+class DiscoveryDateYearContextSummary(BaseModel):
+    """Proven short-date suffix mappings and every supporting evidence cell."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    year_by_suffix: tuple[tuple[int, int], ...] = ()
+    style: str
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_year_mapping(self) -> Self:
+        mapping = self.year_by_suffix
+        if not mapping and self.year is not None:
+            mapping = ((self.year % 100, self.year),)
+        if not mapping:
+            raise ValueError("at least one proven suffix-year mapping is required")
+        if tuple(sorted(mapping)) != mapping:
+            raise ValueError("date suffix-year mappings must be sorted")
+        if len({suffix for suffix, _ in mapping}) != len(mapping):
+            raise ValueError("date suffix-year mappings must have unique suffixes")
+        if any(
+            not 0 <= suffix <= 99 or not 1900 <= mapped_year <= 2100 or mapped_year % 100 != suffix
+            for suffix, mapped_year in mapping
+        ):
+            raise ValueError("invalid date suffix-year mapping")
+        if self.year is not None and mapping != ((self.year % 100, self.year),):
+            raise ValueError("single year must agree with its suffix mapping")
+        return self
+
+
+class RejectedTotalCandidateSummary(BaseModel):
+    """A rejected total-like row retained as a nonfatal discovery advisory."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = Field(min_length=1)
 
 
 class DiscoveryGlyphSummary(BaseModel):
@@ -317,6 +361,8 @@ class StatementDiscoverySummary(BaseModel):
 
     classification: str
     metadata: tuple[DiscoveryMetadataSummary, ...] = ()
+    date_year_context: DiscoveryDateYearContextSummary | None = None
+    rejected_total_candidates: tuple[RejectedTotalCandidateSummary, ...] = ()
     groups: tuple[StatementGroupDiscoverySummary, ...] = ()
     table_regions: tuple[TableRegionSummary, ...] = ()
     printed_totals: tuple[PrintedTotalSummary, ...] = ()

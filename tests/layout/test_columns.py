@@ -199,6 +199,29 @@ def test_infer_column_roles_distinguishes_original_and_billed_amount_headers() -
     )
 
 
+def test_infer_column_roles_marks_generic_amount_between_explicit_amount_roles_as_auxiliary() -> (
+    None
+):
+    headers = (
+        _cell("Billed amount", (0.0, 10.0, 30.0, 20.0)),
+        _cell("Amount", (40.0, 10.0, 70.0, 20.0)),
+        _cell("Original amount", (80.0, 10.0, 110.0, 20.0)),
+    )
+    samples = (
+        _cell("25.00", (0.0, 30.0, 30.0, 40.0)),
+        _cell("100.00", (40.0, 30.0, 70.0, 40.0)),
+        _cell("30.00", (80.0, 30.0, 110.0, 40.0)),
+    )
+
+    schema = infer_column_roles(headers, samples)
+
+    assert tuple(column.role.value for column in schema.columns) == (
+        "amount",
+        "auxiliary_amount",
+        "original_amount",
+    )
+
+
 def test_short_slash_value_remains_ambiguous_when_date_and_installment_are_plausible() -> None:
     schema = infer_column_roles(
         (_cell("Reference", (0.0, 10.0, 30.0, 20.0)),),
@@ -272,4 +295,124 @@ def test_currency_headers_distinguish_billing_from_original_transaction_currency
     assert tuple(column.role for column in schema.columns) == (
         ColumnRole.ORIGINAL_CURRENCY,
         ColumnRole.BILLING_CURRENCY,
+    )
+
+
+def test_infer_column_roles_keeps_shifted_samples_in_header_anchored_bands() -> None:
+    headers = (
+        _cell("Date", (0.0, 10.0, 20.0, 20.0)),
+        _cell("Description", (40.0, 10.0, 70.0, 20.0)),
+        _cell("Amount", (90.0, 10.0, 110.0, 20.0)),
+    )
+    samples = (
+        _cell("01/02/2026", (0.0, 30.0, 20.0, 40.0)),
+        _cell("Market", (40.0, 30.0, 70.0, 40.0)),
+        _cell("12.00", (78.0, 30.0, 82.0, 40.0)),
+        _cell("02/02/2026", (0.0, 50.0, 20.0, 60.0)),
+        _cell("Cafe", (40.0, 50.0, 70.0, 60.0)),
+        _cell("18.00", (118.0, 50.0, 122.0, 60.0)),
+    )
+
+    schema = infer_column_roles(headers, samples)
+
+    assert len(schema.columns) == 3
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.AMOUNT,
+    )
+    assert all("header_anchor_support" in column.diagnostics for column in schema.columns)
+
+
+def test_infer_column_roles_recognizes_compact_definite_hebrew_headers() -> None:
+    headers = (
+        _cell("שםביתהעסק", (0.0, 10.0, 30.0, 20.0)),
+        _cell("סכוםהעסקה", (40.0, 10.0, 70.0, 20.0)),
+        _cell("סכוםהחיוב", (80.0, 10.0, 110.0, 20.0)),
+    )
+    samples = (
+        _cell("Market", (0.0, 30.0, 30.0, 40.0)),
+        _cell("USD 5.00", (40.0, 30.0, 70.0, 40.0)),
+        _cell("ILS 18.00", (80.0, 30.0, 110.0, 40.0)),
+    )
+
+    schema = infer_column_roles(headers, samples)
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+
+
+def test_infer_column_roles_composes_original_modifier_with_generic_amount_header() -> None:
+    schema = infer_column_roles(
+        (_cell("סכום מקורי", (0.0, 10.0, 40.0, 20.0)),),
+        (_cell("25.00", (0.0, 30.0, 40.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.ORIGINAL_AMOUNT
+
+
+@pytest.mark.parametrize(
+    "header",
+    ("Exchange rate", "Exchange rate used for billing", "שערההמרה", "שערהמרהלדולר"),
+)
+def test_infer_column_roles_keeps_exchange_rate_numeric_profile_nonfinancial(
+    header: str,
+) -> None:
+    schema = infer_column_roles(
+        (_cell(header, (0.0, 10.0, 40.0, 20.0)),),
+        (
+            _cell("0.00", (0.0, 30.0, 40.0, 40.0)),
+            _cell("3.72", (0.0, 50.0, 40.0, 60.0)),
+        ),
+    )
+
+    assert schema.columns[0].role is ColumnRole.EXCHANGE_RATE
+    assert not any(
+        diagnostic.startswith("alternative_role:") for diagnostic in schema.columns[0].diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    ("logical_text", "word_texts"),
+    (
+        ("הרמהךיראת", ("הרמהךיראת",)),
+        ("ךיראתהרמה", ("המרה", "תאריך")),
+    ),
+)
+def test_infer_column_roles_recovers_compact_reversed_conversion_date_headers(
+    logical_text: str,
+    word_texts: tuple[str, ...],
+) -> None:
+    words = tuple(
+        Word(
+            text=text,
+            bbox=(0.0, 10.0 + index * 6.0, 40.0, 15.0 + index * 6.0),
+            source="digital",
+            confidence=1.0,
+        )
+        for index, text in enumerate(word_texts)
+    )
+    header = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 28.0),
+        text=logical_text,
+        words=words,
+        confidence=1.0,
+    )
+
+    schema = infer_column_roles(
+        (header,),
+        (
+            _cell("01/02/2026", (0.0, 30.0, 40.0, 40.0)),
+            _cell("03/02/2026", (0.0, 50.0, 40.0, 60.0)),
+        ),
+    )
+
+    assert schema.columns[0].role is ColumnRole.CONVERSION_DATE
+    assert "role_evidence:header" in schema.columns[0].diagnostics
+    assert not any(
+        diagnostic.startswith("alternative_role:") for diagnostic in schema.columns[0].diagnostics
     )

@@ -6,6 +6,8 @@ from decimal import Decimal
 import pytest
 
 from ccparser.discovery import (
+    DateTokenStyle,
+    DiscoveredDateYearContext,
     DiscoveredPrintedTotal,
     DocumentClassification,
     StatementDiscovery,
@@ -86,6 +88,9 @@ def _discovery(
     region: TableRegion,
     total: str,
     currency: str,
+    *,
+    year_context: int | None = None,
+    year_context_style: DateTokenStyle = DateTokenStyle.DAY_FIRST_SLASH,
 ) -> StatementDiscovery:
     total_evidence = EvidenceReference(
         page_number=1,
@@ -113,6 +118,22 @@ def _discovery(
         classification=DocumentClassification.STATEMENT,
         groups=(group,),
         table_regions=(region,),
+        date_year_context=(
+            DiscoveredDateYearContext(
+                year=year_context,
+                style=year_context_style,
+                evidence=(
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(0.0, 230.0, 80.0, 240.0),
+                        raw_text=f"Statement date 15/01/{year_context}",
+                    ),
+                ),
+                confidence=1.0,
+            )
+            if year_context is not None
+            else None
+        ),
         confidence=1.0,
         reason_codes=("transaction_table_with_compatible_total",),
     )
@@ -246,6 +267,50 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_merges_proven_multicell_subordinate_detail_rows() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.UNKNOWN,
+        ColumnRole.EXCHANGE_RATE,
+        ColumnRole.AMOUNT,
+    )
+    first_detail = _row(
+        _cell("Fee detail", 1, 41.0),
+        _cell("Exchange rate", 2, 41.0),
+    ).model_copy(update={"diagnostics": ("subordinate_detail_continuation",)})
+    second_detail = _row(
+        _cell("עמלה", 1, 71.0),
+        _cell("שער המרה", 2, 71.0),
+    ).model_copy(update={"diagnostics": ("subordinate_detail_continuation",)})
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Market", 1, 30.0),
+                _cell("3.72", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            first_detail,
+            _row(
+                _cell("02/02/2026", 0, 60.0),
+                _cell("Cafe", 1, 60.0),
+                _cell("3.74", 2, 60.0),
+                _cell("20.00", 3, 60.0),
+            ),
+            second_detail,
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert len(result.transactions) == 2
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert result.row_results[1].diagnostics == ("merged_subordinate_detail_continuation",)
+    assert result.row_results[3].diagnostics == ("merged_subordinate_detail_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 @pytest.mark.parametrize(
     ("description", "expected"),
     (
@@ -326,7 +391,220 @@ def test_normalize_statement_distinguishes_labeled_transaction_and_posting_dates
     transaction = result.transactions[0]
     assert transaction.transaction_date == date(2026, 2, 1)
     assert transaction.posting_date == date(2026, 2, 3)
+    assert transaction.conversion_date is None
     assert transaction.ambiguities == ()
+
+
+def test_normalize_statement_preserves_conversion_date_as_ancillary_evidence() -> None:
+    region = _region(
+        (
+            ColumnRole.CONVERSION_DATE,
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("03/02/26", 0, 30.0),
+                _cell("01/02/26", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("4.00", 3, 30.0),
+            ),
+        ),
+        headers=("תאריךהמרה", "תאריך", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.conversion_date == date(2026, 2, 3)
+    assert transaction.posting_date is None
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_uses_proven_year_for_each_short_date_suffix() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("31/12/25", 0, 30.0),
+                _cell("First", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+            _row(
+                _cell("01/01/26", 0, 50.0),
+                _cell("Second", 1, 50.0),
+                _cell("4.00", 2, 50.0),
+            ),
+        ),
+    )
+    discovery = _discovery(region, "8.00", "ILS").model_copy(
+        update={
+            "date_year_context": DiscoveredDateYearContext(
+                year=None,
+                year_by_suffix=((25, 2025), (26, 2026)),
+                style=DateTokenStyle.DAY_FIRST_SLASH,
+                evidence=(
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(0.0, 230.0, 80.0, 240.0),
+                        raw_text="31/12/2025",
+                    ),
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(80.0, 230.0, 160.0, 240.0),
+                        raw_text="01/01/2026",
+                    ),
+                ),
+                confidence=1.0,
+            )
+        }
+    )
+
+    result = normalize_statement(discovery)
+
+    assert tuple(transaction.transaction_date for transaction in result.transactions) == (
+        date(2025, 12, 31),
+        date(2026, 1, 1),
+    )
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_extracts_one_context_matched_short_date_token_from_compound_cell() -> (
+    None
+):
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("17 01/02/26", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.ambiguities == ()
+    assert transaction.evidence[0].raw_text == "17 01/02/26"
+
+
+def test_normalize_statement_keeps_tied_generic_compound_date_roles_ambiguous() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("17 01/02/26", 0, 30.0),
+                _cell("03/02/26 א", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("4.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date is None
+    assert transaction.posting_date is None
+    assert "unresolved_date_column_roles" in transaction.ambiguities
+
+
+def test_normalize_statement_proves_complete_transaction_and_optional_later_posting_dates() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("03/02/26 א", 0, 30.0),
+                _cell("01/02/26 ב", 1, 30.0),
+                _cell("First", 2, 30.0),
+                _cell("2.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/26 ג", 1, 50.0),
+                _cell("Second", 2, 50.0),
+                _cell("2.00", 3, 50.0),
+            ),
+            _row(
+                _cell("06/02/26 ד", 0, 70.0),
+                _cell("04/02/26 ה", 1, 70.0),
+                _cell("Third", 2, 70.0),
+                _cell("2.00", 3, 70.0),
+            ),
+        ),
+        headers=("Date", "Date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "6.00", "ILS", year_context=2026))
+
+    assert tuple(transaction.transaction_date for transaction in result.transactions) == (
+        date(2026, 2, 1),
+        date(2026, 2, 2),
+        date(2026, 2, 4),
+    )
+    assert tuple(transaction.posting_date for transaction in result.transactions) == (
+        date(2026, 2, 3),
+        None,
+        date(2026, 2, 6),
+    )
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert all(row.transaction is not None for row in result.row_results)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_does_not_infer_generic_date_roles_when_ordering_conflicts() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("03/02/26", 0, 30.0),
+                _cell("01/02/26", 1, 30.0),
+                _cell("First", 2, 30.0),
+                _cell("2.00", 3, 30.0),
+            ),
+            _row(
+                _cell("04/02/26", 0, 50.0),
+                _cell("06/02/26", 1, 50.0),
+                _cell("Second", 2, 50.0),
+                _cell("2.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    assert len(result.transactions) == 2
+    assert all(
+        "unresolved_date_column_roles" in transaction.ambiguities
+        for transaction in result.transactions
+    )
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_normalize_statement_rejects_short_date_when_context_year_suffix_differs() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("17 01/02/25", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date is None
+    assert "transaction_date:date_year_context_mismatch" in transaction.ambiguities
 
 
 def test_normalize_statement_marks_reconciliation_unreconciled_when_a_row_is_not_emitted() -> None:
@@ -382,6 +660,32 @@ def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation(
     assert result.transactions == ()
     assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
     assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("Retail category", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].ambiguities == ()
+    assert len(result.transactions[0].evidence) == 4
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_distinct_original_and_billing_currency_columns_normalize_foreign_purchase() -> None:

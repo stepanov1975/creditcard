@@ -98,6 +98,44 @@ def test_reconcile_uses_exact_decimal_totals_at_the_currency_minor_unit() -> Non
     assert "currency minor unit" in below_minor_unit.groups[0].diagnostics[0]
 
 
+def test_reconcile_preserves_transactions_when_cycle_total_disagrees() -> None:
+    """A source-level mismatch must stay explicit instead of triggering guesses."""
+
+    from ccparser.models import PrintedTotal, Status, Transaction, TransactionKind
+    from ccparser.reconcile import reconcile
+
+    transactions = (
+        Transaction(
+            transaction_id="first-charge",
+            kind=TransactionKind.CHARGE,
+            billed_amount=Decimal("4.00"),
+            billing_currency="ILS",
+            reconciliation_group_ids=("cycle",),
+        ),
+        Transaction(
+            transaction_id="second-charge",
+            kind=TransactionKind.CHARGE,
+            billed_amount=Decimal("6.00"),
+            billing_currency="ILS",
+            reconciliation_group_ids=("cycle",),
+        ),
+    )
+
+    result = reconcile(
+        transactions,
+        (PrintedTotal(group_id="cycle", amount=Decimal("12.00"), currency="ILS"),),
+    )
+
+    assert result.status is Status.UNRECONCILED
+    assert result.transactions == transactions
+    assert len(result.groups) == 1
+    assert result.groups[0].status is Status.UNRECONCILED
+    assert result.groups[0].calculated_total == Decimal("10.00")
+    assert result.groups[0].printed_total == Decimal("12.00")
+    assert result.groups[0].difference == Decimal("-2.00")
+    assert result.groups[0].transaction_ids == ("first-charge", "second-charge")
+
+
 @pytest.mark.parametrize(
     ("group_ids", "membership_count"),
     [

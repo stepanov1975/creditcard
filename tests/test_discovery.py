@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccparser.discovery import DocumentClassification, discover_statement
+from ccparser.discovery import DateTokenStyle, DocumentClassification, discover_statement
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 
 
@@ -125,6 +125,79 @@ def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -
     assert "statement_evidence_incomplete" in result.reason_codes
 
 
+def test_rejected_total_markers_do_not_poison_a_fully_claimed_table() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 45.0, 80.0, 80.0),
+            _word("30.00", 100.0, 125.0, 80.0),
+            _word("31.00", 130.0, 155.0, 80.0),
+            _word("Total amount", 45.0, 95.0, 100.0),
+            _word("30.00", 100.0, 125.0, 100.0),
+            _word("31.00", 130.0, 155.0, 100.0),
+            _word("Total", 50.0, 95.0, 120.0),
+            _word("₪30.00", 118.0, 155.0, 120.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].table_regions == result.table_regions
+    assert "ambiguous_total_value" not in result.diagnostics
+    assert len(result.rejected_total_candidates) == 2
+    assert all(
+        candidate.diagnostics == ("ambiguous_total_value",)
+        for candidate in result.rejected_total_candidates
+    )
+    assert result.rejected_total_candidates[0].evidence[0].raw_text == "Total"
+
+
+def test_rejected_total_marker_remains_fatal_when_a_table_is_unclaimed() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            *_table(120.0, "₪", "5.00", "7.00"),
+            _word("Total", 45.0, 80.0, 180.0),
+            _word("12.00", 100.0, 125.0, 180.0),
+            _word("13.00", 130.0, 155.0, 180.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert len(result.table_regions) == 2
+    assert "ambiguous_total_value" in result.diagnostics
+    assert len(result.rejected_total_candidates) == 1
+
+
+def test_second_valid_total_candidate_still_blocks_a_fully_claimed_table() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Total", 50.0, 95.0, 100.0),
+            _word("₪30.00", 118.0, 155.0, 100.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert "total_without_table" in result.diagnostics
+    assert result.rejected_total_candidates == ()
+
+
 def test_discover_statement_uses_positive_form_evidence_and_not_absence() -> None:
     form = _page(
         1,
@@ -168,6 +241,208 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
     assert "3456" not in public_diagnostics
 
 
+def test_discover_statement_retains_unique_full_date_year_with_exact_provenance() -> None:
+    page = _page(
+        1,
+        (
+            _word("Cycle 03/02/26", 100.0, 155.0, 5.0),
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "01/02/2026",
+        "02/02/2026",
+    )
+
+
+def test_discover_statement_does_not_choose_a_year_when_full_dates_disagree() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[6] = _word("02/02/2025", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Cycle 03/02/26", 100.0, 155.0, 5.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is None
+
+
+def test_discover_statement_ignores_implausible_year_in_date_shaped_identifier() -> None:
+    page = _page(
+        1,
+        (
+            _word("Reference 1234-01-02", 0.0, 45.0, 5.0),
+            _word("Cycle 03/02/26", 100.0, 155.0, 5.0),
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+
+
+def test_discover_statement_requires_a_matching_short_date_style_for_year_context() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is None
+
+
+def test_discover_statement_preserves_year_first_dash_context_for_matching_style() -> None:
+    page = _page(
+        1,
+        (
+            _word("Period 2026-02-01", 0.0, 45.0, 5.0),
+            _word("Cycle 26-02-03", 100.0, 155.0, 5.0),
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+    assert result.date_year_context.style is DateTokenStyle.YEAR_FIRST_DASH
+
+
+def test_discover_statement_matches_stable_table_suffix_to_one_full_year_anchor() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Prior terms 01/01/2025", 0.0, 70.0, 2.0),
+            _word("Cycle closes 03/02/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2026
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Cycle closes 03/02/2026",
+    )
+
+
+def test_discover_statement_rejects_multiple_full_years_matching_table_suffix() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Archive 03/02/1926", 0.0, 70.0, 2.0),
+            _word("Cycle 03/02/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is None
+
+
+def test_discover_statement_preserves_bijective_table_suffix_year_mapping() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Prior 03/02/2025", 0.0, 70.0, 2.0),
+            _word("Cycle 03/02/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year is None
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert result.date_year_context.year_by_suffix == ((25, 2025), (26, 2026))
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Prior 03/02/2025",
+        "Cycle 03/02/2026",
+    )
+
+
+def test_discover_statement_rejects_incomplete_table_suffix_year_mapping() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Cycle 03/02/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is None
+
+
+def test_discover_statement_rejects_table_suffix_without_matching_full_year() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/26", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Prior terms 03/02/2025", 0.0, 70.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is None
+
+
 def test_discover_statement_reconstructs_backwards_hebrew_total_from_glyphs() -> None:
     words = (
         *_table(20.0, "₪", "10.00", "20.00"),
@@ -180,6 +455,47 @@ def test_discover_statement_reconstructs_backwards_hebrew_total_from_glyphs() ->
 
     assert result.classification is DocumentClassification.STATEMENT
     assert result.groups[0].printed_total.label_evidence.raw_text == "סך הכל"
+
+
+def test_discover_statement_recognizes_compact_hebrew_total_label_prefix() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("סה״כלתאריך", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+
+
+def test_discover_statement_infers_numeric_total_currency_from_billed_amount_header() -> None:
+    page = _page(
+        1,
+        (
+            _word("Date", 0.0, 28.0, 20.0),
+            _word("Description", 50.0, 95.0, 20.0),
+            _word("Billed amount (ILS)", 110.0, 155.0, 20.0),
+            _word("01/02/2026", 0.0, 28.0, 40.0),
+            _word("Market", 50.0, 95.0, 40.0),
+            _word("10.00", 118.0, 155.0, 40.0),
+            _word("02/02/2026", 0.0, 28.0, 60.0),
+            _word("Cafe", 50.0, 95.0, 60.0),
+            _word("20.00", 118.0, 155.0, 60.0),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.currency == "ILS"
+    assert result.groups[0].printed_total.amount_text == "30.00"
 
 
 def test_discover_statement_preserves_negative_trailing_sign_total() -> None:
@@ -274,6 +590,32 @@ def test_mixed_currency_table_is_not_compatible_with_billing_total() -> None:
 
 def test_consecutive_pages_with_compatible_schema_form_proven_continuation_chain() -> None:
     first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪42.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)
+
+
+def test_consecutive_page_continuation_accepts_semantic_header_wording_variants() -> None:
+    first_page = _page(
+        1,
+        (
+            _word("Transaction date", 0.0, 28.0, 190.0),
+            _word("Merchant", 50.0, 95.0, 190.0),
+            _word("Billed amount", 118.0, 155.0, 190.0),
+            *_table(190.0, "₪", "10.00", "20.00")[3:],
+        ),
+    )
     second_page = _page(
         2,
         (

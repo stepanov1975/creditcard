@@ -99,7 +99,7 @@ def _extract_text_blocks(
         if block.get("type") == 1:
             width = block.get("width")
             height = block.get("height")
-            if isinstance(width, int) and isinstance(height, int):
+            if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
                 images.append(
                     ImageEvidence(
                         bbox=_transform_bbox(_bbox(block.get("bbox")), rotation_matrix),

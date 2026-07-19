@@ -14,9 +14,12 @@ import pytest
 
 import ccparser.parser as parser_module
 from ccparser.discovery import (
+    DateTokenStyle,
+    DiscoveredDateYearContext,
     DiscoveredField,
     DiscoveredPrintedTotal,
     DocumentClassification,
+    RejectedTotalCandidate,
     StatementDiscovery,
     StatementGroupDiscovery,
 )
@@ -330,6 +333,31 @@ def _structured_discovery(classification: DocumentClassification) -> StatementDi
             confidence=0.95,
             diagnostics=("metadata_diagnostic",),
         ),
+        date_year_context=DiscoveredDateYearContext(
+            year=2026,
+            style=DateTokenStyle.DAY_FIRST_SLASH,
+            evidence=(
+                EvidenceReference(
+                    page_number=1,
+                    bbox=(0.0, 70.0, 90.0, 80.0),
+                    raw_text="Statement date 15/01/2026",
+                ),
+            ),
+            confidence=0.9,
+        ),
+        rejected_total_candidates=(
+            RejectedTotalCandidate(
+                evidence=(
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(0.0, 90.0, 90.0, 100.0),
+                        raw_text="Subtotal candidate",
+                    ),
+                ),
+                confidence=0.7,
+                diagnostics=("ambiguous_total_value",),
+            ),
+        ),
         confidence=0.8,
         reason_codes=("structured_reason",),
         diagnostics=("discovery_diagnostic",),
@@ -363,6 +391,15 @@ def test_parse_statement_preserves_structured_discovery_for_nonparsed_results(
     assert result.discovery.classification == classification.value
     assert result.discovery.metadata[0].value == "Synthetic Issuer"
     assert result.discovery.metadata[0].evidence.raw_text == "Synthetic Issuer"
+    assert result.discovery.date_year_context is not None
+    assert result.discovery.date_year_context.year == 2026
+    assert result.discovery.date_year_context.year_by_suffix == ((26, 2026),)
+    assert result.discovery.date_year_context.style == "day_first_slash"
+    assert result.discovery.date_year_context.evidence[0].raw_text == ("Statement date 15/01/2026")
+    assert len(result.discovery.rejected_total_candidates) == 1
+    assert result.discovery.rejected_total_candidates[0].evidence[0].raw_text == (
+        "Subtotal candidate"
+    )
     table = result.discovery.table_regions[0]
     assert table.header_evidence[0].raw_text == "Amount"
     assert table.column_roles == ("amount",)
@@ -393,6 +430,49 @@ def test_parse_statement_preserves_structured_discovery_for_nonparsed_results(
     )
     assert serialized_schema["header_cells"][0]["words"][0]["source"] == "digital"
     assert serialized_schema["sample_cells"][0]["words"][0]["source"] == "ocr"
+
+
+def test_parse_statement_serializes_rollover_year_context_mapping(tmp_path: Path) -> None:
+    source = tmp_path / "document.pdf"
+    source.write_bytes(b"synthetic")
+    discovery = _structured_discovery(DocumentClassification.AMBIGUOUS).model_copy(
+        update={
+            "date_year_context": DiscoveredDateYearContext(
+                year=None,
+                year_by_suffix=((25, 2025), (26, 2026)),
+                style=DateTokenStyle.DAY_FIRST_SLASH,
+                evidence=(
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(0.0, 70.0, 90.0, 80.0),
+                        raw_text="Cycle start 31/12/2025",
+                    ),
+                    EvidenceReference(
+                        page_number=1,
+                        bbox=(0.0, 80.0, 90.0, 90.0),
+                        raw_text="Cycle end 01/01/2026",
+                    ),
+                ),
+                confidence=0.9,
+            )
+        }
+    )
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: _evidence(path.read_bytes()),
+        discoverer=lambda evidence: discovery,
+        ocr_provider=object(),
+    )
+
+    assert result.discovery is not None
+    assert result.discovery.date_year_context is not None
+    assert result.discovery.date_year_context.year is None
+    assert result.discovery.date_year_context.year_by_suffix == ((25, 2025), (26, 2026))
+    assert tuple(evidence.raw_text for evidence in result.discovery.date_year_context.evidence) == (
+        "Cycle start 31/12/2025",
+        "Cycle end 01/01/2026",
+    )
 
 
 def _two_group_discovery(classification: DocumentClassification) -> StatementDiscovery:

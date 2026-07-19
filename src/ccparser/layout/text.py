@@ -212,6 +212,32 @@ def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
     return tuple(selected)
 
 
+def _positioned_glyph_groups(glyphs: Sequence[Glyph], bbox: BBox) -> tuple[Glyph, ...]:
+    vertically_relevant = tuple(
+        glyph for glyph in glyphs if bbox[1] <= _center_y(glyph.bbox) <= bbox[3]
+    )
+    selected = tuple(
+        glyph
+        for line in _cluster_lines(vertically_relevant)
+        for group in _glyph_groups(line)
+        if _inside_bbox(_union_bbox(tuple(item.bbox for item in group)), bbox)
+        for glyph in group
+    )
+    return tuple(
+        sorted(
+            selected,
+            key=lambda glyph: (
+                glyph.bbox[1],
+                glyph.bbox[0],
+                glyph.origin,
+                glyph.char,
+                glyph.font,
+                glyph.source,
+            ),
+        )
+    )
+
+
 def _text_from_words(words: Sequence[Word]) -> str:
     rendered_lines: list[str] = []
     for line in _cluster_lines(_deduplicated_words(words)):
@@ -228,19 +254,7 @@ def positioned_evidence_for_bbox(
 ) -> tuple[tuple[Glyph, ...], tuple[Word, ...]]:
     """Return deterministic raw provenance whose centers fall inside ``bbox``."""
 
-    glyphs = tuple(
-        sorted(
-            (glyph for glyph in page_evidence.glyphs if _inside_bbox(glyph.bbox, bbox)),
-            key=lambda glyph: (
-                glyph.bbox[1],
-                glyph.bbox[0],
-                glyph.origin,
-                glyph.char,
-                glyph.font,
-                glyph.source,
-            ),
-        )
-    )
+    glyphs = _positioned_glyph_groups(page_evidence.glyphs, bbox)
     words = tuple(
         sorted(
             _deduplicated_words(

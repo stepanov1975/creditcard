@@ -5,13 +5,18 @@ from __future__ import annotations
 import re
 import statistics
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ccparser.discovery import StatementDiscovery, StatementGroupDiscovery
+from ccparser.discovery import (
+    DateTokenStyle,
+    DiscoveredDateYearContext,
+    StatementDiscovery,
+    StatementGroupDiscovery,
+)
 from ccparser.evidence.models import BBox
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
@@ -69,6 +74,26 @@ _CATEGORY_VOCABULARY: tuple[tuple[TransactionCategory, tuple[str, ...]], ...] = 
     (TransactionCategory.PURCHASE, ("purchase", "purchased", "רכישה", "קנייה", "עסקה")),
 )
 _DATE_PATTERN = re.compile(r"^(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})$")
+_SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
+    DateTokenStyle.DAY_FIRST_SLASH: re.compile(
+        r"(?<!\d)(?P<day>\d{1,2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<year>\d{2})(?!\d)"
+    ),
+    DateTokenStyle.DAY_FIRST_DOT: re.compile(
+        r"(?<!\d)(?P<day>\d{1,2})\s*\.\s*(?P<month>\d{1,2})\s*\.\s*(?P<year>\d{2})(?!\d)"
+    ),
+    DateTokenStyle.DAY_FIRST_DASH: re.compile(
+        r"(?<!\d)(?P<day>\d{1,2})\s*-\s*(?P<month>\d{1,2})\s*-\s*(?P<year>\d{2})(?!\d)"
+    ),
+    DateTokenStyle.YEAR_FIRST_SLASH: re.compile(
+        r"(?<!\d)(?P<year>\d{2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<day>\d{1,2})(?!\d)"
+    ),
+    DateTokenStyle.YEAR_FIRST_DOT: re.compile(
+        r"(?<!\d)(?P<year>\d{2})\s*\.\s*(?P<month>\d{1,2})\s*\.\s*(?P<day>\d{1,2})(?!\d)"
+    ),
+    DateTokenStyle.YEAR_FIRST_DASH: re.compile(
+        r"(?<!\d)(?P<year>\d{2})\s*-\s*(?P<month>\d{1,2})\s*-\s*(?P<day>\d{1,2})(?!\d)"
+    ),
+}
 _INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
 
 
@@ -126,13 +151,6 @@ def _is_relevant_cell(cell: Cell) -> bool:
 
 def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
     diagnostics: list[str] = []
-    diagnostics.extend(f"schema:{value}" for value in region.table_schema.diagnostics)
-    for column in region.table_schema.columns:
-        diagnostics.extend(
-            f"column:{column.index}:{value}"
-            for value in column.diagnostics
-            if value == "ambiguous_role" or value.startswith("alternative_role:")
-        )
     for cell in row.cells:
         columns = tuple(
             column
@@ -150,8 +168,14 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
             value == "ambiguous_role" or value.startswith("alternative_role:")
             for value in column.diagnostics
         )
-        if column.role is ColumnRole.UNKNOWN:
+        if relevant and column.role is ColumnRole.UNKNOWN:
             diagnostics.append(f"column:{column.index}:role_unknown")
+        if relevant and has_alternative:
+            diagnostics.extend(
+                f"column:{column.index}:{value}"
+                for value in column.diagnostics
+                if value == "ambiguous_role" or value.startswith("alternative_role:")
+            )
         if relevant and (column.role is ColumnRole.UNKNOWN or has_alternative):
             diagnostics.append("unresolved_relevant_cell")
     return tuple(dict.fromkeys(diagnostics))
@@ -164,6 +188,7 @@ def _role_contract_diagnostics(region: TableRegion) -> tuple[str, ...]:
     diagnostics: list[str] = []
     maximums = {
         ColumnRole.DATE: 2,
+        ColumnRole.CONVERSION_DATE: 1,
         ColumnRole.DESCRIPTION: 1,
         ColumnRole.AMOUNT: 1,
         ColumnRole.ORIGINAL_AMOUNT: 1,
@@ -192,12 +217,38 @@ def _row_text(rows: Sequence[Row]) -> str:
     return _normalized_text(" ".join(cell.text for row in rows for cell in row.cells))
 
 
-def _parse_date(text: str) -> tuple[date | None, str | None]:
+def _parse_date(
+    text: str,
+    year_context: DiscoveredDateYearContext | None = None,
+) -> tuple[date | None, str | None]:
     normalized = _normalized_text(text)
+    if year_context is not None:
+        short_matches = tuple(_SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
+        if len(short_matches) == 1:
+            short_match = short_matches[0]
+            suffix = int(short_match.group("year"))
+            year_mapping = dict(year_context.year_by_suffix)
+            if not year_mapping and year_context.year is not None:
+                year_mapping[year_context.year % 100] = year_context.year
+            resolved_year = year_mapping.get(suffix)
+            if resolved_year is None:
+                return None, "date_year_context_mismatch"
+            try:
+                return date(
+                    resolved_year,
+                    int(short_match.group("month")),
+                    int(short_match.group("day")),
+                ), None
+            except ValueError:
+                return None, "invalid_date"
+        if len(short_matches) > 1:
+            return None, "ambiguous_date_tokens"
     match = _DATE_PATTERN.fullmatch(normalized)
     if match is None:
         if _INSTALLMENT_PATTERN.fullmatch(normalized) is not None:
             return None, "ambiguous_date_or_installment"
+        if year_context is None:
+            return None, "invalid_date"
         return None, "invalid_date"
     first, _, second, third = match.groups()
     if len(first) == 4:
@@ -231,6 +282,74 @@ def _header_kind(column: ColumnSpec) -> str | None:
     return None
 
 
+def _structural_date_column_kinds(
+    region: TableRegion,
+    year_context: DiscoveredDateYearContext | None,
+) -> dict[int, str]:
+    columns = _role_columns(region, ColumnRole.DATE)
+    if (
+        len(columns) != 2
+        or year_context is None
+        or any(_header_kind(column) is not None for column in columns)
+    ):
+        return {}
+    amount_columns = _role_columns(region, ColumnRole.AMOUNT)
+    if len(amount_columns) != 1:
+        return {}
+    transaction_rows = tuple(
+        row
+        for row in region.rows
+        if len(_cells_for_column(row, amount_columns[0])) == 1
+        and is_money_shaped(_cells_for_column(row, amount_columns[0])[0].text)
+    )
+    if len(transaction_rows) < 2:
+        return {}
+    parsed_by_column: list[tuple[date | None, ...]] = []
+    for column in columns:
+        parsed_values: list[date | None] = []
+        for row in transaction_rows:
+            cells = _cells_for_column(row, column)
+            if len(cells) > 1:
+                return {}
+            if not cells:
+                parsed_values.append(None)
+                continue
+            parsed_date, diagnostic = _parse_date(cells[0].text, year_context)
+            if diagnostic is not None or parsed_date is None:
+                return {}
+            parsed_values.append(parsed_date)
+        parsed_by_column.append(tuple(parsed_values))
+    complete_indexes = tuple(
+        index
+        for index, values in enumerate(parsed_by_column)
+        if all(value is not None for value in values)
+    )
+    if len(complete_indexes) != 1:
+        return {}
+    transaction_index = complete_indexes[0]
+    posting_index = 1 - transaction_index
+    posting_values = parsed_by_column[posting_index]
+    if all(value is not None for value in posting_values):
+        return {}
+    paired = tuple(
+        (transaction_value, posting_value)
+        for transaction_value, posting_value in zip(
+            parsed_by_column[transaction_index], posting_values, strict=True
+        )
+        if transaction_value is not None and posting_value is not None
+    )
+    if len(paired) < 2:
+        return {}
+    if not all(transaction <= posting for transaction, posting in paired):
+        return {}
+    if not any(transaction < posting for transaction, posting in paired):
+        return {}
+    return {
+        columns[transaction_index].index: "transaction",
+        columns[posting_index].index: "posting",
+    }
+
+
 def _category(description: str | None, has_installment: bool) -> TransactionCategory:
     if has_installment:
         return TransactionCategory.INSTALLMENT
@@ -255,11 +374,23 @@ def _category_sign_contradiction(category: TransactionCategory, kind: Transactio
 
 
 def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
+    if "subordinate_detail_continuation" in row.diagnostics:
+        billed_cells = _role_cells(previous, region, ColumnRole.AMOUNT)
+        if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
+            return False
+        if _role_cells(row, region, ColumnRole.AMOUNT):
+            return False
+        typical_height = statistics.median(
+            _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
+        )
+        gap = max(0.0, row.bbox[1] - previous.bbox[3])
+        return gap <= typical_height * 1.5
     description_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
     has_transaction_fields = any(
         _role_cells(row, region, role)
         for role in (
             ColumnRole.DATE,
+            ColumnRole.CONVERSION_DATE,
             ColumnRole.AMOUNT,
             ColumnRole.ORIGINAL_AMOUNT,
             ColumnRole.INSTALLMENT,
@@ -286,25 +417,42 @@ def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, 
     return _normalized_text(" ".join(cell.text for cell in cells)), diagnostics
 
 
-def _dates(row: Row, region: TableRegion) -> tuple[date | None, date | None, list[str]]:
+def _dates(
+    row: Row,
+    region: TableRegion,
+    year_context: DiscoveredDateYearContext | None,
+    structural_kinds: Mapping[int, str],
+) -> tuple[date | None, date | None, date | None, list[str]]:
     columns = _role_columns(region, ColumnRole.DATE)
     diagnostics: list[str] = []
     parsed: list[tuple[str | None, date | None, str | None]] = []
     for column in columns:
         cells = _cells_for_column(row, column)
         if len(cells) != 1:
-            diagnostics.append("multiple_date_cells" if cells else "missing_date_cell")
+            if cells:
+                diagnostics.append("multiple_date_cells")
+            elif structural_kinds.get(column.index) != "posting":
+                diagnostics.append("missing_date_cell")
             continue
-        parsed_date, date_diagnostic = _parse_date(cells[0].text)
-        parsed.append((_header_kind(column), parsed_date, date_diagnostic))
+        parsed_date, date_diagnostic = _parse_date(cells[0].text, year_context)
+        parsed.append(
+            (
+                _header_kind(column) or structural_kinds.get(column.index),
+                parsed_date,
+                date_diagnostic,
+            )
+        )
     transaction_date: date | None = None
     posting_date: date | None = None
+    conversion_date: date | None = None
     if len(columns) == 1 and parsed:
         transaction_date = parsed[0][1]
         if parsed[0][2] is not None:
             diagnostics.extend(("invalid_transaction_date", f"transaction_date:{parsed[0][2]}"))
     elif len(columns) > 1:
-        kinds = tuple(kind for kind, _, _ in parsed)
+        kinds = tuple(
+            _header_kind(column) or structural_kinds.get(column.index) for column in columns
+        )
         if kinds.count("transaction") != 1 or kinds.count("posting") != 1:
             diagnostics.append("unresolved_date_column_roles")
         else:
@@ -321,7 +469,16 @@ def _dates(row: Row, region: TableRegion) -> tuple[date | None, date | None, lis
                         diagnostics.extend(
                             ("invalid_posting_date", f"posting_date:{date_diagnostic}")
                         )
-    return transaction_date, posting_date, diagnostics
+    conversion_columns = _role_columns(region, ColumnRole.CONVERSION_DATE)
+    if len(conversion_columns) == 1:
+        conversion_cells = _cells_for_column(row, conversion_columns[0])
+        if len(conversion_cells) == 1:
+            parsed_conversion_date, conversion_diagnostic = _parse_date(
+                conversion_cells[0].text, year_context
+            )
+            if conversion_diagnostic is None:
+                conversion_date = parsed_conversion_date
+    return transaction_date, posting_date, conversion_date, diagnostics
 
 
 def _normalize_row(
@@ -330,6 +487,8 @@ def _normalize_row(
     continuation_rows: Sequence[Row],
     region: TableRegion,
     group: StatementGroupDiscovery,
+    year_context: DiscoveredDateYearContext | None,
+    date_column_kinds: Mapping[int, str],
     transaction_id: str,
 ) -> RowNormalizationResult:
     rows = (row, *continuation_rows)
@@ -431,7 +590,12 @@ def _normalize_row(
 
     description, description_diagnostics = _description(rows, region)
     diagnostics.extend(description_diagnostics)
-    transaction_date, posting_date, date_diagnostics = _dates(row, region)
+    transaction_date, posting_date, conversion_date, date_diagnostics = _dates(
+        row,
+        region,
+        year_context,
+        date_column_kinds,
+    )
     diagnostics.extend(date_diagnostics)
 
     original_amount: Decimal | None = None
@@ -530,6 +694,7 @@ def _normalize_row(
         ambiguities=tuple(dict.fromkeys(diagnostics)),
         transaction_date=transaction_date,
         posting_date=posting_date,
+        conversion_date=conversion_date,
         description=description,
         category=category,
         original_amount=original_amount,
@@ -582,6 +747,10 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
             group.table_regions,
             key=lambda item: (item.page_number, item.bbox[1], item.bbox[0]),
         ):
+            date_column_kinds = _structural_date_column_kinds(
+                region,
+                discovery.date_year_context,
+            )
             rows = tuple(sorted(region.rows, key=lambda item: (item.bbox[1], item.bbox[0])))
             index = 0
             while index < len(rows):
@@ -602,6 +771,8 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     continuation_rows=continuations,
                     region=region,
                     group=group,
+                    year_context=discovery.date_year_context,
+                    date_column_kinds=date_column_kinds,
                     transaction_id=transaction_id,
                 )
                 row_results.append(row_result)
@@ -611,6 +782,11 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     transactions.append(row_result.transaction)
                 for continuation in continuations:
                     row_ordinal += 1
+                    continuation_diagnostic = (
+                        "merged_subordinate_detail_continuation"
+                        if "subordinate_detail_continuation" in continuation.diagnostics
+                        else "merged_description_continuation"
+                    )
                     row_results.append(
                         RowNormalizationResult(
                             page_number=continuation.page_number,
@@ -618,7 +794,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                             raw_text=_row_text((continuation,)),
                             evidence=_row_evidence((continuation,)),
                             confidence=continuation.confidence,
-                            diagnostics=("merged_description_continuation",),
+                            diagnostics=(continuation_diagnostic,),
                         )
                     )
                 index = continuation_index

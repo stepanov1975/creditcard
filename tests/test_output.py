@@ -39,6 +39,7 @@ def _batch() -> BatchResult:
         billing_currency="ILS",
         reconciliation_group_ids=("group-0001",),
         transaction_date=date(2026, 1, 2),
+        conversion_date=date(2026, 1, 3),
         description='Cafe, "שָׁלוֹם"\nsecond line',
         category=TransactionCategory.PURCHASE,
         original_amount=Decimal("10.200"),
@@ -102,6 +103,7 @@ def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None
     assert transaction["billed_amount"] == "1234.5"
     assert transaction["original_amount"] == "10.2"
     assert transaction["transaction_date"] == "2026-01-02"
+    assert transaction["conversion_date"] == "2026-01-03"
     assert all(unicodedata.is_normalized("NFC", text) for text in _all_strings(payload))
 
 
@@ -119,6 +121,7 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["group_id"] == "group-0001"
     assert row["billed_amount"] == "1234.5"
     assert row["original_amount"] == "10.2"
+    assert row["conversion_date"] == "2026-01-03"
     assert row["description"] == 'Cafe, "שָׁלוֹם"\nsecond line'
     assert row["source_page"] == "1"
     assert row["source_bbox"] == "1:10.25,20.5,30.75,40"

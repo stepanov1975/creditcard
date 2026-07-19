@@ -7,10 +7,10 @@ from ccparser.layout.models import ColumnRole
 from ccparser.layout.regions import detect_table_regions
 
 
-def _word(text: str, x0: float, x1: float, y: float) -> Word:
+def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) -> Word:
     return Word(
         text=text,
-        bbox=(x0, y, x1, y + 10.0),
+        bbox=(x0, y, x1, y + height),
         source="digital",
         confidence=1.0,
     )
@@ -72,6 +72,27 @@ def _data(y: float, date: str, description: str, amount: str) -> tuple[Word, ...
     )
 
 
+def _wide_financial_header(y: float) -> tuple[Word, ...]:
+    return (
+        _word("Billed amount", 0.0, 10.0, y),
+        _word("Exchange rate", 18.0, 28.0, y),
+        _word("Conversion date", 36.0, 46.0, y),
+        _word("Amount", 54.0, 64.0, y),
+        _word("Original amount", 72.0, 82.0, y),
+        _word("Description", 90.0, 100.0, y),
+        _word("Date", 108.0, 120.0, y),
+    )
+
+
+def _wide_sparse_data(y: float, *, include_conversion_date: bool) -> tuple[Word, ...]:
+    return (
+        _word("12.40", 0.0, 10.0, y),
+        *((_word("03/02/2026", 36.0, 46.0, y),) if include_conversion_date else ()),
+        _word("Market", 90.0, 100.0, y),
+        _word("01/02/2026", 108.0, 120.0, y),
+    )
+
+
 def test_detect_table_regions_requires_header_and_repeated_rows_and_stops_at_total() -> None:
     page = _page(
         (
@@ -99,7 +120,7 @@ def test_detect_table_regions_requires_header_and_repeated_rows_and_stops_at_tot
     assert "repeated_rows:2" in region.diagnostics
 
 
-@pytest.mark.parametrize("marker", ('סה"כ', "סה״כ"))
+@pytest.mark.parametrize("marker", ('סה"כ', "סה״כ", "סה״כלתאריך"))
 def test_detect_table_regions_stops_at_quoted_hebrew_total_acronym(marker: str) -> None:
     page = _page(
         (
@@ -264,6 +285,56 @@ def test_detect_table_regions_retains_adjacent_description_continuation() -> Non
     assert "continuation_rows:1" in regions[0].diagnostics
 
 
+def test_detect_table_regions_retains_one_marked_multicell_detail_after_each_transaction() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "10.00"),
+            _word("Exchange rate", 0.0, 22.0, 41.0),
+            _word("Fee 0.50", 35.0, 72.0, 41.0),
+            *_data(60.0, "02/02/2026", "Cafe", "20.00"),
+            _word("שער המרה", 0.0, 22.0, 71.0),
+            _word("עמלה 0.25", 35.0, 72.0, 71.0),
+            _word("Total", 45.0, 72.0, 90.0),
+            _word("30.00", 92.0, 120.0, 90.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert "repeated_rows:2" in regions[0].diagnostics
+    assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
+def test_detail_continuations_do_not_dilute_main_row_column_profiles() -> None:
+    page = _page(
+        (
+            _word("Reference", 0.0, 22.0, 10.0),
+            _word("Description", 35.0, 72.0, 10.0),
+            _word("Amount", 92.0, 120.0, 10.0),
+            *_data(30.0, "01/02/2026", "Market", "10.00"),
+            _word("Exchange rate", 0.0, 22.0, 41.0),
+            _word("Fee 0.50", 35.0, 72.0, 41.0),
+            *_data(60.0, "02/02/2026", "Cafe", "20.00"),
+            _word("שער המרה", 0.0, 22.0, 71.0),
+            _word("עמלה 0.25", 35.0, 72.0, 71.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(column.role for column in regions[0].table_schema.columns) == (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.AMOUNT,
+    )
+    assert len(regions[0].rows) == 4
+    assert len(regions[0].table_schema.sample_cells) == 6
+
+
 def test_description_continuation_does_not_make_one_transaction_row_a_table() -> None:
     page = _page(
         (
@@ -272,6 +343,221 @@ def test_description_continuation_does_not_make_one_transaction_row_a_table() ->
             _word("continued name", 35.0, 72.0, 41.0),
             _word("Total", 45.0, 72.0, 60.0),
             _word("10.00", 92.0, 120.0, 60.0),
+        )
+    )
+
+    assert detect_table_regions(page) == ()
+
+
+def test_detect_table_regions_merges_an_adjacent_two_line_header_band() -> None:
+    page = _page(
+        (
+            _word("תאריך", 0.0, 22.0, 10.0),
+            _word("שם בית עסק", 30.0, 55.0, 10.0),
+            _word("סכום", 70.0, 90.0, 10.0),
+            _word("סכום", 100.0, 120.0, 10.0),
+            _word("עסקה", 0.0, 22.0, 17.5),
+            _word("עסקה", 70.0, 90.0, 17.5),
+            _word("חיוב", 100.0, 120.0, 17.5),
+            _word("01/02/2026", 0.0, 22.0, 32.0),
+            _word("Market", 30.0, 55.0, 32.0),
+            _word("USD 4.00", 70.0, 90.0, 32.0),
+            _word("ILS 14.00", 100.0, 120.0, 32.0),
+            _word("02/02/2026", 0.0, 22.0, 47.0),
+            _word("Cafe", 30.0, 55.0, 47.0),
+            _word("USD 5.00", 70.0, 90.0, 47.0),
+            _word("ILS 16.00", 100.0, 120.0, 47.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(cell.text for cell in regions[0].header.cells) == (
+        "סכום חיוב",
+        "סכום עסקה",
+        "שם בית עסק",
+        "תאריך עסקה",
+    )
+    assert len(regions[0].rows) == 2
+    assert tuple(column.role for column in regions[0].table_schema.columns) == (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+    assert "header_rows:2" in regions[0].diagnostics
+
+
+def test_detect_table_regions_ignores_rows_entirely_outside_the_header_band() -> None:
+    page = _page(
+        (
+            _word("Date", 30.0, 52.0, 10.0),
+            _word("Description", 65.0, 92.0, 10.0),
+            _word("Amount", 102.0, 128.0, 10.0),
+            Word(
+                text="side note",
+                bbox=(0.0, 20.0, 20.0, 50.0),
+                source="digital",
+                confidence=1.0,
+            ),
+            _word("01/02/2026", 30.0, 52.0, 30.0),
+            _word("Market", 65.0, 92.0, 30.0),
+            _word("12.00", 102.0, 128.0, 30.0),
+            Word(
+                text="continued side note",
+                bbox=(0.0, 40.0, 20.0, 70.0),
+                source="digital",
+                confidence=1.0,
+            ),
+            _word("02/02/2026", 30.0, 52.0, 50.0),
+            _word("Cafe", 65.0, 92.0, 50.0),
+            _word("18.00", 102.0, 128.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(tuple(cell.text for cell in row.cells) for row in regions[0].rows) == (
+        ("01/02/2026", "Market", "12.00"),
+        ("02/02/2026", "Cafe", "18.00"),
+    )
+    assert any(
+        diagnostic.startswith("ignored_outside_band_rows:") for diagnostic in regions[0].diagnostics
+    )
+
+
+def test_detect_table_regions_projects_compound_data_cells_to_header_bands() -> None:
+    page = _page(
+        (
+            _word("Date", 0.0, 15.0, 10.0),
+            _word("Description", 25.0, 55.0, 10.0),
+            _word("Amount", 80.0, 110.0, 10.0),
+            _word("01/02/2026", 0.0, 22.0, 30.0),
+            _word("Market", 25.0, 55.0, 30.0),
+            _word("12.00", 112.0, 122.0, 30.0),
+            _word("02/02/2026", 0.0, 22.0, 50.0),
+            _word("Cafe", 25.0, 55.0, 50.0),
+            _word("18.00", 112.0, 122.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(tuple(cell.text for cell in row.cells) for row in regions[0].rows) == (
+        ("01/02/2026", "Market", "12.00"),
+        ("02/02/2026", "Cafe", "18.00"),
+    )
+    assert tuple(column.role for column in regions[0].table_schema.columns) == (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.AMOUNT,
+    )
+
+
+def test_header_band_projection_does_not_reimport_an_adjacent_dense_row() -> None:
+    page = _page(
+        (
+            _word("Date", 30.0, 45.0, 0.5),
+            _word("Description", 55.0, 70.0, 0.5),
+            _word("Amount", 80.0, 100.0, 0.5),
+            _word("01/01/2026", 30.0, 45.0, 20.5),
+            _word("First", 55.0, 70.0, 20.5),
+            _word("10.00", 80.0, 100.0, 20.5),
+            _word("note-a", 0.0, 20.0, 23.8, height=13.0),
+            _word("02/01/2026", 30.0, 45.0, 31.5),
+            _word("Second", 55.0, 70.0, 31.5),
+            _word("20.00", 80.0, 100.0, 31.5),
+            _word("note-b", 0.0, 20.0, 34.8, height=13.0),
+            _word("03/01/2026", 30.0, 45.0, 42.5),
+            _word("Third", 55.0, 70.0, 42.5),
+            _word("30.00", 80.0, 100.0, 42.5),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert [tuple(cell.text for cell in row.cells) for row in regions[0].rows] == [
+        ("01/01/2026", "First", "10.00"),
+        ("02/01/2026", "Second", "20.00"),
+        ("03/01/2026", "Third", "30.00"),
+    ]
+
+
+def test_detect_table_regions_stops_at_aligned_footer_without_a_valid_amount() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            *_data(50.0, "03/02/2026", "Cafe", "18.60"),
+            _word("Summary", 0.0, 22.0, 70.0),
+            _word("Cycle details", 35.0, 72.0, 70.0),
+            _word("12.40 18.60", 92.0, 120.0, 70.0),
+            _word("Reference", 0.0, 22.0, 90.0),
+            _word("Informational footer", 35.0, 72.0, 90.0),
+            _word("None", 92.0, 120.0, 90.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_detect_table_regions_skips_bounded_nonfinancial_preamble_before_data() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            _word("Account section", 35.0, 72.0, 35.0),
+            _word("Cycle", 0.0, 22.0, 50.0),
+            _word("Informational", 35.0, 72.0, 50.0),
+            _word("Pending", 92.0, 120.0, 50.0),
+            _word("Additional details", 35.0, 72.0, 65.0),
+            *_data(80.0, "01/02/2026", "Market", "12.40"),
+            *_data(100.0, "03/02/2026", "Cafe", "18.60"),
+            _word("Total", 35.0, 72.0, 120.0),
+            _word("31.00", 92.0, 120.0, 120.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "ignored_preamble_rows:3" in regions[0].diagnostics
+
+
+def test_detect_table_regions_accepts_repeated_sparse_rows_in_wide_financial_schema() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            _word("Current cycle", 90.0, 100.0, 31.0),
+            *_wide_sparse_data(46.0, include_conversion_date=True),
+            *_wide_sparse_data(66.0, include_conversion_date=True),
+            _word("Total", 90.0, 100.0, 86.0),
+            _word("24.80", 0.0, 10.0, 86.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].table_schema.columns) == 7
+    assert len(regions[0].rows) == 2
+    assert "ignored_preamble_rows:1" in regions[0].diagnostics
+
+
+def test_detect_table_regions_rejects_three_of_seven_column_near_miss() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(40.0, include_conversion_date=False),
+            *_wide_sparse_data(60.0, include_conversion_date=False),
         )
     )
 

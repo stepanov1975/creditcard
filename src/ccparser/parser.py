@@ -20,6 +20,7 @@ from ccparser.models import (
     BatchResult,
     DiscoveryCellSummary,
     DiscoveryColumnSummary,
+    DiscoveryDateYearContextSummary,
     DiscoveryGlyphSummary,
     DiscoveryMetadataSummary,
     DiscoveryRowSummary,
@@ -27,6 +28,7 @@ from ccparser.models import (
     DiscoveryWordSummary,
     EvidenceReference,
     PrintedTotalSummary,
+    RejectedTotalCandidateSummary,
     RowNormalizationSummary,
     StatementDiscoverySummary,
     StatementGroupDiscoverySummary,
@@ -220,9 +222,37 @@ def _discovery_summary(discovery: StatementDiscovery) -> StatementDiscoverySumma
         if value is not None
     )
     groups = tuple(_group_summary(group) for group in discovery.groups)
+    date_year_context = discovery.date_year_context
     return StatementDiscoverySummary(
         classification=discovery.classification.value,
         metadata=metadata,
+        date_year_context=(
+            DiscoveryDateYearContextSummary(
+                year=date_year_context.year,
+                year_by_suffix=(
+                    date_year_context.year_by_suffix
+                    or (
+                        ((date_year_context.year % 100, date_year_context.year),)
+                        if date_year_context.year is not None
+                        else ()
+                    )
+                ),
+                style=date_year_context.style.value,
+                evidence=date_year_context.evidence,
+                confidence=date_year_context.confidence,
+                diagnostics=date_year_context.diagnostics,
+            )
+            if date_year_context is not None
+            else None
+        ),
+        rejected_total_candidates=tuple(
+            RejectedTotalCandidateSummary(
+                evidence=candidate.evidence,
+                confidence=candidate.confidence,
+                diagnostics=candidate.diagnostics,
+            )
+            for candidate in discovery.rejected_total_candidates
+        ),
         groups=groups,
         table_regions=tuple(_table_region_summary(region) for region in discovery.table_regions),
         printed_totals=tuple(group.printed_total for group in groups),

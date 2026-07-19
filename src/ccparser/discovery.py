@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import statistics
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import date
 from enum import StrEnum
 from itertools import pairwise
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser.evidence.models import BBox, DocumentEvidence
 from ccparser.layout import TableRegion, detect_table_regions, logical_rows
@@ -27,6 +29,17 @@ class DocumentClassification(StrEnum):
     STATEMENT = "statement"
     NOT_STATEMENT = "not_statement"
     AMBIGUOUS = "ambiguous"
+
+
+class DateTokenStyle(StrEnum):
+    """Supported relative ordering and separator for abbreviated date tokens."""
+
+    DAY_FIRST_SLASH = "day_first_slash"
+    DAY_FIRST_DOT = "day_first_dot"
+    DAY_FIRST_DASH = "day_first_dash"
+    YEAR_FIRST_SLASH = "year_first_slash"
+    YEAR_FIRST_DOT = "year_first_dot"
+    YEAR_FIRST_DASH = "year_first_dash"
 
 
 class DiscoveredField(_ImmutableDiscoveryModel):
@@ -50,6 +63,48 @@ class DiscoveredPrintedTotal(_ImmutableDiscoveryModel):
     diagnostics: tuple[str, ...] = ()
 
 
+class DiscoveredDateYearContext(_ImmutableDiscoveryModel):
+    """Proven short-date suffix mappings supported by complete document dates."""
+
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    year_by_suffix: tuple[tuple[int, int], ...] = ()
+    style: DateTokenStyle
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_year_mapping(self) -> DiscoveredDateYearContext:
+        mapping = self.year_by_suffix
+        if not mapping and self.year is not None:
+            mapping = ((self.year % 100, self.year),)
+        if not mapping:
+            raise ValueError("at least one proven suffix-year mapping is required")
+        suffixes = tuple(suffix for suffix, _ in mapping)
+        years = tuple(year for _, year in mapping)
+        if len(set(suffixes)) != len(suffixes):
+            raise ValueError("date suffix-year mappings must have unique suffixes")
+        if any(not 0 <= suffix <= 99 for suffix in suffixes):
+            raise ValueError("date suffix must be between 0 and 99")
+        if any(not 1900 <= year <= 2100 for year in years):
+            raise ValueError("mapped year must be between 1900 and 2100")
+        if any(year % 100 != suffix for suffix, year in mapping):
+            raise ValueError("mapped year must match its two-digit suffix")
+        if tuple(sorted(mapping)) != mapping:
+            raise ValueError("date suffix-year mappings must be sorted")
+        if self.year is not None and mapping != ((self.year % 100, self.year),):
+            raise ValueError("single year must agree with its suffix mapping")
+        return self
+
+
+class RejectedTotalCandidate(_ImmutableDiscoveryModel):
+    """A total-like row rejected from grouping, retained with exact evidence."""
+
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = Field(min_length=1)
+
+
 class StatementGroupDiscovery(_ImmutableDiscoveryModel):
     """Structural statement section associated with exactly one printed total."""
 
@@ -70,6 +125,8 @@ class StatementDiscovery(_ImmutableDiscoveryModel):
     account_number: DiscoveredField | None = None
     card_number: DiscoveredField | None = None
     statement_date: DiscoveredField | None = None
+    date_year_context: DiscoveredDateYearContext | None = None
+    rejected_total_candidates: tuple[RejectedTotalCandidate, ...] = ()
     confidence: float = Field(ge=0, le=1)
     reason_codes: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
@@ -124,6 +181,44 @@ _FIELD_LABELS: dict[str, frozenset[str]] = {
     "statement_date": frozenset({"billing date", "statement date", "תאריך דוח", "תאריך חיוב"}),
 }
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
+_DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)")
+_MIN_CONTEXT_YEAR = 1900
+_MAX_CONTEXT_YEAR = 2100
+_DATE_STYLE_CONFIGURATION: dict[DateTokenStyle, tuple[str, bool]] = {
+    DateTokenStyle.DAY_FIRST_SLASH: ("/", False),
+    DateTokenStyle.DAY_FIRST_DOT: (".", False),
+    DateTokenStyle.DAY_FIRST_DASH: ("-", False),
+    DateTokenStyle.YEAR_FIRST_SLASH: ("/", True),
+    DateTokenStyle.YEAR_FIRST_DOT: (".", True),
+    DateTokenStyle.YEAR_FIRST_DASH: ("-", True),
+}
+
+
+def _styled_date_pattern(
+    separator: str,
+    *,
+    year_first: bool,
+    year_digits: int,
+) -> re.Pattern[str]:
+    escaped = re.escape(separator)
+    day = r"(?P<day>\d{1,2})"
+    month = r"(?P<month>\d{1,2})"
+    year = rf"(?P<year>\d{{{year_digits}}})"
+    components = (year, month, day) if year_first else (day, month, year)
+    return re.compile(
+        rf"(?<!\d){components[0]}\s*{escaped}\s*{components[1]}"
+        rf"\s*{escaped}\s*{components[2]}(?!\d)"
+    )
+
+
+_FULL_DATE_TOKEN_PATTERNS = {
+    style: _styled_date_pattern(separator, year_first=year_first, year_digits=4)
+    for style, (separator, year_first) in _DATE_STYLE_CONFIGURATION.items()
+}
+_SHORT_DATE_TOKEN_PATTERNS = {
+    style: _styled_date_pattern(separator, year_first=year_first, year_digits=2)
+    for style, (separator, year_first) in _DATE_STYLE_CONFIGURATION.items()
+}
 
 
 def _normalized_phrase(text: str) -> str:
@@ -148,6 +243,10 @@ def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
         length = len(phrase_tokens)
         if any(tokens[index : index + length] == phrase_tokens for index in range(len(tokens))):
             return True
+        if any("\u0590" <= char <= "\u05ff" for char in phrase):
+            compact_phrase = "".join(phrase_tokens)
+            if any(token.startswith(compact_phrase) for token in tokens):
+                return True
     return False
 
 
@@ -167,9 +266,12 @@ def _table_currencies(region: TableRegion) -> tuple[str, ...]:
     )
     currencies = {
         currency
-        for row in region.rows
+        for cells in (
+            tuple(cell for row in region.rows for cell in row.cells),
+            region.header.cells,
+        )
         for column in billing_columns
-        for cell in row.cells
+        for cell in cells
         if column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= column.bbox[2]
         for currency in currencies_in_text(cell.text)
     }
@@ -263,6 +365,121 @@ def _metadata_field(rows: Sequence[Row], field_name: str) -> DiscoveredField | N
     return None
 
 
+def _complete_date_year(match: re.Match[str]) -> int | None:
+    first, _, second, third = match.groups()
+    if len(first) == 4 and len(third) != 4:
+        year, month, day = int(first), int(second), int(third)
+    elif len(third) == 4 and len(first) != 4:
+        day, month, year = int(first), int(second), int(third)
+    else:
+        return None
+    if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+        return None
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+    return year
+
+
+def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
+    cells: list[Cell] = []
+    for region in regions:
+        date_columns = tuple(
+            column
+            for column in region.table_schema.columns
+            if column.role in {ColumnRole.DATE, ColumnRole.CONVERSION_DATE}
+        )
+        for row in region.rows:
+            for column in date_columns:
+                cells.extend(
+                    cell
+                    for cell in row.cells
+                    if column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= column.bbox[2]
+                )
+    return tuple(cells)
+
+
+def _date_year_context(
+    rows: Sequence[Row], regions: Sequence[TableRegion]
+) -> DiscoveredDateYearContext | None:
+    cells = tuple(cell for row in rows for cell in row.cells)
+    table_date_cells = _table_date_cells(regions)
+    table_short_years_by_style: dict[DateTokenStyle, set[int]] = {}
+    for style, short_pattern in _SHORT_DATE_TOKEN_PATTERNS.items():
+        years: set[int] = set()
+        for cell in table_date_cells:
+            for match in short_pattern.finditer(cell.text):
+                try:
+                    date(2000, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                years.add(int(match.group("year")))
+        table_short_years_by_style[style] = years
+    has_table_short_dates = any(table_short_years_by_style.values())
+    candidates: list[tuple[DateTokenStyle, tuple[tuple[int, int], ...], tuple[Cell, ...]]] = []
+    for style, full_pattern in _FULL_DATE_TOKEN_PATTERNS.items():
+        short_pattern = _SHORT_DATE_TOKEN_PATTERNS[style]
+        full_years: set[int] = set()
+        supporting_cells_by_year: dict[int, list[Cell]] = {}
+        short_years: set[int] = set()
+        for cell in cells:
+            for match in full_pattern.finditer(cell.text):
+                year = int(match.group("year"))
+                if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+                    continue
+                try:
+                    date(year, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                full_years.add(year)
+                supporting_cells_by_year.setdefault(year, []).append(cell)
+            for match in short_pattern.finditer(cell.text):
+                try:
+                    date(2000, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                short_years.add(int(match.group("year")))
+        if has_table_short_dates:
+            table_short_years = table_short_years_by_style[style]
+            if not table_short_years:
+                continue
+            year_by_suffix: list[tuple[int, int]] = []
+            for short_year in sorted(table_short_years):
+                matching_years = tuple(year for year in full_years if year % 100 == short_year)
+                if len(matching_years) != 1:
+                    break
+                year_by_suffix.append((short_year, matching_years[0]))
+            if len(year_by_suffix) != len(table_short_years):
+                continue
+            supporting_cells = tuple(
+                cell for _, year in year_by_suffix for cell in supporting_cells_by_year[year]
+            )
+            candidates.append((style, tuple(year_by_suffix), supporting_cells))
+            continue
+        if len(full_years) == 1:
+            year = next(iter(full_years))
+            if short_years == {year % 100}:
+                candidates.append(
+                    (
+                        style,
+                        ((year % 100, year),),
+                        tuple(supporting_cells_by_year[year]),
+                    )
+                )
+    if len(candidates) != 1:
+        return None
+    style, selected_year_by_suffix, supporting_cells = candidates[0]
+    selected_year = selected_year_by_suffix[0][1] if len(selected_year_by_suffix) == 1 else None
+    return DiscoveredDateYearContext(
+        year=selected_year,
+        year_by_suffix=selected_year_by_suffix,
+        style=style,
+        evidence=tuple(_evidence(cell) for cell in supporting_cells),
+        confidence=statistics.mean(cell.confidence for cell in supporting_cells),
+    )
+
+
 def _positive_form_evidence(rows: Sequence[Row]) -> bool:
     has_title = any(_contains_phrase(cell.text, _FORM_TITLES) for row in rows for cell in row.cells)
     field_count = sum(
@@ -294,7 +511,12 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
         _normalized_phrase(cell.text)
         for cell in sorted(second.header.cells, key=lambda cell: (cell.bbox[0], cell.bbox[1]))
     )
-    return columns_compatible and first_header == second_header
+    known_role_count = sum(
+        first_column.role is not ColumnRole.UNKNOWN
+        for first_column, second_column in zip(first_columns, second_columns, strict=True)
+        if first_column.role is second_column.role
+    )
+    return columns_compatible and (first_header == second_header or known_role_count >= 3)
 
 
 def _proven_page_continuation(
@@ -380,6 +602,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
+    rejected_total_candidates: list[RejectedTotalCandidate] = []
     total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
         preceding = tuple(
@@ -389,7 +612,14 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             < _reading_key_bbox(total_row.page_number, total_row.bbox)
         )
         total, total_diagnostics = _total_from_row(total_row, preceding)
-        diagnostics.extend(total_diagnostics)
+        if total is None and total_diagnostics:
+            rejected_total_candidates.append(
+                RejectedTotalCandidate(
+                    evidence=tuple(_evidence(cell) for cell in total_row.cells),
+                    confidence=statistics.mean(cell.confidence for cell in total_row.cells),
+                    diagnostics=total_diagnostics,
+                )
+            )
         if total is not None and preceding:
             total_candidates.append((total_row, total))
 
@@ -422,6 +652,17 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         )
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
+    date_year_context = _date_year_context(page_rows, regions)
+    claimed_regions = tuple(region for group in groups for region in group.table_regions)
+    has_unclaimed_regions = any(
+        not any(region is claimed for claimed in claimed_regions) for region in regions
+    )
+    if not groups or has_unclaimed_regions:
+        diagnostics.extend(
+            diagnostic
+            for candidate in rejected_total_candidates
+            for diagnostic in candidate.diagnostics
+        )
     if groups:
         classification = DocumentClassification.STATEMENT
         confidence = statistics.mean(group.confidence for group in groups)
@@ -447,6 +688,8 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         account_number=metadata["account_number"],
         card_number=metadata["card_number"],
         statement_date=metadata["statement_date"],
+        date_year_context=date_year_context,
+        rejected_total_candidates=tuple(rejected_total_candidates),
         confidence=confidence,
         reason_codes=reason_codes,
         diagnostics=_deduplicated(diagnostics),
@@ -454,9 +697,12 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
 
 
 __all__ = [
+    "DateTokenStyle",
+    "DiscoveredDateYearContext",
     "DiscoveredField",
     "DiscoveredPrintedTotal",
     "DocumentClassification",
+    "RejectedTotalCandidate",
     "StatementDiscovery",
     "StatementGroupDiscovery",
     "discover_statement",

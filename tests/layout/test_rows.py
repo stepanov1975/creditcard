@@ -107,3 +107,46 @@ def test_cluster_rows_confidence_measures_vertical_coherence_within_cluster() ->
     assert len(aligned) == len(incoherent) == 1
     assert aligned[0].confidence == 1.0
     assert 0.0 < incoherent[0].confidence < aligned[0].confidence
+
+
+def test_cluster_rows_does_not_let_tall_side_text_bridge_dense_table_lines() -> None:
+    words = (
+        _word("sidebar", (0.0, 0.0, 20.0, 40.0)),
+        _word("10.00", (70.0, 0.0, 100.0, 10.0)),
+        _word("20.00", (70.0, 10.5, 100.0, 20.5)),
+        _word("30.00", (70.0, 21.0, 100.0, 31.0)),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    assert len(rows) == 4
+    assert sorted(
+        tuple(cell.text for cell in row.cells)
+        for row in rows
+        if any(cell.text.endswith(".00") for cell in row.cells)
+    ) == [("10.00",), ("20.00",), ("30.00",)]
+
+
+def test_cluster_rows_does_not_expand_a_line_band_through_medium_side_annotations() -> None:
+    words = (
+        _word("01/01", (30.0, 0.5, 45.0, 9.5)),
+        _word("First", (55.0, 0.5, 70.0, 9.5)),
+        _word("10.00", (80.0, 0.5, 100.0, 9.5)),
+        _word("note-a", (0.0, 3.8, 20.0, 16.8)),
+        _word("02/01", (30.0, 11.5, 45.0, 20.5)),
+        _word("Second", (55.0, 11.5, 70.0, 20.5)),
+        _word("20.00", (80.0, 11.5, 100.0, 20.5)),
+        _word("note-b", (0.0, 14.8, 20.0, 27.8)),
+        _word("03/01", (30.0, 22.5, 45.0, 31.5)),
+        _word("Third", (55.0, 22.5, 70.0, 31.5)),
+        _word("30.00", (80.0, 22.5, 100.0, 31.5)),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    transaction_rows = [row for row in rows if any(cell.text.endswith(".00") for cell in row.cells)]
+    assert len(transaction_rows) == 3
+    assert [
+        tuple(cell.text for cell in row.cells if cell.text.endswith(".00"))
+        for row in transaction_rows
+    ] == [("10.00",), ("20.00",), ("30.00",)]
