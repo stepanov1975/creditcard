@@ -248,6 +248,38 @@ def test_discover_statement_accepts_losslessly_joined_multiword_total_label() ->
     assert result.groups[0].printed_total.amount_text == "₪30.00"
 
 
+def test_discover_statement_extracts_unique_decimal_before_joined_total_date() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "5.00", "7.34"),
+            _word("Total for date 12.3403/02/26", 50.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.amount_text == "12.34"
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+def test_discover_statement_rejects_multiple_decimals_in_joined_total_cell() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "5.00", "7.34"),
+            _word("Total 12.34 56.7803/02/26", 50.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert "ambiguous_total_value" in result.diagnostics
+
+
 def test_discover_statement_accepts_compact_hebrew_billed_total_label() -> None:
     page = _page(
         1,
@@ -448,6 +480,39 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
+@pytest.mark.parametrize("candidate_currency", ("", "$"))
+def test_lossless_joined_trailing_minus_total_overlay_is_excluded(
+    candidate_currency: str,
+) -> None:
+    candidate_amount = f"{candidate_currency}30.00-"
+    candidate_amount_glyphs = _ltr_glyphs(candidate_amount, 95.5, 92.0, height=0.8)
+    words = (
+        *_table(20.0, "$", "10.00-", "20.00-"),
+        _word("Total", 30.0, 65.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("-30.00", 118.0, 155.0, 80.0),
+        _word("Total", 30.0, 65.0, 92.0, height=0.8),
+        _word(candidate_amount, 64.0, 98.0, 92.0, height=0.8),
+        _word("03/02/2026", 97.0, 155.0, 92.0, height=0.8),
+    )
+    glyphs = (
+        *_ltr_glyphs("Total", 31.0, 80.0, height=0.8),
+        *_ltr_glyphs("03/02/2026", 71.0, 80.0, height=0.8),
+        *_ltr_glyphs("-30.00", 119.0, 80.0, height=0.8),
+        *_ltr_glyphs("Total", 31.0, 92.0, height=0.8),
+        *candidate_amount_glyphs,
+        *_ltr_glyphs("03/02/2026", 98.0, 92.0, height=0.8),
+    )
+
+    result = discover_statement(_document(_page(1, words, glyphs)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.rejected_total_candidates == ()
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
 def test_vertically_overlapping_tiny_total_does_not_contaminate_reference_proof() -> None:
     page = _page(
         1,
@@ -489,8 +554,8 @@ def test_vertically_overlapping_tiny_total_with_different_amount_remains_fatal()
 
     assert result.classification is DocumentClassification.STATEMENT
     assert len(result.groups) == 1
-    assert result.diagnostics == ("ambiguous_total_value",)
-    assert len(result.rejected_total_candidates) == 1
+    assert result.diagnostics == ("total_without_table",)
+    assert result.rejected_total_candidates == ()
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 
@@ -716,14 +781,15 @@ def test_totals_in_explicitly_percentage_denominated_rate_ledger_are_not_candida
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
-def test_total_in_explicit_fee_tax_summary_is_not_a_statement_total() -> None:
+@pytest.mark.parametrize("fee_label", ("סך העמלות: ₪1.00", 'סה"כעמלות: ₪1.00'))
+def test_total_in_explicit_fee_tax_summary_is_not_a_statement_total(fee_label: str) -> None:
     page = _page(
         1,
         (
             *_table(20.0, "₪", "10.00", "20.00"),
             _word("Total", 50.0, 95.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
-            _word("סך העמלות: ₪1.00", 0.0, 38.0, 120.0),
+            _word(fee_label, 0.0, 38.0, 120.0),
             _word('מע"מ: 0%', 42.0, 72.0, 120.0),
             _word("₪0.00", 78.0, 100.0, 120.0),
             _word('סך הכל כולל מע"מ: ₪1.00', 105.0, 158.0, 120.0),

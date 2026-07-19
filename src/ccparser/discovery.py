@@ -27,7 +27,7 @@ from ccparser.layout.regions import (
 )
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
-from ccparser.money import currencies_in_text, is_money_shaped, parse_amount
+from ccparser.money import canonical_currency, currencies_in_text, is_money_shaped, parse_amount
 
 
 class _ImmutableDiscoveryModel(BaseModel):
@@ -211,6 +211,7 @@ _FEE_SUMMARY_MARKERS = frozenset(
         "עמלות",
         "העמלות",
         "סך העמלות",
+        "סהכעמלות",
     }
 )
 _TAX_SUMMARY_MARKERS = frozenset({"tax", "vat", "מס", "מעמ"})
@@ -317,6 +318,9 @@ _YEAR_MONTH_TOKEN_PATTERN = re.compile(
     r"(?P<month>0?[1-9]|1[0-2])(?!\s*[/\-]\s*\d)(?!\d)"
 )
 _PDF_METADATA_DATE_PATTERN = re.compile(r"^D:(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})")
+_COMPOUND_TOTAL_AMOUNT_PATTERN = re.compile(
+    r"(?<![\d.,])(?P<amount>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)[.,]\d{2}-?)"
+)
 
 
 def _normalized_phrase(text: str) -> str:
@@ -529,6 +533,101 @@ def _has_lossless_overlay_signature(candidate: Row, reference: Row) -> bool:
     return reference_row[0] == tuple(sorted((*reference_cells[0], *candidate_cells[0])))
 
 
+def _cell_glyph_inventory(row: Row) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            char
+            for cell in row.cells
+            for glyph in cell.glyphs
+            for char in unicodedata.normalize("NFC", glyph.char).casefold()
+            if not char.isspace()
+        )
+    )
+
+
+def _text_without_printed_amount(
+    row: Row,
+    total: DiscoveredPrintedTotal,
+) -> str | None:
+    text = "".join(
+        char
+        for cell in row.cells
+        for char in unicodedata.normalize("NFC", cell.text).casefold()
+        if not char.isspace()
+    )
+    amount = "".join(unicodedata.normalize("NFC", total.amount_text).casefold().split())
+    if not amount or text.count(amount) != 1:
+        return None
+    return text.replace(amount, "", 1)
+
+
+def _inventory_without_text(inventory: tuple[str, ...], text: str) -> tuple[str, ...] | None:
+    remaining = list(inventory)
+    for char in unicodedata.normalize("NFC", text).casefold():
+        if char.isspace():
+            continue
+        try:
+            remaining.remove(char)
+        except ValueError:
+            return None
+    return tuple(remaining)
+
+
+def _single_contiguous_insertion(longer: str, shorter: str) -> str | None:
+    if len(longer) <= len(shorter):
+        return None
+    prefix_length = 0
+    while prefix_length < len(shorter) and longer[prefix_length] == shorter[prefix_length]:
+        prefix_length += 1
+    extra_length = len(longer) - len(shorter)
+    if longer[prefix_length + extra_length :] != shorter[prefix_length:]:
+        return None
+    return longer[prefix_length : prefix_length + extra_length]
+
+
+def _has_lossless_compound_total_overlay_signature(
+    candidate: Row,
+    reference: Row,
+    candidate_total: DiscoveredPrintedTotal,
+    reference_total: DiscoveredPrintedTotal,
+) -> bool:
+    if candidate_total.currency != reference_total.currency:
+        return False
+    candidate_amount = parse_amount(
+        candidate_total.amount_text,
+        currency_hint=candidate_total.currency,
+    ).amount
+    reference_amount = parse_amount(
+        reference_total.amount_text,
+        currency_hint=reference_total.currency,
+    ).amount
+    if candidate_amount is None or candidate_amount != reference_amount:
+        return False
+    candidate_residual = _text_without_printed_amount(candidate, candidate_total)
+    reference_residual = _text_without_printed_amount(reference, reference_total)
+    if candidate_residual is None or reference_residual is None:
+        return False
+    candidate_glyphs = _cell_glyph_inventory(candidate)
+    reference_glyphs = _cell_glyph_inventory(reference)
+    if not candidate_glyphs or not reference_glyphs:
+        return False
+    if candidate_residual == reference_residual:
+        return candidate_glyphs == reference_glyphs
+    extra = _single_contiguous_insertion(candidate_residual, reference_residual)
+    if extra is not None:
+        return (
+            canonical_currency(extra) == candidate_total.currency
+            and _inventory_without_text(candidate_glyphs, extra) == reference_glyphs
+        )
+    extra = _single_contiguous_insertion(reference_residual, candidate_residual)
+    if extra is not None:
+        return (
+            canonical_currency(extra) == reference_total.currency
+            and _inventory_without_text(reference_glyphs, extra) == candidate_glyphs
+        )
+    return False
+
+
 def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -569,8 +668,6 @@ def _is_lossless_total_overlay_artifact(
             continue
         if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
             continue
-        if not _has_lossless_overlay_signature(candidate, reference):
-            continue
         preceding = tuple(
             region
             for region in regions
@@ -578,7 +675,23 @@ def _is_lossless_total_overlay_artifact(
             < _reading_key_bbox(reference.page_number, reference.bbox)
         )
         reference_total, _ = _total_from_row(reference, preceding)
-        if reference_total is not None:
+        if reference_total is None:
+            continue
+        if _has_lossless_overlay_signature(candidate, reference):
+            return True
+        candidate_preceding = tuple(
+            region
+            for region in regions
+            if _reading_key_bbox(region.page_number, region.bbox)
+            < _reading_key_bbox(candidate.page_number, candidate.bbox)
+        )
+        candidate_total, _ = _total_from_row(candidate, candidate_preceding)
+        if candidate_total is not None and _has_lossless_compound_total_overlay_signature(
+            candidate,
+            reference,
+            candidate_total,
+            reference_total,
+        ):
             return True
     return False
 
@@ -789,6 +902,15 @@ def _without_isolated_ocr_letter(
     return valid[0] if len(valid) == 1 else None
 
 
+def _unique_compound_total_amount(text: str, currency: str) -> str | None:
+    candidates = tuple(
+        match.group("amount")
+        for match in _COMPOUND_TOTAL_AMOUNT_PATTERN.finditer(unicodedata.normalize("NFC", text))
+        if parse_amount(match.group("amount"), currency_hint=currency).amount is not None
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _total_from_row(
     row: Row,
     preceding_regions: Sequence[TableRegion],
@@ -823,6 +945,7 @@ def _total_from_row(
         diagnostics.append("conflicting_total_currency")
     amount_cells: list[tuple[Cell, str]] = []
     cleaned_amount_cells: list[Cell] = []
+    compound_amount_cells: list[Cell] = []
     if currency is not None:
         for cell in row.cells:
             candidate_text = cell.text
@@ -835,6 +958,12 @@ def _total_from_row(
                         candidate_text = candidate_text[len(marker) :].strip(" :")
                         break
             parsed = parse_amount(candidate_text, currency_hint=currency)
+            if parsed.amount is None and cell in label_cells:
+                compound = _unique_compound_total_amount(candidate_text, currency)
+                if compound is not None:
+                    candidate_text = compound
+                    parsed = parse_amount(candidate_text, currency_hint=currency)
+                    compound_amount_cells.append(cell)
             if parsed.amount is None:
                 cleaned = _without_isolated_ocr_letter(cell, candidate_text, currency)
                 if cleaned is not None:
@@ -855,6 +984,7 @@ def _total_from_row(
         return None, tuple(diagnostics)
     value_cell, amount_text = amount_cells[0]
     ignored_isolated_ocr_letter = any(cell is value_cell for cell in cleaned_amount_cells)
+    extracted_compound_total_amount = any(cell is value_cell for cell in compound_amount_cells)
     return (
         DiscoveredPrintedTotal(
             amount_text=amount_text,
@@ -871,6 +1001,11 @@ def _total_from_row(
                         else ()
                     ),
                     *(("ignored_isolated_ocr_letter",) if ignored_isolated_ocr_letter else ()),
+                    *(
+                        ("extracted_compound_total_amount",)
+                        if extracted_compound_total_amount
+                        else ()
+                    ),
                 )
             ),
         ),
