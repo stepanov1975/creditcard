@@ -224,13 +224,9 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
             _word("Total", 30.0, 65.0, 80.0),
             _word("03/02/2026", 70.0, 105.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
-            _word(
-                "Total ₪30.0003/02/2026",
-                30.0,
-                155.0,
-                105.0,
-                height=1.0,
-            ),
+            _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+            _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+            _word("Total", 118.0, 155.0, 92.0, height=0.8),
         ),
     )
 
@@ -243,7 +239,7 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
-def test_tiny_ambiguous_total_that_is_not_an_exact_duplicate_remains_fatal() -> None:
+def test_tiny_total_with_one_different_word_remains_fatal() -> None:
     page = _page(
         1,
         (
@@ -251,13 +247,9 @@ def test_tiny_ambiguous_total_that_is_not_an_exact_duplicate_remains_fatal() -> 
             _word("Total", 30.0, 65.0, 80.0),
             _word("03/02/2026", 70.0, 105.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
-            _word(
-                "Total ₪31.0003/02/2026",
-                30.0,
-                155.0,
-                105.0,
-                height=1.0,
-            ),
+            _word("₪31.00", 30.0, 65.0, 92.0, height=0.8),
+            _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+            _word("Total", 118.0, 155.0, 92.0, height=0.8),
         ),
     )
 
@@ -265,8 +257,40 @@ def test_tiny_ambiguous_total_that_is_not_an_exact_duplicate_remains_fatal() -> 
 
     assert result.classification is DocumentClassification.STATEMENT
     assert len(result.groups) == 1
-    assert len(result.rejected_total_candidates) == 1
-    assert "ambiguous_total_value" in result.diagnostics
+    assert result.diagnostics == ("total_without_table",)
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize(
+    ("candidate_amount", "candidate_y"),
+    (
+        ("$30.00", 92.0),
+        ("₪03.00", 92.0),
+        ("₪30.00", 140.0),
+    ),
+)
+def test_tiny_total_overlay_without_exact_bounded_word_proof_remains_fatal(
+    candidate_amount: str,
+    candidate_y: float,
+) -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 30.0, 65.0, 80.0),
+            _word("03/02/2026", 70.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word(candidate_amount, 30.0, 65.0, candidate_y, height=0.8),
+            _word("03/02/2026", 70.0, 105.0, candidate_y, height=0.8),
+            _word("Total", 118.0, 155.0, candidate_y, height=0.8),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("total_without_table",)
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 
@@ -317,6 +341,53 @@ def test_points_marker_outside_bounded_section_does_not_exempt_later_ambiguous_t
     assert len(result.groups) == 1
     assert len(result.rejected_total_candidates) == 1
     assert "ambiguous_total_value" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_points_ledger_does_not_exempt_total_after_intervening_financial_table() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Activity", 50.0, 95.0, 110.0),
+            _word("Rewards points", 85.0, 155.0, 110.0),
+            _word("Earned", 50.0, 95.0, 125.0),
+            _word("1,000", 118.0, 155.0, 125.0),
+            *_table(145.0, "₪", "5.00", "7.00"),
+            _word("Total", 45.0, 80.0, 205.0),
+            _word("1,200", 90.0, 115.0, 205.0),
+            _word("1,300", 125.0, 155.0, 205.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.table_regions) == 2
+    assert len(result.rejected_total_candidates) == 1
+    assert "ambiguous_total_value" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_unclaimed_detected_table_region_is_always_reconciliation_fatal() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            *_table(120.0, "₪", "5.00", "7.00"),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert len(result.table_regions) == 2
+    assert result.diagnostics == ("unclaimed_table_region",)
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 

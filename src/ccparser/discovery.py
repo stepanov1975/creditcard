@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser.evidence.models import BBox, DocumentEvidence
 from ccparser.layout import TableRegion, detect_table_regions, logical_rows
-from ccparser.layout.columns import proven_billed_amount_column
+from ccparser.layout.columns import infer_column_roles, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, Row
 from ccparser.models import EvidenceReference
 from ccparser.money import currencies_in_text, parse_amount
@@ -313,13 +313,11 @@ def _row_height(row: Row) -> float:
     return max(0.0, row.bbox[3] - row.bbox[1])
 
 
-def _row_alphanumeric_inventory(row: Row) -> tuple[str, ...]:
+def _row_word_text_multiset(row: Row) -> tuple[str, ...]:
     return tuple(
         sorted(
-            char
-            for cell in row.cells
-            for char in unicodedata.normalize("NFC", cell.text).casefold()
-            if char.isalnum()
+            " ".join(unicodedata.normalize("NFC", word.text).casefold().split())
+            for word in row.words
         )
     )
 
@@ -340,12 +338,16 @@ def _horizontal_containment_fraction(candidate: BBox, reference: BBox) -> float:
     return overlap / candidate_width if candidate_width > 0 else 0.0
 
 
+def _vertical_gap(first: BBox, second: BBox) -> float:
+    return max(0.0, max(first[1], second[1]) - min(first[3], second[3]))
+
+
 def _is_lossless_total_overlay_artifact(
     candidate: Row,
     total_marker_rows: Sequence[Row],
     regions: Sequence[TableRegion],
 ) -> bool:
-    if len(candidate.cells) != 1:
+    if not candidate.words:
         return False
     for reference in total_marker_rows:
         if reference is candidate or reference.page_number != candidate.page_number:
@@ -354,11 +356,13 @@ def _is_lossless_total_overlay_artifact(
             continue
         if _row_height(candidate) > _row_height(reference) * 0.2:
             continue
+        if _vertical_gap(candidate.bbox, reference.bbox) > _row_height(reference) * 1.5:
+            continue
         if _horizontal_containment_fraction(candidate.bbox, reference.bbox) < 0.9:
             continue
         if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
             continue
-        if _row_alphanumeric_inventory(candidate) != _row_alphanumeric_inventory(reference):
+        if _row_word_text_multiset(candidate) != _row_word_text_multiset(reference):
             continue
         preceding = tuple(
             region
@@ -376,7 +380,22 @@ def _is_count_value(text: str) -> bool:
     return _COUNT_VALUE_PATTERN.fullmatch(" ".join(text.split())) is not None
 
 
-def _is_points_ledger_total(candidate: Row, rows: Sequence[Row]) -> bool:
+def _is_financial_header_row(row: Row) -> bool:
+    if len(row.cells) < 2:
+        return False
+    roles = {
+        column.role
+        for column in infer_column_roles(row.cells, ()).columns
+        if column.role is not ColumnRole.UNKNOWN
+    }
+    return ColumnRole.AMOUNT in roles and bool(roles & {ColumnRole.DATE, ColumnRole.DESCRIPTION})
+
+
+def _is_points_ledger_total(
+    candidate: Row,
+    rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+) -> bool:
     if any(currency for cell in candidate.cells for currency in currencies_in_text(cell.text)):
         return False
     count_cells = tuple(cell for cell in candidate.cells if _is_count_value(cell.text))
@@ -408,6 +427,16 @@ def _is_points_ledger_total(candidate: Row, rows: Sequence[Row]) -> bool:
     if any(
         _contains_phrase(cell.text, _TOTAL_MARKERS) for row in section_rows for cell in row.cells
     ):
+        return False
+    if any(
+        region.page_number == candidate.page_number
+        and header_key
+        < _reading_key_bbox(region.header.page_number, region.header.bbox)
+        < candidate_key
+        for region in regions
+    ):
+        return False
+    if any(_is_financial_header_row(row) for row in section_rows):
         return False
     return any(
         _is_count_value(cell.text)
@@ -739,7 +768,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         row
         for row in observed_total_marker_rows
         if not _is_lossless_total_overlay_artifact(row, observed_total_marker_rows, regions)
-        and not _is_points_ledger_total(row, page_rows)
+        and not _is_points_ledger_total(row, page_rows, regions)
     )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
@@ -794,6 +823,10 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
                 confidence=confidence,
             )
         )
+
+    claimed_regions = tuple(region for group in groups for region in group.table_regions)
+    if any(not any(region is claimed for claimed in claimed_regions) for region in regions):
+        diagnostics.append("unclaimed_table_region")
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
     date_year_context = _date_year_context(page_rows, regions)
