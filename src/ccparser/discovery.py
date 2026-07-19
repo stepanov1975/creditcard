@@ -13,9 +13,14 @@ from itertools import pairwise
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
-from ccparser.layout import TableRegion, detect_table_regions, logical_rows
+from ccparser.layout import TableRegion, logical_rows
 from ccparser.layout.columns import infer_column_roles, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.regions import (
+    _detect_table_regions_from_rows,
+    _merged_header_bands,
+    _page_row_key,
+)
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
 from ccparser.money import currencies_in_text, parse_amount
@@ -803,17 +808,28 @@ def _associate_regions(
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     """Discover statement groups and classify only from positive semantic evidence."""
 
+    ordered_pages = tuple(sorted(evidence.pages, key=lambda item: item.page_number))
+    logical_rows_by_page = {page.page_number: logical_rows(page) for page in ordered_pages}
+    merged_rows_by_page = {
+        page.page_number: _merged_header_bands(logical_rows_by_page[page.page_number])
+        for page in ordered_pages
+    }
     page_rows = tuple(
-        row
-        for page in sorted(evidence.pages, key=lambda item: item.page_number)
-        for row in logical_rows(page)
+        row for page in ordered_pages for row in logical_rows_by_page[page.page_number]
     )
-    regions = tuple(
+    initial_regions_by_page = {
+        page.page_number: _detect_table_regions_from_rows(
+            page,
+            merged_rows_by_page[page.page_number],
+        )
+        for page in ordered_pages
+    }
+    initial_regions = tuple(
         sorted(
             (
                 region
-                for page in sorted(evidence.pages, key=lambda item: item.page_number)
-                for region in detect_table_regions(page)
+                for page in ordered_pages
+                for region in initial_regions_by_page[page.page_number]
             ),
             key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
         )
@@ -823,10 +839,38 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         for row in page_rows
         if any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
     )
+    proven_total_overlay_keys = frozenset(
+        _page_row_key(row)
+        for row in observed_total_marker_rows
+        if _is_lossless_total_overlay_artifact(
+            row,
+            observed_total_marker_rows,
+            initial_regions,
+        )
+    )
+    affected_pages = frozenset(page_number for page_number, _ in proven_total_overlay_keys)
+    regions = tuple(
+        sorted(
+            (
+                region
+                for page in ordered_pages
+                for region in (
+                    _detect_table_regions_from_rows(
+                        page,
+                        merged_rows_by_page[page.page_number],
+                        proven_total_overlay_keys,
+                    )
+                    if page.page_number in affected_pages
+                    else initial_regions_by_page[page.page_number]
+                )
+            ),
+            key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
+        )
+    )
     total_marker_rows = tuple(
         row
         for row in observed_total_marker_rows
-        if not _is_lossless_total_overlay_artifact(row, observed_total_marker_rows, regions)
+        if _page_row_key(row) not in proven_total_overlay_keys
         and not _is_points_ledger_total(row, page_rows, regions)
     )
     groups: list[StatementGroupDiscovery] = []

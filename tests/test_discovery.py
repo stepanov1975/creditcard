@@ -1083,6 +1083,125 @@ def test_same_currency_headerless_rows_after_total_form_the_next_exact_group() -
     assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
 
 
+def _headerless_rows_after_total_overlay(
+    *,
+    candidate_amount: str = "₪30.00",
+    candidate_height: float = 0.8,
+    glyphs: tuple[Glyph, ...] = (),
+) -> PageEvidence:
+    return _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 30.0, 65.0, 80.0),
+            _word("03/02/2026", 70.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word(candidate_amount, 30.0, 65.0, 92.0, height=candidate_height),
+            _word("03/02/2026", 70.0, 105.0, 92.0, height=candidate_height),
+            _word("Total", 118.0, 155.0, 92.0, height=candidate_height),
+            _word("03/02/2026", 0.0, 28.0, 105.0),
+            _word("Shop", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+            _word("04/02/2026", 0.0, 28.0, 125.0),
+            _word("Fuel", 50.0, 95.0, 125.0),
+            _word("₪40.00", 118.0, 155.0, 125.0),
+            _word("Total", 50.0, 95.0, 145.0),
+            _word("₪70.00", 118.0, 155.0, 145.0),
+        ),
+        glyphs,
+    )
+
+
+def test_proven_total_overlay_does_not_close_same_page_inherited_rows() -> None:
+    discovery = discover_statement(_document(_headerless_rows_after_total_overlay()))
+    normalized = normalize_statement(discovery)
+
+    assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 1)
+    assert tuple(
+        len(region.rows) for group in discovery.groups for region in group.table_regions
+    ) == (2, 2)
+    assert discovery.diagnostics == ()
+    assert normalized.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("candidate_amount", "candidate_height"),
+    (
+        ("$30.00", 0.8),
+        ("₪31.00", 0.8),
+        ("₪30.00", 10.0),
+    ),
+)
+def test_non_overlay_total_remains_a_hard_inherited_boundary(
+    candidate_amount: str,
+    candidate_height: float,
+) -> None:
+    discovery = discover_statement(
+        _document(
+            _headerless_rows_after_total_overlay(
+                candidate_amount=candidate_amount,
+                candidate_height=candidate_height,
+            )
+        )
+    )
+
+    assert len(discovery.groups) == 1
+    assert "total_without_table" in discovery.diagnostics
+    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize(
+    "candidate_glyphs",
+    (
+        _ltr_glyphs("$31.00", 31.0, 92.0, height=0.8),
+        _ltr_glyphs("9", 67.0, 92.0, height=0.8),
+        _ltr_glyphs("$", 156.0, 92.0, height=0.8),
+    ),
+)
+def test_total_overlay_with_conflicting_glyph_provenance_remains_a_hard_boundary(
+    candidate_glyphs: tuple[Glyph, ...],
+) -> None:
+    discovery = discover_statement(
+        _document(_headerless_rows_after_total_overlay(glyphs=candidate_glyphs))
+    )
+
+    assert len(discovery.groups) == 1
+    assert "total_without_table" in discovery.diagnostics
+    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+
+
+def test_total_overlay_with_swapped_word_glyph_associations_remains_a_hard_boundary() -> None:
+    words = list(_headerless_rows_after_total_overlay().words)
+    words[9] = _word("Total", 20.0, 55.0, 80.0)
+    words[12] = _word("₪30.00", 20.0, 55.0, 92.0, height=0.8)
+    glyphs = (
+        *_ltr_glyphs("Total", 21.0, 80.0, height=0.8),
+        *_ltr_glyphs("03/02/2026", 71.0, 80.0, height=0.8),
+        *_ltr_glyphs("₪30.00", 119.0, 80.0, height=0.8),
+        *_ltr_glyphs("03/02/2026", 21.0, 92.0, height=0.8),
+        *_ltr_glyphs("₪30.00", 71.0, 92.0, height=0.8),
+        *_ltr_glyphs("Total", 119.0, 92.0, height=0.8),
+    )
+    page = _page(1, tuple(words), glyphs)
+
+    discovery = discover_statement(_document(page))
+
+    assert len(discovery.groups) == 1
+    assert "total_without_table" in discovery.diagnostics
+    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+
+
+def test_total_overlay_ignores_conflicting_glyph_from_another_y_band() -> None:
+    other_band = _ltr_glyphs("9", 67.0, 98.0, height=0.8)
+
+    discovery = discover_statement(
+        _document(_headerless_rows_after_total_overlay(glyphs=other_band))
+    )
+
+    assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 1)
+    assert normalize_statement(discovery).reconciliation.status is Status.RECONCILED
+
+
 def test_subtotal_and_final_total_claim_separate_headerless_partitions() -> None:
     page = _page(
         1,
@@ -1115,8 +1234,12 @@ def test_headerless_page_end_rows_join_a_compatible_next_page_table() -> None:
         1,
         (
             *_table(20.0, "₪", "10.00", "20.00"),
-            _word("Total", 50.0, 95.0, 80.0),
+            _word("Total", 30.0, 65.0, 80.0),
+            _word("03/02/2026", 70.0, 105.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+            _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+            _word("Total", 118.0, 155.0, 92.0, height=0.8),
             _word("03/02/2026", 0.0, 28.0, 110.0),
             _word("Shop", 50.0, 95.0, 110.0),
             _word("₪30.00", 118.0, 155.0, 110.0),

@@ -63,6 +63,8 @@ _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
 
+type _PageRowKey = tuple[int, BBox]
+
 
 def _height(bbox: BBox) -> float:
     return max(0.0, bbox[3] - bbox[1])
@@ -725,6 +727,7 @@ def _inherited_region_after_total(
     rows: Sequence[Row],
     total_index: int,
     source_region: TableRegion,
+    proven_total_overlay_keys: frozenset[_PageRowKey] = frozenset(),
 ) -> tuple[TableRegion | None, int]:
     """Resume only a strongly shaped section under real prior header evidence."""
 
@@ -744,6 +747,8 @@ def _inherited_region_after_total(
             ignored_outside_band_count += 1
             continue
         if _is_total_row(row):
+            if _page_row_key(row) in proven_total_overlay_keys:
+                continue
             stop_reason = "stopped_at_total"
             stop_index = index
             break
@@ -1032,10 +1037,15 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
     return tuple(logical_rows)
 
 
-def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]:
-    """Detect plausible repeated transaction tables without document identity rules."""
+def _page_row_key(row: Row) -> _PageRowKey:
+    return row.page_number, row.bbox
 
-    rows = _merged_header_bands(logical_rows(page_evidence))
+
+def _detect_table_regions_from_rows(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    proven_total_overlay_keys: frozenset[_PageRowKey] = frozenset(),
+) -> tuple[TableRegion, ...]:
     regions: list[TableRegion] = []
     index = 0
     while index < len(rows):
@@ -1051,6 +1061,7 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
                 rows,
                 next_index,
                 inherited_source,
+                proven_total_overlay_keys,
             )
             if inherited is None:
                 next_index += 1
@@ -1060,3 +1071,12 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
             next_index = inherited_next_index
         index = max(next_index, index + 1)
     return tuple(regions)
+
+
+def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]:
+    """Detect plausible repeated transaction tables without document identity rules."""
+
+    return _detect_table_regions_from_rows(
+        page_evidence,
+        _merged_header_bands(logical_rows(page_evidence)),
+    )
