@@ -2102,6 +2102,68 @@ def test_repeated_equal_original_values_inherit_proven_billing_currency() -> Non
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_single_equal_domestic_original_value_inherits_billing_currency() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions[0].original_amount == Decimal("10.00")
+    assert result.transactions[0].original_currency == "ILS"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_single_equal_original_value_with_conversion_evidence_keeps_currency_unknown() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.EXCHANGE_RATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("1.0000", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+                _cell("10.00", 4, 30.0),
+            ),
+        ),
+        headers=(
+            "Date",
+            "Description",
+            "Exchange rate",
+            "Original amount",
+            "Billed amount",
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions[0].original_amount is None
+    assert result.transactions[0].original_currency is None
+    assert "original_amount:unknown_currency" in result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_unsigned_original_credit_values_inherit_proven_billing_currency() -> None:
     region = _region(
         (

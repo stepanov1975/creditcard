@@ -178,7 +178,16 @@ def _proven_implicit_original_currency(
         if "subordinate_detail_continuation" not in row.diagnostics
         and len(_cells_for_column(row, billed_column)) == 1
     )
-    if len(transaction_rows) < 2:
+    has_conversion_evidence = any(
+        _role_columns(region, role)
+        for role in (
+            ColumnRole.CONVERSION_DATE,
+            ColumnRole.EXCHANGE_RATE,
+            ColumnRole.CURRENCY,
+        )
+    )
+    minimum_proven_rows = 2 if has_conversion_evidence else 1
+    if len(transaction_rows) < minimum_proven_rows:
         return None
     proven_row_count = 0
     for row in transaction_rows:
@@ -195,7 +204,7 @@ def _proven_implicit_original_currency(
         if abs(original.amount) != abs(billed.amount):
             return None
         proven_row_count += 1
-    return canonical_currency(billing_currency) if proven_row_count >= 2 else None
+    return canonical_currency(billing_currency) if proven_row_count >= minimum_proven_rows else None
 
 
 def _is_relevant_cell(cell: Cell) -> bool:
