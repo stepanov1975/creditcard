@@ -286,67 +286,6 @@ def _parse_installment(text: str) -> tuple[tuple[int, int] | None, str | None]:
     return (current, total), None
 
 
-def _parse_original_amount_cell(
-    cell: Cell,
-    row: Row,
-    original_column: ColumnSpec,
-    description_column: ColumnSpec,
-    currency_hint: str | None,
-) -> AmountParseResult:
-    direct = parse_amount(cell.text, currency_hint=currency_hint)
-    if direct.amount is not None and direct.currency is not None:
-        return direct
-    words = tuple(sorted(cell.words, key=lambda word: (word.bbox[0], word.bbox[1], word.text)))
-    if not words or any(word.source != "digital" for word in words):
-        return direct
-    amount_indexes = tuple(index for index, word in enumerate(words) if is_money_shaped(word.text))
-    currency_indexes = tuple(
-        index for index, word in enumerate(words) if canonical_currency(word.text) is not None
-    )
-    if len(amount_indexes) != 1 or len(currency_indexes) != 1:
-        return direct
-    money_indexes = {amount_indexes[0], currency_indexes[0]}
-    if len(money_indexes) != 2 or max(money_indexes) - min(money_indexes) != 1:
-        return direct
-    residual_indexes = tuple(index for index in range(len(words)) if index not in money_indexes)
-    if not residual_indexes:
-        return direct
-    residual_words = tuple(words[index] for index in residual_indexes)
-    if any(any(char.isdigit() for char in word.text) for word in residual_words):
-        return direct
-    residual_phrases = tuple(_normalized_phrase(word.text) for word in residual_words)
-    if not all(
-        phrase and len("".join(char for char in phrase if char.isalnum())) >= 3
-        for phrase in residual_phrases
-    ):
-        return direct
-    description_cells = _cells_for_column(row, description_column)
-    if len(description_cells) != 1:
-        return direct
-    description_words = description_cells[0].words
-    if not all(
-        any(
-            candidate.source == word.source
-            and _normalized_phrase(candidate.text).startswith(phrase)
-            for candidate in description_words
-        )
-        for word, phrase in zip(residual_words, residual_phrases, strict=True)
-    ):
-        return direct
-    description_is_right = _center_x(description_column.bbox) > _center_x(original_column.bbox)
-    if description_is_right:
-        if min(residual_indexes) <= max(money_indexes):
-            return direct
-    elif max(residual_indexes) >= min(money_indexes):
-        return direct
-    amount_word = words[amount_indexes[0]]
-    currency_word = words[currency_indexes[0]]
-    return parse_amount(
-        f"{amount_word.text} {currency_word.text}",
-        currency_hint=currency_hint,
-    )
-
-
 def _header_kind(column: ColumnSpec) -> str | None:
     header = _normalized_phrase(" ".join(cell.text for cell in column.source_cells))
     if _contains_marker(header, ("posting date", "billing date", "תאריך חיוב")):
@@ -712,20 +651,9 @@ def _normalize_row(
                     original_currency_hint = canonical_currency(original_currency_cells[0].text)
                     if original_currency_hint is None:
                         diagnostics.append("unknown_original_currency")
-            description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
-            original = (
-                _parse_original_amount_cell(
-                    original_cells[0],
-                    row,
-                    original_columns[0],
-                    description_columns[0],
-                    original_currency_hint,
-                )
-                if len(description_columns) == 1
-                else parse_amount(
-                    original_cells[0].text,
-                    currency_hint=original_currency_hint,
-                )
+            original = parse_amount(
+                original_cells[0].text,
+                currency_hint=original_currency_hint,
             )
             if original.amount is None or original.currency is None:
                 diagnostics.extend(

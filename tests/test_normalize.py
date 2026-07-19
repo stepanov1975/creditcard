@@ -37,12 +37,13 @@ def _word(
     y: float,
     *,
     source: str = "digital",
+    confidence: float = 1.0,
 ) -> Word:
     return Word(
         text=text,
         bbox=(x0, y, x1, y + 10.0),
         source=source,
-        confidence=1.0,
+        confidence=confidence,
     )
 
 
@@ -284,17 +285,16 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
 
 
 @pytest.mark.parametrize(
-    ("raw", "amount_word", "currency_word", "expected_currency"),
+    ("raw", "amount_word", "currency_word"),
     (
-        ("-2.56$ MERCHANT", "-2.56", "$", "USD"),
-        ("-28.22GBP MERCHANT", "-28.22", "GBP", "GBP"),
+        ("-2.56$ MERCHANT", "-2.56", "$"),
+        ("-28.22GBP MERCHANT", "-28.22", "GBP"),
     ),
 )
-def test_normalize_statement_uses_unique_original_money_word_subset(
+def test_normalize_statement_rejects_prefix_only_original_money_word_subset(
     raw: str,
     amount_word: str,
     currency_word: str,
-    expected_currency: str,
 ) -> None:
     original_cell = _cell(raw, 1, 30.0).model_copy(
         update={
@@ -330,18 +330,107 @@ def test_normalize_statement_uses_unique_original_money_word_subset(
     second = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     transaction = first.transactions[0]
-    assert transaction.original_amount == Decimal(amount_word)
-    assert transaction.original_currency == expected_currency
+    assert transaction.original_amount is None
+    assert transaction.original_currency is None
     assert transaction.description == "MERCHANT DETAILS"
-    assert tuple(reference.raw_text for reference in transaction.evidence) == (
-        "01/02/2026",
-        raw,
-        "MERCHANT DETAILS",
-        "10.00",
-    )
-    assert transaction.ambiguities == ()
-    assert first.reconciliation.status is Status.RECONCILED
+    assert "original_amount:invalid_amount_text" in transaction.ambiguities
+    assert first.reconciliation.status is Status.UNRECONCILED
     assert first == second
+
+
+@pytest.mark.parametrize(
+    ("original_words", "description_words"),
+    (
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 80.0, 30.0),
+                _word("MERCHANT", 82.0, 88.0, 30.0),
+            ),
+            (_word("MERCHANT", 102.0, 138.0, 30.0),),
+        ),
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT.", 74.0, 88.0, 30.0),
+            ),
+            (_word("MERCHANT DETAILS", 102.0, 138.0, 30.0),),
+        ),
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0),
+            ),
+            (_word("MERCHANT DETAILS", 102.0, 138.0, 30.0),),
+        ),
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 80.0, 30.0),
+                _word("DETAILS", 82.0, 88.0, 30.0),
+            ),
+            (
+                _word("DETAILS", 102.0, 110.0, 30.0),
+                _word("MERCHANT", 112.0, 126.0, 30.0),
+            ),
+        ),
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0),
+            ),
+            (_word("MERCHANT", 74.0, 88.0, 30.0),),
+        ),
+        (
+            (
+                _word("-2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0, confidence=0.9),
+            ),
+            (_word("MERCHANT", 74.0, 88.0, 30.0),),
+        ),
+    ),
+)
+def test_original_money_subset_rejects_nonidentical_or_overlapping_residual_provenance(
+    original_words: tuple[Word, ...],
+    description_words: tuple[Word, ...],
+) -> None:
+    original_text = " ".join(word.text for word in original_words)
+    description_text = " ".join(word.text for word in description_words)
+    original_cell = _cell(original_text, 1, 30.0).model_copy(update={"words": original_words})
+    description_cell = _cell(description_text, 2, 30.0).model_copy(
+        update={"words": description_words}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount is None
+    assert transaction.original_currency is None
+    assert "original_amount:invalid_amount_text" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 @pytest.mark.parametrize(
