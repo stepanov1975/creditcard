@@ -15,6 +15,7 @@ from ccparser.evidence import Word
 from ccparser.evidence.ocr import (
     OCR_LANGUAGES,
     OCR_PREPROCESSING_VERSION,
+    OCR_RECOGNITION_CACHE_VERSION,
     TesseractOcr,
     fuse_ocr_words,
     parse_tesseract_tsv,
@@ -115,6 +116,38 @@ def test_fuse_ocr_words_replaces_only_overlapping_truncated_numeric_token() -> N
     assert tuple(word.text for word in fused) == ("כותרת", "₪", "256.81")
 
 
+def test_fuse_ocr_words_repairs_truncated_valid_calendar_date() -> None:
+    primary = (Word(text="3", bbox=(28.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.96),)
+    supplemental = (
+        Word(
+            text="29/01/23",
+            bbox=(10.0, 30.0, 32.0, 40.0),
+            source="ocr",
+            confidence=0.95,
+        ),
+    )
+
+    fused = fuse_ocr_words(primary, supplemental)
+
+    assert tuple(word.text for word in fused) == ("29/01/23",)
+
+
+def test_fuse_ocr_words_rejects_malformed_calendar_date_supplement() -> None:
+    primary = (Word(text="3", bbox=(28.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.96),)
+    supplemental = (
+        Word(
+            text="39/19/23",
+            bbox=(10.0, 30.0, 32.0, 40.0),
+            source="ocr",
+            confidence=0.95,
+        ),
+    )
+
+    fused = fuse_ocr_words(primary, supplemental)
+
+    assert fused == primary
+
+
 def test_ocr_exposes_a_typed_runtime_error() -> None:
     error_type = getattr(ocr_module, "OcrError", object)
 
@@ -130,7 +163,10 @@ def test_ocr_constructor_has_no_command_override() -> None:
     constructor = inspect.signature(TesseractOcr)
 
     assert "command" not in constructor.parameters
-    assert getattr(ocr_module, "OCR_PIPELINE_VERSION", None) == "tesseract-tsv-fused-numeric-v2"
+    assert (
+        getattr(ocr_module, "OCR_PIPELINE_VERSION", None)
+        == "tesseract-tsv-fused-structured-numeric-v3"
+    )
 
 
 @pytest.mark.parametrize(
@@ -235,7 +271,7 @@ def test_cache_key_contains_every_extraction_dimension(
         "dpi": 300,
         "languages": OCR_LANGUAGES,
         "page_index": 3,
-        "pipeline_version": "tesseract-tsv-fused-numeric-v2",
+        "pipeline_version": OCR_RECOGNITION_CACHE_VERSION,
         "preprocessing_version": OCR_PREPROCESSING_VERSION,
         "source_sha256": "b" * 64,
         "supplemental_command": list(supplemental_tesseract_command()),

@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 import unicodedata
+from datetime import date
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +18,8 @@ from ccparser.evidence.models import BBox, Point, Word
 
 OCR_LANGUAGES = "heb+eng"
 OCR_PREPROCESSING_VERSION = "raw-pixmap-v1"
-OCR_PIPELINE_VERSION = "tesseract-tsv-fused-numeric-v2"
+OCR_PIPELINE_VERSION = "tesseract-tsv-fused-structured-numeric-v3"
+OCR_RECOGNITION_CACHE_VERSION = "tesseract-tsv-fused-numeric-v2"
 TESSERACT_VERSION_TIMEOUT_SECONDS = 10.0
 TESSERACT_RECOGNITION_TIMEOUT_SECONDS = 120.0
 
@@ -61,6 +63,10 @@ def supplemental_tesseract_command() -> tuple[str, ...]:
 
 
 _NUMERIC_TOKEN_PATTERN = re.compile(r"^[+-]?(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[,.]\d{1,2})?$")
+_DATE_TOKEN_PATTERN = re.compile(
+    r"^(?P<first>\d{1,4})(?P<separator>[./-])(?P<second>\d{1,2})"
+    r"(?P=separator)(?P<third>\d{1,4})$"
+)
 
 
 def _overlap_over_smaller(first: BBox, second: BBox) -> float:
@@ -74,8 +80,27 @@ def _overlap_over_smaller(first: BBox, second: BBox) -> float:
 
 
 def _numeric_digit_count(text: str) -> int:
-    normalized = unicodedata.normalize("NFC", text).strip()
-    if _NUMERIC_TOKEN_PATTERN.fullmatch(normalized) is None:
+    normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFC", text).strip()
+        if unicodedata.category(char) != "Cf"
+    )
+    if _NUMERIC_TOKEN_PATTERN.fullmatch(normalized) is not None:
+        return sum(char.isdigit() for char in normalized)
+    match = _DATE_TOKEN_PATTERN.fullmatch(normalized)
+    if match is None:
+        return 0
+    first, second, third = (match.group(name) for name in ("first", "second", "third"))
+    if len(first) == 4 and len(third) <= 2:
+        year, month, day = int(first), int(second), int(third)
+    elif len(first) <= 2 and len(third) in {2, 4}:
+        day, month = int(first), int(second)
+        year = int(third) if len(third) == 4 else 2000 + int(third)
+    else:
+        return 0
+    try:
+        date(year, month, day)
+    except ValueError:
         return 0
     return sum(char.isdigit() for char in normalized)
 
@@ -195,7 +220,7 @@ class TesseractOcr:
             "dpi": self.dpi,
             "languages": OCR_LANGUAGES,
             "page_index": page_index,
-            "pipeline_version": OCR_PIPELINE_VERSION,
+            "pipeline_version": OCR_RECOGNITION_CACHE_VERSION,
             "preprocessing_version": OCR_PREPROCESSING_VERSION,
             "source_sha256": source_sha256,
             "supplemental_command": list(self._supplemental_command),
