@@ -255,7 +255,13 @@ def _character_signature(text: str) -> tuple[str, ...]:
 
 def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str | None:
     visible_glyphs = tuple(glyph for glyph in glyphs if not glyph.char.isspace())
-    if not visible_glyphs or not words:
+    rtl_word_count = sum(_strong_direction(word.text) == "rtl" for word in words)
+    if (
+        not visible_glyphs
+        or not words
+        or rtl_word_count < 2
+        or any(char.isdigit() for glyph in visible_glyphs for char in glyph.char)
+    ):
         return None
     assigned: list[list[Glyph]] = [[] for _ in words]
     for glyph in visible_glyphs:

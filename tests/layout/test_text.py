@@ -95,6 +95,32 @@ def test_logical_text_uses_lossless_words_when_overlapping_glyphs_interleave() -
     assert logical_text_for_evidence(glyphs, words) == "המרה שער"
 
 
+def test_logical_text_keeps_numeric_punctuation_joined_from_glyph_geometry() -> None:
+    glyphs = tuple(_glyph(char, 10.0 + index * 5.0) for index, char in enumerate("12.40"))
+    words = (
+        Word(
+            text="12",
+            bbox=(9.0, 9.0, 19.0, 21.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text=".",
+            bbox=(19.0, 9.0, 24.0, 21.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="40",
+            bbox=(24.0, 9.0, 35.0, 21.0),
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+
+    assert logical_text_for_evidence(glyphs, words) == "12.40"
+
+
 def test_logical_text_attaches_hebrew_combining_marks_to_their_positioned_base() -> None:
     glyphs = (
         _glyph("ל", 75.0),
