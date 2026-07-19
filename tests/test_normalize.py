@@ -475,6 +475,79 @@ def test_normalize_statement_recovers_money_before_description_band_spill() -> N
     assert result.reconciliation.status is Status.RECONCILED
 
 
+@pytest.mark.parametrize(("note_amount", "is_corroborated"), (("3.00", True), ("4.00", False)))
+def test_normalize_statement_uses_bounded_note_to_corroborate_distant_original_spill(
+    note_amount: str,
+    is_corroborated: bool,
+) -> None:
+    original_cell = _cell("$3.00MERCHANT", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("$", 55.0, 58.0, 30.0),
+                _word("3.00", 59.0, 70.0, 30.0),
+                _word("MERCHANT", 80.0, 89.0, 30.0),
+            )
+        }
+    )
+    description_cell = _cell("DETAILS", 2, 30.0).model_copy(
+        update={"words": (_word("DETAILS", 125.0, 138.0, 30.0),)}
+    )
+    note_currency = _cell("USD", 2, 41.0).model_copy(
+        update={
+            "bbox": (105.0, 41.0, 115.0, 51.0),
+            "words": (_word("USD", 105.0, 115.0, 41.0),),
+        }
+    )
+    note_value = _cell(note_amount, 2, 41.0).model_copy(
+        update={
+            "bbox": (118.0, 41.0, 132.0, 51.0),
+            "words": (_word(note_amount, 118.0, 132.0, 41.0),),
+        }
+    )
+    note = _row(note_currency, note_value).model_copy(
+        update={
+            "diagnostics": (
+                "subordinate_detail_continuation",
+                "bounded_hebrew_note_detail",
+            )
+        }
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+            note,
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+    transaction = result.transactions[0]
+
+    if is_corroborated:
+        assert transaction.original_amount == Decimal("3.00")
+        assert transaction.original_currency == "USD"
+        assert transaction.description == "MERCHANT DETAILS"
+        assert transaction.ambiguities == ()
+        assert result.reconciliation.status is Status.RECONCILED
+    else:
+        assert transaction.original_amount is None
+        assert transaction.original_currency is None
+        assert transaction.description == "DETAILS"
+        assert "original_amount:invalid_amount_text" in transaction.ambiguities
+        assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_normalize_statement_recovers_money_before_exact_distant_description_duplicate() -> None:
     original_cell = _cell("$3.00MERCHANT", 1, 30.0).model_copy(
         update={

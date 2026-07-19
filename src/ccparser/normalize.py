@@ -807,11 +807,36 @@ def _word_height(word: Word) -> float:
     return max(0.0, word.bbox[3] - word.bbox[1])
 
 
+def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decimal, str]]:
+    corroborated: set[tuple[Decimal, str]] = set()
+    for row in rows:
+        if "bounded_hebrew_note_detail" not in row.diagnostics:
+            continue
+        words = tuple(word for cell in row.cells for word in cell.words)
+        currencies = {
+            currency
+            for word in words
+            if (currency := canonical_currency(word.text)) is not None
+        }
+        if len(currencies) != 1:
+            continue
+        currency = next(iter(currencies))
+        amounts = {
+            parsed.amount
+            for word in words
+            if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
+        }
+        if len(amounts) == 1:
+            corroborated.add((next(iter(amounts)), currency))
+    return frozenset(corroborated)
+
+
 def _original_amount_with_description_spill(
     row: Row,
     region: TableRegion,
     original_cell: Cell,
     currency_hint: str | None,
+    corroborated_amounts: frozenset[tuple[Decimal, str]],
 ) -> tuple[AmountParseResult, str, bool, bool] | None:
     description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
     original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
@@ -898,10 +923,15 @@ def _original_amount_with_description_spill(
             and residual_signature == description_signature
             and duplicate_is_separate
         )
+        has_bounded_note_corroboration = (
+            parsed.amount,
+            parsed.currency,
+        ) in corroborated_amounts
         if (
             not is_geometrically_adjacent
             and not spills_into_description_band
             and not has_exact_distant_duplicate
+            and not has_bounded_note_corroboration
         ):
             continue
         candidates.append(
@@ -1181,6 +1211,7 @@ def _normalize_row(
                     region,
                     original_cells[0],
                     original_currency_hint,
+                    _bounded_note_original_amounts(continuation_rows),
                 )
                 if spill is not None:
                     original, spill_text, description_on_right, already_in_description = spill
