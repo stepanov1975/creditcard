@@ -193,6 +193,13 @@ _FORM_FIELDS = frozenset(
         "חתימה",
     }
 )
+_CANCELLATION_PURPOSES = frozenset(
+    {
+        "card cancellation",
+        "cancellation of card",
+        "ביטול כרטיס",
+    }
+)
 _FIELD_LABELS: dict[str, frozenset[str]] = {
     "issuer": frozenset({"card issuer", "issuer", "מנפיק", "שם המנפיק"}),
     "account_number": frozenset({"account", "account no", "account number", "חשבון", "מספר חשבון"}),
@@ -716,6 +723,13 @@ def _positive_form_evidence(rows: Sequence[Row]) -> bool:
     return has_title and field_count >= 2
 
 
+def _positive_cancellation_correspondence_evidence(rows: Sequence[Row]) -> bool:
+    return any(
+        _contains_phrase(" ".join(cell.text for cell in row.cells), _CANCELLATION_PURPOSES)
+        for row in rows
+    )
+
+
 def _deduplicated(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
@@ -944,6 +958,15 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         classification = DocumentClassification.NOT_STATEMENT
         confidence = 0.95
         reason_codes = ("positive_non_statement_form_evidence",)
+    elif (
+        not regions
+        and not observed_total_marker_rows
+        and not rejected_total_rows
+        and _positive_cancellation_correspondence_evidence(page_rows)
+    ):
+        classification = DocumentClassification.NOT_STATEMENT
+        confidence = 0.95
+        reason_codes = ("positive_non_statement_cancellation_evidence",)
     else:
         classification = DocumentClassification.AMBIGUOUS
         confidence = 0.5 if regions or total_marker_rows else 0.2

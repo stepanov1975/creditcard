@@ -55,6 +55,7 @@ class AuditReasonCode(StrEnum):
 
     TRANSACTION_TABLE_WITH_COMPATIBLE_TOTAL = "transaction_table_with_compatible_total"
     POSITIVE_NON_STATEMENT_FORM_EVIDENCE = "positive_non_statement_form_evidence"
+    POSITIVE_NON_STATEMENT_CANCELLATION_EVIDENCE = "positive_non_statement_cancellation_evidence"
     STATEMENT_EVIDENCE_INCOMPLETE = "statement_evidence_incomplete"
     INSUFFICIENT_POSITIVE_EVIDENCE = "insufficient_positive_evidence"
     EXTRACTION_ERROR = "extraction_error"
@@ -65,7 +66,12 @@ class AuditReasonCode(StrEnum):
     CLASSIFIER_REASON_REDACTED = "classifier_reason_redacted"
 
 
-_POSITIVE_NON_STATEMENT_REASONS = frozenset({AuditReasonCode.POSITIVE_NON_STATEMENT_FORM_EVIDENCE})
+_POSITIVE_NON_STATEMENT_REASONS = frozenset(
+    {
+        AuditReasonCode.POSITIVE_NON_STATEMENT_CANCELLATION_EVIDENCE,
+        AuditReasonCode.POSITIVE_NON_STATEMENT_FORM_EVIDENCE,
+    }
+)
 
 
 class AuditDecision(_ImmutableAuditModel):

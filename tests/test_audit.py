@@ -35,6 +35,11 @@ _FORM = _discovery(
     0.95,
     "positive_non_statement_form_evidence",
 )
+_CANCELLATION_CORRESPONDENCE = _discovery(
+    DocumentClassification.NOT_STATEMENT,
+    0.95,
+    "positive_non_statement_cancellation_evidence",
+)
 _AMBIGUOUS = _discovery(
     DocumentClassification.AMBIGUOUS,
     0.3,
@@ -107,6 +112,24 @@ def test_audit_directory_dry_run_is_deterministic_positive_only_and_immutable(
     assert report.moved_count == 0
     assert not quarantine_dir.exists()
     assert (input_dir / "b-form.PDF").is_file()
+
+
+def test_audit_directory_accepts_positive_cancellation_correspondence_reason(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    _write(input_dir / "cancellation.pdf", b"cancellation")
+    extractor, classifier = _dependencies({b"cancellation": _CANCELLATION_CORRESPONDENCE})
+
+    report = audit_directory(
+        input_dir,
+        tmp_path / "quarantine",
+        extractor=extractor,
+        classifier=classifier,
+    )
+
+    assert report.decisions[0].action is AuditAction.QUARANTINE
+    assert report.decisions[0].reason_codes == ("positive_non_statement_cancellation_evidence",)
 
 
 def test_audit_directory_reviews_low_confidence_nonstatement_and_corrupt_pdf(

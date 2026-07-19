@@ -591,6 +591,109 @@ def test_discover_statement_uses_positive_form_evidence_and_not_absence() -> Non
     assert prose_result.reason_codes == ("insufficient_positive_evidence",)
 
 
+def test_discover_statement_joins_glyph_corrected_cells_for_cancellation_purpose() -> None:
+    page = _page(
+        1,
+        (
+            _word("לוטיב", 100.0, 121.0, 20.0),
+            _word("סיטרכ", 60.0, 86.0, 20.0),
+        ),
+        (
+            *_rtl_glyphs("ביטול", 120.0, 20.0),
+            *_rtl_glyphs("כרטיס", 85.0, 20.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.NOT_STATEMENT
+    assert result.reason_codes == ("positive_non_statement_cancellation_evidence",)
+
+
+def test_discover_statement_accepts_one_cell_cancellation_purpose() -> None:
+    page = _page(1, (_word("Card cancellation", 10.0, 145.0, 20.0),))
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.NOT_STATEMENT
+    assert result.reason_codes == ("positive_non_statement_cancellation_evidence",)
+
+
+def test_cancellation_purpose_never_overrides_filtered_total_marker_evidence() -> None:
+    page = _page(
+        1,
+        (
+            _word("Card cancellation", 10.0, 145.0, 10.0),
+            _word("Activity", 50.0, 95.0, 40.0),
+            _word("Rewards points", 118.0, 155.0, 40.0),
+            _word("Earned", 50.0, 95.0, 60.0),
+            _word("1,000", 118.0, 155.0, 60.0),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("1,000", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.table_regions == ()
+    assert result.rejected_total_candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("amount_text", "expected_rejected_totals"),
+    (("₪30.00", 0), ("30.00", 1)),
+)
+def test_cancellation_purpose_never_overrides_no_region_total_evidence(
+    amount_text: str,
+    expected_rejected_totals: int,
+) -> None:
+    page = _page(
+        1,
+        (
+            _word("Card cancellation", 10.0, 145.0, 20.0),
+            _word("Account number", 10.0, 70.0, 50.0),
+            _word("123456", 90.0, 130.0, 50.0),
+            _word("Card number", 10.0, 70.0, 70.0),
+            _word("9876", 90.0, 130.0, 70.0),
+            _word("Total", 10.0, 45.0, 100.0),
+            _word(amount_text, 80.0, 120.0, 100.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.table_regions == ()
+    assert len(result.rejected_total_candidates) == expected_rejected_totals
+
+
+def test_cancellation_purpose_never_overrides_table_and_total_evidence() -> None:
+    page = _page(
+        1,
+        (
+            _word("Card cancellation", 10.0, 145.0, 5.0),
+            *_table(40.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 100.0),
+            _word("₪30.00", 118.0, 155.0, 100.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.reason_codes == ("transaction_table_with_compatible_total",)
+
+
+def test_generic_prose_without_cancellation_purpose_remains_ambiguous() -> None:
+    page = _page(1, (_word("Please contact customer service", 10.0, 145.0, 20.0),))
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.reason_codes == ("insufficient_positive_evidence",)
+
+
 def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagnostics() -> None:
     page = _page(
         1,
