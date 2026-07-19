@@ -88,6 +88,31 @@ def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
     return tuple(glyphs)
 
 
+def _ltr_glyphs(
+    text: str,
+    left: float,
+    y: float,
+    *,
+    height: float,
+) -> tuple[Glyph, ...]:
+    glyphs: list[Glyph] = []
+    cursor = left
+    for char in text:
+        glyphs.append(
+            Glyph(
+                char=char,
+                bbox=(cursor, y, cursor + 0.2, y + height),
+                origin=(cursor, y + height * 0.9),
+                font="Synthetic",
+                size=height,
+                source="digital",
+                confidence=1.0,
+            )
+        )
+        cursor += 0.25
+    return tuple(glyphs)
+
+
 def test_discover_statement_builds_deterministic_separate_currency_groups() -> None:
     page = _page(
         1,
@@ -259,6 +284,70 @@ def test_tiny_total_with_one_different_word_remains_fatal() -> None:
     assert len(result.groups) == 1
     assert result.diagnostics == ("total_without_table",)
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_raw_identical_overlay_with_conflicting_amount_glyphs_remains_fatal() -> None:
+    words = (
+        *_table(20.0, "₪", "10.00", "20.00"),
+        _word("Total", 30.0, 65.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("₪30.00", 118.0, 155.0, 80.0),
+        _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+        _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+        _word("Total", 118.0, 155.0, 92.0, height=0.8),
+    )
+    candidate_glyphs = _ltr_glyphs("$31.00", 31.0, 92.0, height=0.8)
+
+    result = discover_statement(_document(_page(1, words, candidate_glyphs)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("total_without_table",)
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_raw_identical_overlay_with_orphan_glyph_provenance_remains_fatal() -> None:
+    words = (
+        *_table(20.0, "₪", "10.00", "20.00"),
+        _word("Total", 30.0, 65.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("₪30.00", 118.0, 155.0, 80.0),
+        _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+        _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+        _word("Total", 118.0, 155.0, 92.0, height=0.8),
+    )
+    orphan = _ltr_glyphs("9", 67.0, 92.0, height=0.8)
+
+    result = discover_statement(_document(_page(1, words, orphan)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("total_without_table",)
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_overlay_ignores_only_normalization_empty_orphan_spacing_glyphs() -> None:
+    words = (
+        *_table(20.0, "₪", "10.00", "20.00"),
+        _word("Total", 30.0, 65.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("₪30.00", 118.0, 155.0, 80.0),
+        _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+        _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+        _word("Total", 118.0, 155.0, 92.0, height=0.8),
+    )
+    spacing_glyphs = (
+        *_ltr_glyphs("  ", 67.0, 80.0, height=0.8),
+        *_ltr_glyphs(" ", 67.0, 92.0, height=0.8),
+    )
+
+    result = discover_statement(_document(_page(1, words, spacing_glyphs)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.rejected_total_candidates == ()
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
 @pytest.mark.parametrize(

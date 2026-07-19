@@ -12,10 +12,11 @@ from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ccparser.evidence.models import BBox, DocumentEvidence
+from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
 from ccparser.layout import TableRegion, detect_table_regions, logical_rows
 from ccparser.layout.columns import infer_column_roles, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
 from ccparser.money import currencies_in_text, parse_amount
 
@@ -322,6 +323,47 @@ def _row_word_text_multiset(row: Row) -> tuple[str, ...]:
     )
 
 
+def _normalized_exact_text(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+
+
+def _center_inside_bbox(candidate: BBox, container: BBox) -> bool:
+    center_x = (candidate[0] + candidate[2]) / 2
+    center_y = (candidate[1] + candidate[3]) / 2
+    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
+
+
+def _row_glyph_authoritative_signature(
+    row: Row,
+) -> tuple[tuple[str, ...], str, tuple[str, ...]]:
+    assigned: list[list[Glyph]] = [[] for _ in row.words]
+    orphan_glyphs: list[Glyph] = []
+    for glyph in row.glyphs:
+        owners = tuple(
+            index
+            for index, word in enumerate(row.words)
+            if _center_inside_bbox(glyph.bbox, word.bbox)
+        )
+        if len(owners) == 1:
+            assigned[owners[0]].append(glyph)
+        else:
+            orphan_glyphs.append(glyph)
+    word_tokens = tuple(
+        sorted(
+            _normalized_exact_text(logical_text_for_evidence(glyphs, (word,)))
+            for word, glyphs in zip(row.words, assigned, strict=True)
+        )
+    )
+    orphan_tuple = tuple(orphan_glyphs)
+    return (
+        word_tokens,
+        _normalized_exact_text(logical_text_for_evidence(orphan_tuple, ())),
+        tuple(
+            sorted(token for glyph in orphan_tuple if (token := _normalized_exact_text(glyph.char)))
+        ),
+    )
+
+
 def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -363,6 +405,10 @@ def _is_lossless_total_overlay_artifact(
         if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
             continue
         if _row_word_text_multiset(candidate) != _row_word_text_multiset(reference):
+            continue
+        if _row_glyph_authoritative_signature(candidate) != _row_glyph_authoritative_signature(
+            reference
+        ):
             continue
         preceding = tuple(
             region

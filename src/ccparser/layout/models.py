@@ -48,6 +48,7 @@ class Row(_ImmutableLayoutModel):
     page_number: int = Field(gt=0)
     bbox: BBox
     cells: tuple[Cell, ...]
+    glyphs: tuple[Glyph, ...] = ()
     words: tuple[Word, ...] = ()
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
