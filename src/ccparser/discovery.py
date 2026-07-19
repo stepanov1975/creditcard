@@ -154,7 +154,9 @@ _TOTAL_MARKERS = frozenset(
         "total amount",
         "total billed",
         "total charges due",
+        "total for date",
         "סהכ",
+        "סך חיוב",
         "סך הכל",
         "סךהכל",
         "סך החיובים הצפויים למועד החיוב הבא",
@@ -304,14 +306,17 @@ def _normalized_phrase(text: str) -> str:
 def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
     tokens = _normalized_phrase(text).split()
     for phrase in phrases:
-        phrase_tokens = phrase.split()
+        phrase_tokens = _normalized_phrase(phrase).split()
         length = len(phrase_tokens)
         if any(tokens[index : index + length] == phrase_tokens for index in range(len(tokens))):
             return True
-        if any("\u0590" <= char <= "\u05ff" for char in phrase):
-            compact_phrase = "".join(phrase_tokens)
-            if any(token.startswith(compact_phrase) for token in tokens):
-                return True
+        compact_phrase = "".join(phrase_tokens)
+        if len(phrase_tokens) > 1 and compact_phrase in tokens:
+            return True
+        if any("\u0590" <= char <= "\u05ff" for char in phrase) and any(
+            token.startswith(compact_phrase) for token in tokens
+        ):
+            return True
     return False
 
 

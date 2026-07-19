@@ -231,6 +231,41 @@ def test_discover_statement_does_not_infer_zero_activity_without_zero_total() ->
     assert result.groups == ()
 
 
+def test_discover_statement_accepts_losslessly_joined_multiword_total_label() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("TOTALFORDATE", 50.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].printed_total.amount_text == "₪30.00"
+
+
+def test_discover_statement_accepts_compact_hebrew_billed_total_label() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word('סךחיובבש"ח', 50.0, 105.0, 80.0),
+            _word("30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].printed_total.currency == "ILS"
+    assert result.groups[0].printed_total.amount_text == "30.00"
+
+
 def test_total_uses_proven_billed_band_when_other_numeric_cells_are_outside_it() -> None:
     page = _page(
         1,
