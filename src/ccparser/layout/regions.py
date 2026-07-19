@@ -907,7 +907,8 @@ def _projection_preserves_table_band_evidence(
     inside_cells = tuple(
         cell for cell in source.cells if table_x0 <= _center_x(cell.bbox) <= table_x1
     )
-    if not inside_cells or len(inside_cells) == len(source.cells):
+    outside_cells = tuple(cell for cell in source.cells if cell not in inside_cells)
+    if not inside_cells:
         return None
     source_words = tuple(word for cell in inside_cells for word in cell.words)
     projected_words = tuple(word for cell in projected.cells for word in cell.words)
@@ -923,7 +924,42 @@ def _projection_preserves_table_band_evidence(
     glyphs_preserved = len(source_glyphs) == len(projected_glyphs) and all(
         source_glyphs.count(glyph) == projected_glyphs.count(glyph) for glyph in source_glyphs
     )
-    return len(source.cells) - len(inside_cells) if words_preserved and glyphs_preserved else None
+    if not words_preserved or not glyphs_preserved:
+        return None
+
+    all_cell_words = tuple(word for cell in source.cells for word in cell.words)
+    if len(source.words) != len(all_cell_words) or any(
+        source.words.count(word) != all_cell_words.count(word) for word in source.words
+    ):
+        return None
+    inside_cell_glyphs = tuple(
+        glyph for cell in inside_cells for glyph in cell.glyphs if not glyph.char.isspace()
+    )
+    unassigned_glyphs = list(
+        glyph for glyph in source.glyphs if not glyph.char.isspace()
+    )
+    for glyph in inside_cell_glyphs:
+        if glyph not in unassigned_glyphs:
+            return None
+        unassigned_glyphs.remove(glyph)
+    outside_cell_glyphs = tuple(
+        glyph for cell in outside_cells for glyph in cell.glyphs if not glyph.char.isspace()
+    )
+    for glyph in outside_cell_glyphs:
+        if glyph in unassigned_glyphs:
+            unassigned_glyphs.remove(glyph)
+    has_separable_outside_glyph_run = bool(unassigned_glyphs) and (
+        all(
+            _center_x(glyph.bbox) < table_x0 or _center_x(glyph.bbox) > table_x1
+            for glyph in unassigned_glyphs
+        )
+        and sum(char.isalpha() for glyph in unassigned_glyphs for char in glyph.char) >= 4
+        and not any(char.isdigit() for glyph in unassigned_glyphs for char in glyph.char)
+    )
+    if unassigned_glyphs and not has_separable_outside_glyph_run:
+        return None
+    excluded_count = len(outside_cells) + int(has_separable_outside_glyph_run)
+    return excluded_count if excluded_count else None
 
 
 def _is_auxiliary_identifier_detail(row: Row) -> bool:
@@ -1800,13 +1836,11 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
                 )
             )
         row_glyphs = tuple(glyphs_by_row[row_index])
-        _, row_words = positioned_evidence_for_bbox(logical_page, row.bbox)
         logical_rows.append(
             row.model_copy(
                 update={
                     "cells": tuple(logical_cells),
                     "glyphs": row_glyphs,
-                    "words": row_words,
                 }
             )
         )

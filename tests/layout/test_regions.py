@@ -178,6 +178,8 @@ def test_logical_rows_assigns_overlapping_glyph_to_nearest_row_once() -> None:
     )
 
     assert len(rows) == 2
+    assert tuple(word.text for word in rows[0].words) == ("Tall sidebar", "First")
+    assert tuple(word.text for word in rows[1].words) == ("Second",)
     assert rows[0].glyphs == (overlapping,)
     assert overlapping not in rows[1].glyphs
 
@@ -185,7 +187,10 @@ def test_logical_rows_assigns_overlapping_glyph_to_nearest_row_once() -> None:
 def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> None:
     billed_word = _word("₪10.00", 10.0, 25.0, 30.0)
     description_word = _word("Market", 40.0, 60.0, 30.0)
-    sidebar_word = _word("Sidebar", 100.0, 120.0, 30.0)
+    sidebar_word = _word("*3338", 100.0, 120.0, 30.0)
+    sidebar_glyphs = tuple(
+        _glyph(char, 100.0 + index * 2.0, 30.0) for index, char in enumerate("*3338")
+    )
     billed = Cell(
         page_number=1,
         bbox=billed_word.bbox,
@@ -204,6 +209,7 @@ def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> N
         page_number=1,
         bbox=sidebar_word.bbox,
         text=sidebar_word.text,
+        glyphs=sidebar_glyphs,
         words=(sidebar_word,),
         confidence=1.0,
     )
@@ -243,6 +249,7 @@ def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> N
         page_number=1,
         bbox=(10.0, 30.0, 120.0, 40.0),
         cells=(billed, description, sidebar),
+        glyphs=sidebar_glyphs,
         words=(billed_word, description_word, sidebar_word),
         confidence=1.0,
     )
@@ -253,6 +260,69 @@ def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> N
             "words": (billed_word, description_word),
         }
     )
+
+    assert _projection_preserves_table_band_evidence(source, projected, header, schema) == 1
+
+
+def test_table_band_evidence_ignores_wordlike_outside_glyph_run() -> None:
+    billed_word = _word("₪10.00", 10.0, 25.0, 30.0)
+    description_word = _word("Market", 40.0, 60.0, 30.0)
+    billed = Cell(
+        page_number=1,
+        bbox=billed_word.bbox,
+        text=billed_word.text,
+        words=(billed_word,),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=description_word.bbox,
+        text=description_word.text,
+        words=(description_word,),
+        confidence=1.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=(10.0, 10.0, 60.0, 20.0),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=(10.0, 10.0, 60.0, 20.0),
+                text="Billed amount",
+                confidence=1.0,
+            ),
+        ),
+        confidence=1.0,
+    )
+    schema = TableSchema(
+        page_number=1,
+        bbox=(10.0, 10.0, 60.0, 40.0),
+        columns=(
+            ColumnSpec(
+                index=0,
+                page_number=1,
+                bbox=(10.0, 10.0, 60.0, 40.0),
+                relative_x0=0.0,
+                relative_x1=1.0,
+                role=ColumnRole.AMOUNT,
+                source_cells=header.cells,
+                confidence=1.0,
+            ),
+        ),
+        header_cells=header.cells,
+        sample_cells=(billed, description),
+        confidence=1.0,
+    )
+    outside_glyphs = _rtl_glyphs("הלוואה", 120.0, 30.0)
+    source = Row(
+        page_number=1,
+        bbox=(10.0, 30.0, 120.0, 40.0),
+        cells=(billed, description),
+        words=(billed_word, description_word),
+        glyphs=outside_glyphs,
+        confidence=1.0,
+    )
+    projected = source.model_copy(update={"bbox": (10.0, 30.0, 60.0, 40.0)})
 
     assert _projection_preserves_table_band_evidence(source, projected, header, schema) == 1
 
