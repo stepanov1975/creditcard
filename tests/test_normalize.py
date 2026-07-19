@@ -717,6 +717,46 @@ def test_normalize_statement_merges_consecutive_subordinate_detail_block() -> No
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_merges_auxiliary_fragment_without_changing_description() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.UNKNOWN,
+        ColumnRole.AMOUNT,
+    )
+    auxiliary = _row(_cell("continued", 2, 41.0)).model_copy(
+        update={"diagnostics": ("subordinate_auxiliary_continuation",)}
+    )
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Hotel", 1, 30.0),
+                _cell("Travel", 2, 30.0),
+                _cell("₪20.00", 3, 30.0),
+            ),
+            auxiliary,
+            _row(
+                _cell("02/02/2026", 0, 52.0),
+                _cell("Cafe", 1, 52.0),
+                _cell("Food", 2, 52.0),
+                _cell("₪10.00", 3, 52.0),
+            ),
+        ),
+        headers=("Date", "Description", "Detail", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "Hotel",
+        "Cafe",
+    )
+    assert result.row_results[1].diagnostics == ("merged_auxiliary_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_band() -> None:
     roles = (
         ColumnRole.DATE,

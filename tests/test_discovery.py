@@ -1580,6 +1580,58 @@ def test_single_same_page_table_ignores_earlier_different_currency_table() -> No
     assert "unclaimed_table_region" in discovery.diagnostics
 
 
+def test_same_page_table_keeps_total_before_later_page_group() -> None:
+    first_page = _page(1, _table(130.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪12.00", 118.0, 155.0, 70.0),
+        ),
+    )
+    third_page = _page(
+        3,
+        (
+            *_table(10.0, "₪", "2.00", "3.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪5.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page, third_page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert tuple(
+        tuple(discovery.table_regions.index(region) for region in group.table_regions)
+        for group in discovery.groups
+    ) == ((1,), (2,))
+    assert "ambiguous_group_region_association" not in discovery.diagnostics
+    assert "unclaimed_table_region" in discovery.diagnostics
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+
+
+def test_two_same_page_totals_do_not_disambiguate_unique_same_page_table() -> None:
+    first_page = _page(1, _table(130.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪12.00", 118.0, 155.0, 70.0),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics
+
+
 def test_single_total_after_two_same_page_tables_remains_unassigned() -> None:
     page = _page(
         1,

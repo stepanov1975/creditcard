@@ -848,6 +848,65 @@ def _foreign_conversion_detail_block(
     return None
 
 
+def _bounded_auxiliary_fragment(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+    previous: Row,
+) -> Row | None:
+    if (
+        start_index + 1 >= len(rows)
+        or not _has_valid_billed_amount(previous, schema)
+        or _row_alignment(previous, schema) < _minimum_row_alignment(schema)
+    ):
+        return None
+    source = rows[start_index]
+    following_source = rows[start_index + 1]
+    if (
+        not _row_intersects_horizontal_band(source, header.bbox)
+        or _is_total_row(source)
+        or _literal_header_role_count(source) >= 2
+        or not _detail_rows_are_adjacent(previous, source)
+        or not _row_intersects_horizontal_band(following_source, header.bbox)
+        or _is_total_row(following_source)
+        or _literal_header_role_count(following_source) >= 2
+        or not _detail_rows_are_adjacent(source, following_source)
+    ):
+        return None
+    projected = _project_row_to_header_bands(page_evidence, source, header)
+    if (
+        len(projected.cells) != 1
+        or not (source.words or any(not glyph.char.isspace() for glyph in source.glyphs))
+        or not _projection_preserves_positioned_evidence(source, projected)
+        or _transaction_shape_count(projected) != 0
+        or _has_subordinate_detail_marker(projected)
+    ):
+        return None
+    cell_center = _center_x(projected.cells[0].bbox)
+    matching_columns = tuple(
+        column for column in schema.columns if column.bbox[0] <= cell_center <= column.bbox[2]
+    )
+    if len(matching_columns) != 1 or matching_columns[0].role is not ColumnRole.UNKNOWN:
+        return None
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    if (
+        not following.cells
+        or not _has_valid_billed_amount(following, schema)
+        or _row_alignment(following, schema) < _minimum_row_alignment(schema)
+        or _transaction_shape_count(following) < 2
+    ):
+        return None
+    return projected.model_copy(
+        update={
+            "diagnostics": tuple(
+                dict.fromkeys((*projected.diagnostics, "subordinate_auxiliary_continuation"))
+            )
+        }
+    )
+
+
 def _inherited_region_after_total(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -1001,6 +1060,7 @@ def _detect_from_header(
     regular_rows: list[Row] = []
     continuation_count = 0
     detail_continuation_count = 0
+    auxiliary_continuation_count = 0
     ignored_outside_band_count = 0
     ignored_preamble_count = 0
     stop_reason: str | None = None
@@ -1063,6 +1123,21 @@ def _detect_from_header(
             stop_reason = "stopped_at_structure_change"
             stop_index = index
             break
+        if detail_continuation_allowed:
+            auxiliary_fragment = _bounded_auxiliary_fragment(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+                previous,
+            )
+            if auxiliary_fragment is not None:
+                accepted.append(auxiliary_fragment)
+                auxiliary_continuation_count += 1
+                detail_continuation_allowed = False
+                previous = auxiliary_fragment
+                continue
         if _is_description_continuation(projected, previous, schema):
             accepted.append(projected)
             continuation_count += 1
@@ -1119,6 +1194,8 @@ def _detect_from_header(
         diagnostics.append(f"continuation_rows:{continuation_count}")
     if detail_continuation_count:
         diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
+    if auxiliary_continuation_count:
+        diagnostics.append(f"auxiliary_continuation_rows:{auxiliary_continuation_count}")
     if ignored_outside_band_count:
         diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
     if ignored_preamble_count:

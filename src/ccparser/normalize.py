@@ -399,6 +399,28 @@ def _category_sign_contradiction(category: TransactionCategory, kind: Transactio
 
 
 def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
+    if "subordinate_auxiliary_continuation" in row.diagnostics:
+        billed_column = _proven_billed_amount_column(region)
+        if billed_column is None or any(
+            diagnostic in previous.diagnostics
+            for diagnostic in (
+                "subordinate_auxiliary_continuation",
+                "subordinate_detail_continuation",
+            )
+        ):
+            return False
+        billed_cells = _cells_for_column(previous, billed_column)
+        if (
+            len(billed_cells) != 1
+            or not is_money_shaped(billed_cells[0].text)
+            or _cells_for_column(row, billed_column)
+        ):
+            return False
+        typical_height = statistics.median(
+            _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
+        )
+        gap = max(0.0, row.bbox[1] - previous.bbox[3])
+        return gap <= typical_height * 1.5
     if "subordinate_detail_continuation" in row.diagnostics:
         billed_column = _proven_billed_amount_column(region)
         if billed_column is None:
@@ -436,7 +458,10 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
 
 def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, list[str]]:
     description_rows = tuple(
-        row for row in rows if "subordinate_detail_continuation" not in row.diagnostics
+        row
+        for row in rows
+        if "subordinate_detail_continuation" not in row.diagnostics
+        and "subordinate_auxiliary_continuation" not in row.diagnostics
     )
     cells = tuple(
         cell
@@ -822,6 +847,8 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     continuation_diagnostic = (
                         "merged_subordinate_detail_continuation"
                         if "subordinate_detail_continuation" in continuation.diagnostics
+                        else "merged_auxiliary_continuation"
+                        if "subordinate_auxiliary_continuation" in continuation.diagnostics
                         else "merged_description_continuation"
                     )
                     row_results.append(

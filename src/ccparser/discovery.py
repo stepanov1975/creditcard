@@ -856,7 +856,12 @@ def _associate_regions(
     )
     if (
         compatible_same_page_candidate
-        and sum(candidate.currency == total.currency for candidate in remaining_totals) == 1
+        and sum(
+            candidate.currency == total.currency
+            and candidate.label_evidence.page_number == total_row.page_number
+            for candidate in remaining_totals
+        )
+        == 1
     ):
         return same_page, ()
     if not section_currencies_match:

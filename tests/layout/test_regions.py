@@ -206,6 +206,26 @@ def _foreign_data(
     )
 
 
+def _auxiliary_table_header(y: float) -> tuple[Word, ...]:
+    return (
+        _word("Date", 0.0, 20.0, y),
+        _word("Description", 30.0, 55.0, y),
+        _word("Detail", 65.0, 85.0, y),
+        _word("Amount", 100.0, 125.0, y),
+    )
+
+
+def _auxiliary_data(
+    y: float, date: str, description: str, detail: str, amount: str
+) -> tuple[Word, ...]:
+    return (
+        _word(date, 0.0, 20.0, y),
+        _word(description, 30.0, 55.0, y),
+        _word(detail, 65.0, 85.0, y),
+        _word(amount, 100.0, 125.0, y),
+    )
+
+
 def _wide_sparse_data(y: float, *, include_conversion_date: bool) -> tuple[Word, ...]:
     return (
         _word("12.40", 0.0, 10.0, y),
@@ -1043,6 +1063,64 @@ def test_foreign_detail_block_uses_normalizer_gap_limit() -> None:
             _word("special arrangement", 30.0, 55.0, 87.0),
             *_foreign_data(98.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
         )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_detect_table_regions_bridges_one_lossless_auxiliary_fragment() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert "subordinate_auxiliary_continuation" in regions[0].rows[2].diagnostics
+    assert "auxiliary_continuation_rows:1" in regions[0].diagnostics
+
+
+def test_auxiliary_fragment_requires_immediately_following_transaction() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("first fragment", 65.0, 85.0, 61.0),
+            _word("second fragment", 65.0, 85.0, 72.0),
+            *_auxiliary_data(83.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_auxiliary_fragment_rejects_unprojected_nonspace_glyph() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        ),
+        glyphs=(_glyph("x", 160.0, 61.0),),
+        width=200.0,
     )
 
     regions = detect_table_regions(page)
