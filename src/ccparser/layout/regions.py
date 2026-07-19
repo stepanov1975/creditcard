@@ -1491,11 +1491,16 @@ def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
         for cell in row.cells
         if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
     )
+    transaction_shape_count = _transaction_shape_count(row)
+    has_embedded_date_proof = transaction_shape_count >= 1 and any(
+        contains_date_token(value)
+        for value in (*[cell.text for cell in row.cells], *[word.text for word in row.words])
+    )
     return (
         len(billed_cells) == 1
         and any(char.isdigit() for char in billed_cells[0].text)
         and not is_money_shaped(billed_cells[0].text)
-        and _transaction_shape_count(row) >= 2
+        and (transaction_shape_count >= 2 or has_embedded_date_proof)
         and _row_alignment(row, schema) >= _minimum_row_alignment(schema)
     )
 

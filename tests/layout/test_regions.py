@@ -2348,6 +2348,32 @@ def test_detect_table_regions_retains_bounded_ambiguous_rows_proven_by_repetitio
     assert "ambiguous_leading_rows:2" in regions[0].diagnostics
 
 
+def test_ambiguous_leading_rows_accept_embedded_date_token_as_transaction_shape() -> None:
+    def row(y: float, date_and_merchant: str, original: str, billed: str) -> tuple[Word, ...]:
+        return (
+            _word(date_and_merchant, 0.0, 20.0, y),
+            _word(original, 65.0, 85.0, y),
+            _word(billed, 100.0, 125.0, y),
+        )
+
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *row(30.0, "01/02/2026 Market", "$10.00", "₪10.00x"),
+            *row(50.0, "02/02/2026 Cafe", "$20.00", "₪20.00x"),
+            *_foreign_data(70.0, "03/02/2026", "Hotel", "$30.00", "₪30.00"),
+            *_foreign_data(90.0, "04/02/2026", "Train", "$40.00", "₪40.00"),
+        ),
+        width=130.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert all("ambiguous_leading_transaction" in row.diagnostics for row in regions[0].rows[:2])
+
+
 def test_detect_table_regions_rejects_unproven_ambiguous_leading_rows() -> None:
     page = _page(
         (
