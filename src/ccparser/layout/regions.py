@@ -63,6 +63,8 @@ _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
 MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
+MIN_ISSUER_CONVERSION_DETAIL_ROWS = 4
+MAX_ISSUER_CONVERSION_DETAIL_ROWS = 5
 
 type _PageRowKey = Row
 
@@ -788,11 +790,22 @@ def _foreign_conversion_detail_block(
     previous: Row,
     observed: Sequence[Row],
 ) -> tuple[tuple[Row, ...], int] | None:
-    if not _has_distinct_original_and_billed_currencies(previous, schema):
-        return None
     billed_column = proven_billed_amount_column(schema, (previous,))
-    if billed_column is None:
+    original_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    if (
+        billed_column is None
+        or len(original_columns) != 1
+        or original_columns[0].index == billed_column.index
+    ):
         return None
+    has_distinct_currencies = _has_distinct_original_and_billed_currencies(previous, schema)
+    maximum_detail_rows = (
+        MAX_FOREIGN_CONVERSION_DETAIL_ROWS
+        if has_distinct_currencies
+        else MAX_ISSUER_CONVERSION_DETAIL_ROWS
+    )
     details: list[Row] = []
     has_exact_marker = False
     preceding = previous
@@ -813,7 +826,11 @@ def _foreign_conversion_detail_block(
         if _has_valid_billed_amount(projected, schema) and alignment >= _minimum_row_alignment(
             schema
         ):
-            if details and has_exact_marker:
+            if (
+                details
+                and has_exact_marker
+                and (has_distinct_currencies or len(details) >= MIN_ISSUER_CONVERSION_DETAIL_ROWS)
+            ):
                 return tuple(details), index - 1
             return None
         billed_cells = tuple(
@@ -822,7 +839,7 @@ def _foreign_conversion_detail_block(
             if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
         )
         if (
-            len(details) >= MAX_FOREIGN_CONVERSION_DETAIL_ROWS
+            len(details) >= maximum_detail_rows
             or billed_cells
             or any(is_date_shaped(cell.text) for cell in projected.cells)
             or _transaction_shape_count(projected) > 1

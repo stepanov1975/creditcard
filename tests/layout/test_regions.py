@@ -966,6 +966,75 @@ def test_foreign_detail_block_requires_distinct_transaction_currencies() -> None
     assert "stopped_at_structure_change" in regions[0].diagnostics
 
 
+def test_issuer_detail_block_accepts_four_rows_without_distinct_currencies() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Local shop", "₪11.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("rate note", 65.0, 85.0, 61.0),
+            _word("conversion note", 30.0, 55.0, 72.0),
+            _word("Fee", 30.0, 55.0, 83.0),
+            _word("discount applied", 65.0, 85.0, 83.0),
+            _word("special arrangement", 30.0, 55.0, 94.0),
+            *_foreign_data(105.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 7
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:6])
+    assert "detail_continuation_rows:4" in regions[0].diagnostics
+
+
+def test_issuer_detail_block_rejects_three_rows_without_distinct_currencies() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Local shop", "₪11.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("rate note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 65.0, 85.0, 72.0),
+            _word("special arrangement", 30.0, 55.0, 83.0),
+            *_foreign_data(94.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_issuer_detail_block_rejects_plain_single_amount_table() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "₪10.00"),
+            *_data(50.0, "02/02/2026", "Shop", "₪11.00"),
+            _word("shipping note", 35.0, 72.0, 61.0),
+            _word("Fee", 35.0, 72.0, 72.0),
+            _word("promotion", 35.0, 72.0, 83.0),
+            _word("customer note", 35.0, 72.0, 94.0),
+            *_data(105.0, "03/02/2026", "Cafe", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 3
+    assert "detail_continuation_rows:4" not in regions[0].diagnostics
+    assert "continuation_rows:1" in regions[0].diagnostics
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_requires_exact_subordinate_marker() -> None:
     page = _page(
         (
