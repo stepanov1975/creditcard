@@ -7,7 +7,10 @@ name = "ccparser"
 version = "0.1.0"
 description = "Local credit-card statement parser"
 requires-python = ">=3.13"
-dependencies = ["pydantic>=2.12,<3", "pymupdf>=1.28,<2"]
+dependencies = ["pydantic>=2.12,<3", "pymupdf>=1.28,<2", "typer>=0.27,<1"]
+
+[project.scripts]
+ccparse = "ccparser.cli:app"
 
 [project.optional-dependencies]
 dev = [

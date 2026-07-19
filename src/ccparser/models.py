@@ -6,6 +6,7 @@ import unicodedata
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Self
 
 from pydantic import (
@@ -160,6 +161,19 @@ class StatementResult(BaseModel):
     transactions: tuple[Transaction, ...]
     groups: tuple[ReconciliationGroup, ...]
     diagnostics: tuple[str, ...] = ()
+    source_name: str | None = None
+    source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    statement_id: str | None = None
+
+    @field_validator("source_name")
+    @classmethod
+    def validate_source_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        source = PurePosixPath(value)
+        if source.is_absolute() or not source.parts or ".." in source.parts:
+            raise ValueError("source name must be a safe relative POSIX path")
+        return source.as_posix()
 
 
 class BatchResult(BaseModel):
