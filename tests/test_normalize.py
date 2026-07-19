@@ -1008,6 +1008,29 @@ def test_normalize_statement_distinguishes_labeled_transaction_and_posting_dates
     assert transaction.ambiguities == ()
 
 
+def test_normalize_statement_completes_one_generic_date_from_labeled_posting_date() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("03/02/2026", 0, 30.0),
+                _cell("01/02/2026", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("4.00", 3, 30.0),
+            ),
+        ),
+        headers=("Posting date", "Date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.posting_date == date(2026, 2, 3)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_preserves_conversion_date_as_ancillary_evidence() -> None:
     region = _region(
         (
@@ -1238,6 +1261,40 @@ def test_normalize_statement_proves_complete_transaction_and_optional_later_post
     )
     assert all(not transaction.ambiguities for transaction in result.transactions)
     assert all(row.transaction is not None for row in result.row_results)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_proves_consistently_earlier_generic_transaction_dates() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("03/02/26", 0, 30.0),
+                _cell("01/02/26", 1, 30.0),
+                _cell("First", 2, 30.0),
+                _cell("2.00", 3, 30.0),
+            ),
+            _row(
+                _cell("04/02/26", 0, 50.0),
+                _cell("04/02/26", 1, 50.0),
+                _cell("Second", 2, 50.0),
+                _cell("2.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Date", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    assert tuple(transaction.transaction_date for transaction in result.transactions) == (
+        date(2026, 2, 1),
+        date(2026, 2, 4),
+    )
+    assert tuple(transaction.posting_date for transaction in result.transactions) == (
+        date(2026, 2, 3),
+        date(2026, 2, 4),
+    )
+    assert all(not transaction.ambiguities for transaction in result.transactions)
     assert result.reconciliation.status is Status.RECONCILED
 
 

@@ -383,11 +383,19 @@ def _structural_date_column_kinds(
     year_context: DiscoveredDateYearContext | None,
 ) -> dict[int, str]:
     columns = _role_columns(region, ColumnRole.DATE)
-    if (
-        len(columns) != 2
-        or year_context is None
-        or any(_header_kind(column) is not None for column in columns)
-    ):
+    if len(columns) != 2 or year_context is None:
+        return {}
+    header_kinds = tuple(_header_kind(column) for column in columns)
+    labeled_indexes = tuple(index for index, kind in enumerate(header_kinds) if kind is not None)
+    if len(labeled_indexes) == 1:
+        labeled_index = labeled_indexes[0]
+        labeled_kind = header_kinds[labeled_index]
+        return {
+            columns[1 - labeled_index].index: (
+                "transaction" if labeled_kind == "posting" else "posting"
+            )
+        }
+    if labeled_indexes:
         return {}
     amount_column = _proven_billed_amount_column(region)
     if amount_column is None:
@@ -420,6 +428,29 @@ def _structural_date_column_kinds(
         for index, values in enumerate(parsed_by_column)
         if all(value is not None for value in values)
     )
+    if len(complete_indexes) == 2:
+        first_values = tuple(value for value in parsed_by_column[0] if value is not None)
+        second_values = tuple(value for value in parsed_by_column[1] if value is not None)
+        ordered_candidates: list[tuple[int, int]] = []
+        if all(
+            first <= second for first, second in zip(first_values, second_values, strict=True)
+        ) and any(
+            first < second for first, second in zip(first_values, second_values, strict=True)
+        ):
+            ordered_candidates.append((0, 1))
+        if all(
+            second <= first for first, second in zip(first_values, second_values, strict=True)
+        ) and any(
+            second < first for first, second in zip(first_values, second_values, strict=True)
+        ):
+            ordered_candidates.append((1, 0))
+        if len(ordered_candidates) != 1:
+            return {}
+        transaction_index, posting_index = ordered_candidates[0]
+        return {
+            columns[transaction_index].index: "transaction",
+            columns[posting_index].index: "posting",
+        }
     if len(complete_indexes) != 1:
         return {}
     transaction_index = complete_indexes[0]
