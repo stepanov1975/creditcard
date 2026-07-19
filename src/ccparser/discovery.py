@@ -14,7 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
 from ccparser.layout import TableRegion, logical_rows
-from ccparser.layout.columns import infer_column_roles, proven_billed_amount_column
+from ccparser.layout.columns import (
+    explicit_billed_amount_column,
+    infer_column_roles,
+    proven_billed_amount_column,
+)
 from ccparser.layout.models import Cell, ColumnRole, Row
 from ccparser.layout.regions import (
     _detect_table_regions_from_rows,
@@ -23,7 +27,7 @@ from ccparser.layout.regions import (
 )
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
-from ccparser.money import currencies_in_text, parse_amount
+from ccparser.money import currencies_in_text, is_money_shaped, parse_amount
 
 
 class _ImmutableDiscoveryModel(BaseModel):
@@ -313,6 +317,44 @@ def _table_currencies(region: TableRegion) -> tuple[str, ...]:
         for currency in currencies_in_text(cell.text)
     }
     return tuple(sorted(currencies))
+
+
+def _can_inherit_printed_total_currency(region: TableRegion) -> bool:
+    roles = {column.role for column in region.table_schema.columns}
+    if roles & {ColumnRole.CURRENCY, ColumnRole.BILLING_CURRENCY}:
+        return False
+    explicit_column = explicit_billed_amount_column(
+        region.table_schema.columns,
+        region.table_schema.header_cells,
+    )
+    proven_column = proven_billed_amount_column(region.table_schema, region.rows)
+    if (
+        explicit_column is None
+        or proven_column is None
+        or explicit_column.index != proven_column.index
+        or not region.rows
+    ):
+        return False
+    for row in region.rows:
+        cells = tuple(
+            cell
+            for cell in row.cells
+            if proven_column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= proven_column.bbox[2]
+        )
+        if (
+            len(cells) != 1
+            or not is_money_shaped(cells[0].text)
+            or currencies_in_text(cells[0].text)
+        ):
+            return False
+    return True
+
+
+def _table_matches_total_currency(region: TableRegion, currency: str) -> bool:
+    table_currencies = _table_currencies(region)
+    if table_currencies:
+        return table_currencies == (currency,)
+    return _can_inherit_printed_total_currency(region)
 
 
 def _reading_key_bbox(page_number: int, bbox: BBox) -> tuple[int, float, float]:
@@ -840,7 +882,7 @@ def _associate_regions(
     if not section:
         return (), ("total_without_table",)
     section_currencies_match = all(
-        _table_currencies(region) == (total.currency,) for region in section
+        _table_matches_total_currency(region, total.currency) for region in section
     )
     if len(section) == 1:
         if not section_currencies_match:
@@ -852,7 +894,7 @@ def _associate_regions(
     compatible_same_page_candidate = (
         len(same_page) == 1
         and same_page[0] is section[-1]
-        and _table_currencies(same_page[0]) == (total.currency,)
+        and _table_matches_total_currency(same_page[0], total.currency)
     )
     if (
         compatible_same_page_candidate

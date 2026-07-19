@@ -67,6 +67,23 @@ def _table(y: float, currency: str, first: str, second: str) -> tuple[Word, ...]
     )
 
 
+def _currencyless_billed_table(y: float) -> tuple[Word, ...]:
+    return (
+        _word("Date", 0.0, 28.0, y),
+        _word("Description", 40.0, 75.0, y),
+        _word("Original amount", 85.0, 112.0, y),
+        _word("Billed amount", 125.0, 155.0, y),
+        _word("01/02/2026", 0.0, 28.0, y + 20.0),
+        _word("Market", 40.0, 75.0, y + 20.0),
+        _word("$10.00", 85.0, 112.0, y + 20.0),
+        _word("20.00", 125.0, 155.0, y + 20.0),
+        _word("02/02/2026", 0.0, 28.0, y + 40.0),
+        _word("Cafe", 40.0, 75.0, y + 40.0),
+        _word("$15.00", 85.0, 112.0, y + 40.0),
+        _word("30.00", 125.0, 155.0, y + 40.0),
+    )
+
+
 def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
     glyphs: list[Glyph] = []
     cursor = right
@@ -1675,6 +1692,47 @@ def test_mixed_currency_table_is_not_compatible_with_billing_total() -> None:
         1,
         (
             *_table(20.0, "", "$10.00", "₪20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_table_currency" in result.diagnostics
+
+
+def test_explicit_currencyless_billed_column_inherits_printed_total_currency() -> None:
+    page = _page(
+        1,
+        (
+            *_currencyless_billed_table(20.0),
+            _word("Total", 40.0, 75.0, 80.0),
+            _word("₪50.00", 125.0, 155.0, 80.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert "ambiguous_table_currency" not in discovery.diagnostics
+    assert tuple(transaction.billed_amount for transaction in normalized.transactions) == (
+        20,
+        30,
+    )
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert normalized.reconciliation.groups[0].difference == 0
+
+
+def test_generic_currencyless_amount_column_does_not_inherit_total_currency() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "", "10.00", "20.00"),
             _word("Total", 50.0, 95.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
         ),
