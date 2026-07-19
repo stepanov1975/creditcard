@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import traceback
 from base64 import b64decode
@@ -20,7 +21,7 @@ from ccparser.discovery import (
     StatementGroupDiscovery,
 )
 from ccparser.evidence import DocumentEvidence, OcrError
-from ccparser.evidence.models import BBox, Word
+from ccparser.evidence.models import BBox, Glyph, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import (
     BatchResult,
@@ -32,6 +33,7 @@ from ccparser.models import (
     TransactionKind,
 )
 from ccparser.normalize import RowNormalizationResult, StatementNormalization
+from ccparser.output import canonical_json_bytes
 from ccparser.parser import (
     ParserInputError,
     ParserRuntimeError,
@@ -188,30 +190,69 @@ def test_parse_statement_downgrades_inconsistent_reconciled_result(tmp_path: Pat
 
 
 def _structured_discovery(classification: DocumentClassification) -> StatementDiscovery:
+    header_glyph = Glyph(
+        char="A",
+        bbox=(0.0, 10.0, 5.0, 20.0),
+        origin=(0.0, 18.0),
+        font="Synthetic Header",
+        size=10.0,
+        source="digital",
+        confidence=0.91,
+    )
+    header_word = Word(
+        text="Amount",
+        bbox=(0.0, 10.0, 40.0, 20.0),
+        source="digital",
+        confidence=0.92,
+    )
     header_cell = Cell(
         page_number=1,
         bbox=(0.0, 10.0, 40.0, 20.0),
         text="Amount",
+        glyphs=(header_glyph,),
+        words=(header_word,),
         confidence=0.9,
         diagnostics=("header_diagnostic",),
+    )
+    candidate_glyph = Glyph(
+        char="1",
+        bbox=(0.0, 30.0, 5.0, 40.0),
+        origin=(0.0, 38.0),
+        font="Synthetic Row",
+        size=9.0,
+        source="digital",
+        confidence=0.79,
+    )
+    candidate_word = Word(
+        text="10.00",
+        bbox=(0.0, 30.0, 40.0, 40.0),
+        source="ocr",
+        confidence=0.78,
     )
     row_cell = Cell(
         page_number=1,
         bbox=(0.0, 30.0, 40.0, 40.0),
         text="10.00",
+        glyphs=(candidate_glyph,),
+        words=(candidate_word,),
         confidence=0.8,
+        diagnostics=("candidate_cell_diagnostic",),
     )
     header = Row(
         page_number=1,
         bbox=header_cell.bbox,
         cells=(header_cell,),
+        words=(header_word,),
         confidence=0.9,
+        diagnostics=("header_row_diagnostic",),
     )
     row = Row(
         page_number=1,
         bbox=row_cell.bbox,
         cells=(row_cell,),
+        words=(candidate_word,),
         confidence=0.8,
+        diagnostics=("candidate_row_diagnostic",),
     )
     column = ColumnSpec(
         index=0,
@@ -322,9 +363,36 @@ def test_parse_statement_preserves_structured_discovery_for_nonparsed_results(
     assert result.discovery.classification == classification.value
     assert result.discovery.metadata[0].value == "Synthetic Issuer"
     assert result.discovery.metadata[0].evidence.raw_text == "Synthetic Issuer"
-    assert result.discovery.table_regions[0].header_evidence[0].raw_text == "Amount"
-    assert result.discovery.table_regions[0].column_roles == ("amount",)
+    table = result.discovery.table_regions[0]
+    assert table.header_evidence[0].raw_text == "Amount"
+    assert table.column_roles == ("amount",)
+    assert table.header.diagnostics == ("header_row_diagnostic",)
+    assert table.rows[0].bbox == (0.0, 30.0, 40.0, 40.0)
+    assert table.rows[0].cells[0].text == "10.00"
+    assert table.rows[0].cells[0].diagnostics == ("candidate_cell_diagnostic",)
+    assert table.rows[0].words[0].source == "ocr"
+    assert table.rows[0].cells[0].glyphs[0].font == "Synthetic Row"
+    assert table.table_schema.diagnostics == ("schema_diagnostic",)
+    assert table.table_schema.columns[0].diagnostics == ("column_diagnostic",)
+    assert table.table_schema.columns[0].source_cells[0].words[0].text == "Amount"
+    assert table.table_schema.header_cells[0].glyphs[0].char == "A"
+    assert table.table_schema.sample_cells[0].words[0].source == "ocr"
+    assert table.diagnostics == ("region_diagnostic",)
     assert result.discovery.reason_codes == ("structured_reason",)
+
+    payload = json.loads(canonical_json_bytes(result))
+    serialized_table = payload["discovery"]["table_regions"][0]
+    assert serialized_table["rows"][0]["cells"][0]["text"] == "10.00"
+    assert serialized_table["rows"][0]["cells"][0]["bbox"] == [0.0, 30.0, 40.0, 40.0]
+    assert serialized_table["rows"][0]["cells"][0]["diagnostics"] == ["candidate_cell_diagnostic"]
+    serialized_schema = serialized_table["table_schema"]
+    assert serialized_schema["diagnostics"] == ["schema_diagnostic"]
+    assert serialized_schema["columns"][0]["diagnostics"] == ["column_diagnostic"]
+    assert serialized_schema["columns"][0]["source_cells"][0]["glyphs"][0]["font"] == (
+        "Synthetic Header"
+    )
+    assert serialized_schema["header_cells"][0]["words"][0]["source"] == "digital"
+    assert serialized_schema["sample_cells"][0]["words"][0]["source"] == "ocr"
 
 
 def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transactions(
@@ -424,6 +492,8 @@ def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transa
     assert result.discovery is not None
     assert result.discovery.printed_totals[0].label_evidence.raw_text == "Total"
     assert result.discovery.printed_totals[0].value_evidence.raw_text == "10.00"
+    assert result.discovery.table_regions[0].rows[0].cells[0].text == "10.00"
+    assert result.discovery.table_regions[0].table_schema.sample_cells[0].words[0].source == "ocr"
     assert payload["row_results"][1]["evidence"][0]["raw_text"] == "rejected raw row"
 
 
@@ -718,9 +788,11 @@ def test_parse_directory_walk_error_is_typed_input_failure_without_empty_outputs
     assert not output_dir.exists()
 
 
+@pytest.mark.parametrize("error_type", (OSError, RuntimeError))
 def test_parse_directory_path_inspection_error_is_typed_and_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
 ) -> None:
     input_dir = tmp_path / "input"
     input_dir.mkdir()
@@ -728,7 +800,7 @@ def test_parse_directory_path_inspection_error_is_typed_and_redacted(
 
     def failing_exists(path: Path) -> bool:
         if path == input_dir:
-            raise OSError("private path inspection detail")
+            raise error_type("private path inspection detail")
         return original_exists(path)
 
     monkeypatch.setattr(Path, "exists", failing_exists)
@@ -739,6 +811,26 @@ def test_parse_directory_path_inspection_error_is_typed_and_redacted(
     rendered = "".join(traceback.format_exception(caught.value))
     assert caught.value.__cause__ is None
     assert "private path inspection" not in rendered
+
+
+def test_parse_directory_default_cache_runtime_error_is_typed_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+
+    def failing_default_cache() -> Path:
+        raise RuntimeError("private home lookup detail")
+
+    monkeypatch.setattr(parser_module, "default_cache_directory", failing_default_cache)
+
+    with pytest.raises(ParserRuntimeError, match="cache directory") as caught:
+        parse_directory(input_dir, tmp_path / "output")
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "private home lookup detail" not in rendered
 
 
 @pytest.mark.parametrize(

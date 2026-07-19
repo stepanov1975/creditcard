@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import StrEnum
 from math import isfinite
 from pathlib import PurePosixPath
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -36,6 +36,7 @@ def _finite_coordinate(value: float) -> float:
 type FiniteDecimal = Annotated[Decimal, AfterValidator(_finite_decimal)]
 type FiniteCoordinate = Annotated[float, AfterValidator(_finite_coordinate)]
 type FiniteBBox = tuple[FiniteCoordinate, FiniteCoordinate, FiniteCoordinate, FiniteCoordinate]
+type FinitePoint = tuple[FiniteCoordinate, FiniteCoordinate]
 
 
 def _decimal_string(value: Decimal) -> str:
@@ -184,6 +185,88 @@ class DiscoveryMetadataSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
+class DiscoveryGlyphSummary(BaseModel):
+    """Dependency-neutral positioned glyph provenance for discovered structure."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    char: str = Field(min_length=1)
+    bbox: FiniteBBox
+    origin: FinitePoint
+    font: str
+    size: Annotated[FiniteCoordinate, Field(ge=0)]
+    source: Literal["digital", "ocr"]
+    confidence: float = Field(ge=0, le=1)
+
+
+class DiscoveryWordSummary(BaseModel):
+    """Dependency-neutral positioned word provenance for discovered structure."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str = Field(min_length=1)
+    bbox: FiniteBBox
+    source: Literal["digital", "ocr"]
+    confidence: float = Field(ge=0, le=1)
+
+
+class DiscoveryCellSummary(BaseModel):
+    """A logical discovery cell with its exact text and source provenance."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    text: str = Field(min_length=1)
+    glyphs: tuple[DiscoveryGlyphSummary, ...] = ()
+    words: tuple[DiscoveryWordSummary, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class DiscoveryRowSummary(BaseModel):
+    """A discovered logical row retaining cells, words, and diagnostics."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    cells: tuple[DiscoveryCellSummary, ...]
+    words: tuple[DiscoveryWordSummary, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class DiscoveryColumnSummary(BaseModel):
+    """A discovered schema column and the cells supporting its semantic role."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    index: int = Field(ge=0)
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    relative_x0: Annotated[FiniteCoordinate, Field(ge=0, le=1)]
+    relative_x1: Annotated[FiniteCoordinate, Field(ge=0, le=1)]
+    role: str
+    source_cells: tuple[DiscoveryCellSummary, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class DiscoveryTableSchemaSummary(BaseModel):
+    """A complete dependency-neutral snapshot of an inferred table schema."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    columns: tuple[DiscoveryColumnSummary, ...]
+    header_cells: tuple[DiscoveryCellSummary, ...]
+    sample_cells: tuple[DiscoveryCellSummary, ...]
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
 class TableRegionSummary(BaseModel):
     """A public, dependency-neutral summary of one inferred transaction table."""
 
@@ -194,6 +277,9 @@ class TableRegionSummary(BaseModel):
     header_evidence: tuple[EvidenceReference, ...]
     column_roles: tuple[str, ...]
     row_count: int = Field(ge=0)
+    header: DiscoveryRowSummary
+    rows: tuple[DiscoveryRowSummary, ...]
+    table_schema: DiscoveryTableSchemaSummary
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
 

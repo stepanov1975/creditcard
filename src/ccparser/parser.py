@@ -12,12 +12,18 @@ from ccparser.discovery import (
     StatementDiscovery,
     discover_statement,
 )
-from ccparser.evidence import DocumentEvidence, TesseractOcr, extract_pdf
+from ccparser.evidence import DocumentEvidence, Glyph, TesseractOcr, Word, extract_pdf
 from ccparser.evidence.provider import OcrProvider
-from ccparser.layout.models import Cell, TableRegion
+from ccparser.layout.models import Cell, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import (
     BatchResult,
+    DiscoveryCellSummary,
+    DiscoveryColumnSummary,
+    DiscoveryGlyphSummary,
     DiscoveryMetadataSummary,
+    DiscoveryRowSummary,
+    DiscoveryTableSchemaSummary,
+    DiscoveryWordSummary,
     EvidenceReference,
     PrintedTotalSummary,
     RowNormalizationSummary,
@@ -84,26 +90,89 @@ def _cell_evidence(cell: Cell) -> EvidenceReference:
     return EvidenceReference(page_number=cell.page_number, bbox=cell.bbox, raw_text=cell.text)
 
 
+def _glyph_summary(glyph: Glyph) -> DiscoveryGlyphSummary:
+    return DiscoveryGlyphSummary(
+        char=glyph.char,
+        bbox=glyph.bbox,
+        origin=glyph.origin,
+        font=glyph.font,
+        size=glyph.size,
+        source=glyph.source,
+        confidence=glyph.confidence,
+    )
+
+
+def _word_summary(word: Word) -> DiscoveryWordSummary:
+    return DiscoveryWordSummary(
+        text=word.text,
+        bbox=word.bbox,
+        source=word.source,
+        confidence=word.confidence,
+    )
+
+
+def _cell_summary(cell: Cell) -> DiscoveryCellSummary:
+    return DiscoveryCellSummary(
+        page_number=cell.page_number,
+        bbox=cell.bbox,
+        text=cell.text,
+        glyphs=tuple(_glyph_summary(glyph) for glyph in cell.glyphs),
+        words=tuple(_word_summary(word) for word in cell.words),
+        confidence=cell.confidence,
+        diagnostics=cell.diagnostics,
+    )
+
+
+def _row_summary(row: Row) -> DiscoveryRowSummary:
+    return DiscoveryRowSummary(
+        page_number=row.page_number,
+        bbox=row.bbox,
+        cells=tuple(_cell_summary(cell) for cell in row.cells),
+        words=tuple(_word_summary(word) for word in row.words),
+        confidence=row.confidence,
+        diagnostics=row.diagnostics,
+    )
+
+
+def _column_summary(column: ColumnSpec) -> DiscoveryColumnSummary:
+    return DiscoveryColumnSummary(
+        index=column.index,
+        page_number=column.page_number,
+        bbox=column.bbox,
+        relative_x0=column.relative_x0,
+        relative_x1=column.relative_x1,
+        role=column.role.value,
+        source_cells=tuple(_cell_summary(cell) for cell in column.source_cells),
+        confidence=column.confidence,
+        diagnostics=column.diagnostics,
+    )
+
+
+def _table_schema_summary(schema: TableSchema) -> DiscoveryTableSchemaSummary:
+    return DiscoveryTableSchemaSummary(
+        page_number=schema.page_number,
+        bbox=schema.bbox,
+        columns=tuple(_column_summary(column) for column in schema.columns),
+        header_cells=tuple(_cell_summary(cell) for cell in schema.header_cells),
+        sample_cells=tuple(_cell_summary(cell) for cell in schema.sample_cells),
+        confidence=schema.confidence,
+        diagnostics=schema.diagnostics,
+    )
+
+
 def _table_region_summary(region: TableRegion) -> TableRegionSummary:
     columns = region.table_schema.columns
-    diagnostics = tuple(
-        dict.fromkeys(
-            (
-                *region.diagnostics,
-                *region.table_schema.diagnostics,
-                *(value for column in columns for value in column.diagnostics),
-                *region.header.diagnostics,
-            )
-        )
-    )
     return TableRegionSummary(
         page_number=region.page_number,
         bbox=region.bbox,
         header_evidence=tuple(_cell_evidence(cell) for cell in region.header.cells),
         column_roles=tuple(column.role.value for column in columns),
         row_count=len(region.rows),
+        header=_row_summary(region.header),
+        rows=tuple(_row_summary(row) for row in region.rows),
+        table_schema=_table_schema_summary(region.table_schema),
         confidence=region.confidence,
-        diagnostics=diagnostics,
+        diagnostics=region.diagnostics,
     )
 
 
@@ -367,17 +436,26 @@ def parse_directory(
             raise ParserInputError("output directory must be a directory")
     except ParserInputError:
         raise
-    except (OSError, TypeError, ValueError):
+    except Exception:
         raise ParserInputError("input or output path cannot be inspected") from None
     try:
         resolved_input = input_path.resolve(strict=True)
         resolved_output = output_path.resolve(strict=False)
-        resolved_cache = Path(cache_dir or default_cache_directory()).resolve(strict=False)
+    except Exception:
+        raise ParserInputError("input directory cannot be inspected") from None
+    try:
+        selected_cache = Path(cache_dir) if cache_dir is not None else default_cache_directory()
+        resolved_cache = selected_cache.resolve(strict=False)
+    except Exception:
+        if cache_dir is None:
+            raise ParserRuntimeError("default cache directory resolution failed") from None
+        raise ParserInputError("cache directory cannot be inspected") from None
+    try:
         _validate_path_topology(resolved_input, resolved_output, resolved_cache)
         sources = _iter_pdf_files(resolved_input, (resolved_output, resolved_cache))
     except ParserInputError:
         raise
-    except OSError:
+    except Exception:
         raise ParserInputError("input directory cannot be inspected") from None
 
     if not sources:
