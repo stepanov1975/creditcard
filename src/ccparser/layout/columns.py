@@ -160,6 +160,7 @@ _SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
     ),
 )
 _GENERIC_FAMILY_ROLES = frozenset({ColumnRole.AMOUNT, ColumnRole.CURRENCY, ColumnRole.DATE})
+_EXACT_HEADER_ONLY_ROLES = frozenset({ColumnRole.LOCATION})
 _GENERIC_AMOUNT_HEADER_TERMS = frozenset({"amount", "סכום"})
 _AUXILIARY_AMOUNT_MODIFIERS = frozenset({"commission", "fee", "surcharge", "עמלה"})
 _BILLING_AMOUNT_MODIFIERS = frozenset(
@@ -741,7 +742,14 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
                 )
             )
             second_score = competing[0][1] if competing else 0.0
-            if candidate_score >= 0.65 and candidate_score - second_score >= 0.13:
+            exact_header_missing = (
+                candidate in _EXACT_HEADER_ONLY_ROLES and header_scores.get(candidate, 0.0) < 1.0
+            )
+            if (
+                not exact_header_missing
+                and candidate_score >= 0.65
+                and candidate_score - second_score >= 0.13
+            ):
                 top_role = candidate
                 top_score = candidate_score
                 if second_score >= 0.65:

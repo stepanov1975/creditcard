@@ -203,6 +203,18 @@ def test_infer_column_roles_keeps_location_amount_header_ambiguous() -> None:
     assert "ambiguous_columns:0" in schema.diagnostics
 
 
+@pytest.mark.parametrize("header", ("City code", "Location ID", "עיר מגורים"))
+def test_infer_column_roles_requires_exact_location_header(header: str) -> None:
+    schema = infer_column_roles(
+        (_cell(header, (0.0, 10.0, 40.0, 20.0)),),
+        (_cell("1234567890", (0.0, 30.0, 40.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.UNKNOWN
+    assert "ambiguous_role" in schema.columns[0].diagnostics
+    assert "ambiguous_columns:0" in schema.diagnostics
+
+
 def test_infer_column_roles_distinguishes_original_and_billed_amount_headers() -> None:
     headers = (
         _cell("Original amount", (0.0, 10.0, 40.0, 20.0)),
