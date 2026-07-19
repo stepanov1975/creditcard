@@ -1424,6 +1424,32 @@ def test_foreign_detail_block_accepts_fifth_identifier_and_separable_sidebar() -
     assert "stopped_at_total" in regions[0].diagnostics
 
 
+def test_foreign_detail_block_accepts_canonical_identifier_beside_header_sidebar() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            _word("more details", 150.0, 185.0, 10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("הסדר מיוחד", 30.0, 85.0, 94.0),
+            _word("מזההכרטיסאינטרנט 8322", 30.0, 85.0, 105.0),
+            _word("sidebar continuation", 150.0, 185.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 8
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:7])
+    assert "detail_continuation_rows:5" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_accepts_wrapped_short_identifier() -> None:
     page = _page(
         (
@@ -1447,6 +1473,57 @@ def test_foreign_detail_block_accepts_wrapped_short_identifier() -> None:
     assert len(regions[0].rows) == 9
     assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:8])
     assert "detail_continuation_rows:6" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_accepts_canonical_hebrew_wrapped_identifier() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("הסדר מיוחד", 30.0, 85.0, 94.0),
+            _word("בסך 1.47 מזהה", 30.0, 85.0, 105.0),
+            _word("כרטיסאינטרנט 8614", 30.0, 85.0, 116.0),
+            *_foreign_data(127.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 9
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:8])
+    assert "detail_continuation_rows:6" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_skips_bounded_strictly_outside_rows() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("sidebar first", 150.0, 185.0, 95.0),
+            _word("הסדר מיוחד", 30.0, 85.0, 107.0),
+            _word("בסך 1.47 מזהה", 30.0, 85.0, 118.0),
+            _word("כרטיסאינטרנט 8614", 30.0, 85.0, 129.0),
+            _word("sidebar second", 150.0, 185.0, 141.0),
+            *_foreign_data(153.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 9
+    assert "detail_continuation_rows:6" in regions[0].diagnostics
+    assert "ignored_outside_band_rows:2" in regions[0].diagnostics
 
 
 def test_foreign_detail_block_rejects_unprojected_nonspace_glyph() -> None:
@@ -1690,6 +1767,100 @@ def test_projection_uses_table_cells_for_vertical_band() -> None:
 
     assert [cell.text for cell in projected.cells] == ["continued"]
     assert next_detail not in tuple(word for cell in projected.cells for word in cell.words)
+
+
+def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
+    header_words = (*_auxiliary_table_header(10.0), _word("Sidebar", 150.0, 175.0, 10.0))
+    continued = _word("continued", 65.0, 85.0, 61.0)
+    sidebar = _word("sidebar text", 150.0, 175.0, 67.0)
+    next_detail = _word("next detail", 65.0, 85.0, 68.5)
+    page = _page((*header_words, continued, sidebar, next_detail), width=200.0)
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 175.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=(65.0, 61.0, 175.0, 77.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in (continued, sidebar)
+        ),
+        words=(continued, sidebar),
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    projected_words = tuple(word for cell in projected.cells for word in cell.words)
+    assert continued in projected_words
+    assert next_detail not in projected_words
+
+
+def test_projection_vertical_band_ignores_unknown_header_sidebar_cells() -> None:
+    header_words = (*_auxiliary_table_header(10.0), _word("Sidebar", 150.0, 190.0, 10.0))
+    continued = _word("continued", 65.0, 85.0, 61.0)
+    sidebar_words = (
+        _word("sidebar", 150.0, 160.0, 67.0),
+        _word("advertising", 165.0, 175.0, 67.0),
+        _word("copy", 180.0, 190.0, 67.0),
+    )
+    page = _page((*header_words, continued, *sidebar_words), width=200.0)
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 190.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    source_words = (continued, *sidebar_words)
+    source = Row(
+        page_number=1,
+        bbox=(65.0, 61.0, 190.0, 77.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in source_words
+        ),
+        words=source_words,
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    assert continued in tuple(word for cell in projected.cells for word in cell.words)
 
 
 def test_auxiliary_fragment_requires_immediately_following_transaction() -> None:

@@ -632,6 +632,22 @@ def _header_band_bounds(header: Row) -> tuple[tuple[float, float], ...]:
     return tuple(pairwise(boundaries))
 
 
+def _semantic_header_horizontal_bounds(header: Row) -> tuple[float, float] | None:
+    semantic_cells = tuple(
+        cell
+        for cell in header.cells
+        if any(
+            score >= 0.82
+            for score in _header_scores(_header_evidence_texts((cell,))).values()
+        )
+    )
+    if len(semantic_cells) < 2:
+        return None
+    return min(cell.bbox[0] for cell in semantic_cells), max(
+        cell.bbox[2] for cell in semantic_cells
+    )
+
+
 def _representative_vertical_band(row: Row) -> tuple[float, float]:
     if not row.cells:
         return row.bbox[1], row.bbox[3]
@@ -672,19 +688,38 @@ def _project_row_to_header_bands(
     row: Row,
     header: Row,
 ) -> Row:
+    del page_evidence
     cells: list[Cell] = []
     header_bands = _header_band_bounds(header)
+    if not header_bands:
+        return row.model_copy(update={"cells": ()})
+    semantic_bounds = _semantic_header_horizontal_bounds(header)
+    table_left = semantic_bounds[0] if semantic_bounds else header_bands[0][0]
+    table_right = semantic_bounds[1] if semantic_bounds else header_bands[-1][1]
     table_cells = tuple(
         cell
         for cell in row.cells
-        if header_bands and header_bands[0][0] <= _center_x(cell.bbox) <= header_bands[-1][1]
+        if header_bands and table_left <= _center_x(cell.bbox) <= table_right
     )
     vertical_source = row.model_copy(update={"cells": table_cells}) if table_cells else row
     top, bottom = _representative_vertical_band(vertical_source)
+    cell_words = tuple(word for cell in row.cells for word in cell.words)
+    cell_glyphs = tuple(glyph for cell in row.cells for glyph in cell.glyphs)
+    row_words = (*row.words, *(word for word in cell_words if word not in row.words))
+    row_glyphs = (*row.glyphs, *(glyph for glyph in cell_glyphs if glyph not in row.glyphs))
     for index, (left, right) in enumerate(header_bands):
-        band_bbox = (left, top, right, bottom)
-        glyphs, words = positioned_evidence_for_bbox(page_evidence, band_bbox)
-        text = logical_text_for_bbox(page_evidence, band_bbox)
+        glyphs = tuple(
+            glyph
+            for glyph in row_glyphs
+            if left <= _center_x(glyph.bbox) <= right
+            and top <= _center_y(glyph.bbox) <= bottom
+        )
+        words = tuple(
+            word
+            for word in row_words
+            if left <= _center_x(word.bbox) <= right and top <= _center_y(word.bbox) <= bottom
+        )
+        text = logical_text_for_evidence(glyphs, words)
         if not text:
             continue
         evidence_boxes = tuple((*[glyph.bbox for glyph in glyphs], *[word.bbox for word in words]))
@@ -763,6 +798,8 @@ def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -
     if not column.bbox[0] - tolerance <= center <= column.bbox[2] + tolerance:
         return False
     normalized_text = unicodedata.normalize("NFC", cell.text).strip()
+    if not any(char.isalnum() for char in normalized_text):
+        return False
     numeric_only = bool(normalized_text) and all(
         char.isdigit() or char.isspace() for char in normalized_text
     )
@@ -908,8 +945,17 @@ def _projection_preserves_table_band_evidence(
         return None
     if _projection_preserves_positioned_evidence(source, projected):
         return 0
-    table_x0 = min(column.bbox[0] for column in schema.columns)
-    table_x1 = max(column.bbox[2] for column in schema.columns)
+    semantic_bounds = _semantic_header_horizontal_bounds(header)
+    table_x0 = (
+        semantic_bounds[0]
+        if semantic_bounds is not None
+        else min(column.bbox[0] for column in schema.columns)
+    )
+    table_x1 = (
+        semantic_bounds[1]
+        if semantic_bounds is not None
+        else max(column.bbox[2] for column in schema.columns)
+    )
     inside_cells = tuple(
         cell for cell in source.cells if table_x0 <= _center_x(cell.bbox) <= table_x1
     )
@@ -988,6 +1034,26 @@ def _is_short_numeric_auxiliary_identifier_detail(row: Row) -> bool:
     return re.fullmatch(r"\d{4,10}", compact) is not None
 
 
+def _has_canonical_card_identifier_lead(row: Row) -> bool:
+    tokens = _normalized_marker(" ".join(cell.text for cell in row.cells)).split()
+    return "מזהה" in tokens or any(
+        tokens[index : index + 2] == ["card", "identifier"]
+        for index in range(len(tokens))
+    )
+
+
+def _has_canonical_card_identifier_tail(row: Row) -> bool:
+    tokens = _normalized_marker(" ".join(cell.text for cell in row.cells)).split()
+    has_card_marker = "card" in tokens or any(token.startswith("כרטיס") for token in tokens)
+    identifiers = set(
+        re.findall(
+            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
+            " ".join(cell.text for cell in row.cells),
+        )
+    )
+    return has_card_marker and len(identifiers) == 1
+
+
 def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
@@ -1029,7 +1095,7 @@ def _foreign_conversion_detail_block(
     schema: TableSchema,
     previous: Row,
     observed: Sequence[Row],
-) -> tuple[tuple[Row, ...], int] | None:
+) -> tuple[tuple[Row, ...], int, int] | None:
     billed_column = proven_billed_amount_column(schema, (previous,))
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
@@ -1048,12 +1114,23 @@ def _foreign_conversion_detail_block(
     )
     details: list[Row] = []
     has_exact_marker = False
+    skipped_outside_rows = 0
     preceding = previous
     for index in range(start_index, len(rows)):
         source = rows[index]
+        if not _row_intersects_horizontal_band(source, header.bbox):
+            if (
+                _is_total_row(source)
+                or _literal_header_role_count(source) >= 2
+                or _structural_gap(preceding, source, (*observed, *details))
+                or not _detail_rows_are_adjacent(preceding, source)
+                or skipped_outside_rows >= MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS
+            ):
+                return None
+            skipped_outside_rows += 1
+            continue
         if (
-            not _row_intersects_horizontal_band(source, header.bbox)
-            or _is_total_row(source)
+            _is_total_row(source)
             or _literal_header_role_count(source) >= 2
             or _structural_gap(preceding, source, (*observed, *details))
             or not _detail_rows_are_adjacent(preceding, source)
@@ -1071,7 +1148,7 @@ def _foreign_conversion_detail_block(
                 and has_exact_marker
                 and (has_distinct_currencies or len(details) >= MIN_ISSUER_CONVERSION_DETAIL_ROWS)
             ):
-                return tuple(details), index - 1
+                return tuple(details), index - 1, skipped_outside_rows
             return None
         outside_table_band_count = _projection_preserves_table_band_evidence(
             source,
@@ -1089,7 +1166,11 @@ def _foreign_conversion_detail_block(
         allowed_fifth_identifier = (
             has_distinct_currencies
             and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS
-            and _is_auxiliary_identifier_detail(projected)
+            and (
+                _is_auxiliary_identifier_detail(projected)
+                or _has_canonical_card_identifier_detail(projected)
+                or _has_canonical_card_identifier_detail(source)
+            )
         )
         allowed_wrapped_identifier_lead = False
         if (
@@ -1113,12 +1194,24 @@ def _foreign_conversion_detail_block(
                     schema,
                 )
                 is not None
-                and _is_short_numeric_auxiliary_identifier_detail(identifier)
+                and (
+                    _is_short_numeric_auxiliary_identifier_detail(identifier)
+                    or (
+                        _has_canonical_card_identifier_lead(projected)
+                        and _has_canonical_card_identifier_tail(identifier)
+                    )
+                )
             )
         allowed_wrapped_identifier_tail = (
             has_distinct_currencies
             and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS + 1
-            and _is_short_numeric_auxiliary_identifier_detail(projected)
+            and (
+                _is_short_numeric_auxiliary_identifier_detail(projected)
+                or (
+                    _has_canonical_card_identifier_lead(details[-1])
+                    and _has_canonical_card_identifier_tail(projected)
+                )
+            )
         )
         if (
             (
@@ -1764,9 +1857,10 @@ def _detect_from_header(
                 (header, *accepted),
             )
             if detail_block is not None:
-                details, consumed_through = detail_block
+                details, consumed_through, skipped_outside_rows = detail_block
                 accepted.extend(details)
                 detail_continuation_count += len(details)
+                ignored_outside_band_count += skipped_outside_rows
                 detail_continuation_allowed = False
                 previous = details[-1]
                 continue
