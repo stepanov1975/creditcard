@@ -955,6 +955,25 @@ def test_detect_table_regions_accepts_strong_single_transaction_bounded_by_total
     assert "stopped_at_total" in regions[0].diagnostics
 
 
+def test_strong_single_transaction_accepts_date_joined_to_description() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            _word("Market01/02/2026", 0.0, 55.0, 30.0),
+            _word("$3.00", 65.0, 85.0, 30.0),
+            _word("₪11.00", 100.0, 125.0, 30.0),
+            _word("Total", 30.0, 55.0, 50.0),
+            _word("₪11.00", 100.0, 125.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 1
+    assert "single_row_strong_evidence" in regions[0].diagnostics
+
+
 def test_detect_table_regions_does_not_match_date_inside_update_header() -> None:
     page = _page(
         (
@@ -1538,6 +1557,33 @@ def test_merge_header_rows_splits_compound_fragment_evidence_between_bands() -> 
         "סכום עמלה",
     )
     assert all("split_header_fragment" in cell.diagnostics for cell in merged.cells)
+
+
+def test_merged_header_bands_skips_separable_tall_sidebar_overlay() -> None:
+    rows = logical_rows(
+        _page(
+            (
+                _word("Date", 0.0, 20.0, 10.0),
+                _word("Description", 30.0, 55.0, 10.0),
+                _word("Amount", 65.0, 85.0, 10.0),
+                _word("Amount", 100.0, 125.0, 10.0),
+                _word("Sidebar", 150.0, 180.0, 10.2, height=26.0),
+                _word("Original", 65.0, 85.0, 17.2),
+                _word("Billed", 100.0, 125.0, 17.2),
+            ),
+            width=190.0,
+        )
+    )
+
+    merged = _merged_header_bands(rows)
+
+    assert len(rows) == 3
+    assert "header_rows:2" in merged[0].diagnostics
+    assert {cell.text for cell in merged[0].cells} >= {
+        "Amount Original",
+        "Amount Billed",
+    }
+    assert merged[1].cells[0].text == "Sidebar"
 
 
 def test_split_header_fragment_preserves_glyph_corrected_rtl_text_and_all_provenance() -> None:

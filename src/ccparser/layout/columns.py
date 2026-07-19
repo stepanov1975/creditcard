@@ -544,6 +544,16 @@ def isolated_date_token(text: str) -> str | None:
     return match.group(0)
 
 
+def contains_date_token(text: str) -> bool:
+    """Return whether text contains at least one complete valid calendar date."""
+
+    normalized = unicodedata.normalize("NFC", text)
+    return any(
+        _is_exact_date_shaped(match.group(0))
+        for match in _THREE_COMPONENT_DATE_PATTERN.finditer(normalized)
+    )
+
+
 def is_date_shaped(text: str) -> bool:
     """Return whether text is one valid date with only a tiny standalone annotation."""
 

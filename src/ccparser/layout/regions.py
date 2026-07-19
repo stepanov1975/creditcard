@@ -12,6 +12,7 @@ from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
 from ccparser.layout.columns import (
     _header_evidence_texts,
     _header_scores,
+    contains_date_token,
     explicit_billed_amount_column,
     infer_column_roles,
     is_date_shaped,
@@ -405,18 +406,31 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
     while index < len(rows):
         header = _split_compound_header_row(rows[index])
         fragments: list[Row] = []
+        skipped_overlay_rows: list[Row] = []
         if _literal_header_role_count(header) >= 2:
             fragment_index = index + 1
             while fragment_index < len(rows) and len(fragments) < 2:
                 candidate = rows[fragment_index]
                 preceding = fragments[-1] if fragments else header
-                if not _is_header_fragment(preceding, candidate):
-                    break
-                fragments.append(candidate)
-                fragment_index += 1
+                if _is_header_fragment(preceding, candidate):
+                    fragments.append(candidate)
+                    fragment_index += 1
+                    continue
+                typical_height = statistics.median(_height(cell.bbox) for cell in header.cells)
+                separable_overlay = (
+                    not skipped_overlay_rows
+                    and not _row_intersects_horizontal_band(candidate, header.bbox)
+                    and candidate.bbox[1] <= header.bbox[3] + typical_height
+                )
+                if separable_overlay:
+                    skipped_overlay_rows.append(candidate)
+                    fragment_index += 1
+                    continue
+                break
         if fragments:
             merged.append(_merge_header_rows(header, fragments))
-            index += len(fragments) + 1
+            merged.extend(skipped_overlay_rows)
+            index = fragment_index
         else:
             merged.append(header)
             index += 1
@@ -493,9 +507,25 @@ def _has_strong_single_row_evidence(
         return False
     known_role_count = sum(column.role is not ColumnRole.UNKNOWN for column in schema.columns)
     row = rows[0]
+    explicit_billed_column = explicit_billed_amount_column(
+        schema.columns,
+        schema.header_cells,
+    )
+    original_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    has_embedded_date_proof = (
+        _transaction_shape_count(row) >= 2
+        and explicit_billed_column is not None
+        and len(original_columns) == 1
+        and any(
+            contains_date_token(value)
+            for value in (*[cell.text for cell in row.cells], *[word.text for word in row.words])
+        )
+    )
     return (
         known_role_count >= 4
-        and _transaction_shape_count(row) >= 3
+        and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
         and _row_alignment(row, schema) >= max(_minimum_row_alignment(schema), 0.75)
     )
 
