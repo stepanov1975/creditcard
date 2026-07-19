@@ -30,6 +30,22 @@ def _cell(text: str, column: int, y: float, *, page: int = 1) -> Cell:
     )
 
 
+def _word(
+    text: str,
+    x0: float,
+    x1: float,
+    y: float,
+    *,
+    source: str = "digital",
+) -> Word:
+    return Word(
+        text=text,
+        bbox=(x0, y, x1, y + 10.0),
+        source=source,
+        confidence=1.0,
+    )
+
+
 def _row(*cells: Cell) -> Row:
     return Row(
         page_number=cells[0].page_number,
@@ -265,6 +281,257 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
     assert len(transaction.evidence) == 6
     assert result.row_results[1].diagnostics == ("merged_description_continuation",)
     assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("raw", "amount_word", "currency_word", "expected_currency"),
+    (
+        ("-2.56$ MERCHANT", "-2.56", "$", "USD"),
+        ("-28.22GBP MERCHANT", "-28.22", "GBP", "GBP"),
+    ),
+)
+def test_normalize_statement_uses_unique_original_money_word_subset(
+    raw: str,
+    amount_word: str,
+    currency_word: str,
+    expected_currency: str,
+) -> None:
+    original_cell = _cell(raw, 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word(amount_word, 52.0, 65.0, 30.0),
+                _word(currency_word, 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0),
+            )
+        }
+    )
+    description_cell = _cell("MERCHANT DETAILS", 2, 30.0).model_copy(
+        update={"words": (_word("MERCHANT DETAILS", 102.0, 138.0, 30.0),)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    first = normalize_statement(_discovery(region, "10.00", "ILS"))
+    second = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = first.transactions[0]
+    assert transaction.original_amount == Decimal(amount_word)
+    assert transaction.original_currency == expected_currency
+    assert transaction.description == "MERCHANT DETAILS"
+    assert tuple(reference.raw_text for reference in transaction.evidence) == (
+        "01/02/2026",
+        raw,
+        "MERCHANT DETAILS",
+        "10.00",
+    )
+    assert transaction.ambiguities == ()
+    assert first.reconciliation.status is Status.RECONCILED
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    ("raw", "word_specs", "description"),
+    (
+        ("-2.56$ MERCHANT", (), "MERCHANT DETAILS"),
+        (
+            "-2.56GB MERCHANT",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("GB", 66.0, 70.0, "digital"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "-2.56$ 3.00 MERCHANT",
+            (
+                ("-2.56", 52.0, 60.0, "digital"),
+                ("$", 61.0, 64.0, "digital"),
+                ("3.00", 65.0, 72.0, "digital"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "-2.56$ MERCHANT",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "ocr"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "-2.56$ HIDDEN",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("HIDDEN", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "-2.56$ AM",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("AM", 74.0, 88.0, "digital"),
+            ),
+            "AMZN DETAILS",
+        ),
+        (
+            "-2.56$ CHANT",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("CHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "-2.56$ STORE24",
+            (
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("STORE24", 74.0, 88.0, "digital"),
+            ),
+            "STORE24 DETAILS",
+        ),
+        (
+            "MERCHANT -2.56$",
+            (
+                ("MERCHANT", 42.0, 49.0, "digital"),
+                ("-2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "--2.56$ MERCHANT",
+            (
+                ("--2.56", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "1,234$ MERCHANT",
+            (
+                ("1,234", 52.0, 65.0, "digital"),
+                ("$", 66.0, 70.0, "digital"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+        (
+            "2.56$ GBP MERCHANT",
+            (
+                ("2.56", 52.0, 60.0, "digital"),
+                ("$", 61.0, 64.0, "digital"),
+                ("GBP", 65.0, 72.0, "digital"),
+                ("MERCHANT", 74.0, 88.0, "digital"),
+            ),
+            "MERCHANT DETAILS",
+        ),
+    ),
+)
+def test_normalize_statement_rejects_unsafe_original_money_word_subset(
+    raw: str,
+    word_specs: tuple[tuple[str, float, float, str], ...],
+    description: str,
+) -> None:
+    original_cell = _cell(raw, 1, 30.0).model_copy(
+        update={
+            "words": tuple(
+                _word(text, x0, x1, 30.0, source=source) for text, x0, x1, source in word_specs
+            )
+        }
+    )
+    description_cell = _cell(description, 2, 30.0).model_copy(
+        update={"words": (_word(description, 102.0, 138.0, 30.0),)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                description_cell,
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount is None
+    assert transaction.original_currency is None
+    assert "original_amount:invalid_amount_text" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize("duplicated_role", (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.DESCRIPTION))
+def test_original_money_word_subset_requires_unique_semantic_columns(
+    duplicated_role: ColumnRole,
+) -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.ORIGINAL_AMOUNT,
+        duplicated_role,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.AMOUNT,
+    )
+    original_cell = _cell("2.56$ MERCHANT", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("2.56", 52.0, 65.0, 30.0),
+                _word("$", 66.0, 70.0, 30.0),
+                _word("MERCHANT", 74.0, 88.0, 30.0),
+            )
+        }
+    )
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original_cell,
+                _cell("OTHER", 2, 30.0),
+                _cell("MERCHANT DETAILS", 3, 30.0),
+                _cell("10.00", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert (
+        f"unsupported_role_cardinality:{duplicated_role.value}" in result.row_results[0].diagnostics
+    )
 
 
 def test_normalize_statement_merges_proven_multicell_subordinate_detail_rows() -> None:
