@@ -1822,6 +1822,35 @@ def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation(
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
+def test_zero_billed_row_is_retained_as_noncontributing_evidence() -> None:
+    region = _region(
+        (
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("5133776", 0, 30.0),
+                _cell("ILS 0.00", 1, 30.0),
+                _cell("ILS 22.29", 2, 30.0),
+                _cell("Card fee", 3, 30.0),
+                _cell("01/02/2026", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "ILS 0.00", "ILS"))
+
+    assert result.transactions == ()
+    assert result.row_results[0].diagnostics == ("noncontributing_zero_billed_row",)
+    assert result.diagnostics == ()
+    assert result.reconciliation.status is Status.RECONCILED
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+
+
 def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity() -> None:
     region = _region(
         (

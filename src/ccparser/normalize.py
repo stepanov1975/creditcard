@@ -1020,7 +1020,7 @@ def _normalize_row(
     diagnostics = list(_assignment_diagnostics(row, region))
     role_contract_diagnostics = _role_contract_diagnostics(region)
     diagnostics.extend(role_contract_diagnostics)
-    if "unresolved_relevant_cell" in diagnostics or role_contract_diagnostics:
+    if role_contract_diagnostics:
         return RowNormalizationResult(
             page_number=row.page_number,
             bbox=row.bbox,
@@ -1109,8 +1109,17 @@ def _normalize_row(
             bbox=row.bbox,
             raw_text=_row_text(rows),
             evidence=evidence,
+            confidence=amount_cells[0].confidence,
+            diagnostics=("noncontributing_zero_billed_row",),
+        )
+    if "unresolved_relevant_cell" in diagnostics:
+        return RowNormalizationResult(
+            page_number=row.page_number,
+            bbox=row.bbox,
+            raw_text=_row_text(rows),
+            evidence=evidence,
             confidence=0.0,
-            diagnostics=("zero_billed_amount",),
+            diagnostics=tuple(diagnostics),
         )
 
     description, description_diagnostics = _description(rows, region)
@@ -1319,7 +1328,8 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                 )
                 row_results.append(row_result)
                 if row_result.transaction is None:
-                    rows_not_emitted += 1
+                    if row_result.diagnostics != ("noncontributing_zero_billed_row",):
+                        rows_not_emitted += 1
                 else:
                     transactions.append(row_result.transaction)
                 for continuation in continuations:
