@@ -13,6 +13,7 @@ from itertools import pairwise
 
 from ccparser.evidence.models import BBox, VectorRule
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
+from ccparser.money import is_money_shaped
 
 _THREE_COMPONENT_DATE_PATTERN = re.compile(r"(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})")
 _TWO_COMPONENT_SLASH_PATTERN = re.compile(r"(\d{1,3})\s*/\s*(\d{1,3})")
@@ -87,6 +88,17 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "סכום לחיוב",
         }
     ),
+    ColumnRole.AUXILIARY_AMOUNT: frozenset(
+        {
+            "commission amount",
+            "fee amount",
+            "surcharge amount",
+            "סכום עמלה",
+            "סכום העמלה",
+            "סכוםעמלה",
+            "סכוםהעמלה",
+        }
+    ),
     ColumnRole.ORIGINAL_AMOUNT: frozenset(
         {
             "original amount",
@@ -130,7 +142,14 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
 
 _SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
     frozenset({ColumnRole.DATE, ColumnRole.CONVERSION_DATE}),
-    frozenset({ColumnRole.AMOUNT, ColumnRole.EXCHANGE_RATE, ColumnRole.ORIGINAL_AMOUNT}),
+    frozenset(
+        {
+            ColumnRole.AMOUNT,
+            ColumnRole.AUXILIARY_AMOUNT,
+            ColumnRole.EXCHANGE_RATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+        }
+    ),
     frozenset(
         {
             ColumnRole.CURRENCY,
@@ -141,6 +160,10 @@ _SEMANTIC_FAMILIES: tuple[frozenset[ColumnRole], ...] = (
 )
 _GENERIC_FAMILY_ROLES = frozenset({ColumnRole.AMOUNT, ColumnRole.CURRENCY, ColumnRole.DATE})
 _GENERIC_AMOUNT_HEADER_TERMS = frozenset({"amount", "סכום"})
+_AUXILIARY_AMOUNT_MODIFIERS = frozenset({"commission", "fee", "surcharge", "עמלה"})
+_BILLING_AMOUNT_MODIFIERS = frozenset(
+    {"bill", "billed", "billing", "charge", "charged", "חיוב", "לחיוב"}
+)
 _ORIGINAL_AMOUNT_MODIFIERS = frozenset({"original", "מקור", "מקורי"})
 _EXCHANGE_RATE_HEADER_TERMS = tuple(_HEADER_VOCABULARY[ColumnRole.EXCHANGE_RATE])
 _CONVERSION_DATE_HEADER_TERMS = tuple(
@@ -420,6 +443,10 @@ def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
             normalized, _GENERIC_AMOUNT_HEADER_TERMS
         ) and _contains_header_concept(normalized, _ORIGINAL_AMOUNT_MODIFIERS):
             composed_roles.add(ColumnRole.ORIGINAL_AMOUNT)
+        if _contains_header_concept(
+            normalized, _GENERIC_AMOUNT_HEADER_TERMS
+        ) and _contains_header_concept(normalized, _AUXILIARY_AMOUNT_MODIFIERS):
+            composed_roles.add(ColumnRole.AUXILIARY_AMOUNT)
         if _contains_header_concept(normalized, _EXCHANGE_RATE_HEADER_TERMS):
             composed_roles.add(ColumnRole.EXCHANGE_RATE)
         if _contains_header_concept(
@@ -451,6 +478,16 @@ def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
                     scores[role] = max(scores.get(role, 0.0), match_score)
         for role in composed_roles:
             scores[role] = 1.0
+    exact_specific_roles = tuple(
+        role for role, score in scores.items() if score == 1.0 and role not in _GENERIC_FAMILY_ROLES
+    )
+    if len(exact_specific_roles) == 1:
+        specific_role = exact_specific_roles[0]
+        scores = {
+            role: score
+            for role, score in scores.items()
+            if not (role in _GENERIC_FAMILY_ROLES and _same_semantic_family(specific_role, role))
+        }
     return scores
 
 
@@ -561,40 +598,52 @@ def _cells_for_column(cells: Sequence[Cell], column: ColumnSpec) -> tuple[Cell, 
     return tuple(cell for cell in cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2])
 
 
-def _has_specific_billing_header(header_cells: Sequence[Cell], column: ColumnSpec) -> bool:
-    specific_terms = _HEADER_VOCABULARY[ColumnRole.AMOUNT] - _GENERIC_AMOUNT_HEADER_TERMS
-    return any(
-        _header_match_score(_normalized_header(cell.text), term) >= 0.82
-        for cell in _cells_for_column(header_cells, column)
-        for term in specific_terms
-    )
+def explicit_billed_amount_column(
+    columns: Sequence[ColumnSpec],
+    header_cells: Sequence[Cell],
+) -> ColumnSpec | None:
+    """Return the sole amount column with an explicit billed/charged qualifier."""
+
+    candidates = []
+    for column in columns:
+        if column.role is not ColumnRole.AMOUNT:
+            continue
+        texts = _header_evidence_texts(_cells_for_column(header_cells, column))
+        if any(
+            _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
+            and _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
+            and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
+            and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
+            for text in texts
+        ):
+            candidates.append(column)
+    return candidates[0] if len(candidates) == 1 else None
 
 
-def _resolve_contextual_amount_roles(
-    columns: Sequence[ColumnSpec], header_cells: Sequence[Cell]
-) -> tuple[ColumnSpec, ...]:
-    billed_indexes = tuple(
-        column.index
-        for column in columns
-        if column.role is ColumnRole.AMOUNT and _has_specific_billing_header(header_cells, column)
+def proven_billed_amount_column(
+    schema: TableSchema,
+    rows: Sequence[Row],
+) -> ColumnSpec | None:
+    """Select billed evidence without retyping empty secondary amount bands."""
+
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    if len(amount_columns) == 1:
+        return amount_columns[0]
+    explicit_column = explicit_billed_amount_column(
+        schema.columns,
+        schema.header_cells,
     )
-    has_original_amount = any(column.role is ColumnRole.ORIGINAL_AMOUNT for column in columns)
-    if len(billed_indexes) != 1 or not has_original_amount:
-        return tuple(columns)
-    billed_index = billed_indexes[0]
-    return tuple(
-        column.model_copy(
-            update={
-                "role": ColumnRole.AUXILIARY_AMOUNT,
-                "diagnostics": tuple(
-                    dict.fromkeys((*column.diagnostics, "role_evidence:table_amount_context"))
-                ),
-            }
-        )
-        if column.role is ColumnRole.AMOUNT and column.index != billed_index
-        else column
-        for column in columns
-    )
+    if explicit_column is None:
+        return None
+    secondary_columns = tuple(column for column in amount_columns if column is not explicit_column)
+    if any(
+        is_money_shaped(cell.text)
+        for row in rows
+        for column in secondary_columns
+        for cell in _cells_for_column(row.cells, column)
+    ):
+        return None
+    return explicit_column
 
 
 def _header_anchored_columns(
@@ -716,8 +765,6 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
                 }
             )
         )
-
-    semantic_columns = list(_resolve_contextual_amount_roles(semantic_columns, header_cells))
 
     bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
     known_fraction = (

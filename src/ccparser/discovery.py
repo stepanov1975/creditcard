@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser.evidence.models import BBox, DocumentEvidence
 from ccparser.layout import TableRegion, detect_table_regions, logical_rows
+from ccparser.layout.columns import proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, Row
 from ccparser.models import EvidenceReference
 from ccparser.money import currencies_in_text, parse_amount
@@ -261,8 +262,19 @@ def _table_currencies(region: TableRegion) -> tuple[str, ...]:
         if ColumnRole.ORIGINAL_AMOUNT in roles:
             return ()
         billing_roles.add(ColumnRole.CURRENCY)
+    proven_amount_column = proven_billed_amount_column(
+        region.table_schema,
+        region.rows,
+    )
     billing_columns = tuple(
-        column for column in region.table_schema.columns if column.role in billing_roles
+        column
+        for column in region.table_schema.columns
+        if column.role in billing_roles
+        and (
+            column.role is not ColumnRole.AMOUNT
+            or proven_amount_column is None
+            or column is proven_amount_column
+        )
     )
     currencies = {
         currency
@@ -577,6 +589,30 @@ def _associate_regions(
     return (), ("ambiguous_group_region_association",)
 
 
+def _rejected_total_is_eligible_for_claimed_region(
+    rejected_row: Row,
+    valid_total_rows: Sequence[Row],
+    regions: Sequence[TableRegion],
+    claimed_regions: Sequence[TableRegion],
+) -> bool:
+    rejected_key = _reading_key_bbox(rejected_row.page_number, rejected_row.bbox)
+    preceding_total_keys = tuple(
+        _reading_key_bbox(row.page_number, row.bbox)
+        for row in valid_total_rows
+        if _reading_key_bbox(row.page_number, row.bbox) < rejected_key
+    )
+    previous_total_key = max(preceding_total_keys, default=None)
+    return any(
+        any(region is claimed for claimed in claimed_regions)
+        and _reading_key_bbox(region.page_number, region.bbox) < rejected_key
+        and (
+            previous_total_key is None
+            or _reading_key_bbox(region.page_number, region.bbox) > previous_total_key
+        )
+        for region in regions
+    )
+
+
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     """Discover statement groups and classify only from positive semantic evidence."""
 
@@ -602,7 +638,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
-    rejected_total_candidates: list[RejectedTotalCandidate] = []
+    rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
     total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
         preceding = tuple(
@@ -613,11 +649,14 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         )
         total, total_diagnostics = _total_from_row(total_row, preceding)
         if total is None and total_diagnostics:
-            rejected_total_candidates.append(
-                RejectedTotalCandidate(
-                    evidence=tuple(_evidence(cell) for cell in total_row.cells),
-                    confidence=statistics.mean(cell.confidence for cell in total_row.cells),
-                    diagnostics=total_diagnostics,
+            rejected_total_rows.append(
+                (
+                    total_row,
+                    RejectedTotalCandidate(
+                        evidence=tuple(_evidence(cell) for cell in total_row.cells),
+                        confidence=statistics.mean(cell.confidence for cell in total_row.cells),
+                        diagnostics=total_diagnostics,
+                    ),
                 )
             )
         if total is not None and preceding:
@@ -657,12 +696,20 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     has_unclaimed_regions = any(
         not any(region is claimed for claimed in claimed_regions) for region in regions
     )
-    if not groups or has_unclaimed_regions:
-        diagnostics.extend(
-            diagnostic
-            for candidate in rejected_total_candidates
-            for diagnostic in candidate.diagnostics
+    valid_total_rows = tuple(row for row, _ in total_candidates)
+    diagnostics.extend(
+        diagnostic
+        for rejected_row, candidate in rejected_total_rows
+        if not groups
+        or has_unclaimed_regions
+        or _rejected_total_is_eligible_for_claimed_region(
+            rejected_row,
+            valid_total_rows,
+            regions,
+            claimed_regions,
         )
+        for diagnostic in candidate.diagnostics
+    )
     if groups:
         classification = DocumentClassification.STATEMENT
         confidence = statistics.mean(group.confidence for group in groups)
@@ -689,7 +736,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         card_number=metadata["card_number"],
         statement_date=metadata["statement_date"],
         date_year_context=date_year_context,
-        rejected_total_candidates=tuple(rejected_total_candidates),
+        rejected_total_candidates=tuple(candidate for _, candidate in rejected_total_rows),
         confidence=confidence,
         reason_codes=reason_codes,
         diagnostics=_deduplicated(diagnostics),

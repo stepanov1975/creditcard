@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
-from ccparser.layout.models import ColumnRole
-from ccparser.layout.regions import detect_table_regions
+from ccparser.layout.columns import infer_column_roles
+from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.regions import _merge_header_rows, _merged_header_bands, detect_table_regions
 
 
 def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) -> Word:
@@ -77,7 +78,7 @@ def _wide_financial_header(y: float) -> tuple[Word, ...]:
         _word("Billed amount", 0.0, 10.0, y),
         _word("Exchange rate", 18.0, 28.0, y),
         _word("Conversion date", 36.0, 46.0, y),
-        _word("Amount", 54.0, 64.0, y),
+        _word("Commission amount", 54.0, 64.0, y),
         _word("Original amount", 72.0, 82.0, y),
         _word("Description", 90.0, 100.0, y),
         _word("Date", 108.0, 120.0, y),
@@ -90,6 +91,36 @@ def _wide_sparse_data(y: float, *, include_conversion_date: bool) -> tuple[Word,
         *((_word("03/02/2026", 36.0, 46.0, y),) if include_conversion_date else ()),
         _word("Market", 90.0, 100.0, y),
         _word("01/02/2026", 108.0, 120.0, y),
+    )
+
+
+def _duplicate_amount_header(y: float, *, explicit_billed: bool) -> tuple[Word, ...]:
+    return (
+        _word("Billed amount" if explicit_billed else "Amount", 0.0, 8.0, y),
+        _word("Commission amount", 16.0, 24.0, y),
+        _word("Exchange rate", 32.0, 40.0, y),
+        _word("Conversion date", 48.0, 56.0, y),
+        _word("Amount", 64.0, 72.0, y),
+        _word("Original amount", 80.0, 88.0, y),
+        _word("Description", 96.0, 104.0, y),
+        _word("Date", 112.0, 120.0, y),
+    )
+
+
+def _duplicate_amount_data(
+    y: float,
+    *,
+    secondary_amount: str | None,
+) -> tuple[Word, ...]:
+    return (
+        _word("12.40", 0.0, 8.0, y),
+        _word("0.00", 16.0, 24.0, y),
+        _word("3.7000", 32.0, 40.0, y),
+        _word("03/02/2026", 48.0, 56.0, y),
+        *((_word(secondary_amount, 64.0, 72.0, y),) if secondary_amount is not None else ()),
+        _word("4.00", 80.0, 88.0, y),
+        _word("Market", 96.0, 104.0, y),
+        _word("01/02/2026", 112.0, 120.0, y),
     )
 
 
@@ -215,6 +246,29 @@ def test_detect_table_regions_rejects_prose_and_single_unrepeated_row() -> None:
 
     assert detect_table_regions(prose) == ()
     assert detect_table_regions(single_row) == ()
+
+
+def test_detect_table_regions_accepts_strong_single_transaction_bounded_by_total() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            _word("12.40", 0.0, 10.0, 30.0),
+            _word("3.70", 18.0, 28.0, 30.0),
+            _word("03/02/2026", 36.0, 46.0, 30.0),
+            _word("4.00", 72.0, 82.0, 30.0),
+            _word("Market", 90.0, 100.0, 30.0),
+            _word("01/02/2026", 108.0, 120.0, 30.0),
+            _word("Total", 90.0, 100.0, 50.0),
+            _word("12.40", 0.0, 10.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 1
+    assert "single_row_strong_evidence" in regions[0].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
 
 
 def test_detect_table_regions_does_not_match_date_inside_update_header() -> None:
@@ -389,6 +443,144 @@ def test_detect_table_regions_merges_an_adjacent_two_line_header_band() -> None:
     assert "header_rows:2" in regions[0].diagnostics
 
 
+def test_merge_header_rows_splits_compound_fragment_evidence_between_bands() -> None:
+    billed_word = _word("סכום", 0.0, 25.0, 10.0)
+    fee_word = _word("סכום", 25.0, 50.0, 10.0)
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 50.0, 20.0),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=billed_word.bbox,
+                text=billed_word.text,
+                words=(billed_word,),
+                confidence=1.0,
+            ),
+            Cell(
+                page_number=1,
+                bbox=fee_word.bbox,
+                text=fee_word.text,
+                words=(fee_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(billed_word, fee_word),
+        confidence=1.0,
+    )
+    billing_qualifier = _word("חיוב", 0.0, 25.0, 21.0)
+    fee_qualifier = _word("עמלה", 25.0, 50.0, 21.0)
+    fragment_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 21.0, 50.0, 31.0),
+        text="חיוב עמלה",
+        words=(billing_qualifier, fee_qualifier),
+        confidence=1.0,
+    )
+    fragment = Row(
+        page_number=1,
+        bbox=fragment_cell.bbox,
+        cells=(fragment_cell,),
+        words=fragment_cell.words,
+        confidence=1.0,
+    )
+
+    merged = _merge_header_rows(header, (fragment,))
+
+    assert tuple(cell.text for cell in merged.cells) == (
+        "סכום חיוב",
+        "סכום עמלה",
+    )
+    assert all("split_header_fragment" in cell.diagnostics for cell in merged.cells)
+
+
+def test_merged_header_bands_splits_two_strong_amount_phrases_in_one_base_cell() -> None:
+    words = (
+        _word("Amount", 0.0, 16.0, 10.0),
+        _word("charged", 17.0, 32.0, 10.0),
+        _word("Commission", 38.0, 54.0, 10.0),
+        _word("amount", 55.0, 70.0, 10.0),
+    )
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 70.0, 20.0),
+        text="Amount charged Commission amount",
+        words=words,
+        confidence=1.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=compound.bbox,
+        cells=(compound,),
+        words=words,
+        confidence=1.0,
+    )
+
+    split_header = _merged_header_bands((header,))[0]
+
+    assert tuple(cell.text for cell in split_header.cells) == (
+        "Amount charged",
+        "Commission amount",
+    )
+    assert tuple(cell.words for cell in split_header.cells) == (
+        words[:2],
+        words[2:],
+    )
+    assert all("split_compound_header_cell" in cell.diagnostics for cell in split_header.cells)
+    schema = infer_column_roles(
+        split_header.cells,
+        (
+            Cell(
+                page_number=1,
+                bbox=(0.0, 30.0, 32.0, 40.0),
+                text="10.00",
+                confidence=1.0,
+            ),
+            Cell(
+                page_number=1,
+                bbox=(38.0, 30.0, 70.0, 40.0),
+                text="0.00",
+                confidence=1.0,
+            ),
+        ),
+    )
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.AMOUNT,
+        ColumnRole.AUXILIARY_AMOUNT,
+    )
+
+
+@pytest.mark.parametrize(
+    "word_specs",
+    (
+        (("Amount", 0.0, 18.0), ("charged", 19.0, 37.0), ("today", 44.0, 60.0)),
+        (("Amount", 0.0, 18.0), ("Reference", 26.0, 46.0), ("code", 47.0, 60.0)),
+    ),
+)
+def test_merged_header_bands_does_not_split_one_sided_header_semantics(
+    word_specs: tuple[tuple[str, float, float], ...],
+) -> None:
+    words = tuple(_word(text, x0, x1, 10.0) for text, x0, x1 in word_specs)
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 60.0, 20.0),
+        text=" ".join(word.text for word in words),
+        words=words,
+        confidence=1.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=compound.bbox,
+        cells=(compound,),
+        words=words,
+        confidence=1.0,
+    )
+
+    retained = _merged_header_bands((header,))[0]
+
+    assert retained.cells == (compound,)
+
+
 def test_detect_table_regions_ignores_rows_entirely_outside_the_header_band() -> None:
     page = _page(
         (
@@ -558,6 +750,51 @@ def test_detect_table_regions_rejects_three_of_seven_column_near_miss() -> None:
             *_wide_financial_header(10.0),
             *_wide_sparse_data(40.0, include_conversion_date=False),
             *_wide_sparse_data(60.0, include_conversion_date=False),
+        )
+    )
+
+    assert detect_table_regions(page) == ()
+
+
+def test_detect_table_regions_uses_explicit_billed_column_when_secondary_is_empty() -> None:
+    page = _page(
+        (
+            *_duplicate_amount_header(10.0, explicit_billed=True),
+            *_duplicate_amount_data(40.0, secondary_amount=None),
+            *_duplicate_amount_data(60.0, secondary_amount=None),
+            _word("Total", 90.0, 100.0, 80.0),
+            _word("24.80", 0.0, 10.0, 80.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert (
+        tuple(column.role for column in regions[0].table_schema.columns).count(ColumnRole.AMOUNT)
+        == 2
+    )
+    assert "secondary_amount_bands_empty" in regions[0].diagnostics
+
+
+def test_detect_table_regions_rejects_populated_secondary_amount_band() -> None:
+    page = _page(
+        (
+            *_duplicate_amount_header(10.0, explicit_billed=True),
+            *_duplicate_amount_data(40.0, secondary_amount="9.00"),
+            *_duplicate_amount_data(60.0, secondary_amount="8.00"),
+        )
+    )
+
+    assert detect_table_regions(page) == ()
+
+
+def test_detect_table_regions_rejects_empty_secondary_without_explicit_billed_header() -> None:
+    page = _page(
+        (
+            *_duplicate_amount_header(10.0, explicit_billed=False),
+            *_duplicate_amount_data(40.0, secondary_amount=None),
+            *_duplicate_amount_data(60.0, secondary_amount=None),
         )
     )
 

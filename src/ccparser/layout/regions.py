@@ -7,8 +7,16 @@ import unicodedata
 from collections.abc import Sequence
 from itertools import pairwise
 
-from ccparser.evidence.models import BBox, PageEvidence
-from ccparser.layout.columns import infer_column_roles, is_date_shaped, is_installment_shaped
+from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
+from ccparser.layout.columns import (
+    _header_evidence_texts,
+    _header_scores,
+    explicit_billed_amount_column,
+    infer_column_roles,
+    is_date_shaped,
+    is_installment_shaped,
+    proven_billed_amount_column,
+)
 from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
 from ccparser.layout.text import logical_text_for_bbox, positioned_evidence_for_bbox
@@ -160,11 +168,162 @@ def _merged_header_cell(cell: Cell, fragments: Sequence[Cell]) -> Cell:
     )
 
 
+def _split_header_fragment(
+    fragment: Cell,
+    header_cells: Sequence[Cell],
+) -> tuple[tuple[int, Cell], ...]:
+    if len(fragment.words) < 2 or len(header_cells) < 2:
+        return ()
+
+    def nearest_header_index(bbox: BBox) -> int:
+        center = _center_x(bbox)
+        return min(
+            range(len(header_cells)),
+            key=lambda index: abs(center - _center_x(header_cells[index].bbox)),
+        )
+
+    words_by_header: dict[int, list[Word]] = {}
+    for word in fragment.words:
+        words_by_header.setdefault(nearest_header_index(word.bbox), []).append(word)
+    if len(words_by_header) < 2:
+        return ()
+
+    glyphs_by_header: dict[int, list[Glyph]] = {}
+    for glyph in fragment.glyphs:
+        glyphs_by_header.setdefault(nearest_header_index(glyph.bbox), []).append(glyph)
+
+    split_fragments: list[tuple[int, Cell]] = []
+    for index, words in words_by_header.items():
+        glyphs = glyphs_by_header.get(index, [])
+        evidence_boxes = tuple((*[word.bbox for word in words], *[glyph.bbox for glyph in glyphs]))
+        confidence_values = tuple(
+            (*[word.confidence for word in words], *[glyph.confidence for glyph in glyphs])
+        )
+        split_fragments.append(
+            (
+                index,
+                Cell(
+                    page_number=fragment.page_number,
+                    bbox=_union_bbox(evidence_boxes),
+                    text=" ".join(word.text for word in words),
+                    glyphs=tuple(glyphs),
+                    words=tuple(words),
+                    confidence=statistics.mean(confidence_values),
+                    diagnostics=tuple(
+                        dict.fromkeys((*fragment.diagnostics, "split_header_fragment"))
+                    ),
+                ),
+            )
+        )
+    return tuple(split_fragments)
+
+
+_AMOUNT_HEADER_ROLES = frozenset(
+    {
+        ColumnRole.AMOUNT,
+        ColumnRole.AUXILIARY_AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+    }
+)
+
+
+def _strong_amount_header_role(cell: Cell) -> ColumnRole | None:
+    scores = _header_scores(_header_evidence_texts((cell,)))
+    roles = tuple(
+        role for role, score in scores.items() if role in _AMOUNT_HEADER_ROLES and score >= 0.82
+    )
+    return roles[0] if len(roles) == 1 else None
+
+
+def _split_compound_header_cell(cell: Cell) -> tuple[Cell, Cell] | None:
+    if len(cell.words) < 2:
+        return None
+    ordered_words = tuple(sorted(cell.words, key=lambda word: (word.bbox[0] + word.bbox[2]) / 2))
+    width = _width(cell.bbox)
+    if width <= 0:
+        return None
+    candidate_partitions = sorted(
+        range(1, len(ordered_words)),
+        key=lambda index: ordered_words[index].bbox[0] - ordered_words[index - 1].bbox[2],
+        reverse=True,
+    )
+    for partition in candidate_partitions:
+        gap = ordered_words[partition].bbox[0] - ordered_words[partition - 1].bbox[2]
+        if gap / width < 0.05:
+            continue
+        left_words = ordered_words[:partition]
+        right_words = ordered_words[partition:]
+        boundary = (ordered_words[partition - 1].bbox[2] + ordered_words[partition].bbox[0]) / 2
+        glyph_groups = (
+            tuple(glyph for glyph in cell.glyphs if _center_x(glyph.bbox) < boundary),
+            tuple(glyph for glyph in cell.glyphs if _center_x(glyph.bbox) >= boundary),
+        )
+        split_cells = []
+        for words, glyphs in zip((left_words, right_words), glyph_groups, strict=True):
+            evidence_boxes = tuple(
+                (*[word.bbox for word in words], *[glyph.bbox for glyph in glyphs])
+            )
+            confidence_values = tuple(
+                (
+                    *[word.confidence for word in words],
+                    *[glyph.confidence for glyph in glyphs],
+                )
+            )
+            split_cells.append(
+                Cell(
+                    page_number=cell.page_number,
+                    bbox=_union_bbox(evidence_boxes),
+                    text=" ".join(word.text for word in words),
+                    glyphs=glyphs,
+                    words=words,
+                    confidence=statistics.mean(confidence_values),
+                    diagnostics=tuple(
+                        dict.fromkeys((*cell.diagnostics, "split_compound_header_cell"))
+                    ),
+                )
+            )
+        first, second = split_cells
+        if (
+            _strong_amount_header_role(first) is not None
+            and _strong_amount_header_role(second) is not None
+        ):
+            return first, second
+    return None
+
+
+def _split_compound_header_row(row: Row) -> Row:
+    cells = tuple(
+        split_cell
+        for cell in row.cells
+        for split_cell in (_split_compound_header_cell(cell) or (cell,))
+    )
+    if cells == row.cells:
+        return row
+    direction = next(
+        (
+            diagnostic.removeprefix("dominant_direction:")
+            for diagnostic in row.diagnostics
+            if diagnostic.startswith("dominant_direction:")
+        ),
+        "ltr",
+    )
+    return row.model_copy(
+        update={
+            "cells": tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
+        }
+    )
+
+
 def _merge_header_rows(header: Row, fragments: Sequence[Row]) -> Row:
     fragment_cells = tuple(cell for row in fragments for cell in row.cells)
     assignments: dict[int, list[Cell]] = {index: [] for index in range(len(header.cells))}
     unmatched: list[Cell] = []
     for fragment_cell in fragment_cells:
+        split_fragments = _split_header_fragment(fragment_cell, header.cells)
+        if split_fragments:
+            for index, split_fragment in split_fragments:
+                assignments[index].append(split_fragment)
+            continue
         center = _center_x(fragment_cell.bbox)
         candidates = tuple(
             (index, candidate)
@@ -217,7 +376,7 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
     merged: list[Row] = []
     index = 0
     while index < len(rows):
-        header = rows[index]
+        header = _split_compound_header_row(rows[index])
         fragments: list[Row] = []
         if _literal_header_role_count(header) >= 2:
             fragment_index = index + 1
@@ -288,6 +447,22 @@ def _minimum_row_alignment(schema: TableSchema) -> float:
         return 1.0
     minimum_columns = min(3, len(schema.columns))
     return max(minimum_columns / len(schema.columns), 0.5)
+
+
+def _has_strong_single_row_evidence(
+    rows: Sequence[Row],
+    schema: TableSchema,
+    stop_reason: str | None,
+) -> bool:
+    if len(rows) != 1 or stop_reason != "stopped_at_total":
+        return False
+    known_role_count = sum(column.role is not ColumnRole.UNKNOWN for column in schema.columns)
+    row = rows[0]
+    return (
+        known_role_count >= 4
+        and _transaction_shape_count(row) >= 3
+        and _row_alignment(row, schema) >= max(_minimum_row_alignment(schema), 0.75)
+    )
 
 
 def _row_intersects_horizontal_band(row: Row, bbox: BBox) -> bool:
@@ -453,11 +628,25 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
     ):
         return False
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    if len(amount_columns) != 1:
+    amount_column = (
+        amount_columns[0]
+        if len(amount_columns) == 1
+        else explicit_billed_amount_column(schema.columns, schema.header_cells)
+    )
+    if amount_column is None:
         return False
-    amount_column = amount_columns[0]
     if any(
         amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2] for cell in row.cells
+    ):
+        return False
+    secondary_amount_columns = tuple(
+        column for column in amount_columns if column is not amount_column
+    )
+    if any(
+        is_money_shaped(cell.text)
+        for column in secondary_amount_columns
+        for cell in row.cells
+        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
     ):
         return False
     minimum_alignment = max(2 / len(schema.columns), 0.6)
@@ -472,15 +661,28 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
 
 def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    if len(amount_columns) != 1:
+    amount_column = (
+        amount_columns[0]
+        if len(amount_columns) == 1
+        else explicit_billed_amount_column(schema.columns, schema.header_cells)
+    )
+    if amount_column is None:
         return False
-    amount_column = amount_columns[0]
     amount_cells = tuple(
         cell
         for cell in row.cells
         if amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2]
     )
-    return len(amount_cells) == 1 and is_money_shaped(amount_cells[0].text)
+    secondary_amount_columns = tuple(
+        column for column in amount_columns if column is not amount_column
+    )
+    secondary_cells = tuple(
+        cell
+        for column in secondary_amount_columns
+        for cell in row.cells
+        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+    )
+    return len(amount_cells) == 1 and is_money_shaped(amount_cells[0].text) and not secondary_cells
 
 
 def _candidate_schema(
@@ -577,14 +779,22 @@ def _detect_from_header(
         detail_continuation_allowed = True
         previous = projected
 
-    if len(regular_rows) < 2:
+    strong_single_row = _has_strong_single_row_evidence(regular_rows, schema, stop_reason)
+    if len(regular_rows) < 2 and not strong_single_row:
         return None, header_index + 1
+
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    billed_amount_column = proven_billed_amount_column(schema, accepted)
 
     sample_cells = tuple(cell for row in regular_rows for cell in row.cells)
     final_schema = infer_column_roles(header.cells, sample_cells)
     bbox = _union_bbox((header.bbox, *(row.bbox for row in accepted)))
     alignments = tuple(_row_alignment(row, final_schema) for row in regular_rows)
     diagnostics = [f"repeated_rows:{len(regular_rows)}"]
+    if len(amount_columns) > 1 and billed_amount_column is not None:
+        diagnostics.append("secondary_amount_bands_empty")
+    if strong_single_row:
+        diagnostics.append("single_row_strong_evidence")
     diagnostics.extend(value for value in header.diagnostics if value.startswith("header_rows:"))
     if continuation_count:
         diagnostics.append(f"continuation_rows:{continuation_count}")

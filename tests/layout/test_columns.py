@@ -199,9 +199,7 @@ def test_infer_column_roles_distinguishes_original_and_billed_amount_headers() -
     )
 
 
-def test_infer_column_roles_marks_generic_amount_between_explicit_amount_roles_as_auxiliary() -> (
-    None
-):
+def test_infer_column_roles_does_not_retype_generic_amount_from_table_context() -> None:
     headers = (
         _cell("Billed amount", (0.0, 10.0, 30.0, 20.0)),
         _cell("Amount", (40.0, 10.0, 70.0, 20.0)),
@@ -217,9 +215,53 @@ def test_infer_column_roles_marks_generic_amount_between_explicit_amount_roles_a
 
     assert tuple(column.role.value for column in schema.columns) == (
         "amount",
-        "auxiliary_amount",
+        "amount",
         "original_amount",
     )
+    assert all(
+        "role_evidence:table_amount_context" not in column.diagnostics for column in schema.columns
+    )
+
+
+@pytest.mark.parametrize(
+    "header",
+    ("Commission amount", "Fee amount", "סכום עמלה", "סכוםהעמלה"),
+)
+def test_infer_column_roles_uses_explicit_auxiliary_amount_header(header: str) -> None:
+    schema = infer_column_roles(
+        (_cell(header, (0.0, 10.0, 40.0, 20.0)),),
+        (_cell("0.00", (0.0, 30.0, 40.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.AUXILIARY_AMOUNT
+    assert "role_evidence:header" in schema.columns[0].diagnostics
+
+
+def test_infer_column_roles_recovers_fee_qualifier_from_source_words() -> None:
+    words = tuple(
+        Word(
+            text=text,
+            bbox=(0.0, 10.0 + index * 6.0, 40.0, 15.0 + index * 6.0),
+            source="digital",
+            confidence=1.0,
+        )
+        for index, text in enumerate(("סכום", "חיוב", "עמלה"))
+    )
+    header = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 30.0),
+        text="סכום חיוב",
+        words=words,
+        confidence=1.0,
+    )
+
+    schema = infer_column_roles(
+        (header,),
+        (_cell("0.00", (0.0, 32.0, 40.0, 42.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.AUXILIARY_AMOUNT
+    assert "role_evidence:header" in schema.columns[0].diagnostics
 
 
 def test_short_slash_value_remains_ambiguous_when_date_and_installment_are_plausible() -> None:

@@ -4,6 +4,8 @@ import pytest
 
 from ccparser.discovery import DateTokenStyle, DocumentClassification, discover_statement
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
+from ccparser.models import Status
+from ccparser.normalize import normalize_statement
 
 
 def _word(text: str, x0: float, x1: float, y: float, *, page: int = 1) -> Word:
@@ -125,7 +127,34 @@ def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -
     assert "statement_evidence_incomplete" in result.reason_codes
 
 
-def test_rejected_total_markers_do_not_poison_a_fully_claimed_table() -> None:
+def test_discover_statement_infers_currency_only_from_proven_billed_amount_band() -> None:
+    page = _page(
+        1,
+        (
+            _word("Date", 0.0, 25.0, 20.0),
+            _word("Description", 42.0, 72.0, 20.0),
+            _word("Amount USD", 88.0, 115.0, 20.0),
+            _word("Billed amount", 132.0, 158.0, 20.0),
+            _word("01/02/2026", 0.0, 25.0, 40.0),
+            _word("Market", 42.0, 72.0, 40.0),
+            _word("₪10.00", 132.0, 158.0, 40.0),
+            _word("02/02/2026", 0.0, 25.0, 60.0),
+            _word("Cafe", 42.0, 72.0, 60.0),
+            _word("₪20.00", 132.0, 158.0, 60.0),
+            _word("Total", 42.0, 72.0, 80.0),
+            _word("30.00", 132.0, 158.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].printed_total.currency == "ILS"
+    assert "unknown_total_currency" not in result.diagnostics
+
+
+def test_ambiguous_total_eligible_for_claimed_table_blocks_reconciliation() -> None:
     page = _page(
         1,
         (
@@ -146,13 +175,37 @@ def test_rejected_total_markers_do_not_poison_a_fully_claimed_table() -> None:
     assert result.classification is DocumentClassification.STATEMENT
     assert len(result.groups) == 1
     assert result.groups[0].table_regions == result.table_regions
-    assert "ambiguous_total_value" not in result.diagnostics
+    assert "ambiguous_total_value" in result.diagnostics
     assert len(result.rejected_total_candidates) == 2
     assert all(
         candidate.diagnostics == ("ambiguous_total_value",)
         for candidate in result.rejected_total_candidates
     )
     assert result.rejected_total_candidates[0].evidence[0].raw_text == "Total"
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_ambiguous_total_after_claimed_section_is_retained_as_nonfatal_advisory() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Total", 45.0, 80.0, 100.0),
+            _word("30.00", 100.0, 125.0, 100.0),
+            _word("31.00", 130.0, 155.0, 100.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ()
+    assert len(result.rejected_total_candidates) == 1
+    assert result.rejected_total_candidates[0].diagnostics == ("ambiguous_total_value",)
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
 def test_rejected_total_marker_remains_fatal_when_a_table_is_unclaimed() -> None:

@@ -18,6 +18,7 @@ from ccparser.discovery import (
     StatementGroupDiscovery,
 )
 from ccparser.evidence.models import BBox
+from ccparser.layout.columns import proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
     EvidenceReference,
@@ -74,6 +75,10 @@ _CATEGORY_VOCABULARY: tuple[tuple[TransactionCategory, tuple[str, ...]], ...] = 
     (TransactionCategory.PURCHASE, ("purchase", "purchased", "רכישה", "קנייה", "עסקה")),
 )
 _DATE_PATTERN = re.compile(r"^(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})$")
+_DATE_TOKEN_PATTERN = re.compile(
+    r"(?<!\d)\d{1,4}\s*(?P<separator>[./-])\s*\d{1,2}\s*"
+    r"(?P=separator)\s*\d{1,4}(?!\d)"
+)
 _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
     DateTokenStyle.DAY_FIRST_SLASH: re.compile(
         r"(?<!\d)(?P<day>\d{1,2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<year>\d{2})(?!\d)"
@@ -139,6 +144,10 @@ def _role_cells(row: Row, region: TableRegion, role: ColumnRole) -> tuple[Cell, 
     )
 
 
+def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
+    return proven_billed_amount_column(region.table_schema, region.rows)
+
+
 def _is_relevant_cell(cell: Cell) -> bool:
     text = _normalized_text(cell.text)
     return (
@@ -198,7 +207,9 @@ def _role_contract_diagnostics(region: TableRegion) -> tuple[str, ...]:
         ColumnRole.INSTALLMENT: 1,
     }
     for role, maximum in maximums.items():
-        if len(role_columns[role]) > maximum:
+        if len(role_columns[role]) > maximum and not (
+            role is ColumnRole.AMOUNT and _proven_billed_amount_column(region) is not None
+        ):
             diagnostics.append(f"unsupported_role_cardinality:{role.value}")
     if role_columns[ColumnRole.ORIGINAL_CURRENCY] and not role_columns[ColumnRole.ORIGINAL_AMOUNT]:
         diagnostics.append("original_currency_without_original_amount")
@@ -222,6 +233,8 @@ def _parse_date(
     year_context: DiscoveredDateYearContext | None = None,
 ) -> tuple[date | None, str | None]:
     normalized = _normalized_text(text)
+    if len(tuple(_DATE_TOKEN_PATTERN.finditer(normalized))) > 1:
+        return None, "ambiguous_date_tokens"
     if year_context is not None:
         short_matches = tuple(_SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
         if len(short_matches) == 1:
@@ -293,14 +306,14 @@ def _structural_date_column_kinds(
         or any(_header_kind(column) is not None for column in columns)
     ):
         return {}
-    amount_columns = _role_columns(region, ColumnRole.AMOUNT)
-    if len(amount_columns) != 1:
+    amount_column = _proven_billed_amount_column(region)
+    if amount_column is None:
         return {}
     transaction_rows = tuple(
         row
         for row in region.rows
-        if len(_cells_for_column(row, amount_columns[0])) == 1
-        and is_money_shaped(_cells_for_column(row, amount_columns[0])[0].text)
+        if len(_cells_for_column(row, amount_column)) == 1
+        and is_money_shaped(_cells_for_column(row, amount_column)[0].text)
     )
     if len(transaction_rows) < 2:
         return {}
@@ -375,10 +388,13 @@ def _category_sign_contradiction(category: TransactionCategory, kind: Transactio
 
 def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
     if "subordinate_detail_continuation" in row.diagnostics:
-        billed_cells = _role_cells(previous, region, ColumnRole.AMOUNT)
+        billed_column = _proven_billed_amount_column(region)
+        if billed_column is None:
+            return False
+        billed_cells = _cells_for_column(previous, billed_column)
         if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
             return False
-        if _role_cells(row, region, ColumnRole.AMOUNT):
+        if _cells_for_column(row, billed_column):
             return False
         typical_height = statistics.median(
             _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
@@ -505,8 +521,9 @@ def _normalize_row(
             confidence=0.0,
             diagnostics=tuple(diagnostics),
         )
-    amount_columns = _role_columns(region, ColumnRole.AMOUNT)
-    if len(amount_columns) != 1:
+    amount_column = _proven_billed_amount_column(region)
+    if amount_column is None:
+        amount_columns = _role_columns(region, ColumnRole.AMOUNT)
         diagnostics.append(
             "unknown_amount_column" if not amount_columns else "multiple_amount_columns"
         )
@@ -518,7 +535,7 @@ def _normalize_row(
             confidence=0.0,
             diagnostics=tuple(diagnostics),
         )
-    amount_cells = _cells_for_column(row, amount_columns[0])
+    amount_cells = _cells_for_column(row, amount_column)
     if len(amount_cells) != 1:
         diagnostics.append("missing_amount_cell" if not amount_cells else "multiple_amount_cells")
         return RowNormalizationResult(
