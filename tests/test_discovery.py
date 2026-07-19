@@ -30,10 +30,12 @@ def _page(
     page_number: int,
     words: tuple[Word, ...],
     glyphs: tuple[Glyph, ...] = (),
+    *,
+    width: float = 160.0,
 ) -> PageEvidence:
     return PageEvidence(
         page_number=page_number,
-        width=160.0,
+        width=width,
         height=260.0,
         glyphs=glyphs,
         words=words,
@@ -1787,6 +1789,63 @@ def test_consecutive_page_continuation_accepts_semantic_header_wording_variants(
     assert result.classification is DocumentClassification.STATEMENT
     assert len(result.groups) == 1
     assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)
+
+
+def test_consecutive_page_continuation_ignores_unknown_page_counter_column() -> None:
+    first_page = _page(1, _currencyless_billed_table(190.0))
+    second_page = _page(
+        2,
+        (
+            *_currencyless_billed_table(10.0),
+            _word("2 of 2", 180.0, 200.0, 10.0),
+            _word("Total", 40.0, 75.0, 70.0),
+            _word("₪100.00", 125.0, 155.0, 70.0),
+        ),
+        width=210.0,
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert discovery.groups[0].table_regions == discovery.table_regions
+    assert tuple(region.page_number for region in discovery.groups[0].table_regions) == (1, 2)
+    assert normalized.reconciliation.groups[0].difference == 0
+
+
+def test_unknown_page_counter_does_not_relax_known_column_geometry() -> None:
+    first_page = _page(1, _currencyless_billed_table(190.0))
+    second_page = _page(
+        2,
+        (
+            _word("Date", 0.0, 15.0, 10.0),
+            _word("Description", 35.0, 60.0, 10.0),
+            _word("Original amount", 70.0, 100.0, 10.0),
+            _word("Billed amount", 125.0, 155.0, 10.0),
+            _word("2 of 2", 180.0, 200.0, 10.0),
+            _word("01/02/2026", 0.0, 15.0, 30.0),
+            _word("Market", 35.0, 60.0, 30.0),
+            _word("$10.00", 70.0, 100.0, 30.0),
+            _word("20.00", 125.0, 155.0, 30.0),
+            _word("02/02/2026", 0.0, 15.0, 50.0),
+            _word("Cafe", 35.0, 60.0, 50.0),
+            _word("$15.00", 70.0, 100.0, 50.0),
+            _word("30.00", 125.0, 155.0, 50.0),
+            _word("Total", 35.0, 60.0, 70.0),
+            _word("₪50.00", 125.0, 155.0, 70.0),
+        ),
+        width=210.0,
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert discovery.groups[0].table_regions == (discovery.table_regions[1],)
+    assert "unclaimed_table_region" in discovery.diagnostics
+    assert normalized.reconciliation.groups[0].difference == 0
 
 
 def test_proven_continuation_is_claimed_before_later_same_currency_total() -> None:

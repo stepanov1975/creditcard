@@ -19,7 +19,7 @@ from ccparser.layout.columns import (
     infer_column_roles,
     proven_billed_amount_column,
 )
-from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row
 from ccparser.layout.regions import (
     _detect_table_regions_from_rows,
     _merged_header_bands,
@@ -810,9 +810,8 @@ def _deduplicated(values: Iterable[str]) -> tuple[str, ...]:
 def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
     first_columns = first.table_schema.columns
     second_columns = second.table_schema.columns
-    if len(first_columns) != len(second_columns):
-        return False
-    columns_compatible = all(
+    same_column_count = len(first_columns) == len(second_columns)
+    columns_compatible = same_column_count and all(
         first_column.role is second_column.role
         and abs(first_column.relative_x0 - second_column.relative_x0) <= 0.08
         and abs(first_column.relative_x1 - second_column.relative_x1) <= 0.08
@@ -826,12 +825,56 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
         _normalized_phrase(cell.text)
         for cell in sorted(second.header.cells, key=lambda cell: (cell.bbox[0], cell.bbox[1]))
     )
-    known_role_count = sum(
-        first_column.role is not ColumnRole.UNKNOWN
-        for first_column, second_column in zip(first_columns, second_columns, strict=True)
-        if first_column.role is second_column.role
+    known_role_count = (
+        sum(
+            first_column.role is not ColumnRole.UNKNOWN
+            for first_column, second_column in zip(first_columns, second_columns, strict=True)
+            if first_column.role is second_column.role
+        )
+        if same_column_count
+        else 0
     )
-    return columns_compatible and (first_header == second_header or known_role_count >= 3)
+    if columns_compatible and (first_header == second_header or known_role_count >= 3):
+        return True
+
+    first_known = tuple(
+        column
+        for column in first_columns
+        if column.role is not ColumnRole.UNKNOWN and "role_evidence:header" in column.diagnostics
+    )
+    second_known = tuple(
+        column
+        for column in second_columns
+        if column.role is not ColumnRole.UNKNOWN and "role_evidence:header" in column.diagnostics
+    )
+    if len(first_known) < 3 or len(first_known) != len(second_known):
+        return False
+    if any(
+        first_column.role is not second_column.role
+        for first_column, second_column in zip(first_known, second_known, strict=True)
+    ):
+        return False
+
+    def core_geometry(columns: Sequence[ColumnSpec]) -> tuple[tuple[float, float], ...]:
+        left = min(column.bbox[0] for column in columns)
+        right = max(column.bbox[2] for column in columns)
+        width = right - left
+        if width <= 0:
+            return ()
+        return tuple(
+            ((column.bbox[0] - left) / width, (column.bbox[2] - left) / width) for column in columns
+        )
+
+    first_geometry = core_geometry(first_known)
+    second_geometry = core_geometry(second_known)
+    return bool(first_geometry) and all(
+        abs(first_x0 - second_x0) <= 0.08 and abs(first_x1 - second_x1) <= 0.08
+        for (first_x0, first_x1), (second_x0, second_x1) in zip(
+            first_geometry,
+            second_geometry,
+            strict=True,
+        )
+    )
 
 
 def _proven_page_continuation(
