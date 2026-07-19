@@ -1095,6 +1095,31 @@ def test_discover_statement_preserves_bijective_table_suffix_year_mapping() -> N
     )
 
 
+def test_discover_statement_bridges_adjacent_suffix_at_december_january_boundary() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("31/12/25", 0.0, 28.0, 40.0)
+    words[6] = _word("01/01/26", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Cycle closes 03/01/2026", 80.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year is None
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert result.date_year_context.year_by_suffix == ((25, 2025), (26, 2026))
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Cycle closes 03/01/2026",
+    )
+
+
 def test_discover_statement_rejects_incomplete_table_suffix_year_mapping() -> None:
     words = list(_table(20.0, "₪", "10.00", "20.00"))
     words[3] = _word("01/02/26", 0.0, 28.0, 40.0)

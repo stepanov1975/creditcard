@@ -732,16 +732,21 @@ def _date_year_context(
     cells = tuple(cell for row in rows for cell in row.cells)
     table_date_cells = _table_date_cells(regions)
     table_short_years_by_style: dict[DateTokenStyle, set[int]] = {}
+    table_short_months_by_style: dict[DateTokenStyle, dict[int, set[int]]] = {}
     for style, short_pattern in _SHORT_DATE_TOKEN_PATTERNS.items():
         years: set[int] = set()
+        months_by_year: dict[int, set[int]] = {}
         for cell in table_date_cells:
             for match in short_pattern.finditer(cell.text):
                 try:
                     date(2000, int(match.group("month")), int(match.group("day")))
                 except ValueError:
                     continue
-                years.add(int(match.group("year")))
+                short_year = int(match.group("year"))
+                years.add(short_year)
+                months_by_year.setdefault(short_year, set()).add(int(match.group("month")))
         table_short_years_by_style[style] = years
+        table_short_months_by_style[style] = months_by_year
     has_table_short_dates = any(table_short_years_by_style.values())
     candidates: list[tuple[DateTokenStyle, tuple[tuple[int, int], ...], tuple[Cell, ...]]] = []
     for style, full_pattern in _FULL_DATE_TOKEN_PATTERNS.items():
@@ -786,6 +791,32 @@ def _date_year_context(
                         candidate_evidence_years.setdefault(bracketed_year, set()).update(
                             (bracketed_year - 1, bracketed_year + 1)
                         )
+                if not candidate_evidence_years and len(table_short_years) == 2:
+                    months_by_year = table_short_months_by_style[style]
+                    for anchor_year in full_years:
+                        anchor_suffix = anchor_year % 100
+                        if anchor_suffix not in table_short_years or anchor_suffix == short_year:
+                            continue
+                        inferred_year: int | None = None
+                        if short_year == (anchor_suffix - 1) % 100:
+                            inferred_year = anchor_year - 1
+                        elif short_year == (anchor_suffix + 1) % 100:
+                            inferred_year = anchor_year + 1
+                        if inferred_year is None or not (
+                            _MIN_CONTEXT_YEAR <= inferred_year <= _MAX_CONTEXT_YEAR
+                        ):
+                            continue
+                        earlier_suffix, later_suffix = (
+                            (short_year, anchor_suffix)
+                            if inferred_year < anchor_year
+                            else (anchor_suffix, short_year)
+                        )
+                        if months_by_year.get(earlier_suffix) == {12} and months_by_year.get(
+                            later_suffix
+                        ) == {1}:
+                            candidate_evidence_years.setdefault(inferred_year, set()).add(
+                                anchor_year
+                            )
                 if len(candidate_evidence_years) != 1:
                     break
                 selected_suffix_year, evidence_years = next(iter(candidate_evidence_years.items()))
