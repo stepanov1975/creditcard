@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import unicodedata
@@ -16,7 +17,7 @@ from ccparser.evidence.models import BBox, Point, Word
 
 OCR_LANGUAGES = "heb+eng"
 OCR_PREPROCESSING_VERSION = "raw-pixmap-v1"
-OCR_PIPELINE_VERSION = "tesseract-tsv-v1"
+OCR_PIPELINE_VERSION = "tesseract-tsv-fused-numeric-v2"
 TESSERACT_VERSION_TIMEOUT_SECONDS = 10.0
 TESSERACT_RECOGNITION_TIMEOUT_SECONDS = 120.0
 
@@ -40,6 +41,78 @@ def tesseract_command() -> tuple[str, ...]:
         "6",
         "tsv",
     )
+
+
+def supplemental_tesseract_command() -> tuple[str, ...]:
+    """Return the fixed English pass used only to repair truncated numeric OCR."""
+
+    return (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "6",
+        "tsv",
+    )
+
+
+_NUMERIC_TOKEN_PATTERN = re.compile(
+    r"^[+-]?(?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[,.]\d{1,2})?$"
+)
+
+
+def _overlap_over_smaller(first: BBox, second: BBox) -> float:
+    width = max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+    height = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+    intersection = width * height
+    first_area = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+    second_area = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+    smaller = min(first_area, second_area)
+    return intersection / smaller if smaller else 0.0
+
+
+def _numeric_digit_count(text: str) -> int:
+    normalized = unicodedata.normalize("NFC", text).strip()
+    if _NUMERIC_TOKEN_PATTERN.fullmatch(normalized) is None:
+        return 0
+    return sum(char.isdigit() for char in normalized)
+
+
+def fuse_ocr_words(
+    primary: tuple[Word, ...],
+    supplemental: tuple[Word, ...],
+) -> tuple[Word, ...]:
+    """Replace only overlapping truncated numeric tokens with stronger OCR evidence."""
+
+    numeric_supplements = tuple(
+        word for word in supplemental if _numeric_digit_count(word.text) >= 2
+    )
+    fused: list[Word] = []
+    for word in primary:
+        primary_digits = _numeric_digit_count(word.text)
+        candidates = tuple(
+            candidate
+            for candidate in numeric_supplements
+            if _overlap_over_smaller(word.bbox, candidate.bbox) >= 0.7
+            and _numeric_digit_count(candidate.text) > primary_digits
+        )
+        fused.append(
+            max(
+                candidates,
+                key=lambda candidate: (
+                    _numeric_digit_count(candidate.text),
+                    candidate.confidence,
+                    candidate.text,
+                ),
+            )
+            if primary_digits and candidates
+            else word
+        )
+    return tuple(fused)
 
 
 def parse_tesseract_tsv(
@@ -96,6 +169,7 @@ class TesseractOcr:
         self.cache_dir = Path(cache_dir)
         self.dpi = dpi
         self._command = tesseract_command()
+        self._supplemental_command = supplemental_tesseract_command()
         self._version: str | None = None
 
     def _tesseract_version(self) -> str:
@@ -126,6 +200,7 @@ class TesseractOcr:
             "pipeline_version": OCR_PIPELINE_VERSION,
             "preprocessing_version": OCR_PREPROCESSING_VERSION,
             "source_sha256": source_sha256,
+            "supplemental_command": list(self._supplemental_command),
             "tesseract_version": self._tesseract_version(),
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -143,10 +218,10 @@ class TesseractOcr:
             origin = (float(pixmap.x) * point_scale, float(pixmap.y) * point_scale)
             return cast(bytes, pixmap.tobytes("png")), origin
 
-    def _recognize(self, image: bytes) -> bytes:
+    def _recognize(self, image: bytes, command: tuple[str, ...]) -> bytes:
         try:
             completed = subprocess.run(
-                self._command,
+                command,
                 input=image,
                 check=True,
                 capture_output=True,
@@ -155,6 +230,18 @@ class TesseractOcr:
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as error:
             raise OcrError("Tesseract recognition failed") from error
         return completed.stdout
+
+    def _cached_recognition(
+        self,
+        cache_path: Path,
+        image: bytes,
+        command: tuple[str, ...],
+    ) -> bytes:
+        if cache_path.is_file():
+            return cache_path.read_bytes()
+        tsv = self._recognize(image, command)
+        self._write_cache(cache_path, tsv)
+        return tsv
 
     def _write_cache(self, cache_path: Path, tsv: bytes) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -185,10 +272,18 @@ class TesseractOcr:
         if hashlib.sha256(pdf_bytes).hexdigest() != source_sha256:
             raise ValueError("source SHA-256 does not match PDF bytes")
         image, origin = self._render(pdf_bytes, page_index, clip)
-        cache_path = self.cache_dir / f"{self.cache_key(source_sha256, page_index, clip)}.tsv"
-        if cache_path.is_file():
-            tsv = cache_path.read_bytes()
-        else:
-            tsv = self._recognize(image)
-            self._write_cache(cache_path, tsv)
-        return parse_tesseract_tsv(tsv, dpi=self.dpi, origin=origin)
+        key = self.cache_key(source_sha256, page_index, clip)
+        primary_tsv = self._cached_recognition(
+            self.cache_dir / f"{key}.primary.tsv",
+            image,
+            self._command,
+        )
+        supplemental_tsv = self._cached_recognition(
+            self.cache_dir / f"{key}.supplemental.tsv",
+            image,
+            self._supplemental_command,
+        )
+        return fuse_ocr_words(
+            parse_tesseract_tsv(primary_tsv, dpi=self.dpi, origin=origin),
+            parse_tesseract_tsv(supplemental_tsv, dpi=self.dpi, origin=origin),
+        )

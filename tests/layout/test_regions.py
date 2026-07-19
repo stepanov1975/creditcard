@@ -1907,6 +1907,168 @@ def test_detect_table_regions_skips_bounded_nonfinancial_preamble_before_data() 
     assert "ignored_preamble_rows:3" in regions[0].diagnostics
 
 
+def test_detect_table_regions_skips_bounded_overlaid_ocr_amount_artifacts() -> None:
+    page = _page(
+        (
+            _word("|", 34.0, 35.0, 10.0),
+            _word("Amount", 192.0, 229.0, 10.0),
+            _word("Description", 332.0, 380.0, 10.0),
+            _word("Date", 494.0, 531.0, 10.0),
+            _word("WA", 240.0, 260.0, 12.5, height=30.0),
+            _word("12.40", 198.0, 230.0, 30.0),
+            _word("Market", 332.0, 380.0, 30.0),
+            _word("01/02/2026", 494.0, 531.0, 30.0),
+            _word("/", 240.0, 260.0, 42.5, height=30.0),
+            _word("18.60", 198.0, 230.0, 60.0),
+            _word("Cafe", 332.0, 380.0, 60.0),
+            _word("03/02/2026", 494.0, 531.0, 60.0),
+            _word("Total", 332.0, 380.0, 80.0),
+            _word("31.00", 198.0, 230.0, 80.0),
+        ),
+        width=560.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(tuple(cell.text for cell in row.cells) for row in regions[0].rows) == (
+        ("12.40", "Market", "01/02/2026"),
+        ("18.60", "Cafe", "03/02/2026"),
+    )
+    assert "ignored_overlaid_ocr_rows:1" in regions[0].diagnostics
+
+
+def test_detect_table_regions_does_not_skip_nonoverlaid_invalid_amount_text() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            *_data(50.0, "03/02/2026", "Cafe", "18.60"),
+            _word("Pending", 92.0, 120.0, 70.0),
+            *_data(100.0, "05/02/2026", "Hotel", "20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_detect_table_regions_ignores_isolated_ocr_punctuation_in_amount_band() -> None:
+    def ocr_word(text: str, x0: float, x1: float, y: float) -> Word:
+        return _word(text, x0, x1, y).model_copy(update={"source": "ocr"})
+
+    page = _page(
+        (
+            *_header(10.0),
+            ocr_word("01/02/2026", 0.0, 22.0, 30.0),
+            ocr_word("Market", 35.0, 72.0, 30.0),
+            ocr_word("12.40", 92.0, 110.0, 30.0),
+            ocr_word("/", 118.0, 120.0, 30.0),
+            ocr_word("03/02/2026", 0.0, 22.0, 50.0),
+            ocr_word("Cafe", 35.0, 72.0, 50.0),
+            ocr_word("18.60", 92.0, 110.0, 50.0),
+            ocr_word("|", 118.0, 120.0, 50.0),
+            _word("Total", 35.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(row.cells[-1].text for row in regions[0].rows) == ("12.40", "18.60")
+    assert all(
+        "ignored_isolated_ocr_punctuation:1" in row.cells[-1].diagnostics for row in regions[0].rows
+    )
+
+
+def test_detect_table_regions_retains_bounded_ambiguous_rows_proven_by_repetition() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "$10.00", "₪10.00x"),
+            *_foreign_data(50.0, "02/02/2026", "Cafe", "$20.00", "₪20.00x"),
+            *_foreign_data(70.0, "03/02/2026", "Hotel", "$30.00", "₪30.00"),
+            *_foreign_data(90.0, "04/02/2026", "Train", "$40.00", "₪40.00"),
+            _word("Total", 30.0, 55.0, 110.0),
+            _word("₪100.00", 100.0, 125.0, 110.0),
+        ),
+        width=130.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert all("ambiguous_leading_transaction" in row.diagnostics for row in regions[0].rows[:2])
+    assert "ambiguous_leading_rows:2" in regions[0].diagnostics
+
+
+def test_detect_table_regions_rejects_unproven_ambiguous_leading_rows() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "$10.00", "₪10.00x"),
+            *_foreign_data(50.0, "02/02/2026", "Cafe", "$20.00", "₪20.00x"),
+        ),
+        width=130.0,
+    )
+
+    assert detect_table_regions(page) == ()
+
+
+def test_detect_table_regions_uses_proper_transaction_header_context() -> None:
+    page = _page(
+        (
+            _word("עסקה", 0.0, 20.0, 10.0),
+            _word("סוג", 30.0, 50.0, 10.0),
+            _word("Original amount", 65.0, 85.0, 10.0),
+            _word("Billed amount", 100.0, 125.0, 10.0),
+            _word("6", 0.0, 20.0, 30.0),
+            _word("regular", 30.0, 50.0, 30.0),
+            _word("$10.00", 65.0, 85.0, 30.0),
+            _word("₪20.00", 100.0, 125.0, 30.0),
+            _word("6", 0.0, 20.0, 50.0),
+            _word("regular", 30.0, 50.0, 50.0),
+            _word("$30.00", 65.0, 85.0, 50.0),
+            _word("₪40.00", 100.0, 125.0, 50.0),
+            _word("Total", 30.0, 50.0, 70.0),
+            _word("₪60.00", 100.0, 125.0, 70.0),
+        ),
+        width=130.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+
+
+def test_detect_table_regions_rejects_dual_amount_summary_without_transaction_context() -> None:
+    page = _page(
+        (
+            _word("Summary", 0.0, 20.0, 10.0),
+            _word("Kind", 30.0, 50.0, 10.0),
+            _word("Original amount", 65.0, 85.0, 10.0),
+            _word("Billed amount", 100.0, 125.0, 10.0),
+            _word("6", 0.0, 20.0, 30.0),
+            _word("regular", 30.0, 50.0, 30.0),
+            _word("$10.00", 65.0, 85.0, 30.0),
+            _word("₪20.00", 100.0, 125.0, 30.0),
+            _word("6", 0.0, 20.0, 50.0),
+            _word("regular", 30.0, 50.0, 50.0),
+            _word("$30.00", 65.0, 85.0, 50.0),
+            _word("₪40.00", 100.0, 125.0, 50.0),
+        ),
+        width=130.0,
+    )
+
+    assert detect_table_regions(page) == ()
+
+
 def test_detect_table_regions_accepts_repeated_sparse_rows_in_wide_financial_schema() -> None:
     page = _page(
         (

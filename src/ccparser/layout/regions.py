@@ -62,9 +62,16 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
     }
 )
 _POINT_COUNT_UNIT_MARKERS = frozenset({"point", "points", "נקודה", "נקודות"})
+_TRANSACTION_CONTEXT_MARKERS = frozenset(
+    {"transaction", "transactions", "עסקה", "העסקה", "עסקאות", "העסקאות"}
+)
 _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
+_ISOLATED_OCR_PUNCTUATION = frozenset({"|", "/", "\\", ":", ";", "~", "_"})
 MAX_HEADER_PREAMBLE_ROWS = 4
+MAX_AMBIGUOUS_LEADING_ROWS = 2
+MAX_AMBIGUOUS_LEADING_PROOF_LOOKAHEAD = 4
+MAX_OVERLAID_OCR_LOOKAHEAD_ROWS = 3
 MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
 MIN_ISSUER_CONVERSION_DETAIL_ROWS = 4
 MAX_ISSUER_CONVERSION_DETAIL_ROWS = 5
@@ -86,6 +93,12 @@ def _center_y(bbox: BBox) -> float:
 
 def _width(bbox: BBox) -> float:
     return max(0.0, bbox[2] - bbox[0])
+
+
+def _vertical_overlap_ratio(first: BBox, second: BBox) -> float:
+    overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+    smaller_height = min(_height(first), _height(second))
+    return overlap / smaller_height if smaller_height else 0.0
 
 
 def _union_bbox(boxes: Sequence[BBox]) -> BBox:
@@ -454,7 +467,17 @@ def _plausible_header(schema: TableSchema) -> bool:
             ColumnRole.ORIGINAL_CURRENCY,
         }
     )
-    return len(schema.columns) >= 2 and len(header_roles) >= 2 and amount_role and context_role
+    transaction_context = any(
+        token in _TRANSACTION_CONTEXT_MARKERS
+        for cell in schema.header_cells
+        for token in _normalized_marker(cell.text).split()
+    )
+    return (
+        len(schema.columns) >= 2
+        and len(header_roles) >= 2
+        and amount_role
+        and (context_role or transaction_context)
+    )
 
 
 def _structural_gap(previous: Row, current: Row, observed: Sequence[Row]) -> bool:
@@ -555,6 +578,33 @@ def _representative_vertical_band(row: Row) -> tuple[float, float]:
     return center - typical_height / 2, center + typical_height / 2
 
 
+def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
+    if is_money_shaped(cell.text) or not cell.words:
+        return cell
+    removed = tuple(
+        word
+        for word in cell.words
+        if word.source == "ocr"
+        and unicodedata.normalize("NFC", word.text).strip() in _ISOLATED_OCR_PUNCTUATION
+    )
+    if not removed:
+        return cell
+    kept = tuple(word for word in cell.words if word not in removed)
+    candidate = logical_text_for_evidence((), kept)
+    if not candidate or not is_money_shaped(candidate):
+        return cell
+    return cell.model_copy(
+        update={
+            "text": candidate,
+            "diagnostics": tuple(
+                dict.fromkeys(
+                    (*cell.diagnostics, f"ignored_isolated_ocr_punctuation:{len(removed)}")
+                )
+            ),
+        }
+    )
+
+
 def _project_row_to_header_bands(
     page_evidence: PageEvidence,
     row: Row,
@@ -573,16 +623,18 @@ def _project_row_to_header_bands(
             (*[glyph.confidence for glyph in glyphs], *[word.confidence for word in words])
         )
         cells.append(
-            Cell(
-                page_number=row.page_number,
-                bbox=_union_bbox(evidence_boxes),
-                text=text,
-                glyphs=glyphs,
-                words=words,
-                confidence=(
-                    statistics.mean(confidence_values) if confidence_values else row.confidence
-                ),
-                diagnostics=(f"projected_header_band:{index}",),
+            _without_isolated_ocr_money_punctuation(
+                Cell(
+                    page_number=row.page_number,
+                    bbox=_union_bbox(evidence_boxes),
+                    text=text,
+                    glyphs=glyphs,
+                    words=words,
+                    confidence=(
+                        statistics.mean(confidence_values) if confidence_values else row.confidence
+                    ),
+                    diagnostics=(f"projected_header_band:{index}",),
+                )
             )
         )
     direction = next(
@@ -1004,6 +1056,115 @@ def _bounded_auxiliary_fragment(
     )
 
 
+def _bounded_overlaid_ocr_amount_artifact(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+) -> int | None:
+    """Return the last noise-row index for a tall OCR artifact over a proven next row."""
+
+    source = rows[start_index]
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    if (
+        len(source.cells) != 1
+        or len(amount_columns) != 1
+        or _is_total_row(source)
+        or _literal_header_role_count(source) >= 2
+        or _transaction_shape_count(source) != 0
+        or not (
+            amount_columns[0].bbox[0]
+            <= _center_x(source.cells[0].bbox)
+            <= amount_columns[0].bbox[2]
+        )
+    ):
+        return None
+
+    stop = min(len(rows), start_index + MAX_OVERLAID_OCR_LOOKAHEAD_ROWS + 1)
+    for following_index in range(start_index + 1, stop):
+        following_source = rows[following_index]
+        if _is_total_row(following_source) or _literal_header_role_count(following_source) >= 2:
+            return None
+        following = _project_row_to_header_bands(page_evidence, following_source, header)
+        if (
+            following.cells
+            and _has_valid_billed_amount(following, schema)
+            and _transaction_shape_count(following) >= 2
+            and _row_alignment(following, schema) >= _minimum_row_alignment(schema)
+        ):
+            return (
+                following_index - 1
+                if _vertical_overlap_ratio(source.bbox, following_source.bbox) >= 0.5
+                else None
+            )
+        if any(char.isalnum() for cell in following_source.cells for char in cell.text):
+            return None
+    return None
+
+
+def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
+    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
+    if billed_column is None:
+        amount_columns = tuple(
+            column for column in schema.columns if column.role is ColumnRole.AMOUNT
+        )
+        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    if billed_column is None:
+        return False
+    billed_cells = tuple(
+        cell
+        for cell in row.cells
+        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+    )
+    return (
+        len(billed_cells) == 1
+        and any(char.isdigit() for char in billed_cells[0].text)
+        and not is_money_shaped(billed_cells[0].text)
+        and _transaction_shape_count(row) >= 2
+        and _row_alignment(row, schema) >= _minimum_row_alignment(schema)
+    )
+
+
+def _leading_ambiguity_is_proven_by_repetition(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+) -> bool:
+    projected = _project_row_to_header_bands(page_evidence, rows[start_index], header)
+    if not _ambiguous_billed_amount_row(projected, schema):
+        return False
+    ambiguous_count = 1
+    consecutive_valid_count = 0
+    stop = min(len(rows), start_index + MAX_AMBIGUOUS_LEADING_PROOF_LOOKAHEAD + 1)
+    for index in range(start_index + 1, stop):
+        source = rows[index]
+        if (
+            not _row_intersects_horizontal_band(source, header.bbox)
+            or _is_total_row(source)
+            or _literal_header_role_count(source) >= 2
+        ):
+            return False
+        candidate = _project_row_to_header_bands(page_evidence, source, header)
+        if (
+            _has_valid_billed_amount(candidate, schema)
+            and _transaction_shape_count(candidate) >= 2
+            and _row_alignment(candidate, schema) >= _minimum_row_alignment(schema)
+        ):
+            consecutive_valid_count += 1
+            if consecutive_valid_count >= 2:
+                return True
+            continue
+        if consecutive_valid_count or not _ambiguous_billed_amount_row(candidate, schema):
+            return False
+        ambiguous_count += 1
+        if ambiguous_count > MAX_AMBIGUOUS_LEADING_ROWS:
+            return False
+    return False
+
+
 def _inherited_region_after_total(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -1158,6 +1319,8 @@ def _detect_from_header(
     continuation_count = 0
     detail_continuation_count = 0
     auxiliary_continuation_count = 0
+    ignored_overlaid_ocr_count = 0
+    ambiguous_leading_count = 0
     ignored_outside_band_count = 0
     ignored_preamble_count = 0
     stop_reason: str | None = None
@@ -1256,6 +1419,36 @@ def _detect_from_header(
             previous = projected
             continue
         if not _has_valid_billed_amount(projected, schema):
+            overlaid_through = _bounded_overlaid_ocr_amount_artifact(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+            if overlaid_through is not None:
+                consumed_through = overlaid_through
+                ignored_overlaid_ocr_count += 1
+                continue
+        if not regular_rows and _leading_ambiguity_is_proven_by_repetition(
+            page_evidence,
+            rows,
+            index,
+            header,
+            schema,
+        ):
+            projected = projected.model_copy(
+                update={
+                    "diagnostics": tuple(
+                        dict.fromkeys((*projected.diagnostics, "ambiguous_leading_transaction"))
+                    )
+                }
+            )
+            accepted.append(projected)
+            ambiguous_leading_count += 1
+            previous = projected
+            continue
+        if not _has_valid_billed_amount(projected, schema):
             stop_reason = "stopped_at_structure_change"
             stop_index = index
             break
@@ -1297,6 +1490,10 @@ def _detect_from_header(
         diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
     if ignored_preamble_count:
         diagnostics.append(f"ignored_preamble_rows:{ignored_preamble_count}")
+    if ignored_overlaid_ocr_count:
+        diagnostics.append(f"ignored_overlaid_ocr_rows:{ignored_overlaid_ocr_count}")
+    if ambiguous_leading_count:
+        diagnostics.append(f"ambiguous_leading_rows:{ambiguous_leading_count}")
     if stop_reason is not None:
         diagnostics.append(stop_reason)
     diagnostics.extend(f"schema:{diagnostic}" for diagnostic in final_schema.diagnostics)

@@ -726,9 +726,35 @@ def _amount_cells_in_nearest_billed_band(
     )
 
 
+def _without_isolated_ocr_letter(
+    cell: Cell,
+    text: str,
+    currency: str,
+) -> str | None:
+    if not cell.words or any(word.source != "ocr" for word in cell.words):
+        return None
+    normalized = "".join(
+        char for char in unicodedata.normalize("NFC", text) if unicodedata.category(char) != "Cf"
+    )
+    candidates: list[str] = []
+    leading = re.fullmatch(r"\s*[A-Za-z]\s+(.+?)\s*", normalized)
+    if leading is not None:
+        candidates.append(leading.group(1))
+    trailing = re.fullmatch(r"\s*(.+?)\s+[A-Za-z]\s*", normalized)
+    if trailing is not None:
+        candidates.append(trailing.group(1))
+    valid = tuple(
+        candidate
+        for candidate in dict.fromkeys(candidates)
+        if parse_amount(candidate, currency_hint=currency).amount is not None
+    )
+    return valid[0] if len(valid) == 1 else None
+
+
 def _total_from_row(
     row: Row,
     preceding_regions: Sequence[TableRegion],
+    document_currency: str | None = None,
 ) -> tuple[DiscoveredPrintedTotal | None, tuple[str, ...]]:
     label_cells = tuple(cell for cell in row.cells if _contains_phrase(cell.text, _TOTAL_MARKERS))
     if not label_cells:
@@ -744,16 +770,21 @@ def _total_from_row(
         if len(currencies) == 1
         for currency in currencies
     }
+    currency_inherited_from_document = False
     if len(explicit_currencies) == 1:
         currency = next(iter(explicit_currencies))
     elif not explicit_currencies and len(inferred_currencies) == 1:
         currency = next(iter(inferred_currencies))
+    elif not explicit_currencies and not inferred_currencies and document_currency is not None:
+        currency = document_currency
+        currency_inherited_from_document = True
     else:
         currency = None
         diagnostics.append("unknown_total_currency")
     if len(explicit_currencies) > 1:
         diagnostics.append("conflicting_total_currency")
     amount_cells: list[tuple[Cell, str]] = []
+    cleaned_amount_cells: list[Cell] = []
     if currency is not None:
         for cell in row.cells:
             candidate_text = cell.text
@@ -766,6 +797,12 @@ def _total_from_row(
                         candidate_text = candidate_text[len(marker) :].strip(" :")
                         break
             parsed = parse_amount(candidate_text, currency_hint=currency)
+            if parsed.amount is None:
+                cleaned = _without_isolated_ocr_letter(cell, candidate_text, currency)
+                if cleaned is not None:
+                    candidate_text = cleaned
+                    parsed = parse_amount(candidate_text, currency_hint=currency)
+                    cleaned_amount_cells.append(cell)
             if parsed.amount is not None:
                 amount_cells.append((cell, candidate_text))
     aligned_to_billed_column = False
@@ -779,6 +816,7 @@ def _total_from_row(
     if len(amount_cells) != 1 or currency is None:
         return None, tuple(diagnostics)
     value_cell, amount_text = amount_cells[0]
+    ignored_isolated_ocr_letter = any(cell is value_cell for cell in cleaned_amount_cells)
     return (
         DiscoveredPrintedTotal(
             amount_text=amount_text,
@@ -786,7 +824,17 @@ def _total_from_row(
             label_evidence=_evidence(label_cells[0]),
             value_evidence=_evidence(value_cell),
             confidence=min(row.confidence, label_cells[0].confidence, value_cell.confidence),
-            diagnostics=(("value_aligned_to_billed_column",) if aligned_to_billed_column else ()),
+            diagnostics=tuple(
+                (
+                    *(("value_aligned_to_billed_column",) if aligned_to_billed_column else ()),
+                    *(
+                        ("currency_inherited_from_document",)
+                        if currency_inherited_from_document
+                        else ()
+                    ),
+                    *(("ignored_isolated_ocr_letter",) if ignored_isolated_ocr_letter else ()),
+                )
+            ),
         ),
         tuple(diagnostics),
     )
@@ -1244,6 +1292,15 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         and not _is_points_ledger_total(row, page_rows, regions)
         and not _is_rate_ledger_total(row, page_rows, regions)
     )
+    observed_document_currencies = {
+        currency
+        for row in total_marker_rows
+        for cell in row.cells
+        for currency in currencies_in_text(cell.text)
+    } | {currency for region in regions for currency in _table_currencies(region)}
+    document_currency = (
+        next(iter(observed_document_currencies)) if len(observed_document_currencies) == 1 else None
+    )
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
     rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
@@ -1256,7 +1313,11 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             if _reading_key_bbox(region.page_number, region.bbox)
             < _reading_key_bbox(total_row.page_number, total_row.bbox)
         )
-        total, total_diagnostics = _total_from_row(total_row, preceding)
+        total, total_diagnostics = _total_from_row(
+            total_row,
+            preceding,
+            document_currency,
+        )
         if total is None and total_diagnostics:
             rejected_total_rows.append(
                 (

@@ -11,11 +11,14 @@ import fitz
 import pytest
 
 import ccparser.evidence.ocr as ocr_module
+from ccparser.evidence import Word
 from ccparser.evidence.ocr import (
     OCR_LANGUAGES,
     OCR_PREPROCESSING_VERSION,
     TesseractOcr,
+    fuse_ocr_words,
     parse_tesseract_tsv,
+    supplemental_tesseract_command,
     tesseract_command,
 )
 from ccparser.evidence.pdf import extract_pdf
@@ -56,6 +59,62 @@ def test_tesseract_command_is_deterministic_and_local() -> None:
     )
 
 
+def test_supplemental_tesseract_command_is_english_numeric_pass() -> None:
+    assert supplemental_tesseract_command() == (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "6",
+        "tsv",
+    )
+
+
+def test_fuse_ocr_words_replaces_only_overlapping_truncated_numeric_token() -> None:
+    primary = (
+        Word(
+            text="כותרת",
+            bbox=(10.0, 10.0, 40.0, 20.0),
+            source="ocr",
+            confidence=0.9,
+        ),
+        Word(
+            text="₪",
+            bbox=(50.0, 30.0, 55.0, 40.0),
+            source="ocr",
+            confidence=0.8,
+        ),
+        Word(
+            text="1",
+            bbox=(58.0, 30.0, 82.0, 40.0),
+            source="ocr",
+            confidence=0.95,
+        ),
+    )
+    supplemental = (
+        Word(
+            text="256.81",
+            bbox=(58.0, 30.0, 82.0, 40.0),
+            source="ocr",
+            confidence=0.9,
+        ),
+        Word(
+            text="2026",
+            bbox=(100.0, 70.0, 120.0, 80.0),
+            source="ocr",
+            confidence=0.9,
+        ),
+    )
+
+    fused = fuse_ocr_words(primary, supplemental)
+
+    assert tuple(word.text for word in fused) == ("כותרת", "₪", "256.81")
+
+
 def test_ocr_exposes_a_typed_runtime_error() -> None:
     error_type = getattr(ocr_module, "OcrError", object)
 
@@ -71,7 +130,10 @@ def test_ocr_constructor_has_no_command_override() -> None:
     constructor = inspect.signature(TesseractOcr)
 
     assert "command" not in constructor.parameters
-    assert getattr(ocr_module, "OCR_PIPELINE_VERSION", None) == "tesseract-tsv-v1"
+    assert (
+        getattr(ocr_module, "OCR_PIPELINE_VERSION", None)
+        == "tesseract-tsv-fused-numeric-v2"
+    )
 
 
 @pytest.mark.parametrize(
@@ -176,9 +238,10 @@ def test_cache_key_contains_every_extraction_dimension(
         "dpi": 300,
         "languages": OCR_LANGUAGES,
         "page_index": 3,
-        "pipeline_version": "tesseract-tsv-v1",
+        "pipeline_version": "tesseract-tsv-fused-numeric-v2",
         "preprocessing_version": OCR_PREPROCESSING_VERSION,
         "source_sha256": "b" * 64,
+        "supplemental_command": list(supplemental_tesseract_command()),
         "tesseract_version": "tesseract 5.7.1",
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -228,7 +291,11 @@ def test_internal_ocr_command_snapshot_is_used_for_recognition(
     words = provider.extract_words(pdf_bytes, _source_sha256(pdf_bytes), page_index=0)
 
     assert words[0].text == "Configured"
-    assert commands == [("tesseract", "--version"), alternate_command]
+    assert commands == [
+        ("tesseract", "--version"),
+        alternate_command,
+        supplemental_tesseract_command(),
+    ]
 
 
 def test_ocr_renders_requested_clip_runs_tesseract_and_reuses_cache(
@@ -269,9 +336,10 @@ def test_ocr_renders_requested_clip_runs_tesseract_and_reuses_cache(
     assert first[0].bbox == pytest.approx((18.0, 36.0, 36.0, 42.0))
     assert commands.count(tesseract_command()) == 1
     assert commands.count(("tesseract", "--version")) == 2
-    assert len(image_inputs) == 1
+    assert len(image_inputs) == 2
     assert image_inputs[0].startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(tuple((tmp_path / "cache").glob("*.tsv"))) == 1
+    assert image_inputs[1] == image_inputs[0]
+    assert len(tuple((tmp_path / "cache").glob("*.tsv"))) == 2
 
 
 @pytest.mark.parametrize(

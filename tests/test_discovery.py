@@ -314,6 +314,63 @@ def test_discover_statement_infers_currency_only_from_proven_billed_amount_band(
     assert "unknown_total_currency" not in result.diagnostics
 
 
+def test_discover_statement_ignores_one_isolated_ocr_letter_before_total_value() -> None:
+    ocr_total = _word("W 30.00", 118.0, 155.0, 80.0).model_copy(update={"source": "ocr"})
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            ocr_total,
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.amount_text == "30.00"
+    assert "ignored_isolated_ocr_letter" in result.groups[0].printed_total.diagnostics
+
+
+def test_discover_statement_uses_unique_document_currency_for_ocr_total() -> None:
+    ocr_total = _word("m 50.00", 125.0, 155.0, 110.0).model_copy(update={"source": "ocr"})
+    page = _page(
+        1,
+        (
+            _word("Total", 40.0, 75.0, 10.0),
+            _word("₪1.00", 125.0, 155.0, 10.0),
+            *_currencyless_billed_table(30.0),
+            _word("Total", 40.0, 75.0, 110.0),
+            ocr_total,
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.currency == "ILS"
+    assert result.groups[0].printed_total.amount_text == "50.00"
+    assert "currency_inherited_from_document" in result.groups[0].printed_total.diagnostics
+    assert "ignored_isolated_ocr_letter" in result.groups[0].printed_total.diagnostics
+
+
+def test_discover_statement_does_not_guess_ocr_total_currency_without_context() -> None:
+    ocr_total = _word("m 50.00", 125.0, 155.0, 90.0).model_copy(update={"source": "ocr"})
+    page = _page(
+        1,
+        (
+            *_currencyless_billed_table(20.0),
+            _word("Total", 40.0, 75.0, 90.0),
+            ocr_total,
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert "unknown_total_currency" in result.diagnostics
+
+
 def test_ambiguous_total_eligible_for_claimed_table_blocks_reconciliation() -> None:
     page = _page(
         1,
