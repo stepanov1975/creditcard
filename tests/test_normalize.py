@@ -1051,6 +1051,29 @@ def test_normalize_statement_distinguishes_labeled_transaction_and_posting_dates
     assert transaction.ambiguities == ()
 
 
+def test_normalize_statement_distinguishes_hebrew_purchase_and_billing_dates() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("03/02/2026", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("4.00", 3, 30.0),
+            ),
+        ),
+        headers=("תאריך רכישה", "תאריך חיוב", "Description", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.posting_date == date(2026, 2, 3)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_completes_one_generic_date_from_labeled_posting_date() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -1788,6 +1811,81 @@ def test_repeated_equal_original_values_inherit_proven_billing_currency() -> Non
     assert all(transaction.original_currency == "ILS" for transaction in result.transactions)
     assert all(not transaction.ambiguities for transaction in result.transactions)
     assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_unsigned_original_credit_values_inherit_proven_billing_currency() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Purchase", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Credit", 1, 50.0),
+                _cell("20.00", 2, 50.0),
+                _cell("-20.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "-10.00", "ILS"))
+
+    assert tuple(transaction.original_amount for transaction in result.transactions) == (
+        Decimal("10.00"),
+        Decimal("20.00"),
+    )
+    assert all(transaction.original_currency == "ILS" for transaction in result.transactions)
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_one_malformed_original_value_does_not_hide_repeated_currency_proof() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("First", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Malformed", 1, 50.0),
+                _cell("1,23.45", 2, 50.0),
+                _cell("123.45", 3, 50.0),
+            ),
+            _row(
+                _cell("03/02/2026", 0, 70.0),
+                _cell("Third", 1, 70.0),
+                _cell("20.00", 2, 70.0),
+                _cell("20.00", 3, 70.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "153.45", "ILS"))
+
+    assert result.transactions[0].original_currency == "ILS"
+    assert result.transactions[2].original_currency == "ILS"
+    assert "original_amount:unknown_currency" not in result.transactions[1].ambiguities
+    assert "original_amount:invalid_grouping_separator" in result.transactions[1].ambiguities
 
 
 def test_mixed_original_values_do_not_inherit_billing_currency() -> None:

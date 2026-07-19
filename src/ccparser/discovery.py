@@ -958,28 +958,33 @@ def _cross_style_year_anchors(cells: Sequence[Cell]) -> dict[int, tuple[Cell, ..
     return {year: tuple(values) for year, values in supporting.items()}
 
 
-def _agreeing_pdf_date_metadata(
+def _pdf_date_metadata_anchor(
     metadata: Sequence[tuple[str, str]],
 ) -> tuple[int, tuple[tuple[str, str], ...]] | None:
     selected = tuple(item for item in metadata if item[0].casefold() in {"creationdate", "moddate"})
-    if {key.casefold() for key, _ in selected} != {"creationdate", "moddate"}:
+    if len(selected) != 2 or {key.casefold() for key, _ in selected} != {
+        "creationdate",
+        "moddate",
+    }:
         return None
-    parsed_years: set[int] = set()
-    for _, value in selected:
+    parsed_dates: dict[str, date] = {}
+    for key, value in selected:
         match = _PDF_METADATA_DATE_PATTERN.match(value)
         if match is None:
             return None
         year = int(match.group("year"))
         try:
-            date(year, int(match.group("month")), int(match.group("day")))
+            parsed_date = date(year, int(match.group("month")), int(match.group("day")))
         except ValueError:
             return None
         if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
             return None
-        parsed_years.add(year)
-    if len(parsed_years) != 1:
+        parsed_dates[key.casefold()] = parsed_date
+    creation_date = parsed_dates["creationdate"]
+    modification_date = parsed_dates["moddate"]
+    if modification_date < creation_date or modification_date.year - creation_date.year > 1:
         return None
-    return next(iter(parsed_years)), selected
+    return creation_date.year, selected
 
 
 def _date_year_context(
@@ -1007,7 +1012,7 @@ def _date_year_context(
         table_short_months_by_style[style] = months_by_year
     has_table_short_dates = any(table_short_years_by_style.values())
     cross_style_anchors = _cross_style_year_anchors(cells)
-    pdf_date_metadata = _agreeing_pdf_date_metadata(metadata)
+    pdf_date_metadata = _pdf_date_metadata_anchor(metadata)
     metadata_year = pdf_date_metadata[0] if pdf_date_metadata is not None else None
     candidates: list[
         tuple[

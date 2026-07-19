@@ -172,6 +172,7 @@ def _proven_implicit_original_currency(
     )
     if len(transaction_rows) < 2:
         return None
+    proven_row_count = 0
     for row in transaction_rows:
         original_cells = _cells_for_column(row, original_columns[0])
         billed_cells = _cells_for_column(row, billed_column)
@@ -179,15 +180,14 @@ def _proven_implicit_original_currency(
             return None
         original = parse_amount(original_cells[0].text, currency_hint=billing_currency)
         billed = parse_amount(billed_cells[0].text, currency_hint=billing_currency)
-        if (
-            original.amount is None
-            or original.currency is None
-            or billed.amount is None
-            or billed.currency is None
-            or original.amount != billed.amount
-        ):
+        if billed.amount is None or billed.currency is None:
+            continue
+        if original.amount is None or original.currency is None:
+            continue
+        if abs(original.amount) != abs(billed.amount):
             return None
-    return canonical_currency(billing_currency)
+        proven_row_count += 1
+    return canonical_currency(billing_currency) if proven_row_count >= 2 else None
 
 
 def _is_relevant_cell(cell: Cell) -> bool:
@@ -408,7 +408,10 @@ def _header_kind(column: ColumnSpec) -> str | None:
     header = _normalized_phrase(" ".join(cell.text for cell in column.source_cells))
     if _contains_marker(header, ("posting date", "billing date", "תאריך חיוב")):
         return "posting"
-    if _contains_marker(header, ("transaction date", "purchase date", "תאריך עסקה")):
+    if _contains_marker(
+        header,
+        ("transaction date", "purchase date", "תאריך עסקה", "תאריך רכישה"),
+    ):
         return "transaction"
     return None
 
