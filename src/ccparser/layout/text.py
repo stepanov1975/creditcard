@@ -253,6 +253,31 @@ def _character_signature(text: str) -> tuple[str, ...]:
     return tuple(sorted(char for char in _normalized(text) if not char.isspace()))
 
 
+def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str | None:
+    visible_glyphs = tuple(glyph for glyph in glyphs if not glyph.char.isspace())
+    if not visible_glyphs or not words:
+        return None
+    assigned: list[list[Glyph]] = [[] for _ in words]
+    for glyph in visible_glyphs:
+        owners = tuple(
+            index for index, word in enumerate(words) if _inside_bbox(glyph.bbox, word.bbox)
+        )
+        if len(owners) != 1:
+            return None
+        assigned[owners[0]].append(glyph)
+    canonical_words: list[Word] = []
+    for word, word_glyphs in zip(words, assigned, strict=True):
+        glyph_text = _text_from_glyphs(word_glyphs)
+        if not glyph_text or _character_signature(glyph_text) != _character_signature(word.text):
+            return None
+        canonical_words.append(word.model_copy(update={"text": glyph_text}))
+    candidate = _text_from_words(canonical_words)
+    glyph_text = _text_from_glyphs(visible_glyphs)
+    return (
+        candidate if _character_signature(candidate) == _character_signature(glyph_text) else None
+    )
+
+
 def canonical_words_for_layout(page_evidence: PageEvidence) -> tuple[Word, ...]:
     """Canonicalize positioned RTL digital words only from lossless glyph geometry."""
 
@@ -305,5 +330,5 @@ def logical_text_for_evidence(
     """Return logical NFC text derived from the exact supplied provenance."""
 
     if glyphs:
-        return _text_from_glyphs(glyphs)
+        return _lossless_word_text(glyphs, words) or _text_from_glyphs(glyphs)
     return _text_from_words(words)

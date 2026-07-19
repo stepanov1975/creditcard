@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
-from ccparser.layout.text import logical_text_for_bbox
+from ccparser.layout.text import logical_text_for_bbox, logical_text_for_evidence
 
 
 def _quality(*, glyph_count: int, word_count: int) -> ExtractionQuality:
@@ -26,6 +26,10 @@ def _glyph(char: str, x: float, y: float = 10.0) -> Glyph:
         source="digital",
         confidence=1.0,
     )
+
+
+def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
+    return tuple(_glyph(char, right - index * 4.0 - 3.0, y) for index, char in enumerate(text))
 
 
 def test_logical_text_orders_each_script_run_and_rtl_word_groups_from_geometry() -> None:
@@ -69,6 +73,26 @@ def test_logical_text_uses_numeric_ltr_run_inside_dominant_hebrew_cell() -> None
     )
 
     assert logical_text_for_bbox(page, (0.0, 0.0, 100.0, 30.0)) == "שלום 12.5"
+
+
+def test_logical_text_uses_lossless_words_when_overlapping_glyphs_interleave() -> None:
+    glyphs = (*_rtl_glyphs("שער", 40.0, 10.0), *_rtl_glyphs("המרה", 46.0, 16.0))
+    words = (
+        Word(
+            text="שער",
+            bbox=(29.0, 10.0, 41.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="המרה",
+            bbox=(31.0, 16.0, 47.0, 26.0),
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+
+    assert logical_text_for_evidence(glyphs, words) == "המרה שער"
 
 
 def test_logical_text_attaches_hebrew_combining_marks_to_their_positioned_base() -> None:

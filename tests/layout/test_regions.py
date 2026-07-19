@@ -815,7 +815,7 @@ def test_detect_table_regions_lets_a_new_header_own_its_rows_after_total() -> No
     assert "inherited_schema_after_total" not in regions[1].diagnostics
 
 
-@pytest.mark.parametrize("marker", ('סה"כ', "סה״כ", "סה״כלתאריך"))
+@pytest.mark.parametrize("marker", ('סה"כ', "סה״כ", "סה״כלתאריך", 'סה " כ חיוב'))
 def test_detect_table_regions_stops_at_quoted_hebrew_total_acronym(marker: str) -> None:
     page = _page(
         (

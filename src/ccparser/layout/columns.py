@@ -169,6 +169,7 @@ _BILLING_AMOUNT_MODIFIERS = frozenset(
     {"bill", "billed", "billing", "charge", "charged", "חיוב", "לחיוב"}
 )
 _ORIGINAL_AMOUNT_MODIFIERS = frozenset({"original", "מקור", "מקורי"})
+_DESCRIPTION_NAME_HEADER_TERMS = frozenset({"merchant name", "שם בית עסק", "שם בית העסק"})
 _EXCHANGE_RATE_HEADER_TERMS = tuple(_HEADER_VOCABULARY[ColumnRole.EXCHANGE_RATE])
 _CONVERSION_DATE_HEADER_TERMS = tuple(
     (*_HEADER_VOCABULARY[ColumnRole.CONVERSION_DATE], "conversion", "exchange", "המרה")
@@ -422,9 +423,13 @@ def _header_evidence_texts(cells: Sequence[Cell]) -> tuple[str, ...]:
 
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     scores: dict[ColumnRole, float] = {}
+    explicit_description_name = False
     for text in texts:
         normalized = _normalized_header(text)
         composed_roles: set[ColumnRole] = set()
+        if _contains_header_concept(normalized, _DESCRIPTION_NAME_HEADER_TERMS):
+            composed_roles.add(ColumnRole.DESCRIPTION)
+            explicit_description_name = True
         if _contains_header_concept(
             normalized, _GENERIC_AMOUNT_HEADER_TERMS
         ) and _contains_header_concept(normalized, _ORIGINAL_AMOUNT_MODIFIERS):
@@ -464,6 +469,8 @@ def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
                     scores[role] = max(scores.get(role, 0.0), match_score)
         for role in composed_roles:
             scores[role] = 1.0
+    if explicit_description_name:
+        scores.pop(ColumnRole.LOCATION, None)
     exact_specific_roles = tuple(
         role for role, score in scores.items() if score == 1.0 and role not in _GENERIC_FAMILY_ROLES
     )

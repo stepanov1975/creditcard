@@ -156,6 +156,8 @@ _TOTAL_MARKERS = frozenset(
         "total billed",
         "total charges due",
         "total for date",
+        "סה כ",
+        "סה כ חיוב",
         "סהכ",
         "סך חיוב",
         "סך הכל",

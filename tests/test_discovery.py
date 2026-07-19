@@ -1578,6 +1578,22 @@ def test_discover_statement_recognizes_compact_hebrew_total_label_prefix() -> No
     assert len(result.groups) == 1
 
 
+def test_discover_statement_recognizes_spaced_hebrew_total_acronym() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word('סה " כ חיוב לתאריך', 50.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+
+
 def test_discover_statement_infers_numeric_total_currency_from_billed_amount_header() -> None:
     page = _page(
         1,

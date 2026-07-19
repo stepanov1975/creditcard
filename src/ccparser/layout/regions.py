@@ -39,6 +39,8 @@ _TOTAL_MARKERS = frozenset(
         "total",
         "total amount",
         "total billed",
+        "סה כ",
+        "סה כ חיוב",
         "סהכ",
         "סך הכל",
         "סךהכל",

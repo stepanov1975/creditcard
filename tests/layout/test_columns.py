@@ -179,6 +179,19 @@ def test_value_profile_breaks_tied_header_concepts() -> None:
     assert schema.diagnostics == ()
 
 
+def test_explicit_merchant_name_dominates_ancillary_location_qualifier() -> None:
+    schema = infer_column_roles(
+        (_cell("City Merchant name Type", (0.0, 10.0, 60.0, 20.0)),),
+        (_cell("ALPHA MARKET", (0.0, 30.0, 60.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.DESCRIPTION
+    assert not any(
+        diagnostic == "alternative_role:location" for diagnostic in schema.columns[0].diagnostics
+    )
+    assert schema.diagnostics == ()
+
+
 def test_infer_column_roles_uses_profiles_but_retains_ambiguous_unknown_column() -> None:
     headers = (
         _cell("When", (0.0, 10.0, 20.0, 20.0)),
