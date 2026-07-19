@@ -312,6 +312,111 @@ def test_detect_table_regions_keeps_sequential_inherited_partitions_disjoint() -
     )
 
 
+def test_detect_table_regions_retries_inherited_schema_after_consecutive_totals() -> None:
+    page = _page(
+        (
+            *_header(5.0),
+            *_data(20.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(35.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 50.0),
+            _word("30.00", 92.0, 120.0, 50.0),
+            _word("Total", 35.0, 72.0, 65.0),
+            *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(115.0, "04/02/2026", "Delta", "40.00"),
+            *_data(140.0, "05/02/2026", "Epsilon", "50.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert tuple(len(region.rows) for region in regions) == (2, 3)
+    assert regions[1].header is regions[0].header
+    assert "inherited_schema_after_total" in regions[1].diagnostics
+    assert "continued_to_page_end" in regions[1].diagnostics
+    assert all(
+        "Total" not in cell.text and "Subtotal" not in cell.text
+        for region in regions
+        for row in region.rows
+        for cell in row.cells
+    )
+
+
+def test_detect_table_regions_retries_after_weak_partition_ends_at_later_total() -> None:
+    weak_row = _data(80.0, "03/02/2026", "Only", "30.00")
+    page = _page(
+        (
+            *_header(5.0),
+            *_data(20.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(35.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 50.0),
+            _word("30.00", 92.0, 120.0, 50.0),
+            _word("Total", 35.0, 72.0, 65.0),
+            *weak_row,
+            _word("Subtotal", 35.0, 72.0, 95.0),
+            _word("30.00", 92.0, 120.0, 95.0),
+            _word("Total", 35.0, 72.0, 110.0),
+            *_data(125.0, "04/02/2026", "Gamma", "40.00"),
+            *_data(145.0, "05/02/2026", "Delta", "50.00"),
+            *_data(160.0, "06/02/2026", "Epsilon", "60.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert tuple(len(region.rows) for region in regions) == (2, 3)
+    assert all(
+        word is not weak_row[0]
+        for region in regions
+        for row in region.rows
+        for cell in row.cells
+        for word in cell.words
+    )
+    assert regions[1].bbox[1] == 125.0
+
+
+def test_detect_table_regions_does_not_retry_without_a_later_total_boundary() -> None:
+    page = _page(
+        (
+            *_header(5.0),
+            *_data(20.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(35.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 50.0),
+            _word("30.00", 92.0, 120.0, 50.0),
+            _word("Footer", 35.0, 72.0, 65.0),
+            *_data(95.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(120.0, "04/02/2026", "Delta", "40.00"),
+            *_data(145.0, "05/02/2026", "Epsilon", "50.00"),
+        )
+    )
+
+    assert len(detect_table_regions(page)) == 1
+
+
+def test_detect_table_regions_lets_new_header_own_rows_after_consecutive_totals() -> None:
+    second_header = _header(80.0)
+    page = _page(
+        (
+            *_header(5.0),
+            *_data(20.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(35.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 50.0),
+            _word("30.00", 92.0, 120.0, 50.0),
+            _word("Total", 35.0, 72.0, 65.0),
+            *second_header,
+            *_data(100.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(120.0, "04/02/2026", "Delta", "40.00"),
+            _word("Total", 35.0, 72.0, 140.0),
+            _word("70.00", 92.0, 120.0, 140.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert tuple(len(region.rows) for region in regions) == (2, 2)
+    assert any(word is second_header[0] for cell in regions[1].header.cells for word in cell.words)
+    assert "inherited_schema_after_total" not in regions[1].diagnostics
+
+
 def test_detect_table_regions_allows_inherited_rows_open_only_at_page_end() -> None:
     page_end = _page(
         (

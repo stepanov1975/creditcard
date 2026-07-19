@@ -806,7 +806,10 @@ def _inherited_region_after_total(
         and accepted[-1].bbox[3] >= page_evidence.height * 0.75
     )
     if not (strong_single_row or repeated_rows_with_total or continued_to_page_end):
-        return None, total_index + 1
+        return (
+            None,
+            stop_index if stop_reason == "stopped_at_total" else total_index + 1,
+        )
 
     alignments = tuple(_row_alignment(row, schema) for row in regular_rows)
     billed_amount_column = proven_billed_amount_column(schema, accepted)
@@ -1064,6 +1067,13 @@ def _detect_table_regions_from_rows(
                 proven_total_overlay_keys,
             )
             if inherited is None:
+                if (
+                    inherited_next_index > next_index
+                    and inherited_next_index < len(rows)
+                    and _is_total_row(rows[inherited_next_index])
+                ):
+                    next_index = inherited_next_index
+                    continue
                 next_index += 1
                 break
             regions.append(inherited)

@@ -1248,9 +1248,14 @@ def test_non_overlay_total_remains_a_hard_inherited_boundary(
         )
     )
 
-    assert len(discovery.groups) == 1
-    assert "total_without_table" in discovery.diagnostics
-    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+    normalized = normalize_statement(discovery)
+
+    assert len(discovery.groups) == 2
+    assert tuple(len(region.rows) for region in discovery.table_regions) == (2, 2)
+    assert discovery.table_regions[1].bbox[1] == 105.0
+    assert discovery.diagnostics
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+    assert normalized.reconciliation.status is Status.UNRECONCILED
 
 
 @pytest.mark.parametrize(
@@ -1268,9 +1273,14 @@ def test_total_overlay_with_conflicting_glyph_provenance_remains_a_hard_boundary
         _document(_headerless_rows_after_total_overlay(glyphs=candidate_glyphs))
     )
 
-    assert len(discovery.groups) == 1
-    assert "total_without_table" in discovery.diagnostics
-    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+    normalized = normalize_statement(discovery)
+
+    assert len(discovery.groups) == 2
+    assert tuple(len(region.rows) for region in discovery.table_regions) == (2, 2)
+    assert discovery.table_regions[1].bbox[1] == 105.0
+    assert discovery.diagnostics
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+    assert normalized.reconciliation.status is Status.UNRECONCILED
 
 
 def test_total_overlay_with_swapped_word_glyph_associations_remains_a_hard_boundary() -> None:
@@ -1289,9 +1299,14 @@ def test_total_overlay_with_swapped_word_glyph_associations_remains_a_hard_bound
 
     discovery = discover_statement(_document(page))
 
-    assert len(discovery.groups) == 1
-    assert "total_without_table" in discovery.diagnostics
-    assert normalize_statement(discovery).reconciliation.status is Status.UNRECONCILED
+    normalized = normalize_statement(discovery)
+
+    assert len(discovery.groups) == 2
+    assert tuple(len(region.rows) for region in discovery.table_regions) == (2, 2)
+    assert discovery.table_regions[1].bbox[1] == 105.0
+    assert discovery.diagnostics
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+    assert normalized.reconciliation.status is Status.UNRECONCILED
 
 
 def test_total_overlay_ignores_conflicting_glyph_from_another_y_band() -> None:
@@ -1303,6 +1318,104 @@ def test_total_overlay_ignores_conflicting_glyph_from_another_y_band() -> None:
 
     assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 1)
     assert normalize_statement(discovery).reconciliation.status is Status.RECONCILED
+
+
+def test_incomplete_total_boundary_preserves_fatal_ambiguity_after_exact_retry() -> None:
+    incomplete_total = _word("Total", 50.0, 95.0, 92.0, height=0.8)
+    first_page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            incomplete_total,
+            _word("03/02/2026", 0.0, 28.0, 115.0),
+            _word("Shop", 50.0, 95.0, 115.0),
+            _word("₪30.00", 118.0, 155.0, 115.0),
+            _word("04/02/2026", 0.0, 28.0, 140.0),
+            _word("Fuel", 50.0, 95.0, 140.0),
+            _word("₪40.00", 118.0, 155.0, 140.0),
+            _word("05/02/2026", 0.0, 28.0, 165.0),
+            _word("Market", 50.0, 95.0, 165.0),
+            _word("₪50.00", 118.0, 155.0, 165.0),
+            _word("06/02/2026", 0.0, 28.0, 190.0),
+            _word("Cafe", 50.0, 95.0, 190.0),
+            _word("₪60.00", 118.0, 155.0, 190.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪192.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert tuple(len(region.rows) for region in discovery.table_regions) == (2, 4, 2)
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+    assert len(discovery.rejected_total_candidates) == 1
+    assert discovery.rejected_total_candidates[0].evidence[0].bbox == incomplete_total.bbox
+    assert "ambiguous_total_value" in discovery.diagnostics
+    assert normalized.reconciliation.status is Status.UNRECONCILED
+
+
+def test_later_total_retries_schema_without_claiming_a_weak_partition() -> None:
+    weak_row = (
+        _word("03/02/2026", 0.0, 28.0, 105.0),
+        _word("Only", 50.0, 95.0, 105.0),
+        _word("₪30.00", 118.0, 155.0, 105.0),
+    )
+    first_page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Total", 50.0, 95.0, 92.0, height=0.8),
+            *weak_row,
+            _word("Subtotal", 50.0, 95.0, 125.0),
+            _word("₪30.00", 118.0, 155.0, 125.0),
+            _word("Total", 50.0, 95.0, 137.0, height=0.8),
+            _word("04/02/2026", 0.0, 28.0, 150.0),
+            _word("Fuel", 50.0, 95.0, 150.0),
+            _word("₪40.00", 118.0, 155.0, 150.0),
+            _word("05/02/2026", 0.0, 28.0, 170.0),
+            _word("Market", 50.0, 95.0, 170.0),
+            _word("₪50.00", 118.0, 155.0, 170.0),
+            _word("06/02/2026", 0.0, 28.0, 190.0),
+            _word("Cafe", 50.0, 95.0, 190.0),
+            _word("₪60.00", 118.0, 155.0, 190.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪162.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert tuple(len(region.rows) for region in discovery.table_regions) == (2, 3, 2)
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+    assert all(
+        word is not weak_row[0]
+        for region in discovery.table_regions
+        for row in region.rows
+        for cell in row.cells
+        for word in cell.words
+    )
+    assert len(discovery.rejected_total_candidates) == 2
+    assert "ambiguous_total_value" in discovery.diagnostics
+    assert "total_without_table" in discovery.diagnostics
+    assert normalized.reconciliation.status is Status.UNRECONCILED
 
 
 def test_subtotal_and_final_total_claim_separate_headerless_partitions() -> None:
