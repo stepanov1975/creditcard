@@ -1297,6 +1297,38 @@ def test_discover_statement_uses_creation_year_before_next_year_modification() -
     assert result.date_year_context.metadata_evidence == document.metadata
 
 
+def test_discover_statement_uses_metadata_to_reject_remote_competing_date_style() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("29/01/23", 0.0, 28.0, 40.0)
+    words[6] = _word("29/01/23", 0.0, 28.0, 60.0)
+    document = _document(
+        _page(
+            1,
+            (
+                _word("Period 01/01/2023", 0.0, 70.0, 2.0),
+                _word("OCR artifact 1929/01/23", 80.0, 155.0, 2.0),
+                *words,
+                _word("Total", 50.0, 95.0, 80.0),
+                _word("₪30.00", 118.0, 155.0, 80.0),
+            ),
+        )
+    ).model_copy(
+        update={
+            "metadata": (
+                ("creationDate", "D:20230203120000+02'00'"),
+                ("modDate", "D:20230204120000+02'00'"),
+            )
+        }
+    )
+
+    result = discover_statement(document)
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2023
+    assert result.date_year_context.style is DateTokenStyle.DAY_FIRST_SLASH
+    assert result.date_year_context.metadata_evidence == document.metadata
+
+
 def test_discover_statement_preserves_year_first_dash_context_for_matching_style() -> None:
     page = _page(
         1,

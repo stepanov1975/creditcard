@@ -18,8 +18,9 @@ from ccparser.evidence.models import BBox, Point, Word
 
 OCR_LANGUAGES = "heb+eng"
 OCR_PREPROCESSING_VERSION = "raw-pixmap-v1"
-OCR_PIPELINE_VERSION = "tesseract-tsv-fused-structured-numeric-v3"
+OCR_PIPELINE_VERSION = "tesseract-tsv-fused-structured-numeric-v4"
 OCR_RECOGNITION_CACHE_VERSION = "tesseract-tsv-fused-numeric-v2"
+OCR_NUMERIC_RECOGNITION_CACHE_VERSION = "tesseract-whitelisted-numeric-v1"
 TESSERACT_VERSION_TIMEOUT_SECONDS = 10.0
 TESSERACT_RECOGNITION_TIMEOUT_SECONDS = 120.0
 
@@ -58,6 +59,25 @@ def supplemental_tesseract_command() -> tuple[str, ...]:
         "1",
         "--psm",
         "6",
+        "tsv",
+    )
+
+
+def numeric_tesseract_command() -> tuple[str, ...]:
+    """Return the fixed whitelisted pass used to corroborate damaged numeric OCR."""
+
+    return (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "6",
+        "-c",
+        "tessedit_char_whitelist=0123456789.,/-+()",
         "tsv",
     )
 
@@ -105,14 +125,46 @@ def _numeric_digit_count(text: str) -> int:
     return sum(char.isdigit() for char in normalized)
 
 
+def _minimal_letter_numeric_repair(primary: str, candidate: str) -> bool:
+    primary_normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFC", primary).strip()
+        if unicodedata.category(char) != "Cf"
+    )
+    candidate_normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFC", candidate).strip()
+        if unicodedata.category(char) != "Cf"
+    )
+    if (
+        len(primary_normalized) != len(candidate_normalized)
+        or sum(char.isdigit() for char in primary_normalized) < 2
+        or _NUMERIC_TOKEN_PATTERN.fullmatch(candidate_normalized) is None
+    ):
+        return False
+    differences = tuple(
+        (primary_char, candidate_char)
+        for primary_char, candidate_char in zip(
+            primary_normalized,
+            candidate_normalized,
+            strict=True,
+        )
+        if primary_char != candidate_char
+    )
+    return len(differences) == 1 and differences[0][0].isalpha() and differences[0][1].isdigit()
+
+
 def fuse_ocr_words(
     primary: tuple[Word, ...],
     supplemental: tuple[Word, ...],
+    numeric_supplemental: tuple[Word, ...] = (),
 ) -> tuple[Word, ...]:
     """Replace only overlapping truncated numeric tokens with stronger OCR evidence."""
 
     numeric_supplements = tuple(
-        word for word in supplemental if _numeric_digit_count(word.text) >= 2
+        word
+        for word in (*supplemental, *numeric_supplemental)
+        if _numeric_digit_count(word.text) >= 2
     )
     fused: list[Word] = []
     for word in primary:
@@ -121,7 +173,10 @@ def fuse_ocr_words(
             candidate
             for candidate in numeric_supplements
             if _overlap_over_smaller(word.bbox, candidate.bbox) >= 0.7
-            and _numeric_digit_count(candidate.text) > primary_digits
+            and (
+                (primary_digits and _numeric_digit_count(candidate.text) > primary_digits)
+                or _minimal_letter_numeric_repair(word.text, candidate.text)
+            )
         )
         fused.append(
             max(
@@ -132,7 +187,7 @@ def fuse_ocr_words(
                     candidate.text,
                 ),
             )
-            if primary_digits and candidates
+            if candidates
             else word
         )
     return tuple(fused)
@@ -193,6 +248,7 @@ class TesseractOcr:
         self.dpi = dpi
         self._command = tesseract_command()
         self._supplemental_command = supplemental_tesseract_command()
+        self._numeric_command = numeric_tesseract_command()
         self._version: str | None = None
 
     def _tesseract_version(self) -> str:
@@ -240,6 +296,15 @@ class TesseractOcr:
             point_scale = 72.0 / self.dpi
             origin = (float(pixmap.x) * point_scale, float(pixmap.y) * point_scale)
             return cast(bytes, pixmap.tobytes("png")), origin
+
+    def _numeric_cache_key(self, recognition_key: str) -> str:
+        payload = {
+            "command": list(self._numeric_command),
+            "recognition_cache_version": OCR_NUMERIC_RECOGNITION_CACHE_VERSION,
+            "recognition_key": recognition_key,
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(serialized).hexdigest()
 
     def _recognize(self, image: bytes, command: tuple[str, ...]) -> bytes:
         try:
@@ -306,7 +371,14 @@ class TesseractOcr:
             image,
             self._supplemental_command,
         )
+        numeric_key = self._numeric_cache_key(key)
+        numeric_tsv = self._cached_recognition(
+            self.cache_dir / f"{numeric_key}.numeric.tsv",
+            image,
+            self._numeric_command,
+        )
         return fuse_ocr_words(
             parse_tesseract_tsv(primary_tsv, dpi=self.dpi, origin=origin),
             parse_tesseract_tsv(supplemental_tsv, dpi=self.dpi, origin=origin),
+            parse_tesseract_tsv(numeric_tsv, dpi=self.dpi, origin=origin),
         )

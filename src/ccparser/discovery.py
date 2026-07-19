@@ -1249,6 +1249,10 @@ def _date_year_context(
                             context_supporting_cells.append(cell)
             if len(year_by_suffix) != len(table_short_years):
                 continue
+            if metadata_year is not None and not any(
+                abs(resolved_year - metadata_year) <= 1 for _, resolved_year in year_by_suffix
+            ):
+                continue
             ordered_supporting_cells = tuple(
                 cell
                 for cell in cells

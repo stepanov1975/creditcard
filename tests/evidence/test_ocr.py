@@ -18,6 +18,7 @@ from ccparser.evidence.ocr import (
     OCR_RECOGNITION_CACHE_VERSION,
     TesseractOcr,
     fuse_ocr_words,
+    numeric_tesseract_command,
     parse_tesseract_tsv,
     supplemental_tesseract_command,
     tesseract_command,
@@ -71,6 +72,23 @@ def test_supplemental_tesseract_command_is_english_numeric_pass() -> None:
         "1",
         "--psm",
         "6",
+        "tsv",
+    )
+
+
+def test_numeric_tesseract_command_is_deterministic_whitelisted_pass() -> None:
+    assert numeric_tesseract_command() == (
+        "tesseract",
+        "stdin",
+        "stdout",
+        "-l",
+        "eng",
+        "--oem",
+        "1",
+        "--psm",
+        "6",
+        "-c",
+        "tessedit_char_whitelist=0123456789.,/-+()",
         "tsv",
     )
 
@@ -148,6 +166,24 @@ def test_fuse_ocr_words_rejects_malformed_calendar_date_supplement() -> None:
     assert fused == primary
 
 
+def test_fuse_ocr_words_repairs_one_letter_inside_otherwise_exact_amount() -> None:
+    primary = (Word(text="A34.96", bbox=(10.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.3),)
+    numeric = (Word(text="134.96", bbox=(10.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.0),)
+
+    fused = fuse_ocr_words(primary, (), numeric)
+
+    assert tuple(word.text for word in fused) == ("134.96",)
+
+
+def test_fuse_ocr_words_rejects_nonminimal_amount_disagreement() -> None:
+    primary = (Word(text="A34.96", bbox=(10.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.3),)
+    numeric = (Word(text="734.98", bbox=(10.0, 30.0, 32.0, 40.0), source="ocr", confidence=0.9),)
+
+    fused = fuse_ocr_words(primary, (), numeric)
+
+    assert fused == primary
+
+
 def test_ocr_exposes_a_typed_runtime_error() -> None:
     error_type = getattr(ocr_module, "OcrError", object)
 
@@ -165,7 +201,7 @@ def test_ocr_constructor_has_no_command_override() -> None:
     assert "command" not in constructor.parameters
     assert (
         getattr(ocr_module, "OCR_PIPELINE_VERSION", None)
-        == "tesseract-tsv-fused-structured-numeric-v3"
+        == "tesseract-tsv-fused-structured-numeric-v4"
     )
 
 
@@ -328,6 +364,7 @@ def test_internal_ocr_command_snapshot_is_used_for_recognition(
         ("tesseract", "--version"),
         alternate_command,
         supplemental_tesseract_command(),
+        numeric_tesseract_command(),
     ]
 
 
@@ -369,10 +406,11 @@ def test_ocr_renders_requested_clip_runs_tesseract_and_reuses_cache(
     assert first[0].bbox == pytest.approx((18.0, 36.0, 36.0, 42.0))
     assert commands.count(tesseract_command()) == 1
     assert commands.count(("tesseract", "--version")) == 2
-    assert len(image_inputs) == 2
+    assert len(image_inputs) == 3
     assert image_inputs[0].startswith(b"\x89PNG\r\n\x1a\n")
     assert image_inputs[1] == image_inputs[0]
-    assert len(tuple((tmp_path / "cache").glob("*.tsv"))) == 2
+    assert image_inputs[2] == image_inputs[0]
+    assert len(tuple((tmp_path / "cache").glob("*.tsv"))) == 3
 
 
 @pytest.mark.parametrize(
