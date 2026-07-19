@@ -358,6 +358,53 @@ def _split_compound_header_row(row: Row) -> Row:
     )
 
 
+def _merge_adjacent_description_header_cells(row: Row) -> Row:
+    cells: list[Cell] = []
+    index = 0
+    while index < len(row.cells):
+        first = row.cells[index]
+        if index + 1 >= len(row.cells):
+            cells.append(first)
+            break
+        second = row.cells[index + 1]
+        first_scores = _header_scores(_header_evidence_texts((first,)))
+        second_scores = _header_scores(_header_evidence_texts((second,)))
+        combined_text = _normalized_marker(f"{first.text} {second.text}")
+        combined_scores = _header_scores((combined_text,))
+        independent_semantics = any(
+            score >= 0.82 for score in (*first_scores.values(), *second_scores.values())
+        )
+        if (
+            combined_scores.get(ColumnRole.DESCRIPTION) != 1.0
+            or independent_semantics
+        ):
+            cells.append(first)
+            index += 1
+            continue
+        sources = (first, second)
+        cells.append(
+            Cell(
+                page_number=row.page_number,
+                bbox=_union_bbox(tuple(source.bbox for source in sources)),
+                text=" ".join(f"{first.text} {second.text}".split()),
+                glyphs=tuple(glyph for source in sources for glyph in source.glyphs),
+                words=tuple(word for source in sources for word in source.words),
+                confidence=statistics.mean(source.confidence for source in sources),
+                diagnostics=tuple(
+                    dict.fromkeys(
+                        (
+                            *(value for source in sources for value in source.diagnostics),
+                            "merged_compound_description_header",
+                        )
+                    )
+                ),
+            )
+        )
+        index += 2
+    merged = tuple(cells)
+    return row if merged == row.cells else row.model_copy(update={"cells": merged})
+
+
 def _merge_header_rows(header: Row, fragments: Sequence[Row]) -> Row:
     fragment_cells = tuple(cell for row in fragments for cell in row.cells)
     assignments: dict[int, list[Cell]] = {index: [] for index in range(len(header.cells))}
@@ -420,7 +467,9 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
     merged: list[Row] = []
     index = 0
     while index < len(rows):
-        header = _split_compound_header_row(rows[index])
+        header = _merge_adjacent_description_header_cells(
+            _split_compound_header_row(rows[index])
+        )
         fragments: list[Row] = []
         skipped_overlay_rows: list[Row] = []
         if _literal_header_role_count(header) >= 2:
@@ -444,7 +493,11 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
                     continue
                 break
         if fragments:
-            merged.append(_merge_header_rows(header, fragments))
+            merged.append(
+                _merge_adjacent_description_header_cells(
+                    _merge_header_rows(header, fragments)
+                )
+            )
             merged.extend(skipped_overlay_rows)
             index = fragment_index
         else:

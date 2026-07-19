@@ -1796,6 +1796,43 @@ def test_merged_header_bands_skips_separable_tall_sidebar_overlay() -> None:
     assert merged[1].cells[0].text == "Sidebar"
 
 
+def test_merged_header_bands_combines_split_merchant_name_phrase() -> None:
+    words = (
+        _word("תאריך העסקה", 100.0, 125.0, 10.0),
+        _word("שם", 76.0, 90.0, 10.0),
+        _word("בית העסק", 40.0, 70.0, 10.0),
+        _word("סכום חיוב", 0.0, 30.0, 10.0),
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 125.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in words
+        ),
+        words=words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:rtl",),
+    )
+
+    merged = _merged_header_bands((header,))[0]
+
+    assert tuple(cell.text for cell in merged.cells) == (
+        "תאריך העסקה",
+        "שם בית העסק",
+        "סכום חיוב",
+    )
+    merchant = merged.cells[1]
+    assert merchant.words == words[1:3]
+    assert "merged_compound_description_header" in merchant.diagnostics
+
+
 def test_split_header_fragment_preserves_glyph_corrected_rtl_text_and_all_provenance() -> None:
     header_cells = (
         Cell(page_number=1, bbox=(0.0, 10.0, 55.0, 20.0), text="Left", confidence=1.0),

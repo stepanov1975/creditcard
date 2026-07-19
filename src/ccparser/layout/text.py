@@ -105,7 +105,16 @@ def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
         direction_changed = (
             direction is not None and last_direction is not None and direction != last_direction
         )
-        if gap > typical_height * 0.4 or direction_changed:
+        currency_suffix_boundary = (
+            any(char.isdigit() for char in glyph.char)
+            and previous.char in CURRENCY_OCR_SYMBOLS
+            and any(
+                char.isdigit()
+                for preceding in groups[-1][:-1]
+                for char in preceding.char
+            )
+        )
+        if gap > typical_height * 0.4 or direction_changed or currency_suffix_boundary:
             groups.append([glyph])
             last_direction = direction
         else:
