@@ -179,6 +179,27 @@ def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -
     assert "statement_evidence_incomplete" in result.reason_codes
 
 
+def test_total_uses_proven_billed_band_when_other_numeric_cells_are_outside_it() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("2", 0.0, 20.0, 80.0),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].printed_total.amount_text == "₪30.00"
+    assert result.groups[0].printed_total.diagnostics == ("value_aligned_to_billed_column",)
+    assert result.rejected_total_candidates == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
 def test_discover_statement_infers_currency_only_from_proven_billed_amount_band() -> None:
     page = _page(
         1,

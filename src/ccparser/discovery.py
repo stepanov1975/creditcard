@@ -570,6 +570,37 @@ def _is_points_ledger_total(
     )
 
 
+def _amount_cells_in_nearest_billed_band(
+    row: Row,
+    amount_cells: Sequence[tuple[Cell, str]],
+    preceding_regions: Sequence[TableRegion],
+) -> tuple[tuple[Cell, str], ...]:
+    same_page_regions = tuple(
+        region
+        for region in preceding_regions
+        if region.page_number == row.page_number and region.bbox[3] <= row.bbox[3]
+    )
+    if not same_page_regions:
+        return ()
+    region = max(
+        same_page_regions,
+        key=lambda candidate: _reading_key_bbox(candidate.page_number, candidate.bbox),
+    )
+    transaction_rows = tuple(
+        candidate
+        for candidate in region.rows
+        if "subordinate_detail_continuation" not in candidate.diagnostics
+    )
+    billed_column = proven_billed_amount_column(region.table_schema, transaction_rows)
+    if billed_column is None:
+        return ()
+    return tuple(
+        candidate
+        for candidate in amount_cells
+        if billed_column.bbox[0] <= _center_x(candidate[0].bbox) <= billed_column.bbox[2]
+    )
+
+
 def _total_from_row(
     row: Row,
     preceding_regions: Sequence[TableRegion],
@@ -612,6 +643,12 @@ def _total_from_row(
             parsed = parse_amount(candidate_text, currency_hint=currency)
             if parsed.amount is not None:
                 amount_cells.append((cell, candidate_text))
+    aligned_to_billed_column = False
+    if len(amount_cells) > 1:
+        aligned = _amount_cells_in_nearest_billed_band(row, amount_cells, preceding_regions)
+        if len(aligned) == 1:
+            amount_cells = list(aligned)
+            aligned_to_billed_column = True
     if len(amount_cells) != 1:
         diagnostics.append("ambiguous_total_value")
     if len(amount_cells) != 1 or currency is None:
@@ -624,6 +661,7 @@ def _total_from_row(
             label_evidence=_evidence(label_cells[0]),
             value_evidence=_evidence(value_cell),
             confidence=min(row.confidence, label_cells[0].confidence, value_cell.confidence),
+            diagnostics=(("value_aligned_to_billed_column",) if aligned_to_billed_column else ()),
         ),
         tuple(diagnostics),
     )
