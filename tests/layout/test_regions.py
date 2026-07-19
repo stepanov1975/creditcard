@@ -1468,6 +1468,27 @@ def test_description_continuation_does_not_make_one_transaction_row_a_table() ->
     assert detect_table_regions(page) == ()
 
 
+def test_description_continuation_allows_bounded_adjacent_band_spill() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=False),
+            _word("4.00", 72.0, 82.0, 30.0),
+            _word("continued merchant", 78.0, 88.0, 41.0),
+            *_wide_sparse_data(60.0, include_conversion_date=False),
+            _word("5.00", 72.0, 82.0, 60.0),
+            _word("Total", 90.0, 100.0, 80.0),
+            _word("24.80", 0.0, 10.0, 80.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 3
+    assert "continuation_rows:1" in regions[0].diagnostics
+
+
 def test_detect_table_regions_merges_an_adjacent_two_line_header_band() -> None:
     page = _page(
         (

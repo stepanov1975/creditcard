@@ -165,6 +165,20 @@ def test_infer_column_roles_combines_hebrew_headers_and_value_profiles() -> None
     assert schema.sample_cells == samples
 
 
+def test_value_profile_breaks_tied_header_concepts() -> None:
+    header = _cell("Merchant city", (0.0, 10.0, 50.0, 20.0))
+    samples = (
+        _cell("ALPHA MARKET", (0.0, 30.0, 50.0, 40.0)),
+        _cell("BETA SERVICES", (0.0, 50.0, 50.0, 60.0)),
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.DESCRIPTION
+    assert "role_evidence:value_profile" in schema.columns[0].diagnostics
+    assert schema.diagnostics == ()
+
+
 def test_infer_column_roles_uses_profiles_but_retains_ambiguous_unknown_column() -> None:
     headers = (
         _cell("When", (0.0, 10.0, 20.0, 20.0)),

@@ -638,7 +638,7 @@ def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -
     cell = row.cells[0]
     column = description_columns[0]
     center = _center_x(cell.bbox)
-    tolerance = (column.bbox[2] - column.bbox[0]) * 0.15
+    tolerance = (column.bbox[2] - column.bbox[0]) * 0.25
     if not column.bbox[0] - tolerance <= center <= column.bbox[2] + tolerance:
         return False
     normalized_text = unicodedata.normalize("NFC", cell.text).strip()
@@ -653,7 +653,7 @@ def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -
         or numeric_only
     ):
         return False
-    minimum_alignment = max(2 / len(schema.columns), 0.6)
+    minimum_alignment = _minimum_row_alignment(schema)
     if _row_alignment(previous, schema) < minimum_alignment:
         return False
     typical_height = statistics.median(

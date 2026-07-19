@@ -743,6 +743,15 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
         profile_scores = _profile_scores(tuple(cell.text for cell in samples))
         scores = dict(header_scores)
         exact_header_roles = tuple(role for role, score in header_scores.items() if score == 1.0)
+        strongest_header_score = max(header_scores.values(), default=0.0)
+        tied_header_roles = tuple(
+            role
+            for role, score in header_scores.items()
+            if score == strongest_header_score and score >= 0.82
+        )
+        profile_supported_tied_roles = tuple(
+            role for role in tied_header_roles if profile_scores.get(role, 0.0) >= 0.5
+        )
         for role, score in profile_scores.items():
             scores[role] = max(scores.get(role, 0.0), score)
         ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].value))
@@ -766,6 +775,13 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
             )
             if alternatives:
                 diagnostics.append(f"alternative_role:{alternatives[0][0].value}")
+        elif len(tied_header_roles) > 1 and len(profile_supported_tied_roles) == 1:
+            top_role = profile_supported_tied_roles[0]
+            top_score = strongest_header_score
+            diagnostics.append(
+                "alternative_role:"
+                + next(role.value for role in tied_header_roles if role is not top_role)
+            )
         elif ranked:
             candidate, candidate_score = ranked[0]
             competing = tuple(
