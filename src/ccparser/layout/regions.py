@@ -855,10 +855,22 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
                 )
             )
         row_glyphs = tuple(
-            glyph
-            for glyph in page_evidence.glyphs
-            if row.bbox[0] <= _center_x(glyph.bbox) <= row.bbox[2]
-            and row.bbox[1] <= _center_y(glyph.bbox) <= row.bbox[3]
+            sorted(
+                (
+                    glyph
+                    for glyph in page_evidence.glyphs
+                    if 0.0 <= _center_x(glyph.bbox) <= page_evidence.width
+                    and row.bbox[1] <= _center_y(glyph.bbox) <= row.bbox[3]
+                ),
+                key=lambda glyph: (
+                    glyph.bbox[1],
+                    glyph.bbox[0],
+                    glyph.origin,
+                    glyph.char,
+                    glyph.font,
+                    glyph.source,
+                ),
+            )
         )
         _, row_words = positioned_evidence_for_bbox(page_evidence, row.bbox)
         logical_rows.append(

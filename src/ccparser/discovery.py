@@ -314,15 +314,6 @@ def _row_height(row: Row) -> float:
     return max(0.0, row.bbox[3] - row.bbox[1])
 
 
-def _row_word_text_multiset(row: Row) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            " ".join(unicodedata.normalize("NFC", word.text).casefold().split())
-            for word in row.words
-        )
-    )
-
-
 def _normalized_exact_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).casefold().split())
 
@@ -335,7 +326,7 @@ def _center_inside_bbox(candidate: BBox, container: BBox) -> bool:
 
 def _row_glyph_authoritative_signature(
     row: Row,
-) -> tuple[tuple[str, ...], str, tuple[str, ...]]:
+) -> tuple[tuple[tuple[str, str], ...], str, tuple[str, ...]]:
     assigned: list[list[Glyph]] = [[] for _ in row.words]
     orphan_glyphs: list[Glyph] = []
     for glyph in row.glyphs:
@@ -348,15 +339,18 @@ def _row_glyph_authoritative_signature(
             assigned[owners[0]].append(glyph)
         else:
             orphan_glyphs.append(glyph)
-    word_tokens = tuple(
+    word_evidence = tuple(
         sorted(
-            _normalized_exact_text(logical_text_for_evidence(glyphs, (word,)))
+            (
+                _normalized_exact_text(word.text),
+                _normalized_exact_text(logical_text_for_evidence(glyphs, (word,))),
+            )
             for word, glyphs in zip(row.words, assigned, strict=True)
         )
     )
     orphan_tuple = tuple(orphan_glyphs)
     return (
-        word_tokens,
+        word_evidence,
         _normalized_exact_text(logical_text_for_evidence(orphan_tuple, ())),
         tuple(
             sorted(token for glyph in orphan_tuple if (token := _normalized_exact_text(glyph.char)))
@@ -403,8 +397,6 @@ def _is_lossless_total_overlay_artifact(
         if _horizontal_containment_fraction(candidate.bbox, reference.bbox) < 0.9:
             continue
         if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
-            continue
-        if _row_word_text_multiset(candidate) != _row_word_text_multiset(reference):
             continue
         if _row_glyph_authoritative_signature(candidate) != _row_glyph_authoritative_signature(
             reference

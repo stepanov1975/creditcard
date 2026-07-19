@@ -306,6 +306,53 @@ def test_raw_identical_overlay_with_conflicting_amount_glyphs_remains_fatal() ->
     assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 
+def test_raw_identical_overlay_with_swapped_glyph_word_associations_remains_fatal() -> None:
+    words = (
+        *_table(20.0, "₪", "10.00", "20.00"),
+        _word("Total", 20.0, 55.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("₪30.00", 118.0, 155.0, 80.0),
+        _word("₪30.00", 20.0, 55.0, 92.0, height=0.8),
+        _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+        _word("Total", 118.0, 155.0, 92.0, height=0.8),
+    )
+    glyphs = (
+        *_ltr_glyphs("Total", 21.0, 80.0, height=0.8),
+        *_ltr_glyphs("03/02/2026", 71.0, 80.0, height=0.8),
+        *_ltr_glyphs("₪30.00", 119.0, 80.0, height=0.8),
+        *_ltr_glyphs("03/02/2026", 21.0, 92.0, height=0.8),
+        *_ltr_glyphs("₪30.00", 71.0, 92.0, height=0.8),
+        *_ltr_glyphs("Total", 119.0, 92.0, height=0.8),
+    )
+
+    result = discover_statement(_document(_page(1, words, glyphs)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("total_without_table",)
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_raw_identical_overlay_with_same_baseline_outside_word_glyph_remains_fatal() -> None:
+    words = (
+        *_table(20.0, "₪", "10.00", "20.00"),
+        _word("Total", 30.0, 65.0, 80.0),
+        _word("03/02/2026", 70.0, 105.0, 80.0),
+        _word("₪30.00", 118.0, 155.0, 80.0),
+        _word("₪30.00", 30.0, 65.0, 92.0, height=0.8),
+        _word("03/02/2026", 70.0, 105.0, 92.0, height=0.8),
+        _word("Total", 118.0, 155.0, 92.0, height=0.8),
+    )
+    outside_word_union = _ltr_glyphs("$", 156.0, 92.0, height=0.8)
+
+    result = discover_statement(_document(_page(1, words, outside_word_union)))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("total_without_table",)
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
 def test_raw_identical_overlay_with_orphan_glyph_provenance_remains_fatal() -> None:
     words = (
         *_table(20.0, "₪", "10.00", "20.00"),

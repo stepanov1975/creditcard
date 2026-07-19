@@ -11,6 +11,7 @@ from ccparser.layout.regions import (
     _split_compound_header_cell,
     _split_header_fragment,
     detect_table_regions,
+    logical_rows,
 )
 
 
@@ -63,6 +64,18 @@ def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
     return tuple(glyphs)
 
 
+def _glyph(char: str, x: float, y: float) -> Glyph:
+    return Glyph(
+        char=char,
+        bbox=(x, y, x + 1.0, y + 6.0),
+        origin=(x, y + 5.0),
+        font="Synthetic",
+        size=6.0,
+        source="digital",
+        confidence=1.0,
+    )
+
+
 def _assert_lossless_split_provenance(
     source: Cell,
     split_cells: tuple[Cell, ...],
@@ -73,6 +86,26 @@ def _assert_lossless_split_provenance(
     assert len(output_glyphs) == len(source.glyphs)
     assert all(output_words.count(word) == 1 for word in source.words)
     assert all(output_glyphs.count(glyph) == 1 for glyph in source.glyphs)
+
+
+def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_band() -> None:
+    same_band_left = _glyph("$", 122.0, 22.0)
+    same_band_right = _glyph("1", 124.0, 22.0)
+    other_band = _glyph("9", 124.0, 62.0)
+
+    rows = logical_rows(
+        _page(
+            (
+                _word("First", 10.0, 30.0, 20.0),
+                _word("Second", 10.0, 30.0, 60.0),
+            ),
+            (same_band_right, other_band, same_band_left),
+        )
+    )
+
+    assert rows[0].glyphs == (same_band_left, same_band_right)
+    assert other_band not in rows[0].glyphs
+    assert rows[1].glyphs == (other_band,)
 
 
 def _header(y: float) -> tuple[Word, ...]:
