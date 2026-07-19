@@ -202,6 +202,227 @@ def test_detect_table_regions_requires_header_and_repeated_rows_and_stops_at_tot
     assert "repeated_rows:2" in region.diagnostics
 
 
+def test_detect_table_regions_resumes_repeated_rows_after_total_with_inherited_schema() -> None:
+    resumed_first = _data(90.0, "03/02/2026", "Gamma", "30.00")
+    resumed_second = _data(110.0, "04/02/2026", "Delta", "40.00")
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *resumed_first,
+            *resumed_second,
+            _word("Total", 35.0, 72.0, 130.0),
+            _word("70.00", 92.0, 120.0, 130.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 2
+    first, resumed = regions
+    assert resumed.header is first.header
+    assert resumed.table_schema is first.table_schema
+    assert resumed.bbox == (0.0, 90.0, 120.0, 120.0)
+    assert resumed.bbox[1] > 80.0
+    assert all("Subtotal" not in cell.text for row in resumed.rows for cell in row.cells)
+    assert all(row not in first.rows for row in resumed.rows)
+    assert any(
+        word is resumed_first[0]
+        for row in resumed.rows
+        for cell in row.cells
+        for word in cell.words
+    )
+    assert "inherited_schema_after_total" in resumed.diagnostics
+
+
+def test_detect_table_regions_keeps_sequential_inherited_partitions_disjoint() -> None:
+    page = _page(
+        (
+            *_header(5.0),
+            *_data(20.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(35.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 50.0),
+            _word("30.00", 92.0, 120.0, 50.0),
+            *_data(65.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(80.0, "04/02/2026", "Delta", "40.00"),
+            _word("Subtotal", 35.0, 72.0, 95.0),
+            _word("70.00", 92.0, 120.0, 95.0),
+            *_data(110.0, "05/02/2026", "Epsilon", "50.00"),
+            *_data(125.0, "06/02/2026", "Zeta", "60.00"),
+            _word("Total", 35.0, 72.0, 140.0),
+            _word("110.00", 92.0, 120.0, 140.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 3
+    assert tuple(region.bbox[1] for region in regions) == (5.0, 65.0, 110.0)
+    row_ids = [id(row) for region in regions for row in region.rows]
+    assert len(row_ids) == len(set(row_ids))
+    assert all(
+        "Subtotal" not in cell.text
+        for region in regions
+        for row in region.rows
+        for cell in row.cells
+    )
+
+
+def test_detect_table_regions_allows_inherited_rows_open_only_at_page_end() -> None:
+    page_end = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_data(100.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(120.0, "04/02/2026", "Delta", "40.00"),
+            *_data(140.0, "05/02/2026", "Epsilon", "50.00"),
+        )
+    )
+    mid_page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(110.0, "04/02/2026", "Delta", "40.00"),
+        )
+    )
+
+    page_end_regions = detect_table_regions(page_end)
+
+    assert len(page_end_regions) == 2
+    assert "continued_to_page_end" in page_end_regions[1].diagnostics
+    assert len(detect_table_regions(mid_page)) == 1
+
+
+def test_detect_table_regions_rejects_weak_single_inherited_row() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Only", "30.00"),
+            _word("Total", 35.0, 72.0, 110.0),
+            _word("30.00", 92.0, 120.0, 110.0),
+        )
+    )
+
+    assert len(detect_table_regions(page)) == 1
+
+
+def test_detect_table_regions_accepts_strong_single_inherited_row_bounded_by_total() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=True),
+            *_wide_sparse_data(50.0, include_conversion_date=True),
+            _word("Subtotal", 90.0, 100.0, 70.0),
+            _word("24.80", 0.0, 10.0, 70.0),
+            _word("12.40", 0.0, 10.0, 90.0),
+            _word("3.70", 18.0, 28.0, 90.0),
+            _word("03/02/2026", 36.0, 46.0, 90.0),
+            _word("4.00", 72.0, 82.0, 90.0),
+            _word("Market", 90.0, 100.0, 90.0),
+            _word("01/02/2026", 108.0, 120.0, 90.0),
+            _word("Total", 90.0, 100.0, 110.0),
+            _word("12.40", 0.0, 10.0, 110.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 2
+    assert len(regions[1].rows) == 1
+    assert "single_row_strong_evidence" in regions[1].diagnostics
+
+
+def test_detect_table_regions_rejects_inherited_rows_split_by_structural_gap() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(150.0, "04/02/2026", "Distant", "40.00"),
+            _word("Total", 35.0, 72.0, 170.0),
+            _word("70.00", 92.0, 120.0, 170.0),
+        )
+    )
+
+    assert len(detect_table_regions(page)) == 1
+
+
+def test_detect_table_regions_does_not_inherit_points_ledger_rows() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Rewards points", "100"),
+            *_data(110.0, "04/02/2026", "Points balance", "200"),
+            _word("Total points", 35.0, 72.0, 130.0),
+            _word("300", 92.0, 120.0, 130.0),
+        )
+    )
+
+    assert len(detect_table_regions(page)) == 1
+
+
+def test_detect_table_regions_does_not_reject_point_named_monetary_merchants() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "$10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "$20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("$30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Rewards points", "$30.00"),
+            *_data(110.0, "04/02/2026", "Loyalty points", "$40.00"),
+            _word("Total", 35.0, 72.0, 130.0),
+            _word("$70.00", 92.0, 120.0, 130.0),
+        )
+    )
+
+    assert len(detect_table_regions(page)) == 2
+
+
+def test_detect_table_regions_lets_a_new_header_own_its_rows_after_total() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            _word("Subtotal", 35.0, 72.0, 70.0),
+            _word("30.00", 92.0, 120.0, 70.0),
+            *_header(90.0),
+            *_data(110.0, "03/02/2026", "Gamma", "30.00"),
+            *_data(130.0, "04/02/2026", "Delta", "40.00"),
+            _word("Total", 35.0, 72.0, 150.0),
+            _word("70.00", 92.0, 120.0, 150.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 2
+    assert regions[1].header.bbox[1] == 90.0
+    assert "inherited_schema_after_total" not in regions[1].diagnostics
+
+
 @pytest.mark.parametrize("marker", ('סה"כ', "סה״כ", "סה״כלתאריך"))
 def test_detect_table_regions_stops_at_quoted_hebrew_total_acronym(marker: str) -> None:
     page = _page(
@@ -220,6 +441,26 @@ def test_detect_table_regions_stops_at_quoted_hebrew_total_acronym(marker: str) 
     assert len(regions[0].rows) == 2
     assert "stopped_at_total" in regions[0].diagnostics
     assert all(marker not in cell.text for row in regions[0].rows for cell in row.cells)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ("Amount due", "Billing total", "Statement total", "סכום לחיוב"),
+)
+def test_detect_table_regions_stops_at_supported_statement_total_semantics(marker: str) -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            *_data(50.0, "03/02/2026", "Cafe", "18.60"),
+            _word(marker, 35.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+
+    region = detect_table_regions(page)[0]
+
+    assert "stopped_at_total" in region.diagnostics
 
 
 def test_detect_table_regions_stops_at_new_header_and_detects_next_table() -> None:

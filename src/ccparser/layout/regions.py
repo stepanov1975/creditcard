@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
@@ -28,14 +29,21 @@ from ccparser.money import is_currency_shaped, is_money_shaped
 
 _TOTAL_MARKERS = frozenset(
     {
+        "amount due",
+        "billing total",
         "grand total",
+        "statement total",
         "subtotal",
         "total",
+        "total amount",
+        "total billed",
         "סהכ",
         "סך הכל",
         "סךהכל",
         "סכום כולל",
         "סכוםכולל",
+        "סכום לחיוב",
+        "סכוםלחיוב",
     }
 )
 _SUBORDINATE_DETAIL_MARKERS = frozenset(
@@ -50,6 +58,18 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "שער המרה",
     }
 )
+_POINTS_LEDGER_MARKERS = frozenset(
+    {
+        "benefit points",
+        "loyalty points",
+        "point balance",
+        "points",
+        "rewards points",
+        "יתרת נקודות",
+        "נקודות",
+    }
+)
+_POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
 
@@ -695,6 +715,148 @@ def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     return len(amount_cells) == 1 and is_money_shaped(amount_cells[0].text) and not secondary_cells
 
 
+def _has_non_transaction_ledger_marker(row: Row) -> bool:
+    normalized_cells = tuple(_normalized_marker(cell.text) for cell in row.cells)
+    has_points_marker = any(
+        normalized == marker
+        or normalized.startswith(marker + " ")
+        or normalized.endswith(" " + marker)
+        or f" {marker} " in f" {normalized} "
+        for normalized in normalized_cells
+        for marker in _POINTS_LEDGER_MARKERS
+    )
+    money_cells = tuple(cell for cell in row.cells if is_money_shaped(cell.text))
+    return (
+        has_points_marker
+        and bool(money_cells)
+        and all(
+            _POINT_COUNT_PATTERN.fullmatch(cell.text.strip()) is not None for cell in money_cells
+        )
+    )
+
+
+def _inherited_region_after_total(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    total_index: int,
+    source_region: TableRegion,
+) -> tuple[TableRegion | None, int]:
+    """Resume only a strongly shaped section under real prior header evidence."""
+
+    header = source_region.header
+    schema = source_region.table_schema
+    accepted: list[Row] = []
+    regular_rows: list[Row] = []
+    continuation_count = 0
+    detail_continuation_count = 0
+    ignored_outside_band_count = 0
+    stop_reason: str | None = None
+    stop_index = len(rows)
+    previous = rows[total_index]
+    detail_continuation_allowed = False
+    for index, row in enumerate(rows[total_index + 1 :], start=total_index + 1):
+        if not _row_intersects_horizontal_band(row, header.bbox):
+            ignored_outside_band_count += 1
+            continue
+        if _is_total_row(row):
+            stop_reason = "stopped_at_total"
+            stop_index = index
+            break
+        if _structural_gap(previous, row, (header, *accepted)):
+            stop_reason = "stopped_at_structural_gap"
+            stop_index = index
+            break
+        if _literal_header_role_count(row) >= 2:
+            stop_reason = "stopped_at_new_header"
+            stop_index = index
+            break
+        projected = _project_row_to_header_bands(page_evidence, row, header)
+        if not projected.cells:
+            ignored_outside_band_count += 1
+            continue
+        if regular_rows and _is_description_continuation(projected, previous, schema):
+            accepted.append(projected)
+            continuation_count += 1
+            previous = projected
+            continue
+        if detail_continuation_allowed and _is_marked_detail_continuation(
+            projected, previous, schema
+        ):
+            projected = projected.model_copy(
+                update={
+                    "diagnostics": tuple(
+                        dict.fromkeys((*projected.diagnostics, "subordinate_detail_continuation"))
+                    )
+                }
+            )
+            accepted.append(projected)
+            detail_continuation_count += 1
+            detail_continuation_allowed = False
+            previous = projected
+            continue
+        if (
+            _has_non_transaction_ledger_marker(projected)
+            or _transaction_shape_count(projected) < 2
+            or not _has_valid_billed_amount(projected, schema)
+            or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+        ):
+            stop_reason = "stopped_at_structure_change"
+            stop_index = index
+            break
+        accepted.append(projected)
+        regular_rows.append(projected)
+        detail_continuation_allowed = True
+        previous = projected
+
+    strong_single_row = _has_strong_single_row_evidence(regular_rows, schema, stop_reason)
+    repeated_rows_with_total = len(regular_rows) >= 2 and stop_reason == "stopped_at_total"
+    continued_to_page_end = (
+        len(regular_rows) >= 2
+        and stop_reason is None
+        and accepted[-1].bbox[3] >= page_evidence.height * 0.75
+    )
+    if not (strong_single_row or repeated_rows_with_total or continued_to_page_end):
+        return None, total_index + 1
+
+    alignments = tuple(_row_alignment(row, schema) for row in regular_rows)
+    billed_amount_column = proven_billed_amount_column(schema, accepted)
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    diagnostics = [
+        f"repeated_rows:{len(regular_rows)}",
+        "inherited_schema_after_total",
+        "row_only_region_bbox",
+    ]
+    if len(amount_columns) > 1 and billed_amount_column is not None:
+        diagnostics.append("secondary_amount_bands_empty")
+    if strong_single_row:
+        diagnostics.append("single_row_strong_evidence")
+    if continuation_count:
+        diagnostics.append(f"continuation_rows:{continuation_count}")
+    if detail_continuation_count:
+        diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
+    if ignored_outside_band_count:
+        diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
+    diagnostics.append("continued_to_page_end" if continued_to_page_end else "stopped_at_total")
+    return (
+        TableRegion(
+            page_number=header.page_number,
+            bbox=_union_bbox(tuple(row.bbox for row in accepted)),
+            header=header,
+            rows=tuple(accepted),
+            table_schema=schema,
+            confidence=statistics.mean(
+                (
+                    schema.confidence,
+                    statistics.mean(row.confidence for row in accepted),
+                    statistics.mean(alignments),
+                )
+            ),
+            diagnostics=tuple(diagnostics),
+        ),
+        stop_index,
+    )
+
+
 def _candidate_schema(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -893,7 +1055,23 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
     index = 0
     while index < len(rows):
         region, next_index = _detect_from_header(page_evidence, rows, index)
-        if region is not None:
-            regions.append(region)
+        if region is None:
+            index = max(next_index, index + 1)
+            continue
+        regions.append(region)
+        inherited_source = region
+        while "stopped_at_total" in inherited_source.diagnostics and next_index < len(rows):
+            inherited, inherited_next_index = _inherited_region_after_total(
+                page_evidence,
+                rows,
+                next_index,
+                inherited_source,
+            )
+            if inherited is None:
+                next_index += 1
+                break
+            regions.append(inherited)
+            inherited_source = inherited
+            next_index = inherited_next_index
         index = max(next_index, index + 1)
     return tuple(regions)

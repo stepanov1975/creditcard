@@ -1052,6 +1052,79 @@ def test_same_currency_multi_card_tables_each_pair_with_their_adjacent_total() -
     assert all(len(group.table_regions) == 1 for group in result.groups)
 
 
+def test_same_currency_headerless_rows_after_total_form_the_next_exact_group() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("03/02/2026", 0.0, 28.0, 100.0),
+            _word("Shop", 50.0, 95.0, 100.0),
+            _word("₪30.00", 118.0, 155.0, 100.0),
+            _word("04/02/2026", 0.0, 28.0, 120.0),
+            _word("Fuel", 50.0, 95.0, 120.0),
+            _word("₪40.00", 118.0, 155.0, 120.0),
+            _word("Total", 50.0, 95.0, 140.0),
+            _word("₪70.00", 118.0, 155.0, 140.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(page))
+    normalized = normalize_statement(discovery)
+
+    assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 1)
+    assert tuple(
+        len(region.rows)
+        for statement_group in discovery.groups
+        for region in statement_group.table_regions
+    ) == (2, 2)
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+
+
+def test_headerless_page_end_rows_join_a_compatible_next_page_table() -> None:
+    first_page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("03/02/2026", 0.0, 28.0, 110.0),
+            _word("Shop", 50.0, 95.0, 110.0),
+            _word("₪30.00", 118.0, 155.0, 110.0),
+            _word("04/02/2026", 0.0, 28.0, 130.0),
+            _word("Fuel", 50.0, 95.0, 130.0),
+            _word("₪40.00", 118.0, 155.0, 130.0),
+            _word("05/02/2026", 0.0, 28.0, 150.0),
+            _word("Market", 50.0, 95.0, 150.0),
+            _word("₪50.00", 118.0, 155.0, 150.0),
+            _word("06/02/2026", 0.0, 28.0, 170.0),
+            _word("Cafe", 50.0, 95.0, 170.0),
+            _word("₪60.00", 118.0, 155.0, 170.0),
+            _word("07/02/2026", 0.0, 28.0, 190.0),
+            _word("Hotel", 50.0, 95.0, 190.0),
+            _word("₪70.00", 118.0, 155.0, 190.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪262.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 2)
+    assert tuple(region.page_number for region in discovery.groups[1].table_regions) == (1, 2)
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+
+
 def test_totals_after_multiple_same_currency_tables_remain_unassigned() -> None:
     page = _page(
         1,
