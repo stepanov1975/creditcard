@@ -652,23 +652,19 @@ def _date_year_context(
                 matching_years = tuple(
                     sorted(year for year in full_years if year % 100 == short_year)
                 )
-                if len(matching_years) > 1:
+                candidate_evidence_years = {year: {year} for year in matching_years}
+                for bracketed_year in range(_MIN_CONTEXT_YEAR, _MAX_CONTEXT_YEAR + 1):
+                    if (
+                        bracketed_year % 100 == short_year
+                        and bracketed_year - 1 in full_years
+                        and bracketed_year + 1 in full_years
+                    ):
+                        candidate_evidence_years.setdefault(bracketed_year, set()).update(
+                            (bracketed_year - 1, bracketed_year + 1)
+                        )
+                if len(candidate_evidence_years) != 1:
                     break
-                if matching_years:
-                    selected_suffix_year = matching_years[0]
-                    evidence_years: tuple[int, ...] = (selected_suffix_year,)
-                else:
-                    bracketed_years = tuple(
-                        year
-                        for year in range(_MIN_CONTEXT_YEAR, _MAX_CONTEXT_YEAR + 1)
-                        if year % 100 == short_year
-                        and year - 1 in full_years
-                        and year + 1 in full_years
-                    )
-                    if len(bracketed_years) != 1:
-                        break
-                    selected_suffix_year = bracketed_years[0]
-                    evidence_years = (selected_suffix_year - 1, selected_suffix_year + 1)
+                selected_suffix_year, evidence_years = next(iter(candidate_evidence_years.items()))
                 year_by_suffix.append((short_year, selected_suffix_year))
                 for evidence_year in evidence_years:
                     for cell in supporting_cells_by_year[evidence_year]:
@@ -676,7 +672,12 @@ def _date_year_context(
                             context_supporting_cells.append(cell)
             if len(year_by_suffix) != len(table_short_years):
                 continue
-            candidates.append((style, tuple(year_by_suffix), tuple(context_supporting_cells)))
+            ordered_supporting_cells = tuple(
+                cell
+                for cell in cells
+                if any(cell is supporting for supporting in context_supporting_cells)
+            )
+            candidates.append((style, tuple(year_by_suffix), ordered_supporting_cells))
             continue
         if len(full_years) == 1:
             year = next(iter(full_years))

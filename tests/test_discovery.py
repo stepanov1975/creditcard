@@ -778,6 +778,64 @@ def test_discover_statement_rejects_adjacent_brackets_in_two_centuries() -> None
 
 
 @pytest.mark.parametrize(
+    ("direct_anchor", "prior_anchor", "next_anchor"),
+    (
+        ("Direct 03/02/1925", "Prior 03/02/2024", "Next 03/02/2026"),
+        ("Direct 03/02/2025", "Prior 03/02/1924", "Next 03/02/1926"),
+    ),
+)
+def test_discover_statement_rejects_direct_suffix_anchor_conflicting_with_other_century_bracket(
+    direct_anchor: str,
+    prior_anchor: str,
+    next_anchor: str,
+) -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word(direct_anchor, 0.0, 45.0, 2.0),
+            _word(prior_anchor, 55.0, 100.0, 2.0),
+            _word(next_anchor, 110.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    assert discover_statement(_document(page)).date_year_context is None
+
+
+def test_discover_statement_preserves_direct_and_bracket_evidence_for_same_year() -> None:
+    words = list(_table(20.0, "₪", "10.00", "20.00"))
+    words[3] = _word("01/02/25", 0.0, 28.0, 40.0)
+    words[6] = _word("02/02/25", 0.0, 28.0, 60.0)
+    page = _page(
+        1,
+        (
+            _word("Direct 03/02/2025", 0.0, 45.0, 2.0),
+            _word("Prior 03/02/2024", 55.0, 100.0, 2.0),
+            _word("Next 03/02/2026", 110.0, 155.0, 2.0),
+            *words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert result.date_year_context.year == 2025
+    assert result.date_year_context.year_by_suffix == ((25, 2025),)
+    assert tuple(item.raw_text for item in result.date_year_context.evidence) == (
+        "Direct 03/02/2025",
+        "Prior 03/02/2024",
+        "Next 03/02/2026",
+    )
+
+
+@pytest.mark.parametrize(
     "anchor",
     (
         "Only prior 03/02/2024",
