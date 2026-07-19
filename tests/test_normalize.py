@@ -14,7 +14,7 @@ from ccparser.discovery import (
     StatementGroupDiscovery,
     discover_statement,
 )
-from ccparser.evidence import DocumentEvidence, ExtractionQuality, PageEvidence, Word
+from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
 from ccparser.normalize import normalize_statement, parse_amount
@@ -44,6 +44,21 @@ def _word(
         bbox=(x0, y, x1, y + 10.0),
         source=source,
         confidence=confidence,
+    )
+
+
+def _glyphs(text: str, x0: float, y: float) -> tuple[Glyph, ...]:
+    return tuple(
+        Glyph(
+            char=char,
+            bbox=(x0 + index, y, x0 + index + 0.8, y + 10.0),
+            origin=(x0 + index, y + 9.0),
+            font="Synthetic",
+            size=10.0,
+            source="digital",
+            confidence=1.0,
+        )
+        for index, char in enumerate(text)
     )
 
 
@@ -1320,6 +1335,36 @@ def test_normalize_statement_rejects_date_from_barely_overlapping_boundary_cell(
     assert "invalid_transaction_date" in transaction.ambiguities
 
 
+def test_normalize_statement_removes_glyph_proven_duplicate_date_prefix() -> None:
+    duplicated_prefix = _glyphs("012", 46.0, 30.0)
+    description = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 49.0, 40.0),
+        text="MERCHANT 012",
+        words=(_word("MERCHANT", 0.0, 35.0, 30.0), _word("012", 46.0, 49.0, 30.0)),
+        confidence=1.0,
+    )
+    valid_date = "24/01/2022"
+    date_cell = Cell(
+        page_number=1,
+        bbox=(46.0, 30.0, 90.0, 40.0),
+        text=f"012{valid_date}",
+        glyphs=(*duplicated_prefix, *_glyphs(valid_date, 51.0, 30.0)),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2022, 1, 24)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_extracts_unique_full_date_at_alphabetic_cell_boundary() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -1338,6 +1383,26 @@ def test_normalize_statement_extracts_unique_full_date_at_alphabetic_cell_bounda
     assert transaction.transaction_date == date(2026, 2, 1)
     assert transaction.ambiguities == ()
     assert transaction.evidence[0].raw_text == "MERCHANT01/02/2026"
+
+
+def test_normalize_statement_extracts_boundary_date_after_punctuated_merchant() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("MERCHANT S.A.30/06/2025", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2025, 6, 30)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_normalize_statement_rejects_compound_short_and_full_date_tokens() -> None:

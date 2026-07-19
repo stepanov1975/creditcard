@@ -17,9 +17,10 @@ from ccparser.discovery import (
     StatementDiscovery,
     StatementGroupDiscovery,
 )
-from ccparser.evidence.models import BBox, Word
+from ccparser.evidence.models import BBox, Glyph, Word
 from ccparser.layout.columns import isolated_date_token, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
+from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import (
     EvidenceReference,
     PrintedTotal,
@@ -124,6 +125,12 @@ def _contains_marker(text: str, markers: Iterable[str]) -> bool:
 
 def _center_x(bbox: BBox) -> float:
     return (bbox[0] + bbox[2]) / 2
+
+
+def _bbox_center_inside(candidate: BBox, container: BBox) -> bool:
+    center_x = (candidate[0] + candidate[2]) / 2
+    center_y = (candidate[1] + candidate[3]) / 2
+    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
 
 
 def _height(bbox: BBox) -> float:
@@ -299,7 +306,11 @@ def _parse_date(
         if (
             (boundary_match.start() == 0 or boundary_match.end() == len(normalized))
             and residual_chars
-            and all(char.isalpha() for char in residual_chars)
+            and any(char.isalpha() for char in residual_chars)
+            and all(
+                char.isalpha() or unicodedata.category(char)[0] in {"M", "P"}
+                for char in residual_chars
+            )
         ):
             normalized = boundary_match.group(0)
     if year_context is not None:
@@ -392,6 +403,98 @@ def _parse_overlapping_boundary_date(
         if parsed_date is not None and diagnostic is None:
             candidates[parsed_date] = (parsed_date, None)
     return next(iter(candidates.values())) if len(candidates) == 1 else (None, "invalid_date")
+
+
+def _glyph_identity(glyph: Glyph) -> tuple[object, ...]:
+    return (
+        glyph.char,
+        glyph.bbox,
+        glyph.origin,
+        glyph.font,
+        glyph.size,
+        glyph.source,
+        glyph.confidence,
+    )
+
+
+def _outside_glyphs_have_lossless_word_backing(
+    outside: Sequence[Glyph],
+    row: Row,
+    column: ColumnSpec,
+    assigned_cell: Cell,
+) -> bool:
+    words = tuple(
+        word
+        for cell in row.cells
+        if cell is not assigned_cell
+        and not column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        for word in cell.words
+    )
+    assigned: list[list[Glyph]] = [[] for _ in words]
+    for glyph in outside:
+        owners = tuple(
+            index for index, word in enumerate(words) if _bbox_center_inside(glyph.bbox, word.bbox)
+        )
+        if len(owners) != 1:
+            return False
+        assigned[owners[0]].append(glyph)
+    return bool(words) and all(
+        not glyphs
+        or _normalized_text(word.text).casefold()
+        == _normalized_text(logical_text_for_evidence(tuple(glyphs), (word,))).casefold()
+        for word, glyphs in zip(words, assigned, strict=True)
+    )
+
+
+def _parse_date_without_duplicated_boundary_glyphs(
+    row: Row,
+    column: ColumnSpec,
+    assigned_cell: Cell,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[date | None, str | None]:
+    if not assigned_cell.glyphs:
+        return None, "invalid_date"
+    outside = tuple(
+        glyph
+        for glyph in assigned_cell.glyphs
+        if not column.bbox[0] <= _center_x(glyph.bbox) <= column.bbox[2]
+    )
+    if not outside:
+        return None, "invalid_date"
+    outside_sides = {
+        "left" if _center_x(glyph.bbox) < column.bbox[0] else "right" for glyph in outside
+    }
+    if len(outside_sides) != 1:
+        return None, "invalid_date"
+    duplicated_evidence = {
+        _glyph_identity(glyph)
+        for cell in row.cells
+        if cell is not assigned_cell
+        and not column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        for glyph in cell.glyphs
+    }
+    has_exact_duplicate_glyphs = bool(duplicated_evidence) and all(
+        _glyph_identity(glyph) in duplicated_evidence for glyph in outside
+    )
+    if not has_exact_duplicate_glyphs and not _outside_glyphs_have_lossless_word_backing(
+        outside,
+        row,
+        column,
+        assigned_cell,
+    ):
+        return None, "invalid_date"
+    remaining = tuple(glyph for glyph in assigned_cell.glyphs if glyph not in outside)
+    if not remaining:
+        return None, "invalid_date"
+    parsed_date, diagnostic = _parse_date(
+        logical_text_for_evidence(remaining, ()),
+        year_context,
+    )
+    return (
+        (parsed_date, None)
+        if parsed_date is not None and diagnostic is None
+        else (None, "invalid_date")
+    )
 
 
 def _parse_installment(text: str) -> tuple[tuple[int, int] | None, str | None]:
@@ -702,6 +805,13 @@ def _dates(
             continue
         parsed_date, date_diagnostic = _parse_cell_date(cells[0], year_context)
         if date_diagnostic == "invalid_date":
+            parsed_date, date_diagnostic = _parse_date_without_duplicated_boundary_glyphs(
+                row,
+                column,
+                cells[0],
+                year_context,
+            )
+        if date_diagnostic == "invalid_date":
             parsed_date, date_diagnostic = _parse_overlapping_boundary_date(
                 row,
                 column,
@@ -749,6 +859,15 @@ def _dates(
             parsed_conversion_date, conversion_diagnostic = _parse_cell_date(
                 conversion_cells[0], year_context
             )
+            if conversion_diagnostic == "invalid_date":
+                parsed_conversion_date, conversion_diagnostic = (
+                    _parse_date_without_duplicated_boundary_glyphs(
+                        row,
+                        conversion_columns[0],
+                        conversion_cells[0],
+                        year_context,
+                    )
+                )
             if conversion_diagnostic == "invalid_date":
                 parsed_conversion_date, conversion_diagnostic = _parse_overlapping_boundary_date(
                     row,
