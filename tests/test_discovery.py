@@ -1572,7 +1572,7 @@ def test_consecutive_page_continuation_accepts_semantic_header_wording_variants(
     assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)
 
 
-def test_consecutive_tables_with_two_later_totals_do_not_collapse_into_chain() -> None:
+def test_proven_continuation_is_claimed_before_later_same_currency_total() -> None:
     first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
     second_page = _page(
         2,
@@ -1586,7 +1586,213 @@ def test_consecutive_tables_with_two_later_totals_do_not_collapse_into_chain() -
     )
 
     result = discover_statement(_document(first_page, second_page))
+    repeated = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.groups[0].table_regions == result.table_regions
+    assert tuple(region.page_number for region in result.groups[0].table_regions) == (1, 2)
+    assert "ambiguous_group_region_association" not in result.diagnostics
+    assert "unclaimed_table_region" not in result.diagnostics
+    assert "total_without_table" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+    assert repeated.model_dump(mode="json") == result.model_dump(mode="json")
+
+
+def test_proven_continuation_keeps_later_table_in_separate_group() -> None:
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪999.00", 118.0, 155.0, 70.0),
+            _word("Date", 0.0, 28.0, 100.0),
+            _word("Description", 40.0, 78.0, 100.0),
+            _word("Original amount", 88.0, 118.0, 100.0),
+            _word("Billed amount", 128.0, 158.0, 100.0),
+            _word("03/02/2026", 0.0, 28.0, 120.0),
+            _word("Shop", 40.0, 78.0, 120.0),
+            _word("$3.00", 88.0, 118.0, 120.0),
+            _word("₪11.00", 128.0, 158.0, 120.0),
+            _word("04/02/2026", 0.0, 28.0, 140.0),
+            _word("Fuel", 40.0, 78.0, 140.0),
+            _word("$4.00", 88.0, 118.0, 140.0),
+            _word("₪13.00", 128.0, 158.0, 140.0),
+            _word("Total", 40.0, 78.0, 170.0),
+            _word("₪777.00", 128.0, 158.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+    repeated = discover_statement(_document(first_page, second_page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.table_regions) == 3
+    assert len(result.groups) == 2
+    assert result.groups[0].table_regions == result.table_regions[:2]
+    assert result.groups[1].table_regions == result.table_regions[2:]
+    assert tuple(
+        tuple(region.page_number for region in group.table_regions) for group in result.groups
+    ) == ((1, 2), (2,))
+    assert "ambiguous_group_region_association" not in result.diagnostics
+    assert "unclaimed_table_region" not in result.diagnostics
+    assert "total_without_table" not in result.diagnostics
+    assert repeated.model_dump(mode="json") == result.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("first_y", "second_y", "total_y"),
+    ((130.0, 10.0, 70.0), (190.0, 70.0, 140.0)),
+)
+def test_later_totals_do_not_relax_page_edge_continuation_proof(
+    first_y: float,
+    second_y: float,
+    total_y: float,
+) -> None:
+    first_page = _page(1, _table(first_y, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(second_y, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, total_y),
+            _word("₪999.00", 118.0, 155.0, total_y),
+            _word("Total", 50.0, 95.0, total_y + 20.0),
+            _word("₪777.00", 118.0, 155.0, total_y + 20.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
 
     assert result.classification is DocumentClassification.AMBIGUOUS
     assert result.groups == ()
     assert "ambiguous_group_region_association" in result.diagnostics
+    assert "unclaimed_table_region" in result.diagnostics
+
+
+def test_later_totals_do_not_relax_schema_compatibility() -> None:
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            _word("Date", 0.0, 28.0, 10.0),
+            _word("Description", 40.0, 78.0, 10.0),
+            _word("Original amount", 88.0, 118.0, 10.0),
+            _word("Billed amount", 128.0, 158.0, 10.0),
+            _word("01/02/2026", 0.0, 28.0, 30.0),
+            _word("Market", 40.0, 78.0, 30.0),
+            _word("$3.00", 88.0, 118.0, 30.0),
+            _word("₪5.00", 128.0, 158.0, 30.0),
+            _word("02/02/2026", 0.0, 28.0, 50.0),
+            _word("Cafe", 40.0, 78.0, 50.0),
+            _word("$4.00", 88.0, 118.0, 50.0),
+            _word("₪7.00", 128.0, 158.0, 50.0),
+            _word("Total", 40.0, 78.0, 70.0),
+            _word("₪999.00", 128.0, 158.0, 70.0),
+            _word("Total", 40.0, 78.0, 90.0),
+            _word("₪777.00", 128.0, 158.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics
+
+
+def test_later_totals_do_not_relax_continuation_currency_match() -> None:
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "$", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪999.00", 118.0, 155.0, 70.0),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪777.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert result.groups == ()
+    assert "ambiguous_table_currency" in result.diagnostics
+
+
+def test_later_totals_do_not_relax_consecutive_page_requirement() -> None:
+    first_page = _page(1, _table(190.0, "₪", "10.00", "20.00"))
+    second_page = _page(2, ())
+    third_page = _page(
+        3,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪999.00", 118.0, 155.0, 70.0),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪777.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page, third_page))
+
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics
+
+
+def test_intervening_total_keeps_consecutive_page_tables_in_separate_groups() -> None:
+    first_page = _page(
+        1,
+        (
+            *_table(170.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 235.0),
+            _word("₪999.00", 118.0, 155.0, 235.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪777.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert len(result.groups) == 2
+    assert result.groups[0].table_regions == result.table_regions[:1]
+    assert result.groups[1].table_regions == result.table_regions[1:]
+
+
+def test_unproven_continuation_does_not_consume_later_table_scope() -> None:
+    first_page = _page(1, _table(130.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪999.00", 118.0, 155.0, 70.0),
+            _word("Date", 0.0, 28.0, 100.0),
+            _word("Description", 40.0, 78.0, 100.0),
+            _word("Original amount", 88.0, 118.0, 100.0),
+            _word("Billed amount", 128.0, 158.0, 100.0),
+            _word("03/02/2026", 0.0, 28.0, 120.0),
+            _word("Shop", 40.0, 78.0, 120.0),
+            _word("$3.00", 88.0, 118.0, 120.0),
+            _word("₪11.00", 128.0, 158.0, 120.0),
+            _word("04/02/2026", 0.0, 28.0, 140.0),
+            _word("Fuel", 40.0, 78.0, 140.0),
+            _word("$4.00", 88.0, 118.0, 140.0),
+            _word("₪13.00", 128.0, 158.0, 140.0),
+            _word("Total", 40.0, 78.0, 170.0),
+            _word("₪777.00", 128.0, 158.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert len(result.table_regions) == 3
+    assert len(result.groups) == 1
+    assert result.groups[0].table_regions == result.table_regions[2:]
+    assert "ambiguous_group_region_association" in result.diagnostics
+    assert "unclaimed_table_region" in result.diagnostics

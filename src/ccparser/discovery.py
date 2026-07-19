@@ -812,10 +812,10 @@ def _associate_regions(
         return (), ("ambiguous_table_currency",)
     if len(section) == 1:
         return section, ()
-    if sum(candidate.currency == total.currency for candidate in remaining_totals) > 1:
-        return (), ("ambiguous_group_region_association",)
     if _proven_page_continuation(section, page_heights):
         return section, ()
+    if sum(candidate.currency == total.currency for candidate in remaining_totals) > 1:
+        return (), ("ambiguous_group_region_association",)
     return (), ("ambiguous_group_region_association",)
 
 
