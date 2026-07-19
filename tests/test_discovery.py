@@ -179,6 +179,58 @@ def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -
     assert "statement_evidence_incomplete" in result.reason_codes
 
 
+@pytest.mark.parametrize(
+    ("no_activity_text", "total_label"),
+    (
+        ("No transactions this period", "Total charges due"),
+        ("לאבוצעועסקאותבתקופהזו", 'סךהחיוביםהצפוייםלמועדהחיובהבאבש"ח'),
+        ("לאבוצעועסקותהחודש", 'סךהחיוביםהצפוייםלמועדהחיובהבאבש"ח'),
+    ),
+)
+def test_discover_statement_accepts_proven_zero_activity_statement(
+    no_activity_text: str,
+    total_label: str,
+) -> None:
+    page = _page(
+        1,
+        (
+            _word("Monthly card statement", 10.0, 90.0, 20.0),
+            _word(total_label, 10.0, 110.0, 60.0),
+            _word("₪0.00", 125.0, 155.0, 60.0),
+            _word(no_activity_text, 10.0, 130.0, 100.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.reason_codes == ("zero_activity_statement_with_compatible_total",)
+    assert len(result.groups) == 1
+    assert result.groups[0].table_regions == ()
+    assert result.groups[0].printed_total.amount_text == "₪0.00"
+    assert result.groups[0].printed_total.currency == "ILS"
+    normalization = normalize_statement(result)
+    assert normalization.transactions == ()
+    assert normalization.reconciliation.status is Status.RECONCILED
+    assert normalization.reconciliation.groups[0].difference == 0
+
+
+def test_discover_statement_does_not_infer_zero_activity_without_zero_total() -> None:
+    page = _page(
+        1,
+        (
+            _word("No transactions this period", 10.0, 130.0, 20.0),
+            _word("Total charges due", 10.0, 110.0, 60.0),
+            _word("₪12.00", 125.0, 155.0, 60.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+
+
 def test_total_uses_proven_billed_band_when_other_numeric_cells_are_outside_it() -> None:
     page = _page(
         1,

@@ -153,13 +153,27 @@ _TOTAL_MARKERS = frozenset(
         "total",
         "total amount",
         "total billed",
+        "total charges due",
         "סהכ",
         "סך הכל",
         "סךהכל",
+        "סך החיובים הצפויים למועד החיוב הבא",
         "סכום כולל",
         "סכוםכולל",
         "סכום לחיוב",
         "סכוםלחיוב",
+    }
+)
+_NO_ACTIVITY_MARKERS = frozenset(
+    {
+        "no activity this month",
+        "no activity this period",
+        "no transactions this month",
+        "no transactions this period",
+        "לא בוצעו עסקאות החודש",
+        "לא בוצעו עסקאות בתקופה זו",
+        "לא בוצעו עסקות החודש",
+        "לא בוצעו עסקות בתקופה זו",
     }
 )
 _POINTS_UNIT_MARKERS = frozenset(
@@ -299,6 +313,18 @@ def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
             if any(token.startswith(compact_phrase) for token in tokens):
                 return True
     return False
+
+
+def _positive_zero_activity_evidence(rows: Sequence[Row]) -> Cell | None:
+    return next(
+        (
+            cell
+            for row in rows
+            for cell in row.cells
+            if _contains_phrase(cell.text, _NO_ACTIVITY_MARKERS)
+        ),
+        None,
+    )
 
 
 def _evidence(cell: Cell) -> EvidenceReference:
@@ -1180,6 +1206,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
     rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
+    standalone_total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
         preceding = tuple(
@@ -1200,8 +1227,10 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
                     ),
                 )
             )
-        if total is not None and preceding:
-            total_candidates.append((total_row, total))
+        if total is not None:
+            standalone_total_candidates.append((total_row, total))
+            if preceding:
+                total_candidates.append((total_row, total))
 
     page_heights = {page.page_number: page.height for page in evidence.pages}
     previous_total_row: Row | None = None
@@ -1231,6 +1260,31 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             )
         )
 
+    zero_activity_cell = _positive_zero_activity_evidence(page_rows)
+    if (
+        not groups
+        and not regions
+        and zero_activity_cell is not None
+        and len(standalone_total_candidates) == 1
+    ):
+        _, zero_total = standalone_total_candidates[0]
+        parsed_zero_total = parse_amount(
+            zero_total.amount_text,
+            currency_hint=zero_total.currency,
+        )
+        if parsed_zero_total.amount == 0 and parsed_zero_total.currency == zero_total.currency:
+            groups.append(
+                StatementGroupDiscovery(
+                    group_id="group-0001",
+                    table_regions=(),
+                    printed_total=zero_total,
+                    confidence=statistics.mean(
+                        (zero_total.confidence, zero_activity_cell.confidence)
+                    ),
+                    diagnostics=("explicit_zero_activity",),
+                )
+            )
+
     claimed_regions = tuple(region for group in groups for region in group.table_regions)
     if any(not any(region is claimed for claimed in claimed_regions) for region in regions):
         diagnostics.append("unclaimed_table_region")
@@ -1243,7 +1297,11 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     if groups:
         classification = DocumentClassification.STATEMENT
         confidence = statistics.mean(group.confidence for group in groups)
-        reason_codes = ("transaction_table_with_compatible_total",)
+        reason_codes = (
+            ("zero_activity_statement_with_compatible_total",)
+            if all(not group.table_regions for group in groups)
+            else ("transaction_table_with_compatible_total",)
+        )
     elif not regions and not total_marker_rows and _positive_form_evidence(page_rows):
         classification = DocumentClassification.NOT_STATEMENT
         confidence = 0.95
