@@ -9,6 +9,7 @@ from ccparser.layout.regions import (
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
+    _project_row_to_header_bands,
     _projection_preserves_table_band_evidence,
     _split_compound_header_cell,
     _split_header_fragment,
@@ -1353,6 +1354,31 @@ def test_foreign_detail_block_accepts_fifth_identifier_and_separable_sidebar() -
     assert "stopped_at_total" in regions[0].diagnostics
 
 
+def test_foreign_detail_block_accepts_wrapped_short_identifier() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted", 30.0, 55.0, 61.0),
+            _word("at issuer rate", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 30.0, 85.0, 83.0),
+            _word("special arrangement", 30.0, 85.0, 94.0),
+            _word("card identifier ending", 30.0, 85.0, 105.0),
+            _word("7312", 65.0, 85.0, 116.0),
+            *_foreign_data(127.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 9
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:8])
+    assert "detail_continuation_rows:6" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_rejects_unprojected_nonspace_glyph() -> None:
     page = _page(
         (
@@ -1373,6 +1399,29 @@ def test_foreign_detail_block_rejects_unprojected_nonspace_glyph() -> None:
     assert len(regions) == 1
     assert len(regions[0].rows) == 2
     assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_hands_following_transaction_to_row_validator() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        glyphs=(_glyph("x", 160.0, 83.0),),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 5
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:4])
+    assert "detail_continuation_rows:2" in regions[0].diagnostics
 
 
 def test_exact_fee_marker_is_not_merged_into_foreign_merchant_description() -> None:
@@ -1453,6 +1502,79 @@ def test_detect_table_regions_bridges_split_lossless_auxiliary_fragment() -> Non
     assert len(regions[0].rows[2].cells) == 2
     assert "subordinate_auxiliary_continuation" in regions[0].rows[2].diagnostics
     assert "auxiliary_continuation_rows:1" in regions[0].diagnostics
+
+
+def test_auxiliary_fragment_ignores_separable_outside_table_cell() -> None:
+    sidebar = _word("unrelated sidebar", 150.0, 185.0, 61.0)
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            sidebar,
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    continuation = regions[0].rows[2]
+    assert "subordinate_auxiliary_continuation" in continuation.diagnostics
+    assert "ignored_outside_table_band_cells:1" in continuation.diagnostics
+    assert all(sidebar not in cell.words for row in regions[0].rows for cell in row.cells)
+
+
+def test_projection_uses_table_cells_for_vertical_band() -> None:
+    header_words = _auxiliary_table_header(10.0)
+    continued = _word("continued", 65.0, 85.0, 61.0)
+    first_sidebar = _word("sidebar first", 150.0, 175.0, 67.0)
+    second_sidebar = _word("sidebar second", 185.0, 215.0, 67.0)
+    next_detail = _word("next detail", 65.0, 85.0, 68.5)
+    page = _page(
+        (*header_words, continued, first_sidebar, second_sidebar, next_detail),
+        width=220.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 125.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=(65.0, 61.0, 215.0, 77.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in (continued, first_sidebar, second_sidebar)
+        ),
+        words=(continued, first_sidebar, second_sidebar),
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    assert [cell.text for cell in projected.cells] == ["continued"]
+    assert next_detail not in tuple(word for cell in projected.cells for word in cell.words)
 
 
 def test_auxiliary_fragment_requires_immediately_following_transaction() -> None:

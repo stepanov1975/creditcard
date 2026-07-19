@@ -614,8 +614,15 @@ def _project_row_to_header_bands(
     header: Row,
 ) -> Row:
     cells: list[Cell] = []
-    top, bottom = _representative_vertical_band(row)
-    for index, (left, right) in enumerate(_header_band_bounds(header)):
+    header_bands = _header_band_bounds(header)
+    table_cells = tuple(
+        cell
+        for cell in row.cells
+        if header_bands and header_bands[0][0] <= _center_x(cell.bbox) <= header_bands[-1][1]
+    )
+    vertical_source = row.model_copy(update={"cells": table_cells}) if table_cells else row
+    top, bottom = _representative_vertical_band(vertical_source)
+    for index, (left, right) in enumerate(header_bands):
         band_bbox = (left, top, right, bottom)
         glyphs, words = positioned_evidence_for_bbox(page_evidence, band_bbox)
         text = logical_text_for_bbox(page_evidence, band_bbox)
@@ -879,6 +886,13 @@ def _is_auxiliary_identifier_detail(row: Row) -> bool:
     )
 
 
+def _is_short_numeric_auxiliary_identifier_detail(row: Row) -> bool:
+    if len(row.cells) != 1:
+        return False
+    compact = "".join(row.cells[0].text.split())
+    return re.fullmatch(r"\d{4,10}", compact) is not None
+
+
 def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
@@ -951,13 +965,7 @@ def _foreign_conversion_detail_block(
         ):
             return None
         projected = _project_row_to_header_bands(page_evidence, source, header)
-        outside_table_band_count = _projection_preserves_table_band_evidence(
-            source,
-            projected,
-            header,
-            schema,
-        )
-        if not projected.cells or outside_table_band_count is None:
+        if not projected.cells:
             return None
         alignment = _row_alignment(projected, schema)
         if _has_valid_billed_amount(projected, schema) and alignment >= _minimum_row_alignment(
@@ -970,6 +978,14 @@ def _foreign_conversion_detail_block(
             ):
                 return tuple(details), index - 1
             return None
+        outside_table_band_count = _projection_preserves_table_band_evidence(
+            source,
+            projected,
+            header,
+            schema,
+        )
+        if outside_table_band_count is None:
+            return None
         billed_cells = tuple(
             cell
             for cell in projected.cells
@@ -980,8 +996,42 @@ def _foreign_conversion_detail_block(
             and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS
             and _is_auxiliary_identifier_detail(projected)
         )
+        allowed_wrapped_identifier_lead = False
         if (
-            (len(details) >= maximum_detail_rows and not allowed_fifth_identifier)
+            has_distinct_currencies
+            and has_exact_marker
+            and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS
+            and index + 1 < len(rows)
+        ):
+            identifier_source = rows[index + 1]
+            identifier = _project_row_to_header_bands(
+                page_evidence,
+                identifier_source,
+                header,
+            )
+            allowed_wrapped_identifier_lead = (
+                _detail_rows_are_adjacent(source, identifier_source)
+                and _projection_preserves_table_band_evidence(
+                    identifier_source,
+                    identifier,
+                    header,
+                    schema,
+                )
+                is not None
+                and _is_short_numeric_auxiliary_identifier_detail(identifier)
+            )
+        allowed_wrapped_identifier_tail = (
+            has_distinct_currencies
+            and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS + 1
+            and _is_short_numeric_auxiliary_identifier_detail(projected)
+        )
+        if (
+            (
+                len(details) >= maximum_detail_rows
+                and not allowed_fifth_identifier
+                and not allowed_wrapped_identifier_lead
+                and not allowed_wrapped_identifier_tail
+            )
             or billed_cells
             or any(is_date_shaped(cell.text) for cell in projected.cells)
             or _transaction_shape_count(projected) > 1
@@ -1040,10 +1090,16 @@ def _bounded_auxiliary_fragment(
     ):
         return None
     projected = _project_row_to_header_bands(page_evidence, source, header)
+    outside_table_band_count = _projection_preserves_table_band_evidence(
+        source,
+        projected,
+        header,
+        schema,
+    )
     if (
         not 1 <= len(projected.cells) <= 2
         or not (source.words or any(not glyph.char.isspace() for glyph in source.glyphs))
-        or not _projection_preserves_positioned_evidence(source, projected)
+        or outside_table_band_count is None
         or _transaction_shape_count(projected) != 0
         or _has_subordinate_detail_marker(projected)
     ):
@@ -1076,7 +1132,17 @@ def _bounded_auxiliary_fragment(
     return projected.model_copy(
         update={
             "diagnostics": tuple(
-                dict.fromkeys((*projected.diagnostics, "subordinate_auxiliary_continuation"))
+                dict.fromkeys(
+                    (
+                        *projected.diagnostics,
+                        "subordinate_auxiliary_continuation",
+                        *(
+                            (f"ignored_outside_table_band_cells:{outside_table_band_count}",)
+                            if outside_table_band_count
+                            else ()
+                        ),
+                    )
+                )
             )
         }
     )
