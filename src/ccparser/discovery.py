@@ -862,7 +862,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             initial_regions,
         )
     )
-    affected_pages = frozenset(page_number for page_number, _ in proven_total_overlay_keys)
+    affected_pages = frozenset(row.page_number for row in proven_total_overlay_keys)
     regions = tuple(
         sorted(
             (

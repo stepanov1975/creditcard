@@ -8,6 +8,7 @@ from ccparser.layout.models import Cell, ColumnRole, Row
 from ccparser.layout.regions import (
     _merge_header_rows,
     _merged_header_bands,
+    _page_row_key,
     _split_compound_header_cell,
     _split_header_fragment,
     detect_table_regions,
@@ -86,6 +87,46 @@ def _assert_lossless_split_provenance(
     assert len(output_glyphs) == len(source.glyphs)
     assert all(output_words.count(word) == 1 for word in source.words)
     assert all(output_glyphs.count(glyph) == 1 for glyph in source.glyphs)
+
+
+def test_page_row_key_distinguishes_overlapping_rows_with_the_same_bbox() -> None:
+    first_word = _word("Amount due", 30.0, 140.0, 135.0)
+    second_word = _word("סכום כולל", 30.0, 140.0, 135.0)
+    first = Row(
+        page_number=1,
+        bbox=first_word.bbox,
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=first_word.bbox,
+                text=first_word.text,
+                words=(first_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(first_word,),
+        confidence=1.0,
+    )
+    second = Row(
+        page_number=1,
+        bbox=second_word.bbox,
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=second_word.bbox,
+                text=second_word.text,
+                words=(second_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(second_word,),
+        confidence=1.0,
+    )
+
+    assert first.bbox == second.bbox
+    assert _page_row_key(first) != _page_row_key(second)
+    assert _page_row_key(first) == _page_row_key(first.model_copy())
+    assert len(frozenset((_page_row_key(first), _page_row_key(second)))) == 2
 
 
 def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_band() -> None:

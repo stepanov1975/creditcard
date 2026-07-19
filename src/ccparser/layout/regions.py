@@ -63,7 +63,7 @@ _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
 
-type _PageRowKey = tuple[int, BBox]
+type _PageRowKey = Row
 
 
 def _height(bbox: BBox) -> float:
@@ -1038,7 +1038,7 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
 
 
 def _page_row_key(row: Row) -> _PageRowKey:
-    return row.page_number, row.bbox
+    return row
 
 
 def _detect_table_regions_from_rows(
