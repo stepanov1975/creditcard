@@ -75,6 +75,7 @@ MAX_HEADER_PREAMBLE_ROWS = 4
 MAX_AMBIGUOUS_LEADING_ROWS = 2
 MAX_AMBIGUOUS_LEADING_PROOF_LOOKAHEAD = 4
 MAX_OVERLAID_OCR_LOOKAHEAD_ROWS = 3
+MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS = 2
 MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
 MIN_ISSUER_CONVERSION_DETAIL_ROWS = 4
 MAX_ISSUER_CONVERSION_DETAIL_ROWS = 5
@@ -1166,7 +1167,24 @@ def _bounded_auxiliary_fragment(
     ):
         return None
     source = rows[start_index]
-    following_source = rows[start_index + 1]
+    following_index = start_index + 1
+    skipped_outside_rows = 0
+    while (
+        following_index < len(rows)
+        and not _row_intersects_horizontal_band(rows[following_index], header.bbox)
+    ):
+        candidate = rows[following_index]
+        if (
+            _is_total_row(candidate)
+            or _literal_header_role_count(candidate) >= 2
+            or skipped_outside_rows >= MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS
+        ):
+            return None
+        skipped_outside_rows += 1
+        following_index += 1
+    if following_index >= len(rows):
+        return None
+    following_source = rows[following_index]
     if (
         not _row_intersects_horizontal_band(source, header.bbox)
         or _is_total_row(source)

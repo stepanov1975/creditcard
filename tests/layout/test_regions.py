@@ -1598,6 +1598,28 @@ def test_auxiliary_fragment_ignores_separable_outside_table_cell() -> None:
     assert all(sidebar not in cell.words for row in regions[0].rows for cell in row.cells)
 
 
+def test_auxiliary_fragment_skips_strictly_outside_table_row() -> None:
+    sidebar = _word("unrelated sidebar", 150.0, 185.0, 68.5)
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            sidebar,
+            *_auxiliary_data(79.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert "subordinate_auxiliary_continuation" in regions[0].rows[2].diagnostics
+    assert "ignored_outside_band_rows:1" in regions[0].diagnostics
+
+
 def test_projection_uses_table_cells_for_vertical_band() -> None:
     header_words = _auxiliary_table_header(10.0)
     continued = _word("continued", 65.0, 85.0, 61.0)
