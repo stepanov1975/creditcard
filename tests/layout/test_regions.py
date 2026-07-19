@@ -1103,6 +1103,37 @@ def test_foreign_detail_block_is_limited_to_four_rows() -> None:
     assert "stopped_at_structure_change" in regions[0].diagnostics
 
 
+def test_foreign_detail_block_accepts_fifth_identifier_and_separable_sidebar() -> None:
+    sidebar = _word("unrelated sidebar", 150.0, 185.0, 83.0)
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 30.0, 55.0, 83.0),
+            sidebar,
+            _word("special arrangement", 30.0, 55.0, 94.0),
+            _word("card 8614", 30.0, 55.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+            _word("Total", 30.0, 55.0, 136.0),
+            _word("41.00", 100.0, 125.0, 136.0),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 8
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:7])
+    assert "ignored_outside_table_band_cells:1" in regions[0].rows[4].diagnostics
+    assert all(sidebar not in cell.words for row in regions[0].rows for cell in row.cells)
+    assert "detail_continuation_rows:5" in regions[0].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_rejects_unprojected_nonspace_glyph() -> None:
     page = _page(
         (

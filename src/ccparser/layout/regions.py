@@ -733,6 +733,48 @@ def _projection_preserves_positioned_evidence(source: Row, projected: Row) -> bo
     return words_preserved and glyphs_preserved
 
 
+def _projection_preserves_table_band_evidence(
+    source: Row,
+    projected: Row,
+    header: Row,
+) -> int | None:
+    if _projection_preserves_positioned_evidence(source, projected):
+        return 0
+    inside_cells = tuple(
+        cell for cell in source.cells if header.bbox[0] <= _center_x(cell.bbox) <= header.bbox[2]
+    )
+    if not inside_cells or len(inside_cells) == len(source.cells):
+        return None
+    source_words = tuple(word for cell in inside_cells for word in cell.words)
+    projected_words = tuple(word for cell in projected.cells for word in cell.words)
+    source_glyphs = tuple(
+        glyph for cell in inside_cells for glyph in cell.glyphs if not glyph.char.isspace()
+    )
+    projected_glyphs = tuple(
+        glyph for cell in projected.cells for glyph in cell.glyphs if not glyph.char.isspace()
+    )
+    words_preserved = len(source_words) == len(projected_words) and all(
+        source_words.count(word) == projected_words.count(word) for word in source_words
+    )
+    glyphs_preserved = len(source_glyphs) == len(projected_glyphs) and all(
+        source_glyphs.count(glyph) == projected_glyphs.count(glyph) for glyph in source_glyphs
+    )
+    return len(source.cells) - len(inside_cells) if words_preserved and glyphs_preserved else None
+
+
+def _is_auxiliary_identifier_detail(row: Row) -> bool:
+    if len(row.cells) != 1:
+        return False
+    text = unicodedata.normalize("NFC", row.cells[0].text)
+    return (
+        any(char.isalpha() for char in text)
+        and any(char.isdigit() for char in text)
+        and not is_money_shaped(text)
+        and not is_date_shaped(text)
+        and not is_currency_shaped(text)
+    )
+
+
 def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
@@ -805,7 +847,12 @@ def _foreign_conversion_detail_block(
         ):
             return None
         projected = _project_row_to_header_bands(page_evidence, source, header)
-        if not projected.cells or not _projection_preserves_positioned_evidence(source, projected):
+        outside_table_band_count = _projection_preserves_table_band_evidence(
+            source,
+            projected,
+            header,
+        )
+        if not projected.cells or outside_table_band_count is None:
             return None
         alignment = _row_alignment(projected, schema)
         if _has_valid_billed_amount(projected, schema) and alignment >= _minimum_row_alignment(
@@ -823,8 +870,13 @@ def _foreign_conversion_detail_block(
             for cell in projected.cells
             if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
         )
+        allowed_fifth_identifier = (
+            has_distinct_currencies
+            and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS
+            and _is_auxiliary_identifier_detail(projected)
+        )
         if (
-            len(details) >= maximum_detail_rows
+            (len(details) >= maximum_detail_rows and not allowed_fifth_identifier)
             or billed_cells
             or any(is_date_shaped(cell.text) for cell in projected.cells)
             or _transaction_shape_count(projected) > 1
@@ -840,6 +892,11 @@ def _foreign_conversion_detail_block(
                             *projected.diagnostics,
                             "subordinate_detail_continuation",
                             "foreign_conversion_detail_block",
+                            *(
+                                (f"ignored_outside_table_band_cells:{outside_table_band_count}",)
+                                if outside_table_band_count
+                                else ()
+                            ),
                         )
                     )
                 )
