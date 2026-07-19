@@ -371,6 +371,39 @@ def _row_glyph_authoritative_signature(
     )
 
 
+def _cell_backed_row_signature(
+    row: Row,
+) -> tuple[tuple[tuple[str, str], ...], str, tuple[str, ...]]:
+    return _row_glyph_authoritative_signature(
+        row.model_copy(
+            update={
+                "words": tuple(word for cell in row.cells for word in cell.words),
+                "glyphs": tuple(glyph for cell in row.cells for glyph in cell.glyphs),
+            }
+        )
+    )
+
+
+def _has_lossless_overlay_signature(candidate: Row, reference: Row) -> bool:
+    candidate_row = _row_glyph_authoritative_signature(candidate)
+    reference_row = _row_glyph_authoritative_signature(reference)
+    if candidate_row == reference_row:
+        return True
+
+    candidate_cells = _cell_backed_row_signature(candidate)
+    reference_cells = _cell_backed_row_signature(reference)
+    empty_orphans = ("", ())
+    if (
+        candidate_cells != reference_cells
+        or candidate_row != candidate_cells
+        or candidate_cells[1:] != empty_orphans
+        or reference_cells[1:] != empty_orphans
+        or reference_row[1:] != empty_orphans
+    ):
+        return False
+    return reference_row[0] == tuple(sorted((*reference_cells[0], *candidate_cells[0])))
+
+
 def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -411,9 +444,7 @@ def _is_lossless_total_overlay_artifact(
             continue
         if _row_total_marker_signature(candidate) != _row_total_marker_signature(reference):
             continue
-        if _row_glyph_authoritative_signature(candidate) != _row_glyph_authoritative_signature(
-            reference
-        ):
+        if not _has_lossless_overlay_signature(candidate, reference):
             continue
         preceding = tuple(
             region

@@ -264,6 +264,52 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
+def test_vertically_overlapping_tiny_total_does_not_contaminate_reference_proof() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 30.0, 65.0, 80.0),
+            _word("03/02/2026", 70.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("₪30.00", 106.0, 108.0, 88.0, height=0.8),
+            _word("03/02/2026", 108.2, 110.5, 88.0, height=0.8),
+            _word("Total", 110.7, 112.5, 88.0, height=0.8),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.rejected_total_candidates == ()
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+def test_vertically_overlapping_tiny_total_with_different_amount_remains_fatal() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 30.0, 65.0, 80.0),
+            _word("03/02/2026", 70.0, 105.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("₪31.00", 106.0, 108.0, 88.0, height=0.8),
+            _word("03/02/2026", 108.2, 110.5, 88.0, height=0.8),
+            _word("Total", 110.7, 112.5, 88.0, height=0.8),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert result.diagnostics == ("ambiguous_total_value",)
+    assert len(result.rejected_total_candidates) == 1
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
 def test_tiny_total_with_one_different_word_remains_fatal() -> None:
     page = _page(
         1,
