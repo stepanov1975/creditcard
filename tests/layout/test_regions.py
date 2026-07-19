@@ -1620,6 +1620,29 @@ def test_auxiliary_fragment_skips_strictly_outside_table_row() -> None:
     assert "ignored_outside_band_rows:1" in regions[0].diagnostics
 
 
+def test_detect_table_regions_bridges_bounded_card_identifier_detail_block() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("donation notice", 30.0, 55.0, 61.0),
+            _word("מזהה כרטיס", 30.0, 55.0, 72.0),
+            _word("9313", 65.0, 75.0, 72.0),
+            *_auxiliary_data(83.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 5
+    details = regions[0].rows[2:4]
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in details)
+    assert all("bounded_card_identifier_detail_block" in row.diagnostics for row in details)
+    assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
 def test_projection_uses_table_cells_for_vertical_band() -> None:
     header_words = _auxiliary_table_header(10.0)
     continued = _word("continued", 65.0, 85.0, 61.0)

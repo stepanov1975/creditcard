@@ -64,6 +64,9 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "שער המרה",
     }
 )
+_CARD_IDENTIFIER_DETAIL_MARKERS = frozenset(
+    {"card id", "card identifier", "מזהה כרטיס"}
+)
 _POINT_COUNT_UNIT_MARKERS = frozenset({"point", "points", "נקודה", "נקודות"})
 _TRANSACTION_CONTEXT_MARKERS = frozenset(
     {"transaction", "transactions", "עסקה", "העסקה", "עסקאות", "העסקאות"}
@@ -76,6 +79,8 @@ MAX_AMBIGUOUS_LEADING_ROWS = 2
 MAX_AMBIGUOUS_LEADING_PROOF_LOOKAHEAD = 4
 MAX_OVERLAID_OCR_LOOKAHEAD_ROWS = 3
 MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS = 2
+CARD_IDENTIFIER_MIN_DIGITS = 4
+CARD_IDENTIFIER_MAX_DIGITS = 10
 MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
 MIN_ISSUER_CONVERSION_DETAIL_ROWS = 4
 MAX_ISSUER_CONVERSION_DETAIL_ROWS = 5
@@ -1255,6 +1260,108 @@ def _bounded_auxiliary_fragment(
     )
 
 
+def _has_canonical_card_identifier_detail(row: Row) -> bool:
+    normalized = _normalized_marker(" ".join(cell.text for cell in row.cells))
+    tokens = normalized.split()
+    compact = "".join(tokens)
+    has_marker = any(
+        any(
+            tokens[index : index + len(marker.split())] == marker.split()
+            for index in range(len(tokens))
+        )
+        or (
+            any("\u0590" <= char <= "\u05ff" for char in marker)
+            and marker.replace(" ", "") in compact
+        )
+        for marker in _CARD_IDENTIFIER_DETAIL_MARKERS
+    )
+    if not has_marker:
+        return False
+    identifiers = set(
+        re.findall(
+            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
+            " ".join(cell.text for cell in row.cells),
+        )
+    )
+    return len(identifiers) == 1
+
+
+def _bounded_card_identifier_detail_block(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+    previous: Row,
+) -> tuple[tuple[Row, Row], int] | None:
+    if (
+        start_index + 2 >= len(rows)
+        or not _has_valid_billed_amount(previous, schema)
+        or _row_alignment(previous, schema) < _minimum_row_alignment(schema)
+    ):
+        return None
+    sources = (rows[start_index], rows[start_index + 1])
+    following_source = rows[start_index + 2]
+    if (
+        any(not _row_intersects_horizontal_band(source, header.bbox) for source in sources)
+        or not _row_intersects_horizontal_band(following_source, header.bbox)
+        or any(_is_total_row(source) for source in (*sources, following_source))
+        or any(_literal_header_role_count(source) >= 2 for source in (*sources, following_source))
+        or not _detail_rows_are_adjacent(previous, sources[0])
+        or not _detail_rows_are_adjacent(sources[0], sources[1])
+        or not _detail_rows_are_adjacent(sources[1], following_source)
+    ):
+        return None
+    details = tuple(
+        _project_row_to_header_bands(page_evidence, source, header) for source in sources
+    )
+    excluded_counts = tuple(
+        _projection_preserves_table_band_evidence(source, detail, header, schema)
+        for source, detail in zip(sources, details, strict=True)
+    )
+    if (
+        any(not detail.cells for detail in details)
+        or any(count is None for count in excluded_counts)
+        or any(any(is_date_shaped(cell.text) for cell in detail.cells) for detail in details)
+        or _transaction_shape_count(details[0]) != 0
+        or _transaction_shape_count(details[1]) > 1
+        or any(_has_valid_billed_amount(detail, schema) for detail in details)
+        or any(_row_alignment(detail, schema) <= 0 for detail in details)
+        or not _has_canonical_card_identifier_detail(details[1])
+    ):
+        return None
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    if (
+        not following.cells
+        or not _has_valid_billed_amount(following, schema)
+        or _row_alignment(following, schema) < _minimum_row_alignment(schema)
+        or _transaction_shape_count(following) < 2
+    ):
+        return None
+    marked_details = tuple(
+        detail.model_copy(
+            update={
+                "diagnostics": tuple(
+                    dict.fromkeys(
+                        (
+                            *detail.diagnostics,
+                            "subordinate_detail_continuation",
+                            "bounded_card_identifier_detail_block",
+                            *(
+                                (f"ignored_outside_table_band_cells:{excluded_count}",)
+                                if excluded_count
+                                else ()
+                            ),
+                        )
+                    )
+                )
+            }
+        )
+        for detail, excluded_count in zip(details, excluded_counts, strict=True)
+    )
+    return (marked_details[0], marked_details[1]), start_index + 1
+
+
 def _bounded_hebrew_note_detail(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -1625,6 +1732,22 @@ def _detect_from_header(
             ignored_preamble_count += 1
             previous = projected
             continue
+        if detail_continuation_allowed:
+            card_identifier_block = _bounded_card_identifier_detail_block(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+                previous,
+            )
+            if card_identifier_block is not None:
+                card_details, consumed_through = card_identifier_block
+                accepted.extend(card_details)
+                detail_continuation_count += len(card_details)
+                detail_continuation_allowed = False
+                previous = card_details[-1]
+                continue
         if detail_continuation_allowed:
             detail_block = _foreign_conversion_detail_block(
                 page_evidence,

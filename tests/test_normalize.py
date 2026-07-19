@@ -2433,6 +2433,56 @@ def test_original_currency_without_original_amount_blocks_emission() -> None:
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
+def test_negative_billed_adjustment_may_omit_unprinted_original_amount() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Statement adjustment", 1, 30.0),
+                _cell("-2.00", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "-2.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].billed_amount == Decimal("-2.00")
+    assert result.transactions[0].original_amount is None
+    assert "missing_original_amount_cell" not in result.row_results[0].diagnostics
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_positive_billed_row_still_requires_printed_original_amount() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("2.00", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "2.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "missing_original_amount_cell" in result.row_results[0].diagnostics
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_refund_category_with_positive_billed_sign_is_authoritative_but_ambiguous() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),

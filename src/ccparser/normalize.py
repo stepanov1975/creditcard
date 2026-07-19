@@ -1177,15 +1177,19 @@ def _normalize_row(
         diagnostics.append("multiple_original_amount_columns")
     elif len(original_columns) == 1:
         original_cells = _cells_for_column(row, original_columns[0])
+        original_currency_columns = _role_columns(region, ColumnRole.ORIGINAL_CURRENCY)
         if len(original_cells) != 1:
-            diagnostics.append(
-                "missing_original_amount_cell"
-                if not original_cells
-                else "multiple_original_amount_cells"
+            negative_adjustment_without_original = (
+                not original_cells and billed.amount < 0 and not original_currency_columns
             )
+            if not negative_adjustment_without_original:
+                diagnostics.append(
+                    "missing_original_amount_cell"
+                    if not original_cells
+                    else "multiple_original_amount_cells"
+                )
         else:
             original_currency_hint = _proven_implicit_original_currency(region, currency_hint)
-            original_currency_columns = _role_columns(region, ColumnRole.ORIGINAL_CURRENCY)
             if len(original_currency_columns) > 1:
                 diagnostics.append("multiple_original_currency_columns")
             elif len(original_currency_columns) == 1:
