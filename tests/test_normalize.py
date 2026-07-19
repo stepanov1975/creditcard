@@ -667,6 +667,56 @@ def test_normalize_statement_merges_proven_multicell_subordinate_detail_rows() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_merges_consecutive_subordinate_detail_block() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+    details = tuple(
+        _row(_cell(first, 1, y), _cell(second, 2, y)).model_copy(
+            update={"diagnostics": ("subordinate_detail_continuation",)}
+        )
+        for y, first, second in (
+            (41.0, "converted at issuer rate", "conversion note"),
+            (52.0, "Fee", "discount applied"),
+            (63.0, "special", "arrangement"),
+        )
+    )
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Foreign shop", 1, 30.0),
+                _cell("$3.00", 2, 30.0),
+                _cell("₪11.00", 3, 30.0),
+            ),
+            *details,
+            _row(
+                _cell("02/02/2026", 0, 74.0),
+                _cell("Cafe", 1, 74.0),
+                _cell("₪20.00", 2, 74.0),
+                _cell("₪20.00", 3, 74.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "31.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "Foreign shop",
+        "Cafe",
+    )
+    assert all(
+        result.row_results[index].diagnostics == ("merged_subordinate_detail_continuation",)
+        for index in (1, 2, 3)
+    )
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_band() -> None:
     roles = (
         ColumnRole.DATE,

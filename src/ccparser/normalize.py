@@ -403,9 +403,10 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
         billed_column = _proven_billed_amount_column(region)
         if billed_column is None:
             return False
-        billed_cells = _cells_for_column(previous, billed_column)
-        if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
-            return False
+        if "subordinate_detail_continuation" not in previous.diagnostics:
+            billed_cells = _cells_for_column(previous, billed_column)
+            if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
+                return False
         if _cells_for_column(row, billed_column):
             return False
         typical_height = statistics.median(

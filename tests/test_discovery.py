@@ -1537,6 +1537,67 @@ def test_headerless_page_end_rows_join_a_compatible_next_page_table() -> None:
     assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
 
 
+def test_single_same_page_table_keeps_its_total_when_earlier_page_is_unproven() -> None:
+    first_page = _page(1, _table(130.0, "₪", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪12.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert discovery.groups[0].table_regions == (discovery.table_regions[1],)
+    assert "ambiguous_group_region_association" not in discovery.diagnostics
+    assert "unclaimed_table_region" in discovery.diagnostics
+    assert normalized.reconciliation.status is Status.UNRECONCILED
+    assert normalized.reconciliation.groups[0].difference == 0
+
+
+def test_single_same_page_table_ignores_earlier_different_currency_table() -> None:
+    first_page = _page(1, _table(130.0, "$", "10.00", "20.00"))
+    second_page = _page(
+        2,
+        (
+            *_table(10.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 70.0),
+            _word("₪12.00", 118.0, 155.0, 70.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert discovery.groups[0].table_regions == (discovery.table_regions[1],)
+    assert "ambiguous_table_currency" not in discovery.diagnostics
+    assert "unclaimed_table_region" in discovery.diagnostics
+
+
+def test_single_total_after_two_same_page_tables_remains_unassigned() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            *_table(90.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 150.0),
+            _word("₪12.00", 118.0, 155.0, 150.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.AMBIGUOUS
+    assert result.groups == ()
+    assert "ambiguous_group_region_association" in result.diagnostics
+
+
 def test_totals_after_multiple_same_currency_tables_remain_unassigned() -> None:
     page = _page(
         1,

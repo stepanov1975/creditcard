@@ -25,10 +25,15 @@ def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) ->
     )
 
 
-def _page(words: tuple[Word, ...], glyphs: tuple[Glyph, ...] = ()) -> PageEvidence:
+def _page(
+    words: tuple[Word, ...],
+    glyphs: tuple[Glyph, ...] = (),
+    *,
+    width: float = 130.0,
+) -> PageEvidence:
     return PageEvidence(
         page_number=1,
-        width=130.0,
+        width=width,
         height=180.0,
         glyphs=glyphs,
         words=words,
@@ -174,6 +179,30 @@ def _wide_financial_header(y: float) -> tuple[Word, ...]:
         _word("Original amount", 72.0, 82.0, y),
         _word("Description", 90.0, 100.0, y),
         _word("Date", 108.0, 120.0, y),
+    )
+
+
+def _foreign_table_header(y: float) -> tuple[Word, ...]:
+    return (
+        _word("Date", 0.0, 20.0, y),
+        _word("Description", 30.0, 55.0, y),
+        _word("Original amount", 65.0, 85.0, y),
+        _word("Billed amount", 100.0, 125.0, y),
+    )
+
+
+def _foreign_data(
+    y: float,
+    date: str,
+    description: str,
+    original_amount: str,
+    billed_amount: str,
+) -> tuple[Word, ...]:
+    return (
+        _word(date, 0.0, 20.0, y),
+        _word(description, 30.0, 55.0, y),
+        _word(original_amount, 65.0, 85.0, y),
+        _word(billed_amount, 100.0, 125.0, y),
     )
 
 
@@ -868,6 +897,159 @@ def test_detect_table_regions_retains_one_marked_multicell_detail_after_each_tra
     assert len(regions[0].rows) == 4
     assert "repeated_rows:2" in regions[0].diagnostics
     assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
+def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 65.0, 85.0, 72.0),
+            _word("special arrangement", 30.0, 55.0, 83.0),
+            *_foreign_data(94.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+            _word("Total", 30.0, 55.0, 114.0),
+            _word("41.00", 100.0, 125.0, 114.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 6
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:5])
+    assert "detail_continuation_rows:3" in regions[0].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_requires_distinct_transaction_currencies() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Local shop", "₪11.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 65.0, 85.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_requires_exact_subordinate_marker() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("discount", 30.0, 55.0, 72.0),
+            _word("special arrangement", 65.0, 85.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_is_limited_to_four_rows() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount", 30.0, 55.0, 83.0),
+            _word("special", 30.0, 55.0, 94.0),
+            _word("fifth detail", 30.0, 55.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_rejects_unprojected_nonspace_glyph() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 55.0, 61.0),
+            _word("conversion note", 65.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        glyphs=(_glyph("x", 160.0, 61.0),),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
+def test_exact_fee_marker_is_not_merged_into_foreign_merchant_description() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("Fee", 30.0, 55.0, 61.0),
+            _word("special arrangement", 30.0, 55.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 5
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:4])
+    assert "continuation_rows:1" not in regions[0].diagnostics
+    assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_uses_normalizer_gap_limit() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("Fee", 30.0, 55.0, 61.0),
+            _word("special arrangement", 30.0, 55.0, 87.0),
+            *_foreign_data(98.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
 
 
 def test_detail_continuations_do_not_dilute_main_row_column_profiles() -> None:

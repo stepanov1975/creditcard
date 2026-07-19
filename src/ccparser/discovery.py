@@ -839,14 +839,28 @@ def _associate_regions(
     )
     if not section:
         return (), ("total_without_table",)
-    if any(_table_currencies(region) != (total.currency,) for region in section):
-        return (), ("ambiguous_table_currency",)
+    section_currencies_match = all(
+        _table_currencies(region) == (total.currency,) for region in section
+    )
     if len(section) == 1:
+        if not section_currencies_match:
+            return (), ("ambiguous_table_currency",)
         return section, ()
-    if _proven_page_continuation(section, page_heights):
+    if section_currencies_match and _proven_page_continuation(section, page_heights):
         return section, ()
-    if sum(candidate.currency == total.currency for candidate in remaining_totals) > 1:
-        return (), ("ambiguous_group_region_association",)
+    same_page = tuple(region for region in section if region.page_number == total_row.page_number)
+    compatible_same_page_candidate = (
+        len(same_page) == 1
+        and same_page[0] is section[-1]
+        and _table_currencies(same_page[0]) == (total.currency,)
+    )
+    if (
+        compatible_same_page_candidate
+        and sum(candidate.currency == total.currency for candidate in remaining_totals) == 1
+    ):
+        return same_page, ()
+    if not section_currencies_match:
+        return (), ("ambiguous_table_currency",)
     return (), ("ambiguous_group_region_association",)
 
 

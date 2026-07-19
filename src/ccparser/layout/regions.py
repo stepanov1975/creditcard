@@ -25,7 +25,7 @@ from ccparser.layout.text import (
     logical_text_for_evidence,
     positioned_evidence_for_bbox,
 )
-from ccparser.money import is_currency_shaped, is_money_shaped
+from ccparser.money import currencies_in_text, is_currency_shaped, is_money_shaped
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -62,6 +62,7 @@ _POINT_COUNT_UNIT_MARKERS = frozenset({"point", "points", "נקודה", "נקו�
 _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
+MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
 
 type _PageRowKey = Row
 
@@ -444,6 +445,14 @@ def _structural_gap(previous: Row, current: Row, observed: Sequence[Row]) -> boo
     return gap > typical_height * 2.5
 
 
+def _detail_rows_are_adjacent(previous: Row, current: Row) -> bool:
+    typical_height = statistics.median(
+        _height(candidate.bbox) for candidate in (*previous.cells, *current.cells)
+    )
+    gap = max(0.0, current.bbox[1] - previous.bbox[3])
+    return gap <= typical_height * 1.5
+
+
 def _row_alignment(row: Row, schema: TableSchema) -> float:
     matched_columns: set[int] = set()
     for cell in row.cells:
@@ -722,6 +731,123 @@ def _is_points_count_ledger_row(row: Row) -> bool:
     )
 
 
+def _projection_preserves_positioned_evidence(source: Row, projected: Row) -> bool:
+    projected_words = tuple(word for cell in projected.cells for word in cell.words)
+    source_glyphs = tuple(glyph for glyph in source.glyphs if not glyph.char.isspace())
+    projected_glyphs = tuple(
+        glyph for cell in projected.cells for glyph in cell.glyphs if not glyph.char.isspace()
+    )
+    words_preserved = len(source.words) == len(projected_words) and all(
+        source.words.count(word) == projected_words.count(word) for word in source.words
+    )
+    glyphs_preserved = len(source_glyphs) == len(projected_glyphs) and all(
+        source_glyphs.count(glyph) == projected_glyphs.count(glyph) for glyph in source_glyphs
+    )
+    return words_preserved and glyphs_preserved
+
+
+def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
+    original_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    billed_column = proven_billed_amount_column(schema, (row,))
+    if len(original_columns) != 1 or billed_column is None:
+        return False
+    original_cells = tuple(
+        cell
+        for cell in row.cells
+        if original_columns[0].bbox[0] <= _center_x(cell.bbox) <= original_columns[0].bbox[2]
+    )
+    billed_cells = tuple(
+        cell
+        for cell in row.cells
+        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+    )
+    if (
+        len(original_cells) != 1
+        or len(billed_cells) != 1
+        or not is_money_shaped(original_cells[0].text)
+        or not is_money_shaped(billed_cells[0].text)
+    ):
+        return False
+    original_currencies = currencies_in_text(original_cells[0].text)
+    billed_currencies = currencies_in_text(billed_cells[0].text)
+    return (
+        len(original_currencies) == 1
+        and len(billed_currencies) == 1
+        and original_currencies != billed_currencies
+    )
+
+
+def _foreign_conversion_detail_block(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+    previous: Row,
+    observed: Sequence[Row],
+) -> tuple[tuple[Row, ...], int] | None:
+    if not _has_distinct_original_and_billed_currencies(previous, schema):
+        return None
+    billed_column = proven_billed_amount_column(schema, (previous,))
+    if billed_column is None:
+        return None
+    details: list[Row] = []
+    has_exact_marker = False
+    preceding = previous
+    for index in range(start_index, len(rows)):
+        source = rows[index]
+        if (
+            not _row_intersects_horizontal_band(source, header.bbox)
+            or _is_total_row(source)
+            or _literal_header_role_count(source) >= 2
+            or _structural_gap(preceding, source, (*observed, *details))
+            or not _detail_rows_are_adjacent(preceding, source)
+        ):
+            return None
+        projected = _project_row_to_header_bands(page_evidence, source, header)
+        if not projected.cells or not _projection_preserves_positioned_evidence(source, projected):
+            return None
+        alignment = _row_alignment(projected, schema)
+        if _has_valid_billed_amount(projected, schema) and alignment >= _minimum_row_alignment(
+            schema
+        ):
+            if details and has_exact_marker:
+                return tuple(details), index - 1
+            return None
+        billed_cells = tuple(
+            cell
+            for cell in projected.cells
+            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+        )
+        if (
+            len(details) >= MAX_FOREIGN_CONVERSION_DETAIL_ROWS
+            or billed_cells
+            or any(is_date_shaped(cell.text) for cell in projected.cells)
+            or _transaction_shape_count(projected) > 1
+            or alignment <= 0
+        ):
+            return None
+        has_exact_marker = has_exact_marker or _has_subordinate_detail_marker(projected)
+        projected = projected.model_copy(
+            update={
+                "diagnostics": tuple(
+                    dict.fromkeys(
+                        (
+                            *projected.diagnostics,
+                            "subordinate_detail_continuation",
+                            "foreign_conversion_detail_block",
+                        )
+                    )
+                )
+            }
+        )
+        details.append(projected)
+        preceding = projected
+    return None
+
+
 def _inherited_region_after_total(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -879,9 +1005,12 @@ def _detect_from_header(
     ignored_preamble_count = 0
     stop_reason: str | None = None
     stop_index = len(rows)
+    consumed_through = header_index
     previous = header
     detail_continuation_allowed = False
     for index, row in enumerate(rows[header_index + 1 :], start=header_index + 1):
+        if index <= consumed_through:
+            continue
         if not _row_intersects_horizontal_band(row, header.bbox):
             ignored_outside_band_count += 1
             continue
@@ -909,6 +1038,31 @@ def _detect_from_header(
             ignored_preamble_count += 1
             previous = projected
             continue
+        if detail_continuation_allowed:
+            detail_block = _foreign_conversion_detail_block(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+                previous,
+                (header, *accepted),
+            )
+            if detail_block is not None:
+                details, consumed_through = detail_block
+                accepted.extend(details)
+                detail_continuation_count += len(details)
+                detail_continuation_allowed = False
+                previous = details[-1]
+                continue
+        if (
+            detail_continuation_allowed
+            and len(projected.cells) == 1
+            and _has_subordinate_detail_marker(projected)
+        ):
+            stop_reason = "stopped_at_structure_change"
+            stop_index = index
+            break
         if _is_description_continuation(projected, previous, schema):
             accepted.append(projected)
             continuation_count += 1
