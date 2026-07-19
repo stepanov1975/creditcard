@@ -10,6 +10,7 @@ from typing import Protocol
 from ccparser.discovery import (
     DocumentClassification,
     StatementDiscovery,
+    StatementGroupDiscovery,
     discover_statement,
 )
 from ccparser.evidence import DocumentEvidence, Glyph, TesseractOcr, Word, extract_pdf
@@ -28,6 +29,7 @@ from ccparser.models import (
     PrintedTotalSummary,
     RowNormalizationSummary,
     StatementDiscoverySummary,
+    StatementGroupDiscoverySummary,
     StatementResult,
     Status,
     TableRegionSummary,
@@ -176,6 +178,29 @@ def _table_region_summary(region: TableRegion) -> TableRegionSummary:
     )
 
 
+def _printed_total_summary(group: StatementGroupDiscovery) -> PrintedTotalSummary:
+    total = group.printed_total
+    return PrintedTotalSummary(
+        group_id=group.group_id,
+        amount_text=total.amount_text,
+        currency=total.currency,
+        label_evidence=total.label_evidence,
+        value_evidence=total.value_evidence,
+        confidence=total.confidence,
+        diagnostics=total.diagnostics,
+    )
+
+
+def _group_summary(group: StatementGroupDiscovery) -> StatementGroupDiscoverySummary:
+    return StatementGroupDiscoverySummary(
+        group_id=group.group_id,
+        table_regions=tuple(_table_region_summary(region) for region in group.table_regions),
+        printed_total=_printed_total_summary(group),
+        confidence=group.confidence,
+        diagnostics=group.diagnostics,
+    )
+
+
 def _discovery_summary(discovery: StatementDiscovery) -> StatementDiscoverySummary:
     metadata_values = (
         discovery.issuer,
@@ -194,25 +219,13 @@ def _discovery_summary(discovery: StatementDiscovery) -> StatementDiscoverySumma
         for value in metadata_values
         if value is not None
     )
-    printed_totals = tuple(
-        PrintedTotalSummary(
-            group_id=group.group_id,
-            amount_text=group.printed_total.amount_text,
-            currency=group.printed_total.currency,
-            label_evidence=group.printed_total.label_evidence,
-            value_evidence=group.printed_total.value_evidence,
-            confidence=group.printed_total.confidence,
-            diagnostics=tuple(
-                dict.fromkeys((*group.diagnostics, *group.printed_total.diagnostics))
-            ),
-        )
-        for group in discovery.groups
-    )
+    groups = tuple(_group_summary(group) for group in discovery.groups)
     return StatementDiscoverySummary(
         classification=discovery.classification.value,
         metadata=metadata,
+        groups=groups,
         table_regions=tuple(_table_region_summary(region) for region in discovery.table_regions),
-        printed_totals=printed_totals,
+        printed_totals=tuple(group.printed_total for group in groups),
         confidence=discovery.confidence,
         reason_codes=discovery.reason_codes,
         diagnostics=discovery.diagnostics,

@@ -395,6 +395,128 @@ def test_parse_statement_preserves_structured_discovery_for_nonparsed_results(
     assert serialized_schema["sample_cells"][0]["words"][0]["source"] == "ocr"
 
 
+def _two_group_discovery(classification: DocumentClassification) -> StatementDiscovery:
+    base = _structured_discovery(DocumentClassification.STATEMENT)
+    first_region = base.table_regions[0]
+    second_cell = (
+        first_region.rows[0]
+        .cells[0]
+        .model_copy(
+            update={
+                "bbox": (50.0, 30.0, 90.0, 40.0),
+                "text": "20.00",
+                "diagnostics": ("second_candidate_cell",),
+            }
+        )
+    )
+    second_row = first_region.rows[0].model_copy(
+        update={
+            "bbox": second_cell.bbox,
+            "cells": (second_cell,),
+            "diagnostics": ("second_candidate_row",),
+        }
+    )
+    second_schema = first_region.table_schema.model_copy(
+        update={
+            "bbox": (50.0, 10.0, 90.0, 40.0),
+            "sample_cells": (second_cell,),
+            "diagnostics": ("second_schema",),
+        }
+    )
+    second_region = first_region.model_copy(
+        update={
+            "bbox": (50.0, 10.0, 90.0, 40.0),
+            "rows": (second_row,),
+            "table_schema": second_schema,
+            "diagnostics": ("second_region",),
+        }
+    )
+    first_total = base.groups[0].printed_total.model_copy(update={"diagnostics": ("first_total",)})
+    second_total = first_total.model_copy(
+        update={
+            "amount_text": "20.00",
+            "value_evidence": first_total.value_evidence.model_copy(update={"raw_text": "20.00"}),
+            "diagnostics": ("second_total",),
+        }
+    )
+    groups = (
+        StatementGroupDiscovery(
+            group_id="group-first",
+            table_regions=(first_region,),
+            printed_total=first_total,
+            confidence=0.71,
+            diagnostics=("first_group",),
+        ),
+        StatementGroupDiscovery(
+            group_id="group-second",
+            table_regions=(second_region,),
+            printed_total=second_total,
+            confidence=0.62,
+            diagnostics=("second_group",),
+        ),
+    )
+    return base.model_copy(
+        update={
+            "classification": classification,
+            "groups": groups,
+            "table_regions": (first_region, second_region),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("classification", "expected_status"),
+    (
+        (DocumentClassification.STATEMENT, Status.UNRECONCILED),
+        (DocumentClassification.AMBIGUOUS, Status.UNSUPPORTED),
+        (DocumentClassification.NOT_STATEMENT, Status.NOT_STATEMENT),
+    ),
+)
+def test_parse_statement_preserves_group_structure_and_table_association(
+    tmp_path: Path,
+    classification: DocumentClassification,
+    expected_status: Status,
+) -> None:
+    source = tmp_path / "two-groups.pdf"
+    source.write_bytes(b"two synthetic groups")
+    discovery = _two_group_discovery(classification)
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: _evidence(path.read_bytes()),
+        discoverer=lambda evidence: discovery,
+        normalizer=_normalizer(Status.UNRECONCILED),
+        ocr_provider=object(),
+    )
+
+    assert result.status is expected_status
+    assert result.discovery is not None
+    first, second = result.discovery.groups
+    assert first.group_id == "group-first"
+    assert first.table_regions[0].rows[0].cells[0].text == "10.00"
+    assert first.confidence == 0.71
+    assert first.diagnostics == ("first_group",)
+    assert first.printed_total.diagnostics == ("first_total",)
+    assert second.group_id == "group-second"
+    assert second.table_regions[0].rows[0].cells[0].text == "20.00"
+    assert second.table_regions[0].bbox == (50.0, 10.0, 90.0, 40.0)
+    assert second.confidence == 0.62
+    assert second.diagnostics == ("second_group",)
+    assert second.printed_total.diagnostics == ("second_total",)
+    assert result.discovery.printed_totals[0].diagnostics == ("first_total",)
+    assert result.discovery.printed_totals[1].diagnostics == ("second_total",)
+
+    payload = json.loads(canonical_json_bytes(result))
+    serialized_groups = payload["discovery"]["groups"]
+    assert serialized_groups[0]["table_regions"][0]["rows"][0]["cells"][0]["text"] == ("10.00")
+    assert serialized_groups[0]["confidence"] == 0.71
+    assert serialized_groups[0]["diagnostics"] == ["first_group"]
+    assert serialized_groups[0]["printed_total"]["diagnostics"] == ["first_total"]
+    assert serialized_groups[1]["table_regions"][0]["rows"][0]["cells"][0]["text"] == ("20.00")
+    assert serialized_groups[1]["diagnostics"] == ["second_group"]
+    assert serialized_groups[1]["printed_total"]["diagnostics"] == ["second_total"]
+
+
 def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transactions(
     tmp_path: Path,
 ) -> None:

@@ -298,6 +298,18 @@ class PrintedTotalSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
+class StatementGroupDiscoverySummary(BaseModel):
+    """A discovered statement group with exact table and total association."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    group_id: str
+    table_regions: tuple[TableRegionSummary, ...]
+    printed_total: PrintedTotalSummary
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
 class StatementDiscoverySummary(BaseModel):
     """Structured discovery boundary without importing discovery/layout models."""
 
@@ -305,6 +317,7 @@ class StatementDiscoverySummary(BaseModel):
 
     classification: str
     metadata: tuple[DiscoveryMetadataSummary, ...] = ()
+    groups: tuple[StatementGroupDiscoverySummary, ...] = ()
     table_regions: tuple[TableRegionSummary, ...] = ()
     printed_totals: tuple[PrintedTotalSummary, ...] = ()
     confidence: float = Field(ge=0, le=1)
