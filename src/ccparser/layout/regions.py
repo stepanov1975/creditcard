@@ -1041,18 +1041,29 @@ def _bounded_auxiliary_fragment(
         return None
     projected = _project_row_to_header_bands(page_evidence, source, header)
     if (
-        len(projected.cells) != 1
+        not 1 <= len(projected.cells) <= 2
         or not (source.words or any(not glyph.char.isspace() for glyph in source.glyphs))
         or not _projection_preserves_positioned_evidence(source, projected)
         or _transaction_shape_count(projected) != 0
         or _has_subordinate_detail_marker(projected)
     ):
         return None
-    cell_center = _center_x(projected.cells[0].bbox)
     matching_columns = tuple(
-        column for column in schema.columns if column.bbox[0] <= cell_center <= column.bbox[2]
+        tuple(
+            column
+            for column in schema.columns
+            if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        )
+        for cell in projected.cells
     )
-    if len(matching_columns) != 1 or matching_columns[0].role is not ColumnRole.UNKNOWN:
+    if (
+        any(len(columns) != 1 for columns in matching_columns)
+        or any(
+            columns[0].role not in {ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION}
+            for columns in matching_columns
+        )
+        or not any(columns[0].role is ColumnRole.UNKNOWN for columns in matching_columns)
+    ):
         return None
     following = _project_row_to_header_bands(page_evidence, following_source, header)
     if (

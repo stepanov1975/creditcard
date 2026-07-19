@@ -1434,6 +1434,27 @@ def test_detect_table_regions_bridges_one_lossless_auxiliary_fragment() -> None:
     assert "auxiliary_continuation_rows:1" in regions[0].diagnostics
 
 
+def test_detect_table_regions_bridges_split_lossless_auxiliary_fragment() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("fragment", 35.0, 50.0, 61.0),
+            _word("continued", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    assert len(regions[0].rows[2].cells) == 2
+    assert "subordinate_auxiliary_continuation" in regions[0].rows[2].diagnostics
+    assert "auxiliary_continuation_rows:1" in regions[0].diagnostics
+
+
 def test_auxiliary_fragment_requires_immediately_following_transaction() -> None:
     page = _page(
         (
