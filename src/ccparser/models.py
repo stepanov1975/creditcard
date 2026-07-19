@@ -6,8 +6,9 @@ import unicodedata
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
+from math import isfinite
 from pathlib import PurePosixPath
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import (
     BaseModel,
@@ -17,11 +18,30 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.functional_validators import AfterValidator
+
+
+def _finite_decimal(value: Decimal) -> Decimal:
+    if not value.is_finite():
+        raise ValueError("financial values must be finite")
+    return value
+
+
+def _finite_coordinate(value: float) -> float:
+    if not isfinite(value):
+        raise ValueError("coordinates must be finite")
+    return value
+
+
+type FiniteDecimal = Annotated[Decimal, AfterValidator(_finite_decimal)]
+type FiniteCoordinate = Annotated[float, AfterValidator(_finite_coordinate)]
+type FiniteBBox = tuple[FiniteCoordinate, FiniteCoordinate, FiniteCoordinate, FiniteCoordinate]
 
 
 def _decimal_string(value: Decimal) -> str:
     """Return a canonical plain-decimal representation for financial output."""
 
+    _finite_decimal(value)
     text = format(value, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
@@ -64,7 +84,7 @@ class EvidenceReference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int
-    bbox: tuple[float, float, float, float]
+    bbox: FiniteBBox
     raw_text: str
 
 
@@ -75,7 +95,7 @@ class Transaction(BaseModel):
 
     transaction_id: str
     kind: TransactionKind
-    billed_amount: Decimal
+    billed_amount: FiniteDecimal
     billing_currency: str
     reconciliation_group_ids: tuple[str, ...]
     ambiguities: tuple[str, ...] = ()
@@ -83,7 +103,7 @@ class Transaction(BaseModel):
     posting_date: date | None = None
     description: str | None = None
     category: TransactionCategory = TransactionCategory.UNKNOWN
-    original_amount: Decimal | None = None
+    original_amount: FiniteDecimal | None = None
     original_currency: str | None = None
     installment_current: int | None = Field(default=None, gt=0)
     installment_total: int | None = Field(default=None, gt=0)
@@ -124,9 +144,9 @@ class PrintedTotal(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: str
-    amount: Decimal
+    amount: FiniteDecimal
     currency: str
-    minor_unit: Decimal = Field(default=Decimal("0.01"), gt=0)
+    minor_unit: Annotated[FiniteDecimal, Field(gt=0)] = Decimal("0.01")
 
     @field_serializer("amount", "minor_unit")
     def serialize_money(self, value: Decimal) -> str:
@@ -140,9 +160,9 @@ class ReconciliationGroup(BaseModel):
 
     group_id: str
     currency: str
-    printed_total: Decimal
-    calculated_total: Decimal
-    difference: Decimal
+    printed_total: FiniteDecimal
+    calculated_total: FiniteDecimal
+    difference: FiniteDecimal
     transaction_ids: tuple[str, ...]
     status: Status
     diagnostics: tuple[str, ...] = ()
@@ -150,6 +170,74 @@ class ReconciliationGroup(BaseModel):
     @field_serializer("printed_total", "calculated_total", "difference")
     def serialize_money(self, value: Decimal) -> str:
         return _decimal_string(value)
+
+
+class DiscoveryMetadataSummary(BaseModel):
+    """A discovered metadata value and the exact evidence supporting it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    field_name: str
+    value: str
+    evidence: EvidenceReference
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class TableRegionSummary(BaseModel):
+    """A public, dependency-neutral summary of one inferred transaction table."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    header_evidence: tuple[EvidenceReference, ...]
+    column_roles: tuple[str, ...]
+    row_count: int = Field(ge=0)
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class PrintedTotalSummary(BaseModel):
+    """A discovered printed total with label and value provenance."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    group_id: str
+    amount_text: str
+    currency: str
+    label_evidence: EvidenceReference
+    value_evidence: EvidenceReference
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
+
+
+class StatementDiscoverySummary(BaseModel):
+    """Structured discovery boundary without importing discovery/layout models."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    classification: str
+    metadata: tuple[DiscoveryMetadataSummary, ...] = ()
+    table_regions: tuple[TableRegionSummary, ...] = ()
+    printed_totals: tuple[PrintedTotalSummary, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+    reason_codes: tuple[str, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+class RowNormalizationSummary(BaseModel):
+    """Every accepted, rejected, or merged normalization row and its evidence."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_number: int = Field(gt=0)
+    bbox: FiniteBBox
+    raw_text: str
+    evidence: tuple[EvidenceReference, ...]
+    transaction: Transaction | None = None
+    confidence: float = Field(ge=0, le=1)
+    diagnostics: tuple[str, ...] = ()
 
 
 class StatementResult(BaseModel):
@@ -164,6 +252,10 @@ class StatementResult(BaseModel):
     source_name: str | None = None
     source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     statement_id: str | None = None
+    discovery: StatementDiscoverySummary | None = None
+    row_results: tuple[RowNormalizationSummary, ...] = ()
+    normalization_confidence: float | None = Field(default=None, ge=0, le=1)
+    normalization_diagnostics: tuple[str, ...] = ()
 
     @field_validator("source_name")
     @classmethod

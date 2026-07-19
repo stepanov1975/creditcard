@@ -179,3 +179,66 @@ def test_existing_transaction_constructor_remains_valid_after_extension() -> Non
     assert transaction.category is TransactionCategory.UNKNOWN
     assert transaction.description is None
     assert transaction.evidence == ()
+
+
+@pytest.mark.parametrize("nonfinite", ("NaN", "Infinity", "-Infinity"))
+def test_every_financial_model_rejects_nonfinite_decimals(nonfinite: str) -> None:
+    from ccparser.models import (
+        PrintedTotal,
+        ReconciliationGroup,
+        Status,
+        Transaction,
+        TransactionKind,
+    )
+
+    value = Decimal(nonfinite)
+    transaction_arguments = {
+        "transaction_id": "transaction-0001",
+        "kind": TransactionKind.CHARGE,
+        "billed_amount": Decimal("1.00"),
+        "billing_currency": "ILS",
+        "reconciliation_group_ids": ("group-0001",),
+    }
+    group_arguments = {
+        "group_id": "group-0001",
+        "currency": "ILS",
+        "printed_total": Decimal("1.00"),
+        "calculated_total": Decimal("1.00"),
+        "difference": Decimal("0.00"),
+        "transaction_ids": ("transaction-0001",),
+        "status": Status.RECONCILED,
+    }
+
+    for field_name in ("billed_amount", "original_amount"):
+        arguments = dict(transaction_arguments)
+        arguments[field_name] = value
+        if field_name == "original_amount":
+            arguments["original_currency"] = "USD"
+        with pytest.raises(ValidationError, match="finite"):
+            Transaction(**arguments)
+    for field_name in ("amount", "minor_unit"):
+        arguments = {
+            "group_id": "group-0001",
+            "amount": Decimal("1.00"),
+            "currency": "ILS",
+        }
+        arguments[field_name] = value
+        with pytest.raises(ValidationError, match="finite"):
+            PrintedTotal(**arguments)
+    for field_name in ("printed_total", "calculated_total", "difference"):
+        arguments = dict(group_arguments)
+        arguments[field_name] = value
+        with pytest.raises(ValidationError, match="finite"):
+            ReconciliationGroup(**arguments)
+
+
+@pytest.mark.parametrize("coordinate", (float("nan"), float("inf"), float("-inf")))
+def test_public_evidence_rejects_nonfinite_coordinates(coordinate: float) -> None:
+    from ccparser.models import EvidenceReference
+
+    with pytest.raises(ValidationError, match="finite"):
+        EvidenceReference(
+            page_number=1,
+            bbox=(coordinate, 0.0, 1.0, 1.0),
+            raw_text="synthetic",
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+import traceback
 from base64 import b64decode
 from collections.abc import Callable
 from decimal import Decimal
@@ -10,11 +11,27 @@ from pathlib import Path
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 import pytest
 
-from ccparser.discovery import DocumentClassification, StatementDiscovery
+import ccparser.parser as parser_module
+from ccparser.discovery import (
+    DiscoveredField,
+    DiscoveredPrintedTotal,
+    DocumentClassification,
+    StatementDiscovery,
+    StatementGroupDiscovery,
+)
 from ccparser.evidence import DocumentEvidence, OcrError
 from ccparser.evidence.models import BBox, Word
-from ccparser.models import BatchResult, ReconciliationGroup, StatementResult, Status
-from ccparser.normalize import StatementNormalization
+from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
+from ccparser.models import (
+    BatchResult,
+    EvidenceReference,
+    ReconciliationGroup,
+    StatementResult,
+    Status,
+    Transaction,
+    TransactionKind,
+)
+from ccparser.normalize import RowNormalizationResult, StatementNormalization
 from ccparser.parser import (
     ParserInputError,
     ParserRuntimeError,
@@ -148,6 +165,9 @@ def test_parse_statement_maps_normalized_statement_and_strict_does_not_change_da
 
     assert ordinary == strict
     assert ordinary.status is normalized_status
+    assert ordinary.discovery is not None
+    assert ordinary.discovery.classification == DocumentClassification.STATEMENT.value
+    assert ordinary.normalization_confidence == 1.0
 
 
 def test_parse_statement_downgrades_inconsistent_reconciled_result(tmp_path: Path) -> None:
@@ -165,6 +185,246 @@ def test_parse_statement_downgrades_inconsistent_reconciled_result(tmp_path: Pat
 
     assert result.status is Status.UNRECONCILED
     assert "unresolved_row" in result.diagnostics
+
+
+def _structured_discovery(classification: DocumentClassification) -> StatementDiscovery:
+    header_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 20.0),
+        text="Amount",
+        confidence=0.9,
+        diagnostics=("header_diagnostic",),
+    )
+    row_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 40.0, 40.0),
+        text="10.00",
+        confidence=0.8,
+    )
+    header = Row(
+        page_number=1,
+        bbox=header_cell.bbox,
+        cells=(header_cell,),
+        confidence=0.9,
+    )
+    row = Row(
+        page_number=1,
+        bbox=row_cell.bbox,
+        cells=(row_cell,),
+        confidence=0.8,
+    )
+    column = ColumnSpec(
+        index=0,
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 40.0),
+        relative_x0=0.0,
+        relative_x1=1.0,
+        role=ColumnRole.AMOUNT,
+        source_cells=(header_cell,),
+        confidence=0.85,
+        diagnostics=("column_diagnostic",),
+    )
+    schema = TableSchema(
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 40.0),
+        columns=(column,),
+        header_cells=(header_cell,),
+        sample_cells=(row_cell,),
+        confidence=0.85,
+        diagnostics=("schema_diagnostic",),
+    )
+    region = TableRegion(
+        page_number=1,
+        bbox=(0.0, 10.0, 40.0, 40.0),
+        header=header,
+        rows=(row,),
+        table_schema=schema,
+        confidence=0.8,
+        diagnostics=("region_diagnostic",),
+    )
+    issuer_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(50.0, 5.0, 90.0, 15.0),
+        raw_text="Synthetic Issuer",
+    )
+    total_label = EvidenceReference(
+        page_number=1,
+        bbox=(0.0, 50.0, 40.0, 60.0),
+        raw_text="Total",
+    )
+    total_value = EvidenceReference(
+        page_number=1,
+        bbox=(50.0, 50.0, 90.0, 60.0),
+        raw_text="10.00",
+    )
+    printed_total = DiscoveredPrintedTotal(
+        amount_text="10.00",
+        currency="ILS",
+        label_evidence=total_label,
+        value_evidence=total_value,
+        confidence=0.9,
+        diagnostics=("total_diagnostic",),
+    )
+    groups = (
+        (
+            StatementGroupDiscovery(
+                group_id="group-0001",
+                table_regions=(region,),
+                printed_total=printed_total,
+                confidence=0.85,
+                diagnostics=("group_diagnostic",),
+            ),
+        )
+        if classification is DocumentClassification.STATEMENT
+        else ()
+    )
+    return StatementDiscovery(
+        classification=classification,
+        groups=groups,
+        table_regions=(region,),
+        issuer=DiscoveredField(
+            field_name="issuer",
+            value="Synthetic Issuer",
+            evidence=issuer_evidence,
+            confidence=0.95,
+            diagnostics=("metadata_diagnostic",),
+        ),
+        confidence=0.8,
+        reason_codes=("structured_reason",),
+        diagnostics=("discovery_diagnostic",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("classification", "expected_status"),
+    (
+        (DocumentClassification.AMBIGUOUS, Status.UNSUPPORTED),
+        (DocumentClassification.NOT_STATEMENT, Status.NOT_STATEMENT),
+    ),
+)
+def test_parse_statement_preserves_structured_discovery_for_nonparsed_results(
+    tmp_path: Path,
+    classification: DocumentClassification,
+    expected_status: Status,
+) -> None:
+    source = tmp_path / "document.pdf"
+    source.write_bytes(b"synthetic")
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: _evidence(path.read_bytes()),
+        discoverer=lambda evidence: _structured_discovery(classification),
+        ocr_provider=object(),
+    )
+
+    assert result.status is expected_status
+    assert result.discovery is not None
+    assert result.discovery.classification == classification.value
+    assert result.discovery.metadata[0].value == "Synthetic Issuer"
+    assert result.discovery.metadata[0].evidence.raw_text == "Synthetic Issuer"
+    assert result.discovery.table_regions[0].header_evidence[0].raw_text == "Amount"
+    assert result.discovery.table_regions[0].column_roles == ("amount",)
+    assert result.discovery.reason_codes == ("structured_reason",)
+
+
+def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transactions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "statement.pdf"
+    source.write_bytes(b"synthetic")
+    discovery = _structured_discovery(DocumentClassification.STATEMENT)
+    transaction = Transaction(
+        transaction_id="group-0001-p001-r0001",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("10.00"),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+    )
+    accepted_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(0.0, 30.0, 40.0, 40.0),
+        raw_text="accepted raw row",
+    )
+    rejected_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(0.0, 40.0, 40.0, 50.0),
+        raw_text="rejected raw row",
+    )
+    row_results = (
+        RowNormalizationResult(
+            page_number=1,
+            bbox=accepted_evidence.bbox,
+            raw_text="accepted raw row",
+            evidence=(accepted_evidence,),
+            transaction=transaction,
+            confidence=0.8,
+        ),
+        RowNormalizationResult(
+            page_number=1,
+            bbox=rejected_evidence.bbox,
+            raw_text="rejected raw row",
+            evidence=(rejected_evidence,),
+            confidence=0.4,
+            diagnostics=("unresolved_relevant_cell",),
+        ),
+        RowNormalizationResult(
+            page_number=1,
+            bbox=(0.0, 50.0, 40.0, 60.0),
+            raw_text="merged raw row",
+            evidence=(),
+            confidence=0.7,
+            diagnostics=("merged_description_continuation",),
+        ),
+    )
+    group = ReconciliationGroup(
+        group_id="group-0001",
+        currency="ILS",
+        printed_total=Decimal("10.00"),
+        calculated_total=Decimal("0.00"),
+        difference=Decimal("-10.00"),
+        transaction_ids=(),
+        status=Status.UNRECONCILED,
+        diagnostics=("transaction_filtered",),
+    )
+    normalization = StatementNormalization(
+        discovery=discovery,
+        transactions=(transaction,),
+        printed_totals=(),
+        row_results=row_results,
+        reconciliation=StatementResult(
+            status=Status.UNRECONCILED,
+            transactions=(),
+            groups=(group,),
+            diagnostics=("reconciliation_diagnostic",),
+        ),
+        confidence=0.65,
+        diagnostics=("rows_not_emitted:1",),
+    )
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: _evidence(path.read_bytes()),
+        discoverer=lambda evidence: discovery,
+        normalizer=lambda value: normalization,
+        ocr_provider=object(),
+    )
+    payload = result.model_dump(mode="json")
+
+    assert result.status is Status.UNRECONCILED
+    assert result.transactions == (transaction,)
+    assert result.groups == (group,)
+    assert tuple(row.raw_text for row in result.row_results) == (
+        "accepted raw row",
+        "rejected raw row",
+        "merged raw row",
+    )
+    assert result.row_results[1].diagnostics == ("unresolved_relevant_cell",)
+    assert result.normalization_confidence == 0.65
+    assert result.normalization_diagnostics == ("rows_not_emitted:1",)
+    assert result.discovery is not None
+    assert result.discovery.printed_totals[0].label_evidence.raw_text == "Total"
+    assert result.discovery.printed_totals[0].value_evidence.raw_text == "10.00"
+    assert payload["row_results"][1]["evidence"][0]["raw_text"] == "rejected raw row"
 
 
 @pytest.mark.parametrize("missing_kind", ("missing", "directory"))
@@ -196,6 +456,8 @@ def test_parse_statement_wraps_ocr_and_processing_failures_without_detail(
         parse_statement(source, extractor=failing_extractor, ocr_provider=object())
 
     assert "private detail" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert "private detail" not in "".join(traceback.format_exception(caught.value))
 
 
 class _RecordingOcr:
@@ -419,8 +681,235 @@ def test_parse_directory_does_not_write_outputs_when_one_input_fails(tmp_path: P
             raise ParserRuntimeError("generic processing failure")
         return StatementResult(status=Status.RECONCILED, transactions=(), groups=())
 
-    with pytest.raises(ParserRuntimeError):
+    with pytest.raises(ParserRuntimeError) as caught:
         parse_directory(input_dir, output_dir, jobs=2, statement_parser=parser)
 
+    assert caught.value.__cause__ is None
+    assert "generic processing failure" not in "".join(traceback.format_exception(caught.value))
     assert not (output_dir / "results.json").exists()
     assert not (output_dir / "transactions.csv").exists()
+
+
+def test_parse_directory_walk_error_is_typed_input_failure_without_empty_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    def failing_walk(
+        top: Path,
+        *,
+        followlinks: bool,
+        onerror: Callable[[OSError], object] | None = None,
+    ) -> tuple[object, ...]:
+        del top, followlinks
+        assert onerror is not None
+        onerror(PermissionError("private unreadable directory detail"))
+        return ()
+
+    monkeypatch.setattr(parser_module.os, "walk", failing_walk)
+
+    with pytest.raises(ParserInputError, match="cannot be inspected") as caught:
+        parse_directory(input_dir, output_dir)
+
+    assert caught.value.__cause__ is None
+    assert not output_dir.exists()
+
+
+def test_parse_directory_path_inspection_error_is_typed_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    original_exists = Path.exists
+
+    def failing_exists(path: Path) -> bool:
+        if path == input_dir:
+            raise OSError("private path inspection detail")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", failing_exists)
+
+    with pytest.raises(ParserInputError, match="cannot be inspected") as caught:
+        parse_directory(input_dir, tmp_path / "output")
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "private path inspection" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("output_location", "cache_location"),
+    (
+        ("input", "cache-disjoint"),
+        ("parent", "cache-disjoint"),
+        ("output-disjoint", "input"),
+        ("output-disjoint", "parent"),
+        ("shared", "shared"),
+        ("shared", "shared/nested"),
+        ("shared/nested", "shared"),
+    ),
+)
+def test_parse_directory_rejects_unsafe_input_output_cache_topology(
+    tmp_path: Path,
+    output_location: str,
+    cache_location: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"synthetic")
+    output_dir = (
+        input_dir
+        if output_location == "input"
+        else tmp_path
+        if output_location == "parent"
+        else tmp_path / output_location
+    )
+    cache_dir = (
+        input_dir
+        if cache_location == "input"
+        else tmp_path
+        if cache_location == "parent"
+        else tmp_path / cache_location
+    )
+
+    with pytest.raises(ParserInputError, match="topology") as caught:
+        parse_directory(
+            input_dir,
+            output_dir,
+            cache_dir=cache_dir,
+            statement_parser=_directory_parser([]),
+        )
+
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize("placement", ("nested", "disjoint"))
+def test_parse_directory_allows_and_prunes_only_safe_output_cache_trees(
+    tmp_path: Path,
+    placement: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    if placement == "nested":
+        output_dir = input_dir / "output"
+        cache_dir = input_dir / "cache"
+    else:
+        output_dir = tmp_path / "output"
+        cache_dir = tmp_path / "cache"
+    output_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True)
+    (output_dir / "ignored.pdf").write_bytes(b"ignored output")
+    (cache_dir / "ignored.pdf").write_bytes(b"ignored cache")
+    calls: list[str] = []
+
+    result = parse_directory(
+        input_dir,
+        output_dir,
+        cache_dir=cache_dir,
+        statement_parser=_directory_parser(calls),
+    )
+
+    assert result.status is Status.RECONCILED
+    assert calls == ["statement.pdf"]
+
+
+def test_parse_directory_publishes_with_one_pair_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    output_dir = tmp_path / "output"
+    published: list[tuple[Path, BatchResult]] = []
+    monkeypatch.setattr(
+        parser_module,
+        "write_batch_outputs",
+        lambda path, batch: published.append((Path(path), batch)),
+    )
+
+    result = parse_directory(
+        input_dir,
+        output_dir,
+        statement_parser=_directory_parser([]),
+    )
+
+    assert published == [(output_dir, result)]
+
+
+@pytest.mark.parametrize("failure_stage", ("creation", "execution"))
+def test_parse_directory_wraps_executor_failures_without_private_causes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "a.pdf").write_bytes(b"a")
+    (input_dir / "b.pdf").write_bytes(b"b")
+
+    class FailingExecutor:
+        def __init__(self, max_workers: int) -> None:
+            del max_workers
+            if failure_stage == "creation":
+                raise RuntimeError("private executor creation detail")
+
+        def __enter__(self) -> FailingExecutor:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def map(self, function: object, values: object) -> tuple[object, ...]:
+            del function, values
+            raise RuntimeError("private executor execution detail")
+
+    monkeypatch.setattr(parser_module, "ThreadPoolExecutor", FailingExecutor)
+
+    with pytest.raises(ParserRuntimeError, match="directory statement processing failed") as caught:
+        parse_directory(
+            input_dir,
+            tmp_path / "output",
+            jobs=2,
+            statement_parser=_directory_parser([]),
+        )
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "private executor" not in rendered
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        OSError("private output OSError"),
+        ValueError("private output ValueError"),
+        TypeError("private output TypeError"),
+        UnicodeError("private output UnicodeError"),
+        RuntimeError("private output RuntimeError"),
+    ),
+)
+def test_parse_directory_wraps_all_output_failures_without_private_causes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    monkeypatch.setattr(
+        parser_module,
+        "write_batch_outputs",
+        lambda output, batch: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(ParserRuntimeError, match="output writing failed") as caught:
+        parse_directory(input_dir, tmp_path / "output")
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "private output" not in rendered

@@ -300,9 +300,11 @@ def test_cli_sanitizes_control_characters_in_relative_source_names(
     assert "\nstatus-injection.pdf" not in result.output
 
 
-def test_parse_cli_rejects_non_positive_jobs_for_single_file(
+@pytest.mark.parametrize("jobs", ("0", "1.5", "workers"))
+def test_parse_cli_maps_malformed_or_non_positive_jobs_to_exit_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    jobs: str,
 ) -> None:
     source = tmp_path / "synthetic.pdf"
     source.write_bytes(b"synthetic")
@@ -324,10 +326,38 @@ def test_parse_cli_rejects_non_positive_jobs_for_single_file(
             "--output-dir",
             str(tmp_path / "output"),
             "--jobs",
-            "0",
+            jobs,
         ],
     )
 
     assert result.exit_code == 1
     assert "input_or_runtime_error" in result.output
     assert called is False
+
+
+def test_single_file_cli_publishes_with_one_pair_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "synthetic.pdf"
+    source.write_bytes(b"synthetic")
+    output_dir = tmp_path / "output"
+    published: list[tuple[Path, BatchResult]] = []
+    monkeypatch.setattr(
+        cli_module, "parse_statement", lambda *args, **kwargs: _statement(Status.RECONCILED)
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "write_batch_outputs",
+        lambda path, batch: published.append((Path(path), batch)),
+    )
+
+    result = runner.invoke(
+        app,
+        ["parse", str(source), "--output-dir", str(output_dir)],
+    )
+
+    assert result.exit_code == 0
+    assert len(published) == 1
+    assert published[0][0] == output_dir
+    assert published[0][1].status is Status.RECONCILED

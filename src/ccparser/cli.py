@@ -13,7 +13,7 @@ import typer
 from ccparser.audit import AuditReport, audit_directory
 from ccparser.evidence import TesseractOcr, extract_pdf
 from ccparser.models import BatchResult, StatementResult, Status
-from ccparser.output import write_csv_atomic, write_json_atomic
+from ccparser.output import write_batch_outputs
 from ccparser.parser import (
     ParserInputError,
     default_cache_directory,
@@ -41,8 +41,19 @@ def _batch_for_statement(statement: StatementResult) -> BatchResult:
 
 
 def _write_single_output(output_dir: Path, batch: BatchResult) -> None:
-    write_json_atomic(output_dir / "results.json", batch)
-    write_csv_atomic(output_dir / "transactions.csv", batch)
+    write_batch_outputs(output_dir, batch)
+
+
+def _validated_jobs(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        jobs = int(value)
+    except ValueError:
+        raise ParserInputError("jobs must be a positive integer") from None
+    if jobs <= 0:
+        raise ParserInputError("jobs must be a positive integer")
+    return jobs
 
 
 def _print_batch(batch: BatchResult, fallback_name: str) -> None:
@@ -71,20 +82,19 @@ def parse_command(
     input_path: Annotated[Path, typer.Argument(metavar="INPUT")],
     output_dir: Annotated[Path, typer.Option("--output-dir", metavar="DIR")],
     strict: Annotated[bool, typer.Option("--strict")] = False,
-    jobs: Annotated[int | None, typer.Option("--jobs", metavar="N")] = None,
+    jobs: Annotated[str | None, typer.Option("--jobs", metavar="N")] = None,
     cache_dir: Annotated[Path | None, typer.Option("--cache-dir", metavar="DIR")] = None,
 ) -> None:
     """Parse one PDF or a directory and write canonical JSON and CSV."""
 
     try:
-        if jobs is not None and jobs <= 0:
-            raise ParserInputError("jobs must be a positive integer")
+        validated_jobs = _validated_jobs(jobs)
         if input_path.is_dir():
             batch = parse_directory(
                 input_path,
                 output_dir,
                 strict,
-                jobs,
+                validated_jobs,
                 cache_dir=cache_dir,
             )
         else:

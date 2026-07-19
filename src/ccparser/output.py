@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import os
 import tempfile
 import unicodedata
@@ -46,6 +47,8 @@ CSV_COLUMNS = (
 
 
 def _normalized_json(value: object) -> JsonValue:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("JSON numeric values must be finite")
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
@@ -81,6 +84,8 @@ def canonical_json_bytes(result: BaseModel) -> bytes:
 def _decimal_string(value: Decimal | None) -> str:
     if value is None:
         return ""
+    if not value.is_finite():
+        raise ValueError("financial values must be finite")
     text = format(value, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
@@ -96,6 +101,8 @@ def _codes(*groups: Iterable[str]) -> str:
 
 
 def _coordinate(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError("coordinates must be finite")
     return format(value, ".15g")
 
 
@@ -252,10 +259,37 @@ def write_csv_atomic(path: str | Path, batch: BatchResult) -> None:
     _write_atomic(path, transactions_csv_bytes(batch))
 
 
+def _restore_output(path: Path, previous: bytes | None) -> None:
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        _write_atomic(path, previous)
+
+
+def write_batch_outputs(output_dir: str | Path, batch: BatchResult) -> None:
+    """Pre-render and publish the JSON/CSV pair with exact rollback on failure."""
+
+    json_content = canonical_json_bytes(batch)
+    csv_content = transactions_csv_bytes(batch)
+    directory = Path(output_dir)
+    json_path = directory / "results.json"
+    csv_path = directory / "transactions.csv"
+    previous_json = json_path.read_bytes() if json_path.exists() else None
+    previous_csv = csv_path.read_bytes() if csv_path.exists() else None
+    try:
+        _write_atomic(json_path, json_content)
+        _write_atomic(csv_path, csv_content)
+    except Exception:
+        _restore_output(json_path, previous_json)
+        _restore_output(csv_path, previous_csv)
+        raise
+
+
 __all__ = [
     "CSV_COLUMNS",
     "canonical_json_bytes",
     "transactions_csv_bytes",
+    "write_batch_outputs",
     "write_csv_atomic",
     "write_json_atomic",
 ]

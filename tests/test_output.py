@@ -25,6 +25,7 @@ from ccparser.output import (
     CSV_COLUMNS,
     canonical_json_bytes,
     transactions_csv_bytes,
+    write_batch_outputs,
     write_csv_atomic,
     write_json_atomic,
 )
@@ -186,30 +187,141 @@ def test_atomic_writers_repeat_identically_and_do_not_replace_on_failure(
 
 
 def test_canonical_json_rejects_non_finite_coordinates() -> None:
+    evidence = EvidenceReference.model_construct(
+        page_number=1,
+        bbox=(float("nan"), 0.0, 1.0, 1.0),
+        raw_text="synthetic",
+    )
     transaction = Transaction(
         transaction_id="transaction-0001",
         kind=TransactionKind.CHARGE,
         billed_amount=Decimal("1.00"),
         billing_currency="ILS",
         reconciliation_group_ids=("group-0001",),
-        evidence=(
-            EvidenceReference(
-                page_number=1,
-                bbox=(float("nan"), 0.0, 1.0, 1.0),
-                raw_text="synthetic",
-            ),
-        ),
+        evidence=(evidence,),
     )
-    batch = BatchResult(
+    statement = StatementResult.model_construct(
         status=Status.UNRECONCILED,
-        statements=(
-            StatementResult(
-                status=Status.UNRECONCILED,
-                transactions=(transaction,),
-                groups=(),
-            ),
-        ),
+        transactions=(transaction,),
+        groups=(),
+        diagnostics=(),
+    )
+    batch = BatchResult.model_construct(
+        status=Status.UNRECONCILED,
+        statements=(statement,),
+        diagnostics=(),
     )
 
-    with pytest.raises(ValueError, match="range"):
+    with pytest.raises(ValueError, match="finite"):
         canonical_json_bytes(batch)
+    with pytest.raises(ValueError, match="finite"):
+        transactions_csv_bytes(batch)
+
+
+@pytest.mark.parametrize("nonfinite", ("NaN", "Infinity", "-Infinity"))
+def test_json_and_csv_defensively_reject_constructed_nonfinite_money(nonfinite: str) -> None:
+    transaction = Transaction.model_construct(
+        transaction_id="transaction-0001",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal(nonfinite),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+    )
+    statement = StatementResult.model_construct(
+        status=Status.UNRECONCILED,
+        transactions=(transaction,),
+        groups=(),
+        diagnostics=(),
+    )
+    batch = BatchResult.model_construct(
+        status=Status.UNRECONCILED,
+        statements=(statement,),
+        diagnostics=(),
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        canonical_json_bytes(batch)
+    with pytest.raises(ValueError, match="finite"):
+        transactions_csv_bytes(batch)
+
+
+@pytest.mark.parametrize("has_existing_pair", (False, True))
+def test_batch_pair_writer_rolls_back_second_publish_exactly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_existing_pair: bool,
+) -> None:
+    output_dir = tmp_path / "output"
+    json_path = output_dir / "results.json"
+    csv_path = output_dir / "transactions.csv"
+    if has_existing_pair:
+        output_dir.mkdir()
+        json_path.write_bytes(b"old json bytes\n")
+        csv_path.write_bytes(b"old csv bytes\r\n")
+    old_json = json_path.read_bytes() if has_existing_pair else None
+    old_csv = csv_path.read_bytes() if has_existing_pair else None
+    original_replace = output_module.os.replace
+    failed = False
+
+    def fail_first_csv_publish(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if Path(destination).name == "transactions.csv" and not failed:
+            failed = True
+            raise OSError("private second publish detail")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(output_module.os, "replace", fail_first_csv_publish)
+
+    with pytest.raises(OSError, match="second publish"):
+        write_batch_outputs(output_dir, _batch())
+
+    assert (json_path.read_bytes() if json_path.exists() else None) == old_json
+    assert (csv_path.read_bytes() if csv_path.exists() else None) == old_csv
+    assert not tuple(output_dir.glob(".*.tmp"))
+
+
+def test_batch_pair_writer_prerenders_both_before_output_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+
+    def fail_csv_render(batch: BatchResult) -> bytes:
+        del batch
+        raise TypeError("private serialization detail")
+
+    monkeypatch.setattr(output_module, "transactions_csv_bytes", fail_csv_render)
+
+    with pytest.raises(TypeError, match="serialization"):
+        write_batch_outputs(output_dir, _batch())
+
+    assert not output_dir.exists()
+
+
+def test_batch_pair_writer_rolls_back_fsync_failure_after_second_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    json_path = output_dir / "results.json"
+    csv_path = output_dir / "transactions.csv"
+    json_path.write_bytes(b"old json\n")
+    csv_path.write_bytes(b"old csv\r\n")
+    old_pair = (json_path.read_bytes(), csv_path.read_bytes())
+    original_fsync = output_module.os.fsync
+    calls = 0
+
+    def fail_second_directory_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise OSError("private second fsync detail")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(output_module.os, "fsync", fail_second_directory_fsync)
+
+    with pytest.raises(OSError, match="second fsync"):
+        write_batch_outputs(output_dir, _batch())
+
+    assert (json_path.read_bytes(), csv_path.read_bytes()) == old_pair
