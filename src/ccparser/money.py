@@ -33,8 +33,10 @@ _CURRENCY_ALIASES = {
     "USD": "USD",
     "€": "EUR",
     "EUR": "EUR",
+    "EU": "EUR",
     "£": "GBP",
     "GBP": "GBP",
+    "GB": "GBP",
     "JPY": "JPY",
     "CHF": "CHF",
     "AUD": "AUD",
@@ -43,7 +45,8 @@ _CURRENCY_ALIASES = {
 # Some embedded Hebrew fonts expose the shekel glyph as ``{``. Accept that
 # artifact only where the surrounding text proves a monetary use.
 _CURRENCY_PATTERN = re.compile(
-    r"(?<![A-Z])(?:ILS|NIS|USD|EUR|GBP|JPY|CHF|AUD|CAD)(?![A-Z])|[₪$€£]|ש[\s\"״']*ח"
+    r"(?<![A-Z])(?:ILS|NIS|USD|EUR|EU|GBP|GB|JPY|CHF|AUD|CAD)(?![A-Z])"
+    r"|[₪$€£]|ש[\s\"״']*ח"
     r"|ב\s*-\s*\{|\{(?=\s*[+-]?\d)",
     re.IGNORECASE,
 )

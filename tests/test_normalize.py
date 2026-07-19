@@ -181,6 +181,8 @@ def _discovery(
         ("100.00 credit", "USD", Decimal("-100.00"), "USD"),
         ("100.00 זיכוי", "ILS", Decimal("-100.00"), "ILS"),
         ("10.00 ש״ח", None, Decimal("10.00"), "ILS"),
+        ("EU19.98", None, Decimal("19.98"), "EUR"),
+        ("GB47.94", None, Decimal("47.94"), "GBP"),
         ("{10.00", None, Decimal("10.00"), "ILS"),
     ),
 )
