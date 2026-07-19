@@ -249,6 +249,31 @@ def _text_from_words(words: Sequence[Word]) -> str:
     return _normalized(" ".join(rendered_lines))
 
 
+def _character_signature(text: str) -> tuple[str, ...]:
+    return tuple(sorted(char for char in _normalized(text) if not char.isspace()))
+
+
+def canonical_words_for_layout(page_evidence: PageEvidence) -> tuple[Word, ...]:
+    """Canonicalize positioned RTL digital words only from lossless glyph geometry."""
+
+    canonical: list[Word] = []
+    for word in page_evidence.words:
+        if word.source != "digital" or _strong_direction(word.text) != "rtl":
+            canonical.append(word)
+            continue
+        glyphs = _positioned_glyph_groups(page_evidence.glyphs, word.bbox)
+        glyph_text = _text_from_glyphs(glyphs) if glyphs else ""
+        if (
+            glyph_text
+            and _strong_direction(glyph_text) == "rtl"
+            and _character_signature(glyph_text) == _character_signature(word.text)
+        ):
+            canonical.append(word.model_copy(update={"text": glyph_text}))
+        else:
+            canonical.append(word)
+    return tuple(canonical)
+
+
 def positioned_evidence_for_bbox(
     page_evidence: PageEvidence, bbox: BBox
 ) -> tuple[tuple[Glyph, ...], tuple[Word, ...]]:

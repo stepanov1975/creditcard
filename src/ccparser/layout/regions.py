@@ -21,6 +21,7 @@ from ccparser.layout.columns import (
 from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.rows import cluster_rows
 from ccparser.layout.text import (
+    canonical_words_for_layout,
     logical_text_for_bbox,
     logical_text_for_evidence,
     positioned_evidence_for_bbox,
@@ -1284,16 +1285,19 @@ def _detect_from_header(
 def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
     """Return every page row with glyph-corrected logical cell text and provenance."""
 
-    geometric_rows = cluster_rows(page_evidence.words, page_evidence.page_number)
+    logical_page = page_evidence.model_copy(
+        update={"words": canonical_words_for_layout(page_evidence)}
+    )
+    geometric_rows = cluster_rows(logical_page.words, logical_page.page_number)
     logical_rows: list[Row] = []
     for row in geometric_rows:
         logical_cells = []
         for cell in row.cells:
-            glyphs, words = positioned_evidence_for_bbox(page_evidence, cell.bbox)
+            glyphs, words = positioned_evidence_for_bbox(logical_page, cell.bbox)
             logical_cells.append(
                 cell.model_copy(
                     update={
-                        "text": logical_text_for_bbox(page_evidence, cell.bbox) or cell.text,
+                        "text": logical_text_for_bbox(logical_page, cell.bbox) or cell.text,
                         "glyphs": glyphs,
                         "words": words,
                     }
@@ -1303,8 +1307,8 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
             sorted(
                 (
                     glyph
-                    for glyph in page_evidence.glyphs
-                    if 0.0 <= _center_x(glyph.bbox) <= page_evidence.width
+                    for glyph in logical_page.glyphs
+                    if 0.0 <= _center_x(glyph.bbox) <= logical_page.width
                     and row.bbox[1] <= _center_y(glyph.bbox) <= row.bbox[3]
                 ),
                 key=lambda glyph: (
@@ -1317,7 +1321,7 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
                 ),
             )
         )
-        _, row_words = positioned_evidence_for_bbox(page_evidence, row.bbox)
+        _, row_words = positioned_evidence_for_bbox(logical_page, row.bbox)
         logical_rows.append(
             row.model_copy(
                 update={

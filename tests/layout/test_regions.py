@@ -154,6 +154,31 @@ def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_ban
     assert rows[1].glyphs == (other_band,)
 
 
+def test_logical_rows_canonicalizes_visual_order_rtl_word_from_lossless_glyphs() -> None:
+    rows = logical_rows(
+        _page(
+            (_word("תיביר", 60.0, 82.0, 20.0),),
+            _rtl_glyphs("ריבית", 80.0, 20.0),
+        )
+    )
+
+    assert rows[0].cells[0].text == "ריבית"
+    assert tuple(word.text for word in rows[0].cells[0].words) == ("ריבית",)
+    assert tuple(word.text for word in rows[0].words) == ("ריבית",)
+
+
+def test_logical_rows_does_not_rewrite_rtl_word_from_non_lossless_glyphs() -> None:
+    rows = logical_rows(
+        _page(
+            (_word("תיביר", 60.0, 82.0, 20.0),),
+            _rtl_glyphs("ריביו", 80.0, 20.0),
+        )
+    )
+
+    assert tuple(word.text for word in rows[0].cells[0].words) == ("תיביר",)
+    assert tuple(word.text for word in rows[0].words) == ("תיביר",)
+
+
 def _header(y: float) -> tuple[Word, ...]:
     return (
         _word("Date", 0.0, 22.0, y),
