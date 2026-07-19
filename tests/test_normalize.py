@@ -1107,6 +1107,26 @@ def test_normalize_statement_extracts_one_context_matched_short_date_token_from_
     assert transaction.evidence[0].raw_text == "17 01/02/26"
 
 
+def test_normalize_statement_extracts_unique_full_date_at_alphabetic_cell_boundary() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("MERCHANT01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.ambiguities == ()
+    assert transaction.evidence[0].raw_text == "MERCHANT01/02/2026"
+
+
 def test_normalize_statement_rejects_compound_short_and_full_date_tokens() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),

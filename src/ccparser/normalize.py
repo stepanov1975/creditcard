@@ -248,11 +248,22 @@ def _parse_date(
     year_context: DiscoveredDateYearContext | None = None,
 ) -> tuple[date | None, str | None]:
     normalized = _normalized_text(text)
-    if len(tuple(_DATE_TOKEN_PATTERN.finditer(normalized))) > 1:
+    full_date_matches = tuple(_DATE_TOKEN_PATTERN.finditer(normalized))
+    if len(full_date_matches) > 1:
         return None, "ambiguous_date_tokens"
     isolated_token = isolated_date_token(normalized)
     if isolated_token is not None:
         normalized = isolated_token
+    elif len(full_date_matches) == 1:
+        boundary_match = full_date_matches[0]
+        residual = normalized[: boundary_match.start()] + normalized[boundary_match.end() :]
+        residual_chars = tuple(char for char in residual if not char.isspace())
+        if (
+            (boundary_match.start() == 0 or boundary_match.end() == len(normalized))
+            and residual_chars
+            and all(char.isalpha() for char in residual_chars)
+        ):
+            normalized = boundary_match.group(0)
     if year_context is not None:
         short_matches = tuple(_SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
         if len(short_matches) == 1:
