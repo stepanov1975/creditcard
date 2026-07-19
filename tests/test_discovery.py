@@ -1083,6 +1083,33 @@ def test_same_currency_headerless_rows_after_total_form_the_next_exact_group() -
     assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
 
 
+def test_subtotal_and_final_total_claim_separate_headerless_partitions() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Subtotal", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("03/02/2026", 0.0, 28.0, 100.0),
+            _word("Shop", 50.0, 95.0, 100.0),
+            _word("₪30.00", 118.0, 155.0, 100.0),
+            _word("04/02/2026", 0.0, 28.0, 120.0),
+            _word("Fuel", 50.0, 95.0, 120.0),
+            _word("₪40.00", 118.0, 155.0, 120.0),
+            _word("Total", 50.0, 95.0, 140.0),
+            _word("₪70.00", 118.0, 155.0, 140.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert tuple(len(group.table_regions) for group in discovery.groups) == (1, 1)
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert tuple(group.difference for group in normalized.reconciliation.groups) == (0, 0)
+
+
 def test_headerless_page_end_rows_join_a_compatible_next_page_table() -> None:
     first_page = _page(
         1,

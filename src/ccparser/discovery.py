@@ -140,6 +140,7 @@ _TOTAL_MARKERS = frozenset(
         "billing total",
         "grand total",
         "statement total",
+        "subtotal",
         "total",
         "total amount",
         "total billed",

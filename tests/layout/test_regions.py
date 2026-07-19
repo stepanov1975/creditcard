@@ -368,14 +368,14 @@ def test_detect_table_regions_does_not_inherit_points_ledger_rows() -> None:
     page = _page(
         (
             *_header(10.0),
-            *_data(30.0, "01/02/2026", "Alpha", "10.00"),
-            *_data(50.0, "02/02/2026", "Beta", "20.00"),
+            *_data(30.0, "01/02/2026", "Alpha", "₪10.00"),
+            *_data(50.0, "02/02/2026", "Beta", "₪20.00"),
             _word("Subtotal", 35.0, 72.0, 70.0),
-            _word("30.00", 92.0, 120.0, 70.0),
-            *_data(90.0, "03/02/2026", "Rewards points", "100"),
-            *_data(110.0, "04/02/2026", "Points balance", "200"),
-            _word("Total points", 35.0, 72.0, 130.0),
-            _word("300", 92.0, 120.0, 130.0),
+            _word("₪30.00", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "נקודה", "100"),
+            *_data(110.0, "04/02/2026", "נקודה", "200"),
+            _word("Total", 35.0, 72.0, 130.0),
+            _word("₪300", 92.0, 120.0, 130.0),
         )
     )
 
@@ -385,15 +385,17 @@ def test_detect_table_regions_does_not_inherit_points_ledger_rows() -> None:
 def test_detect_table_regions_does_not_reject_point_named_monetary_merchants() -> None:
     page = _page(
         (
-            *_header(10.0),
-            *_data(30.0, "01/02/2026", "Alpha", "$10.00"),
-            *_data(50.0, "02/02/2026", "Beta", "$20.00"),
+            _word("Date", 0.0, 22.0, 10.0),
+            _word("Description", 35.0, 72.0, 10.0),
+            _word("Billed amount (USD)", 92.0, 120.0, 10.0),
+            *_data(30.0, "01/02/2026", "Alpha", "10"),
+            *_data(50.0, "02/02/2026", "Beta", "20"),
             _word("Subtotal", 35.0, 72.0, 70.0),
-            _word("$30.00", 92.0, 120.0, 70.0),
-            *_data(90.0, "03/02/2026", "Rewards points", "$30.00"),
-            *_data(110.0, "04/02/2026", "Loyalty points", "$40.00"),
+            _word("$30", 92.0, 120.0, 70.0),
+            *_data(90.0, "03/02/2026", "Rewards points", "30"),
+            *_data(110.0, "04/02/2026", "Loyalty points", "40"),
             _word("Total", 35.0, 72.0, 130.0),
-            _word("$70.00", 92.0, 120.0, 130.0),
+            _word("$70", 92.0, 120.0, 130.0),
         )
     )
 

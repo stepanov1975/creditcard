@@ -58,17 +58,7 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "שער המרה",
     }
 )
-_POINTS_LEDGER_MARKERS = frozenset(
-    {
-        "benefit points",
-        "loyalty points",
-        "point balance",
-        "points",
-        "rewards points",
-        "יתרת נקודות",
-        "נקודות",
-    }
-)
+_POINT_COUNT_UNIT_MARKERS = frozenset({"point", "points", "נקודה", "נקודות"})
 _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
 _ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 MAX_HEADER_PREAMBLE_ROWS = 4
@@ -715,19 +705,14 @@ def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     return len(amount_cells) == 1 and is_money_shaped(amount_cells[0].text) and not secondary_cells
 
 
-def _has_non_transaction_ledger_marker(row: Row) -> bool:
+def _is_points_count_ledger_row(row: Row) -> bool:
     normalized_cells = tuple(_normalized_marker(cell.text) for cell in row.cells)
-    has_points_marker = any(
-        normalized == marker
-        or normalized.startswith(marker + " ")
-        or normalized.endswith(" " + marker)
-        or f" {marker} " in f" {normalized} "
-        for normalized in normalized_cells
-        for marker in _POINTS_LEDGER_MARKERS
+    has_exact_points_unit = any(
+        normalized in _POINT_COUNT_UNIT_MARKERS for normalized in normalized_cells
     )
     money_cells = tuple(cell for cell in row.cells if is_money_shaped(cell.text))
     return (
-        has_points_marker
+        has_exact_points_unit
         and bool(money_cells)
         and all(
             _POINT_COUNT_PATTERN.fullmatch(cell.text.strip()) is not None for cell in money_cells
@@ -795,7 +780,7 @@ def _inherited_region_after_total(
             previous = projected
             continue
         if (
-            _has_non_transaction_ledger_marker(projected)
+            _is_points_count_ledger_row(projected)
             or _transaction_shape_count(projected) < 2
             or not _has_valid_billed_amount(projected, schema)
             or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
