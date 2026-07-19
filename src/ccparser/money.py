@@ -40,8 +40,11 @@ _CURRENCY_ALIASES = {
     "AUD": "AUD",
     "CAD": "CAD",
 }
+# Some embedded Hebrew fonts expose the shekel glyph as ``{``. Accept that
+# artifact only where the surrounding text proves a monetary use.
 _CURRENCY_PATTERN = re.compile(
-    r"(?<![A-Z])(?:ILS|NIS|USD|EUR|GBP|JPY|CHF|AUD|CAD)(?![A-Z])|[₪$€£]|ש[\s\"״']*ח",
+    r"(?<![A-Z])(?:ILS|NIS|USD|EUR|GBP|JPY|CHF|AUD|CAD)(?![A-Z])|[₪$€£]|ש[\s\"״']*ח"
+    r"|ב\s*-\s*\{|\{(?=\s*[+-]?\d)",
     re.IGNORECASE,
 )
 _CREDIT_MARKERS = (
@@ -111,7 +114,7 @@ def currencies_in_text(text: str) -> tuple[str, ...]:
 
     found: list[str] = []
     for match in _CURRENCY_PATTERN.finditer(text):
-        currency = canonical_currency(match.group())
+        currency = "ILS" if "{" in match.group() else canonical_currency(match.group())
         if currency is not None and currency not in found:
             found.append(currency)
     return tuple(found)

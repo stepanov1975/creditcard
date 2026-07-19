@@ -166,6 +166,7 @@ def _discovery(
         ("100.00 credit", "USD", Decimal("-100.00"), "USD"),
         ("100.00 זיכוי", "ILS", Decimal("-100.00"), "ILS"),
         ("10.00 ש״ח", None, Decimal("10.00"), "ILS"),
+        ("{10.00", None, Decimal("10.00"), "ILS"),
     ),
 )
 def test_parse_amount_supports_structurally_unambiguous_formats_and_credit_markers(
@@ -246,6 +247,25 @@ def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconci
     assert all(transaction.billing_currency == "ILS" for transaction in result.transactions)
     assert result.reconciliation.status is Status.RECONCILED
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
+
+
+def test_normalize_statement_parses_date_with_one_standalone_letter() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026 ל", 0, 30.0),
+                _cell("Market", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions[0].transaction_date == date(2026, 2, 1)
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_normalize_statement_preserves_foreign_installment_and_wrapped_description() -> None:
@@ -800,6 +820,48 @@ def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_ba
     assert tuple(reference.raw_text for reference in result.row_results[1].evidence) == (
         "Fee detail",
         "Conversion note",
+    )
+    assert result.row_results[1].diagnostics == ("merged_subordinate_detail_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_ignores_marked_detail_money_when_proving_billed_column() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.AMOUNT,
+        ColumnRole.AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+    )
+    detail = _row(
+        _cell("Fee", 1, 41.0),
+        _cell("0.50", 3, 41.0),
+    ).model_copy(update={"diagnostics": ("subordinate_detail_continuation",)})
+    region = _region(
+        roles,
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Market", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("USD 3.00", 4, 30.0),
+            ),
+            detail,
+            _row(
+                _cell("02/02/2026", 0, 52.0),
+                _cell("Cafe", 1, 52.0),
+                _cell("20.00", 2, 52.0),
+                _cell("USD 6.00", 4, 52.0),
+            ),
+        ),
+        headers=("Date", "Description", "Billed amount", "Amount", "Original amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert tuple(transaction.billed_amount for transaction in result.transactions) == (
+        Decimal("10.00"),
+        Decimal("20.00"),
     )
     assert result.row_results[1].diagnostics == ("merged_subordinate_detail_continuation",)
     assert result.reconciliation.status is Status.RECONCILED

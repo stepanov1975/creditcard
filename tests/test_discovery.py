@@ -1167,6 +1167,30 @@ def test_discover_statement_infers_numeric_total_currency_from_billed_amount_hea
     assert result.groups[0].printed_total.amount_text == "30.00"
 
 
+def test_discover_statement_recognizes_contextual_legacy_shekel_glyph() -> None:
+    page = _page(
+        1,
+        (
+            _word("Date", 0.0, 28.0, 20.0),
+            _word("Description", 50.0, 95.0, 20.0),
+            _word("סכום החיוב ב-{", 110.0, 155.0, 20.0),
+            _word("01/02/2026", 0.0, 28.0, 40.0),
+            _word("Market", 50.0, 95.0, 40.0),
+            _word("10.00", 118.0, 155.0, 40.0),
+            _word("02/02/2026", 0.0, 28.0, 60.0),
+            _word("Cafe", 50.0, 95.0, 60.0),
+            _word("20.00", 118.0, 155.0, 60.0),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert result.groups[0].printed_total.currency == "ILS"
+
+
 def test_discover_statement_preserves_negative_trailing_sign_total() -> None:
     page = _page(
         1,

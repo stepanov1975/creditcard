@@ -15,8 +15,10 @@ from ccparser.evidence.models import BBox, VectorRule
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.money import is_money_shaped
 
-_THREE_COMPONENT_DATE_PATTERN = re.compile(r"(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})")
-_TWO_COMPONENT_SLASH_PATTERN = re.compile(r"(\d{1,3})\s*/\s*(\d{1,3})")
+_THREE_COMPONENT_DATE_PATTERN = re.compile(
+    r"(?<!\d)(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)"
+)
+_TWO_COMPONENT_SLASH_PATTERN = re.compile(r"(?<!\d)(\d{1,3})\s*/\s*(\d{1,3})(?!\d)")
 _MONEY_PATTERN = re.compile(
     r"(?:[-+]?\s*(?:[$€£₪]\s*)?|\(\s*)(?:\d{1,3}(?:[, ]\d{3})+|\d+)"
     r"(?:[.,]\d{2,3})(?:\s*[$€£₪])?\s*\)?"
@@ -504,9 +506,7 @@ def _valid_calendar_day(day: int, month: int, year: int | None = None) -> bool:
     return day <= maximum
 
 
-def is_date_shaped(text: str) -> bool:
-    """Return whether the complete text is a valid supported calendar date."""
-
+def _is_exact_date_shaped(text: str) -> bool:
     short_match = _TWO_COMPONENT_SLASH_PATTERN.fullmatch(text)
     if short_match is not None:
         day, month = (int(component) for component in short_match.groups())
@@ -521,6 +521,33 @@ def is_date_shaped(text: str) -> bool:
     else:
         day, month, year = int(first), int(second), int(third)
     return 1 <= year <= 9999 and _valid_calendar_day(day, month, year)
+
+
+def isolated_date_token(text: str) -> str | None:
+    """Return one valid date token with at most one standalone letter around it."""
+
+    normalized = unicodedata.normalize("NFC", text).strip()
+    candidate_matches = tuple(_THREE_COMPONENT_DATE_PATTERN.finditer(normalized))
+    if not candidate_matches:
+        candidate_matches = tuple(_TWO_COMPONENT_SLASH_PATTERN.finditer(normalized))
+    valid_matches = tuple(
+        match for match in candidate_matches if _is_exact_date_shaped(match.group(0))
+    )
+    if len(valid_matches) != 1:
+        return None
+    match = valid_matches[0]
+    remainder = normalized[: match.start()] + normalized[match.end() :]
+    if any(char.isdigit() for char in remainder):
+        return None
+    if sum(char.isalpha() for char in remainder) > 1:
+        return None
+    return match.group(0)
+
+
+def is_date_shaped(text: str) -> bool:
+    """Return whether text is one valid date with only a tiny standalone annotation."""
+
+    return isolated_date_token(text) is not None
 
 
 def is_installment_shaped(text: str) -> bool:

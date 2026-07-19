@@ -660,29 +660,14 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
         or any(is_date_shaped(cell.text) for cell in row.cells)
     ):
         return False
-    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    amount_column = (
-        amount_columns[0]
-        if len(amount_columns) == 1
-        else explicit_billed_amount_column(schema.columns, schema.header_cells)
-    )
+    amount_column = proven_billed_amount_column(schema, (previous,))
     if amount_column is None:
         return False
     if any(
         amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2] for cell in row.cells
     ):
         return False
-    secondary_amount_columns = tuple(
-        column for column in amount_columns if column is not amount_column
-    )
-    if any(
-        is_money_shaped(cell.text)
-        for column in secondary_amount_columns
-        for cell in row.cells
-        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
-    ):
-        return False
-    minimum_alignment = max(2 / len(schema.columns), 0.6)
+    minimum_alignment = max(2 / len(schema.columns), 0.5)
     if _row_alignment(row, schema) < minimum_alignment:
         return False
     typical_height = statistics.median(

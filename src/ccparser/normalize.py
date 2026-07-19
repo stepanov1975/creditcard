@@ -18,7 +18,7 @@ from ccparser.discovery import (
     StatementGroupDiscovery,
 )
 from ccparser.evidence.models import BBox
-from ccparser.layout.columns import proven_billed_amount_column
+from ccparser.layout.columns import isolated_date_token, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
     EvidenceReference,
@@ -146,7 +146,10 @@ def _role_cells(row: Row, region: TableRegion, role: ColumnRole) -> tuple[Cell, 
 
 
 def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
-    return proven_billed_amount_column(region.table_schema, region.rows)
+    transaction_rows = tuple(
+        row for row in region.rows if "subordinate_detail_continuation" not in row.diagnostics
+    )
+    return proven_billed_amount_column(region.table_schema, transaction_rows)
 
 
 def _is_relevant_cell(cell: Cell) -> bool:
@@ -247,6 +250,9 @@ def _parse_date(
     normalized = _normalized_text(text)
     if len(tuple(_DATE_TOKEN_PATTERN.finditer(normalized))) > 1:
         return None, "ambiguous_date_tokens"
+    isolated_token = isolated_date_token(normalized)
+    if isolated_token is not None:
+        normalized = isolated_token
     if year_context is not None:
         short_matches = tuple(_SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
         if len(short_matches) == 1:

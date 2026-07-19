@@ -919,6 +919,30 @@ def test_detect_table_regions_retains_one_marked_multicell_detail_after_each_tra
     assert "detail_continuation_rows:2" in regions[0].diagnostics
 
 
+def test_marked_detail_may_populate_secondary_amount_when_billed_band_is_empty() -> None:
+    page = _page(
+        (
+            *_duplicate_amount_header(10.0, explicit_billed=True),
+            *_duplicate_amount_data(30.0, secondary_amount=None),
+            _word("Rate", 32.0, 40.0, 41.0),
+            _word("0.50", 64.0, 72.0, 41.0),
+            _word("Discount", 80.0, 88.0, 41.0),
+            _word("Fee", 96.0, 104.0, 41.0),
+            *_duplicate_amount_data(52.0, secondary_amount=None),
+            _word("Total", 96.0, 104.0, 72.0),
+            _word("24.80", 0.0, 8.0, 72.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 3
+    assert "subordinate_detail_continuation" in regions[0].rows[1].diagnostics
+    assert "detail_continuation_rows:1" in regions[0].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
+
+
 def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() -> None:
     page = _page(
         (

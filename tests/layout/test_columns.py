@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ccparser.evidence import VectorRule, Word
-from ccparser.layout.columns import infer_column_bands, infer_column_roles
+from ccparser.layout.columns import infer_column_bands, infer_column_roles, is_date_shaped
 from ccparser.layout.models import Cell, ColumnRole, Row
 
 
@@ -63,6 +63,15 @@ def _transform_row(row: Row, factor: float, shift: float) -> Row:
             "cells": transformed_cells,
         }
     )
+
+
+def test_date_shape_allows_one_standalone_letter_around_a_complete_date() -> None:
+    assert is_date_shaped("ל 07/03/22")
+    assert is_date_shaped("07/03/2022 ל")
+
+
+def test_date_shape_rejects_descriptive_text_around_a_date() -> None:
+    assert not is_date_shaped("posted 07/03/2022")
 
 
 def test_infer_column_bands_finds_repeated_bands_in_scale_independent_coordinates() -> None:
