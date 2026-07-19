@@ -56,6 +56,7 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "surcharge",
         "עמלה",
         "המרה",
+        "הומר",
         "שער המרה",
     }
 )
@@ -738,11 +739,16 @@ def _projection_preserves_table_band_evidence(
     source: Row,
     projected: Row,
     header: Row,
+    schema: TableSchema,
 ) -> int | None:
+    if source.page_number != header.page_number or projected.page_number != header.page_number:
+        return None
     if _projection_preserves_positioned_evidence(source, projected):
         return 0
+    table_x0 = min(column.bbox[0] for column in schema.columns)
+    table_x1 = max(column.bbox[2] for column in schema.columns)
     inside_cells = tuple(
-        cell for cell in source.cells if header.bbox[0] <= _center_x(cell.bbox) <= header.bbox[2]
+        cell for cell in source.cells if table_x0 <= _center_x(cell.bbox) <= table_x1
     )
     if not inside_cells or len(inside_cells) == len(source.cells):
         return None
@@ -852,6 +858,7 @@ def _foreign_conversion_detail_block(
             source,
             projected,
             header,
+            schema,
         )
         if not projected.cells or outside_table_band_count is None:
             return None
@@ -1289,8 +1296,42 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
         update={"words": canonical_words_for_layout(page_evidence)}
     )
     geometric_rows = cluster_rows(logical_page.words, logical_page.page_number)
+    glyphs_by_row: list[list[Glyph]] = [[] for _ in geometric_rows]
+    positioned_glyphs = tuple(
+        sorted(
+            (
+                glyph
+                for glyph in logical_page.glyphs
+                if 0.0 <= _center_x(glyph.bbox) <= logical_page.width
+            ),
+            key=lambda glyph: (
+                glyph.bbox[1],
+                glyph.bbox[0],
+                glyph.origin,
+                glyph.char,
+                glyph.font,
+                glyph.source,
+            ),
+        )
+    )
+    for glyph in positioned_glyphs:
+        center_y = _center_y(glyph.bbox)
+        candidate_indices = tuple(
+            index
+            for index, row in enumerate(geometric_rows)
+            if row.bbox[1] <= center_y <= row.bbox[3]
+        )
+        if candidate_indices:
+            owner = min(
+                candidate_indices,
+                key=lambda index: (
+                    abs(center_y - _center_y(geometric_rows[index].bbox)),
+                    index,
+                ),
+            )
+            glyphs_by_row[owner].append(glyph)
     logical_rows: list[Row] = []
-    for row in geometric_rows:
+    for row_index, row in enumerate(geometric_rows):
         logical_cells = []
         for cell in row.cells:
             glyphs, words = positioned_evidence_for_bbox(logical_page, cell.bbox)
@@ -1303,24 +1344,7 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
                     }
                 )
             )
-        row_glyphs = tuple(
-            sorted(
-                (
-                    glyph
-                    for glyph in logical_page.glyphs
-                    if 0.0 <= _center_x(glyph.bbox) <= logical_page.width
-                    and row.bbox[1] <= _center_y(glyph.bbox) <= row.bbox[3]
-                ),
-                key=lambda glyph: (
-                    glyph.bbox[1],
-                    glyph.bbox[0],
-                    glyph.origin,
-                    glyph.char,
-                    glyph.font,
-                    glyph.source,
-                ),
-            )
-        )
+        row_glyphs = tuple(glyphs_by_row[row_index])
         _, row_words = positioned_evidence_for_bbox(logical_page, row.bbox)
         logical_rows.append(
             row.model_copy(

@@ -178,6 +178,15 @@ _NO_ACTIVITY_MARKERS = frozenset(
         "לא בוצעו עסקות בתקופה זו",
     }
 )
+_CONTINUATION_HEADING_MARKERS = frozenset(
+    {
+        "continued transaction details",
+        "continued transactions",
+        "transaction details continued",
+        "המשך פירוט עסקאות",
+        "המשך פירוט עסקות",
+    }
+)
 _POINTS_UNIT_MARKERS = frozenset(
     {
         "loyalty points",
@@ -1062,8 +1071,24 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
     )
 
 
+def _has_explicit_continuation_heading(
+    region: TableRegion,
+    rows: Sequence[Row],
+    page_height: float,
+) -> bool:
+    return any(
+        cell.bbox[3] <= region.header.bbox[1]
+        and region.header.bbox[1] - cell.bbox[3] <= page_height * 0.12
+        and _contains_phrase(cell.text, _CONTINUATION_HEADING_MARKERS)
+        for row in rows
+        for cell in row.cells
+    )
+
+
 def _proven_page_continuation(
-    regions: Sequence[TableRegion], page_heights: Mapping[int, float]
+    regions: Sequence[TableRegion],
+    page_heights: Mapping[int, float],
+    page_rows: Mapping[int, Sequence[Row]],
 ) -> bool:
     if len(regions) < 2 or len({region.page_number for region in regions}) != len(regions):
         return False
@@ -1076,7 +1101,13 @@ def _proven_page_continuation(
             return False
         if not _schemas_compatible(previous, following):
             return False
-        if previous.bbox[3] < previous_height * 0.75:
+        has_edge_continuation = previous.bbox[3] >= previous_height * 0.75
+        has_explicit_heading = _has_explicit_continuation_heading(
+            following,
+            page_rows.get(following.page_number, ()),
+            following_height,
+        )
+        if not has_edge_continuation and not has_explicit_heading:
             return False
         if following.header.bbox[1] > following_height * 0.25:
             return False
@@ -1091,6 +1122,7 @@ def _associate_regions(
     previous_total_row: Row | None,
     remaining_totals: Sequence[DiscoveredPrintedTotal],
     page_heights: Mapping[int, float],
+    page_rows: Mapping[int, Sequence[Row]],
 ) -> tuple[tuple[TableRegion, ...], tuple[str, ...]]:
     total_key = _reading_key_bbox(total_row.page_number, total_row.bbox)
     previous_total_key = (
@@ -1116,7 +1148,11 @@ def _associate_regions(
         if not section_currencies_match:
             return (), ("ambiguous_table_currency",)
         return section, ()
-    if section_currencies_match and _proven_page_continuation(section, page_heights):
+    if section_currencies_match and _proven_page_continuation(
+        section,
+        page_heights,
+        page_rows,
+    ):
         return section, ()
     same_page = tuple(region for region in section if region.page_number == total_row.page_number)
     compatible_same_page_candidate = (
@@ -1247,6 +1283,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             previous_total_row=previous_total_row,
             remaining_totals=tuple(candidate for _, candidate in total_candidates[total_index:]),
             page_heights=page_heights,
+            page_rows=logical_rows_by_page,
         )
         previous_total_row = total_row
         diagnostics.extend(association_diagnostics)

@@ -2075,6 +2075,27 @@ def test_consecutive_page_continuation_ignores_unknown_page_counter_column() -> 
     assert normalized.reconciliation.groups[0].difference == 0
 
 
+def test_explicit_continuation_heading_proves_matching_table_across_page_ad_space() -> None:
+    first = _page(1, _table(20.0, "₪", "10.00", "20.00"))
+    second = _page(
+        2,
+        (
+            _word("Continued transaction details", 10.0, 105.0, 5.0),
+            *_table(30.0, "₪", "12.00", "18.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪60.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    discovery = discover_statement(_document(first, second))
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
+    assert discovery.groups[0].table_regions == discovery.table_regions
+    assert tuple(region.page_number for region in discovery.groups[0].table_regions) == (1, 2)
+    assert "unclaimed_table_region" not in discovery.diagnostics
+
+
 def test_unknown_page_counter_does_not_relax_known_column_geometry() -> None:
     first_page = _page(1, _currencyless_billed_table(190.0))
     second_page = _page(

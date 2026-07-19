@@ -4,11 +4,12 @@ import pytest
 
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
-from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
+    _projection_preserves_table_band_evidence,
     _split_compound_header_cell,
     _split_header_fragment,
     detect_table_regions,
@@ -152,6 +153,107 @@ def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_ban
     assert rows[0].glyphs == (same_band_left, same_band_right)
     assert other_band not in rows[0].glyphs
     assert rows[1].glyphs == (other_band,)
+
+
+def test_logical_rows_assigns_overlapping_glyph_to_nearest_row_once() -> None:
+    overlapping = Glyph(
+        char="x",
+        bbox=(2.0, 28.0, 3.0, 44.0),
+        origin=(2.0, 42.0),
+        font="Synthetic",
+        size=16.0,
+        source="digital",
+        confidence=1.0,
+    )
+    rows = logical_rows(
+        _page(
+            (
+                _word("First", 40.0, 70.0, 20.0),
+                _word("Tall sidebar", 0.0, 30.0, 22.0, height=22.0),
+                _word("Second", 40.0, 70.0, 35.0),
+            ),
+            (overlapping,),
+        )
+    )
+
+    assert len(rows) == 2
+    assert rows[0].glyphs == (overlapping,)
+    assert overlapping not in rows[1].glyphs
+
+
+def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> None:
+    billed_word = _word("₪10.00", 10.0, 25.0, 30.0)
+    description_word = _word("Market", 40.0, 60.0, 30.0)
+    sidebar_word = _word("Sidebar", 100.0, 120.0, 30.0)
+    billed = Cell(
+        page_number=1,
+        bbox=billed_word.bbox,
+        text=billed_word.text,
+        words=(billed_word,),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=description_word.bbox,
+        text=description_word.text,
+        words=(description_word,),
+        confidence=1.0,
+    )
+    sidebar = Cell(
+        page_number=1,
+        bbox=sidebar_word.bbox,
+        text=sidebar_word.text,
+        words=(sidebar_word,),
+        confidence=1.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=(30.0, 10.0, 60.0, 20.0),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=(30.0, 10.0, 60.0, 20.0),
+                text="Billed amount",
+                confidence=1.0,
+            ),
+        ),
+        confidence=1.0,
+    )
+    schema = TableSchema(
+        page_number=1,
+        bbox=(10.0, 10.0, 60.0, 40.0),
+        columns=(
+            ColumnSpec(
+                index=0,
+                page_number=1,
+                bbox=(10.0, 10.0, 60.0, 40.0),
+                relative_x0=0.0,
+                relative_x1=1.0,
+                role=ColumnRole.AMOUNT,
+                source_cells=header.cells,
+                confidence=1.0,
+            ),
+        ),
+        header_cells=header.cells,
+        sample_cells=(billed, description),
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=(10.0, 30.0, 120.0, 40.0),
+        cells=(billed, description, sidebar),
+        words=(billed_word, description_word, sidebar_word),
+        confidence=1.0,
+    )
+    projected = source.model_copy(
+        update={
+            "bbox": (10.0, 30.0, 60.0, 40.0),
+            "cells": (billed, description),
+            "words": (billed_word, description_word),
+        }
+    )
+
+    assert _projection_preserves_table_band_evidence(source, projected, header, schema) == 1
 
 
 def test_logical_rows_canonicalizes_visual_order_rtl_word_from_lossless_glyphs() -> None:
@@ -992,6 +1094,33 @@ def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() 
     assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:5])
     assert "detail_continuation_rows:3" in regions[0].diagnostics
     assert "stopped_at_total" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_accepts_proper_hebrew_converted_marker() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר לפי שער יציג", 30.0, 75.0, 61.0),
+            _word("עמלת עסקה", 30.0, 75.0, 72.0),
+            _word("הנחה מיוחדת", 30.0, 75.0, 83.0),
+            _word("הסדר מיוחד", 30.0, 75.0, 94.0),
+            _word("כרטיס 8614", 30.0, 75.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+            _word("unrelated sidebar", 150.0, 185.0, 116.0),
+            _word("Total", 30.0, 55.0, 136.0),
+            _word("41.00", 100.0, 125.0, 136.0),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 8
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:7])
+    assert "detail_continuation_rows:5" in regions[0].diagnostics
 
 
 def test_foreign_detail_block_requires_distinct_transaction_currencies() -> None:
