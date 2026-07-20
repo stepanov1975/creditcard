@@ -303,12 +303,22 @@ def _is_isolated_ocr_edge_artifact_cell(
         for candidate in _cells_for_column(candidate_row, column)
         if _is_relevant_cell(candidate)
     )
+    header_is_bounded_ocr_artifact = (
+        len(header_cells) == 1
+        and bool(header_cells[0].words)
+        and all(word.source == "ocr" for word in header_cells[0].words)
+        and not any(char.isdigit() for char in header_cells[0].text)
+        and sum(char.isalpha() for char in header_cells[0].text) <= 5
+    )
     return (
         column.role is ColumnRole.UNKNOWN
         and column.index
         in {min(item.index for item in columns), max(item.index for item in columns)}
         and len(header_cells) == 1
-        and not any(char.isalnum() for char in header_cells[0].text)
+        and (
+            not any(char.isalnum() for char in header_cells[0].text)
+            or header_is_bounded_ocr_artifact
+        )
         and bool(cell.words)
         and all(word.source == "ocr" for word in cell.words)
         and sum(char.isalnum() for char in cell.text) <= 1
@@ -417,16 +427,13 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
                 diagnostics.append("unresolved_relevant_cell")
             continue
         column = columns[0]
-        safe_card_identifier = (
-            column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(row, cell)
+        safe_card_identifier = column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(
+            row, cell
         )
         safe_edge_artifact = _is_isolated_ocr_edge_artifact_cell(cell, column, region)
-        safe_location_identifier = (
-            column.role is ColumnRole.LOCATION
-            and (
-                _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
-                or _original_currency_spilled_into_location(cell, region) is not None
-            )
+        safe_location_identifier = column.role is ColumnRole.LOCATION and (
+            _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
+            or _original_currency_spilled_into_location(cell, region) is not None
         )
         has_alternative = any(
             value == "ambiguous_role" or value.startswith("alternative_role:")
@@ -565,11 +572,68 @@ def _parse_date(
         return None, "invalid_date"
 
 
+def _year_context_years(
+    year_context: DiscoveredDateYearContext | None,
+) -> frozenset[int]:
+    if year_context is None:
+        return frozenset()
+    years = {year for _, year in year_context.year_by_suffix}
+    if year_context.year is not None:
+        years.add(year_context.year)
+    return frozenset(years)
+
+
+def _cell_has_ocr_evidence(cell: Cell) -> bool:
+    return any(item.source == "ocr" for item in (*cell.words, *cell.glyphs))
+
+
+def _parse_ocr_contaminated_cell_date(
+    cell: Cell,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[date | None, str | None]:
+    if year_context is None or not _cell_has_ocr_evidence(cell):
+        return None, "invalid_date"
+    normalized = _normalized_text(cell.text)
+    matches = tuple(_DATE_TOKEN_PATTERN.finditer(normalized))
+    if len(matches) != 1:
+        return None, "invalid_date"
+    match = _DATE_PATTERN.fullmatch(matches[0].group(0))
+    if match is None:
+        return None, "invalid_date"
+    first, separator, second, third = match.groups()
+    candidates: list[str] = []
+    if year_context.style in {
+        DateTokenStyle.DAY_FIRST_SLASH,
+        DateTokenStyle.DAY_FIRST_DOT,
+        DateTokenStyle.DAY_FIRST_DASH,
+    }:
+        if len(first) == 4:
+            candidates.append(f"{first[-2:]}{separator}{second}{separator}{third}")
+        if len(third) == 4:
+            candidates.append(f"{first}{separator}{second}{separator}{third[:2]}")
+    repaired = {
+        parsed_date
+        for candidate in candidates
+        if (parsed_date := _parse_date(candidate, year_context)[0]) is not None
+    }
+    return (next(iter(repaired)), None) if len(repaired) == 1 else (None, "invalid_date")
+
+
 def _parse_cell_date(
     cell: Cell,
     year_context: DiscoveredDateYearContext | None,
 ) -> tuple[date | None, str | None]:
     parsed = _parse_date(cell.text, year_context)
+    allowed_years = _year_context_years(year_context)
+    parsed_year_mismatch = (
+        parsed[0] is not None and bool(allowed_years) and parsed[0].year not in allowed_years
+    )
+    if parsed_year_mismatch or parsed[1] == "invalid_date":
+        repaired = _parse_ocr_contaminated_cell_date(cell, year_context)
+        if repaired[0] is not None:
+            return repaired
+    if parsed_year_mismatch:
+        return None, "date_year_context_mismatch"
     if parsed[1] != "invalid_date":
         return parsed
     word_candidates = tuple(
@@ -577,8 +641,80 @@ def _parse_cell_date(
         for word in cell.words
         if (candidate := _parse_date(word.text, year_context))[0] is not None
         and candidate[1] is None
+        and (not allowed_years or candidate[0].year in allowed_years)
     )
     return word_candidates[0] if len(word_candidates) == 1 else parsed
+
+
+def _short_date_tokens(cell: Cell) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for text in (cell.text, *(word.text for word in cell.words)):
+        normalized = _normalized_text(text)
+        tokens.extend(match.group(0) for match in _DATE_TOKEN_PATTERN.finditer(normalized))
+    return tuple(dict.fromkeys(tokens))
+
+
+def _valid_short_date_token_for_style(
+    token: str,
+    style: DateTokenStyle,
+) -> re.Match[str] | None:
+    match = _SHORT_DATE_TOKEN_PATTERNS[style].fullmatch(_normalized_text(token))
+    if match is None:
+        return None
+    try:
+        date(2000, int(match.group("month")), int(match.group("day")))
+    except ValueError:
+        return None
+    return match
+
+
+def _proven_unanchored_short_date_style(
+    region: TableRegion,
+    column: ColumnSpec,
+) -> DateTokenStyle | None:
+    amount_column = _proven_billed_amount_column(region)
+    if amount_column is None:
+        return None
+    transaction_rows = tuple(
+        row
+        for row in region.rows
+        if len(_cells_for_column(row, amount_column)) == 1
+        and is_money_shaped(_cells_for_column(row, amount_column)[0].text)
+    )
+    if len(transaction_rows) < 2:
+        return None
+    tokens_by_row: list[str] = []
+    for row in transaction_rows:
+        tokens = tuple(
+            dict.fromkeys(
+                token
+                for cell in row.cells
+                if _horizontal_overlap(cell.bbox, column.bbox) > 0
+                for token in _short_date_tokens(cell)
+            )
+        )
+        if len(tokens) != 1:
+            return None
+        tokens_by_row.append(tokens[0])
+    candidates: list[DateTokenStyle] = []
+    for style in DateTokenStyle:
+        matches = tuple(_valid_short_date_token_for_style(token, style) for token in tokens_by_row)
+        if any(match is None for match in matches):
+            continue
+        suffixes = {int(match.group("year")) for match in matches if match is not None}
+        if len(suffixes) == 1:
+            candidates.append(style)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _has_proven_unanchored_short_date(
+    cell: Cell,
+    style: DateTokenStyle | None,
+) -> bool:
+    if style is None:
+        return False
+    tokens = _short_date_tokens(cell)
+    return len(tokens) == 1 and _valid_short_date_token_for_style(tokens[0], style) is not None
 
 
 def _parse_overlapping_boundary_date(
@@ -924,14 +1060,8 @@ def _is_boundary_description_continuation(
         else None
     )
     if not (
-        any(
-            _horizontal_coverage(cell.bbox, candidate.bbox) >= 0.9
-            for candidate in merchant_cells
-        )
-        or (
-            merchant_span is not None
-            and _horizontal_coverage(cell.bbox, merchant_span) >= 0.9
-        )
+        any(_horizontal_coverage(cell.bbox, candidate.bbox) >= 0.9 for candidate in merchant_cells)
+        or (merchant_span is not None and _horizontal_coverage(cell.bbox, merchant_span) >= 0.9)
     ):
         return False
     typical_height = statistics.median(
@@ -1001,14 +1131,95 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
     return gap <= typical_height * 1.5
 
 
-def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, list[str]]:
+def _horizontal_overlap(first: BBox, second: BBox) -> float:
+    return max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+
+
+def _boundary_date_description_split(
+    cell: Cell,
+    date_column: ColumnSpec,
+    description_column: ColumnSpec,
+    year_context: DiscoveredDateYearContext | None,
+    unanchored_style: DateTokenStyle | None,
+) -> tuple[date | None, str] | None:
+    if (
+        not _cell_has_ocr_evidence(cell)
+        or _horizontal_overlap(cell.bbox, date_column.bbox) <= 0
+        or _horizontal_overlap(cell.bbox, description_column.bbox) <= 0
+    ):
+        return None
+    normalized = _normalized_text(cell.text)
+    matches = tuple(_DATE_TOKEN_PATTERN.finditer(normalized))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    parsed_date, diagnostic = _parse_cell_date(cell, year_context)
+    has_proven_unanchored_date = (
+        (
+            year_context is None
+            and _valid_short_date_token_for_style(match.group(0), unanchored_style) is not None
+        )
+        if unanchored_style is not None
+        else False
+    )
+    if (parsed_date is None or diagnostic is not None) and not has_proven_unanchored_date:
+        return None
+    residual = _normalized_text(normalized[: match.start()] + normalized[match.end() :])
+    if (
+        not residual
+        or not any(char.isalpha() for char in residual)
+        or any(char.isdigit() for char in residual)
+    ):
+        return None
+    return parsed_date, residual
+
+
+def _boundary_date_description_splits(
+    row: Row,
+    region: TableRegion,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[tuple[Cell, date | None, str], ...]:
+    date_columns = _role_columns(region, ColumnRole.DATE)
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    if len(date_columns) != 1 or len(description_columns) != 1:
+        return ()
+    unanchored_style = (
+        _proven_unanchored_short_date_style(region, date_columns[0])
+        if year_context is None
+        else None
+    )
+    candidates = tuple(
+        (cell, parsed_date, residual)
+        for cell in row.cells
+        if (
+            split := _boundary_date_description_split(
+                cell,
+                date_columns[0],
+                description_columns[0],
+                year_context,
+                unanchored_style,
+            )
+        )
+        for parsed_date, residual in (split,)
+    )
+    unique = {
+        (candidate[0].bbox, candidate[1], candidate[2]): candidate for candidate in candidates
+    }
+    return tuple(unique.values())
+
+
+def _description(
+    rows: Sequence[Row],
+    region: TableRegion,
+    year_context: DiscoveredDateYearContext | None,
+) -> tuple[str | None, list[str]]:
     description_rows = tuple(
         row
         for row in rows
         if "subordinate_detail_continuation" not in row.diagnostics
         and "subordinate_auxiliary_continuation" not in row.diagnostics
     )
-    cells: list[Cell] = []
+    texts: list[str] = []
     for index, row in enumerate(description_rows):
         row_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
         if (
@@ -1021,15 +1232,20 @@ def _description(rows: Sequence[Row], region: TableRegion) -> tuple[str | None, 
             )
         ):
             row_cells = row.cells
-        cells.extend(row_cells)
+        splits = _boundary_date_description_splits(row, region, year_context)
+        split_by_bbox = {cell.bbox: residual for cell, _, residual in splits}
+        if row_cells:
+            texts.extend(split_by_bbox.get(cell.bbox, cell.text) for cell in row_cells)
+        elif len(splits) == 1:
+            texts.append(splits[0][2])
     diagnostics: list[str] = []
-    if not cells:
+    if not texts:
         if _role_columns(region, ColumnRole.DESCRIPTION):
             diagnostics.append("missing_description_cell")
         return None, diagnostics
-    if len(cells) > len(description_rows):
+    if len(texts) > len(description_rows):
         diagnostics.append("multiple_description_cells")
-    return _normalized_text(" ".join(cell.text for cell in cells)), diagnostics
+    return _normalized_text(" ".join(texts)), diagnostics
 
 
 def _word_height(word: Word) -> float:
@@ -1043,9 +1259,7 @@ def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decim
             continue
         words = tuple(word for cell in row.cells for word in cell.words)
         currencies = {
-            currency
-            for word in words
-            if (currency := canonical_currency(word.text)) is not None
+            currency for word in words if (currency := canonical_currency(word.text)) is not None
         }
         if len(currencies) != 1:
             continue
@@ -1058,6 +1272,91 @@ def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decim
         if len(amounts) == 1:
             corroborated.add((next(iter(amounts)), currency))
     return frozenset(corroborated)
+
+
+def _ocr_original_amount_corroborated_by_billed(
+    original_cell: Cell,
+    parsed_original: AmountParseResult,
+    original_currency_hint: str | None,
+    billed: AmountParseResult,
+) -> AmountParseResult | None:
+    if (
+        not _cell_has_ocr_evidence(original_cell)
+        or parsed_original.diagnostics != ("invalid_grouping_separator",)
+        or billed.amount is None
+        or billed.amount <= 0
+        or billed.currency is None
+        or original_currency_hint != billed.currency
+        or any(char.isalpha() for char in original_cell.text)
+        or any(char in "-+()" for char in original_cell.text)
+    ):
+        return None
+    observed_digits = "".join(char for char in original_cell.text if char.isdigit())
+    billed_digits = "".join(char for char in f"{billed.amount:.2f}" if char.isdigit())
+    if observed_digits != billed_digits:
+        return None
+    return AmountParseResult(
+        raw_text=original_cell.text,
+        amount=billed.amount,
+        currency=billed.currency,
+        confidence=min(original_cell.confidence, billed.confidence),
+    )
+
+
+def _original_amount_from_subordinate_detail(
+    original_cell: Cell,
+    parsed_original: AmountParseResult,
+    original_currency_hint: str | None,
+    continuation_rows: Sequence[Row],
+) -> AmountParseResult | None:
+    if (
+        not _cell_has_ocr_evidence(original_cell)
+        or parsed_original.amount is not None
+        or not parsed_original.diagnostics
+    ):
+        return None
+    pairs: set[tuple[Decimal, str]] = set()
+    supporting_confidences: list[float] = []
+    for row in continuation_rows:
+        if "subordinate_detail_continuation" not in row.diagnostics:
+            continue
+        words = tuple(word for cell in row.cells for word in cell.words)
+        currencies = {
+            currency for word in words if (currency := canonical_currency(word.text)) is not None
+        }
+        if len(currencies) != 1:
+            continue
+        currency = next(iter(currencies))
+        amounts = {
+            parsed.amount
+            for word in words
+            if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
+        }
+        if len(amounts) == 1:
+            pairs.add((next(iter(amounts)), currency))
+            supporting_confidences.extend(word.confidence for word in words)
+    if len(pairs) != 1:
+        return None
+    amount, currency = next(iter(pairs))
+    main_currencies = currencies_in_text(original_cell.text)
+    if currency not in main_currencies and original_currency_hint != currency:
+        return None
+    exact_main_amounts = {
+        parsed.amount
+        for word in original_cell.words
+        if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
+    }
+    if amount not in exact_main_amounts:
+        return None
+    return AmountParseResult(
+        raw_text=original_cell.text,
+        amount=amount,
+        currency=currency,
+        confidence=min(
+            original_cell.confidence,
+            *(supporting_confidences or [original_cell.confidence]),
+        ),
+    )
 
 
 def _original_amount_with_description_spill(
@@ -1223,13 +1522,33 @@ def _dates(
     parsed: list[tuple[str | None, date | None, str | None]] = []
     for column in columns:
         cells = _cells_for_column(row, column)
+        unanchored_style = (
+            _proven_unanchored_short_date_style(region, column) if year_context is None else None
+        )
         if len(cells) != 1:
             if cells:
                 diagnostics.append("multiple_date_cells")
             elif structural_kinds.get(column.index) != "posting":
-                diagnostics.append("missing_date_cell")
+                boundary_splits = _boundary_date_description_splits(
+                    row,
+                    region,
+                    year_context,
+                )
+                if len(columns) == 1 and len(boundary_splits) == 1:
+                    parsed.append(
+                        (
+                            _header_kind(column) or structural_kinds.get(column.index),
+                            boundary_splits[0][1],
+                            None,
+                        )
+                    )
+                else:
+                    diagnostics.append("missing_date_cell")
             continue
-        parsed_date, date_diagnostic = _parse_cell_date(cells[0], year_context)
+        if _has_proven_unanchored_short_date(cells[0], unanchored_style):
+            parsed_date, date_diagnostic = None, None
+        else:
+            parsed_date, date_diagnostic = _parse_cell_date(cells[0], year_context)
         if date_diagnostic == "invalid_date":
             parsed_date, date_diagnostic = _parse_date_without_duplicated_boundary_glyphs(
                 row,
@@ -1244,6 +1563,15 @@ def _dates(
                 cells[0],
                 year_context,
             )
+        if date_diagnostic is not None:
+            boundary_splits = _boundary_date_description_splits(
+                row,
+                region,
+                year_context,
+            )
+            if len(columns) == 1 and len(boundary_splits) == 1:
+                parsed_date = boundary_splits[0][1]
+                date_diagnostic = None
         parsed.append(
             (
                 _header_kind(column) or structural_kinds.get(column.index),
@@ -1423,7 +1751,7 @@ def _normalize_row(
             diagnostics=tuple(diagnostics),
         )
 
-    description, description_diagnostics = _description(rows, region)
+    description, description_diagnostics = _description(rows, region, year_context)
     diagnostics.extend(description_diagnostics)
     transaction_date, posting_date, conversion_date, date_diagnostics = _dates(
         row,
@@ -1473,9 +1801,7 @@ def _normalize_row(
                     spilled_currencies = {
                         currency
                         for cell in location_cells
-                        if (
-                            currency := _original_currency_spilled_into_location(cell, region)
-                        )
+                        if (currency := _original_currency_spilled_into_location(cell, region))
                         is not None
                     }
                     if len(spilled_currencies) == 1:
@@ -1484,6 +1810,24 @@ def _normalize_row(
                 original_cells[0].text,
                 currency_hint=original_currency_hint,
             )
+            if original.amount is None or original.currency is None:
+                corroborated = _ocr_original_amount_corroborated_by_billed(
+                    original_cells[0],
+                    original,
+                    original_currency_hint,
+                    billed,
+                )
+                if corroborated is not None:
+                    original = corroborated
+            if original.amount is None or original.currency is None:
+                recovered_detail = _original_amount_from_subordinate_detail(
+                    original_cells[0],
+                    original,
+                    original_currency_hint,
+                    continuation_rows,
+                )
+                if recovered_detail is not None:
+                    original = recovered_detail
             if original.amount is None or original.currency is None:
                 recovered = _amount_from_exact_words_between_boundary_glyphs(
                     original_cells[0],

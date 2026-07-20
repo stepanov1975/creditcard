@@ -71,9 +71,7 @@ _SUBORDINATE_DETAIL_MARKERS = frozenset(
         "שער המרה",
     }
 )
-_CARD_IDENTIFIER_DETAIL_MARKERS = frozenset(
-    {"card id", "card identifier", "מזהה כרטיס"}
-)
+_CARD_IDENTIFIER_DETAIL_MARKERS = frozenset({"card id", "card identifier", "מזהה כרטיס"})
 _POINT_COUNT_UNIT_MARKERS = frozenset({"point", "points", "נקודה", "נקודות"})
 _TRANSACTION_CONTEXT_MARKERS = frozenset(
     {"transaction", "transactions", "עסקה", "העסקה", "עסקאות", "העסקאות"}
@@ -177,6 +175,13 @@ def _transaction_shape_count(row: Row) -> int:
         or is_money_shaped(cell.text)
         or is_currency_shaped(cell.text)
         for cell in row.cells
+    )
+
+
+def _has_transaction_date_evidence(row: Row) -> bool:
+    return any(
+        is_date_shaped(text) or contains_date_token(text)
+        for text in (*[cell.text for cell in row.cells], *[word.text for word in row.words])
     )
 
 
@@ -392,10 +397,7 @@ def _merge_adjacent_description_header_cells(row: Row) -> Row:
         independent_semantics = any(
             score >= 0.82 for score in (*first_scores.values(), *second_scores.values())
         )
-        if (
-            combined_scores.get(ColumnRole.DESCRIPTION) != 1.0
-            or independent_semantics
-        ):
+        if combined_scores.get(ColumnRole.DESCRIPTION) != 1.0 or independent_semantics:
             cells.append(first)
             index += 1
             continue
@@ -515,9 +517,7 @@ def _split_overlaid_header_fragment(
         len(fragment_words) < 2
         or len(data_words) < 3
         or any(
-            is_money_shaped(word.text)
-            or is_date_shaped(word.text)
-            or is_currency_shaped(word.text)
+            is_money_shaped(word.text) or is_date_shaped(word.text) or is_currency_shaped(word.text)
             for word in fragment_words
         )
     ):
@@ -618,9 +618,7 @@ def _split_overlaid_header_fragment(
     table_data = data.model_copy(
         update={
             "cells": tuple(
-                cell
-                for cell in data.cells
-                if table_left <= _center_x(cell.bbox) <= table_right
+                cell for cell in data.cells if table_left <= _center_x(cell.bbox) <= table_right
             )
         }
     )
@@ -640,9 +638,7 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
     merged: list[Row] = []
     index = 0
     while index < len(rows):
-        header = _merge_adjacent_description_header_cells(
-            _split_compound_header_row(rows[index])
-        )
+        header = _merge_adjacent_description_header_cells(_split_compound_header_row(rows[index]))
         fragments: list[Row] = []
         skipped_overlay_rows: list[Row] = []
         if _literal_header_role_count(header) >= 2:
@@ -677,9 +673,7 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
                 break
         if fragments:
             merged.append(
-                _merge_adjacent_description_header_cells(
-                    _merge_header_rows(header, fragments)
-                )
+                _merge_adjacent_description_header_cells(_merge_header_rows(header, fragments))
             )
             merged.extend(skipped_overlay_rows)
             index = fragment_index
@@ -774,9 +768,7 @@ def _has_strong_single_row_evidence(
         schema.columns,
         schema.header_cells,
     )
-    amount_columns = tuple(
-        column for column in schema.columns if column.role is ColumnRole.AMOUNT
-    )
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     billed_column = (
         explicit_billed_column
         if explicit_billed_column is not None
@@ -798,19 +790,13 @@ def _has_strong_single_row_evidence(
         tuple(
             cell
             for cell in row.cells
-            if billed_column.bbox[0]
-            <= _center_x(cell.bbox)
-            <= billed_column.bbox[2]
+            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
         )
         if billed_column is not None
         else ()
     )
     total_amount_cells = (
-        tuple(
-            cell
-            for cell in total_row.cells
-            if is_money_shaped(cell.text)
-        )
+        tuple(cell for cell in total_row.cells if is_money_shaped(cell.text))
         if total_row is not None and _is_total_row(total_row)
         else ()
     )
@@ -840,8 +826,7 @@ def _has_strong_single_row_evidence(
         and _transaction_shape_count(row) >= 2
     )
     strong_structure = (
-        known_role_count >= 4
-        and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
+        known_role_count >= 4 and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
     ) or exact_ocr_singleton
     return (
         strong_structure
@@ -871,10 +856,7 @@ def _semantic_header_horizontal_bounds(header: Row) -> tuple[float, float] | Non
     semantic_cells = tuple(
         cell
         for cell in header.cells
-        if any(
-            score >= 0.82
-            for score in _header_scores(_header_evidence_texts((cell,))).values()
-        )
+        if any(score >= 0.82 for score in _header_scores(_header_evidence_texts((cell,))).values())
     )
     if len(semantic_cells) < 2:
         return None
@@ -898,9 +880,7 @@ def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
         word
         for word in cell.words
         if word.source == "ocr"
-        and (
-            normalized := unicodedata.normalize("NFC", word.text).strip()
-        )
+        and (normalized := unicodedata.normalize("NFC", word.text).strip())
         and all(char in _ISOLATED_OCR_PUNCTUATION for char in normalized)
     )
     if not removed:
@@ -925,14 +905,10 @@ def _without_separated_ocr_money_artifacts(cell: Cell) -> Cell:
     if is_money_shaped(cell.text) or len(cell.words) < 2:
         return cell
     money_words = tuple(
-        word
-        for word in cell.words
-        if is_money_shaped(word.text) or is_currency_shaped(word.text)
+        word for word in cell.words if is_money_shaped(word.text) or is_currency_shaped(word.text)
     )
     decimal_money_words = tuple(
-        word
-        for word in money_words
-        if re.search(r"[.,]\d{1,2}(?!\d)", word.text) is not None
+        word for word in money_words if re.search(r"[.,]\d{1,2}(?!\d)", word.text) is not None
     )
     retained = (
         tuple(
@@ -949,8 +925,7 @@ def _without_separated_ocr_money_artifacts(cell: Cell) -> Cell:
         or not removed
         or any(word.source != "ocr" for word in removed)
         or any(
-            max(kept.bbox[0], artifact.bbox[0])
-            < min(kept.bbox[2], artifact.bbox[2])
+            max(kept.bbox[0], artifact.bbox[0]) < min(kept.bbox[2], artifact.bbox[2])
             for kept in retained
             for artifact in removed
         )
@@ -996,8 +971,7 @@ def _project_row_to_header_bands(
     row_words = (*row.words, *(word for word in cell_words if word not in row.words))
     row_glyphs = (*row.glyphs, *(glyph for glyph in cell_glyphs if glyph not in row.glyphs))
     if not any(
-        table_left <= _center_x(item.bbox) <= table_right
-        for item in (*row_words, *row_glyphs)
+        table_left <= _center_x(item.bbox) <= table_right for item in (*row_words, *row_glyphs)
     ):
         return row.model_copy(update={"cells": ()})
 
@@ -1057,17 +1031,19 @@ def _project_row_to_header_bands(
         cells.append(
             _without_separated_ocr_money_artifacts(
                 _without_isolated_ocr_money_punctuation(
-                Cell(
-                    page_number=row.page_number,
-                    bbox=_union_bbox(evidence_boxes),
-                    text=text,
-                    glyphs=glyphs,
-                    words=words,
-                    confidence=(
-                        statistics.mean(confidence_values) if confidence_values else row.confidence
-                    ),
-                    diagnostics=(f"projected_header_band:{index}",),
-                )
+                    Cell(
+                        page_number=row.page_number,
+                        bbox=_union_bbox(evidence_boxes),
+                        text=text,
+                        glyphs=glyphs,
+                        words=words,
+                        confidence=(
+                            statistics.mean(confidence_values)
+                            if confidence_values
+                            else row.confidence
+                        ),
+                        diagnostics=(f"projected_header_band:{index}",),
+                    )
                 )
             )
         )
@@ -1317,9 +1293,7 @@ def _projection_preserves_table_band_evidence(
     inside_cell_glyphs = tuple(
         glyph for cell in inside_cells for glyph in cell.glyphs if not glyph.char.isspace()
     )
-    unassigned_glyphs = list(
-        glyph for glyph in source.glyphs if not glyph.char.isspace()
-    )
+    unassigned_glyphs = list(glyph for glyph in source.glyphs if not glyph.char.isspace())
     for glyph in inside_cell_glyphs:
         if glyph not in unassigned_glyphs:
             return None
@@ -1348,9 +1322,13 @@ def _is_auxiliary_identifier_detail(row: Row) -> bool:
     if len(row.cells) != 1:
         return False
     text = unicodedata.normalize("NFC", row.cells[0].text)
+    normalized_tokens = _normalized_marker(text).split()
+    has_hebrew = any("\u0590" <= char <= "\u05ff" for char in text)
+    has_proper_hebrew_card_marker = any(token.startswith("כרטיס") for token in normalized_tokens)
     return (
         any(char.isalpha() for char in text)
         and any(char.isdigit() for char in text)
+        and (not has_hebrew or has_proper_hebrew_card_marker)
         and not is_money_shaped(text)
         and not is_date_shaped(text)
         and not is_currency_shaped(text)
@@ -1367,8 +1345,7 @@ def _is_short_numeric_auxiliary_identifier_detail(row: Row) -> bool:
 def _has_canonical_card_identifier_lead(row: Row) -> bool:
     tokens = _normalized_marker(" ".join(cell.text for cell in row.cells)).split()
     return "מזהה" in tokens or any(
-        tokens[index : index + 2] == ["card", "identifier"]
-        for index in range(len(tokens))
+        tokens[index : index + 2] == ["card", "identifier"] for index in range(len(tokens))
     )
 
 
@@ -1620,9 +1597,8 @@ def _bounded_auxiliary_fragment(
     source = rows[start_index]
     following_index = start_index + 1
     skipped_outside_rows = 0
-    while (
-        following_index < len(rows)
-        and not _row_intersects_horizontal_band(rows[following_index], header.bbox)
+    while following_index < len(rows) and not _row_intersects_horizontal_band(
+        rows[following_index], header.bbox
     ):
         candidate = rows[following_index]
         if (
@@ -1723,13 +1699,18 @@ def _has_canonical_card_identifier_detail(row: Row) -> bool:
     )
     if not has_marker:
         return False
-    identifiers = set(
-        re.findall(
-            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
-            " ".join(cell.text for cell in row.cells),
-        )
+    raw_text = " ".join(cell.text for cell in row.cells)
+    digit_runs = tuple(
+        match.group()
+        for match in re.finditer(r"\d+", raw_text)
+        if (match.start() == 0 or raw_text[match.start() - 1] not in ".,/")
+        and (match.end() == len(raw_text) or raw_text[match.end()] not in ".,/")
     )
-    return len(identifiers) == 1
+    identifier = "".join(digit_runs)
+    return (
+        bool(digit_runs)
+        and CARD_IDENTIFIER_MIN_DIGITS <= len(identifier) <= CARD_IDENTIFIER_MAX_DIGITS
+    )
 
 
 def _has_canonical_internet_card_identifier_lead(row: Row) -> bool:
@@ -1835,8 +1816,7 @@ def _bounded_card_identifier_tail(
         or not _row_intersects_horizontal_band(following_source, header.bbox)
         or any(_is_total_row(candidate) for candidate in (source, following_source))
         or any(
-            _literal_header_role_count(candidate) >= 2
-            for candidate in (source, following_source)
+            _literal_header_role_count(candidate) >= 2 for candidate in (source, following_source)
         )
         or not _detail_rows_are_adjacent(previous, source)
         or not _detail_rows_are_adjacent(source, following_source)
@@ -1929,9 +1909,8 @@ def _bounded_hebrew_note_detail(
     source = rows[start_index]
     following_index = start_index + 1
     skipped_outside_rows = 0
-    while (
-        following_index < len(rows)
-        and not _row_intersects_horizontal_band(rows[following_index], header.bbox)
+    while following_index < len(rows) and not _row_intersects_horizontal_band(
+        rows[following_index], header.bbox
     ):
         candidate = rows[following_index]
         if (
@@ -2013,9 +1992,7 @@ def _bounded_overlaid_ocr_amount_artifact(
         tuple(
             cell
             for cell in projected_source.cells
-            if amount_columns[0].bbox[0]
-            <= _center_x(cell.bbox)
-            <= amount_columns[0].bbox[2]
+            if amount_columns[0].bbox[0] <= _center_x(cell.bbox) <= amount_columns[0].bbox[2]
         )
         if len(amount_columns) == 1
         else ()
@@ -2064,9 +2041,7 @@ def _trailing_overlaid_ocr_amount_artifact(
     previous: Row,
     schema: TableSchema,
 ) -> bool:
-    amount_columns = tuple(
-        column for column in schema.columns if column.role is ColumnRole.AMOUNT
-    )
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     artifact_text = " ".join(cell.text for cell in source.cells)
     alphabetic_count = sum(char.isalpha() for char in artifact_text)
     has_digit = any(char.isdigit() for char in artifact_text)
@@ -2076,10 +2051,7 @@ def _trailing_overlaid_ocr_amount_artifact(
         and len(amount_columns) == 1
         and bool(source.words)
         and all(word.source == "ocr" for word in source.words)
-        and (
-            not any(char.isalnum() for char in artifact_text)
-            or is_bounded_fragment
-        )
+        and (not any(char.isalnum() for char in artifact_text) or is_bounded_fragment)
         and amount_columns[0].bbox[0]
         <= _center_x(source.cells[0].bbox)
         <= amount_columns[0].bbox[2]
@@ -2107,6 +2079,16 @@ def _bounded_complementary_transaction_rows(
         or _vertical_overlap_ratio(source.bbox, following.bbox) < 0.5
     ):
         return None
+    projected_source = _project_row_to_header_bands(page_evidence, source, header)
+    projected_following = _project_row_to_header_bands(page_evidence, following, header)
+    minimum_alignment = _minimum_row_alignment(schema)
+    if any(
+        _has_valid_billed_amount(candidate, schema)
+        and _has_transaction_date_evidence(candidate)
+        and _row_alignment(candidate, schema) >= minimum_alignment
+        for candidate in (projected_source, projected_following)
+    ):
+        return None
     combined = Row(
         page_number=source.page_number,
         bbox=_union_bbox((source.bbox, following.bbox)),
@@ -2123,8 +2105,9 @@ def _bounded_complementary_transaction_rows(
     projected = _project_row_to_header_bands(page_evidence, combined, header)
     if (
         not _has_valid_billed_amount(projected, schema)
+        or not _has_transaction_date_evidence(projected)
         or _transaction_shape_count(projected) < 2
-        or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+        or _row_alignment(projected, schema) < minimum_alignment
     ):
         return None
     return projected, start_index + 1
@@ -2171,9 +2154,7 @@ def _spilled_currency_fragment_before_transaction(
     ):
         return False
     currency_words = tuple(
-        word
-        for word in source.words
-        if word.source == "digital" and is_currency_shaped(word.text)
+        word for word in source.words if word.source == "digital" and is_currency_shaped(word.text)
     )
     if len(currency_words) != 1:
         return False
@@ -2190,8 +2171,7 @@ def _spilled_currency_fragment_before_transaction(
         if (
             len(following_currencies) != 1
             or canonical_currency(currency_word.text) != following_currencies[0]
-            or logical_text_for_evidence(matching_glyphs, (currency_word,))
-            != currency_word.text
+            or logical_text_for_evidence(matching_glyphs, (currency_word,)) != currency_word.text
         ):
             return False
     horizontal_gap = _horizontal_gap(currency_word.bbox, billed_cell.bbox)
@@ -2202,9 +2182,7 @@ def _spilled_currency_fragment_before_transaction(
     ):
         return False
     projected = _project_row_to_header_bands(page_evidence, source, header)
-    currency_cells = tuple(
-        cell for cell in projected.cells if currency_word in cell.words
-    )
+    currency_cells = tuple(cell for cell in projected.cells if currency_word in cell.words)
     if currency_cells and (
         len(currency_cells) != 1 or not is_currency_shaped(currency_cells[0].text)
     ):
@@ -2364,19 +2342,23 @@ def _inherited_region_after_total(
             detail_continuation_allowed = False
             previous = projected
             continue
-        if (
-            not _has_valid_billed_amount(projected, schema)
-            and _spilled_currency_fragment_before_transaction(
-                page_evidence,
-                rows,
-                index,
-                header,
-                schema,
-            )
+        if not _has_valid_billed_amount(
+            projected, schema
+        ) and _spilled_currency_fragment_before_transaction(
+            page_evidence,
+            rows,
+            index,
+            header,
+            schema,
         ):
             ignored_spilled_currency_count += 1
             continue
-        if not _has_valid_billed_amount(projected, schema):
+        if (
+            not _has_valid_billed_amount(projected, schema)
+            or not _has_transaction_date_evidence(projected)
+            or _transaction_shape_count(projected) < 2
+            or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+        ):
             complementary = _bounded_complementary_transaction_rows(
                 page_evidence,
                 rows,
@@ -2662,19 +2644,23 @@ def _detect_from_header(
             detail_continuation_allowed = False
             previous = projected
             continue
-        if (
-            not _has_valid_billed_amount(projected, schema)
-            and _spilled_currency_fragment_before_transaction(
-                page_evidence,
-                rows,
-                index,
-                header,
-                schema,
-            )
+        if not _has_valid_billed_amount(
+            projected, schema
+        ) and _spilled_currency_fragment_before_transaction(
+            page_evidence,
+            rows,
+            index,
+            header,
+            schema,
         ):
             ignored_spilled_currency_count += 1
             continue
-        if not _has_valid_billed_amount(projected, schema):
+        if (
+            not _has_valid_billed_amount(projected, schema)
+            or not _has_transaction_date_evidence(projected)
+            or _transaction_shape_count(projected) < 2
+            or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+        ):
             complementary = _bounded_complementary_transaction_rows(
                 page_evidence,
                 rows,
@@ -2820,8 +2806,7 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
             center_x = _center_x(glyph.bbox)
             containing_word_distances = {
                 index: min(
-                    abs(center_x - _center_x(word.bbox))
-                    + abs(center_y - _center_y(word.bbox))
+                    abs(center_x - _center_x(word.bbox)) + abs(center_y - _center_y(word.bbox))
                     for word in geometric_rows[index].words
                     if word.bbox[0] <= center_x <= word.bbox[2]
                     and word.bbox[1] <= center_y <= word.bbox[3]
@@ -2931,9 +2916,7 @@ def _singleton_transaction_candidates(
     existing_regions: Sequence[TableRegion],
 ) -> tuple[TableRegion, ...]:
     rows = _merged_header_bands(logical_rows(page_evidence))
-    existing_row_bboxes = {
-        row.bbox for region in existing_regions for row in region.rows
-    }
+    existing_row_bboxes = {row.bbox for region in existing_regions for row in region.rows}
     candidates: list[TableRegion] = []
     observed_bboxes: set[BBox] = set()
     for header_index, header in enumerate(rows):
@@ -2952,7 +2935,12 @@ def _singleton_transaction_candidates(
             ):
                 continue
             projected = _project_row_to_header_bands(page_evidence, source, header)
-            if not _has_valid_billed_amount(projected, schema):
+            if (
+                not _has_valid_billed_amount(projected, schema)
+                or not _has_transaction_date_evidence(projected)
+                or _transaction_shape_count(projected) < 2
+                or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+            ):
                 complementary = _bounded_complementary_transaction_rows(
                     page_evidence,
                     rows,
@@ -2978,9 +2966,7 @@ def _singleton_transaction_candidates(
                     header=header,
                     rows=(projected,),
                     table_schema=final_schema,
-                    confidence=statistics.mean(
-                        (final_schema.confidence, projected.confidence)
-                    ),
+                    confidence=statistics.mean((final_schema.confidence, projected.confidence)),
                     diagnostics=("singleton_transaction_candidate",),
                 )
             )

@@ -179,6 +179,36 @@ def test_value_profile_breaks_tied_header_concepts() -> None:
     assert schema.diagnostics == ()
 
 
+def test_date_profile_accepts_one_isolated_ocr_digit_around_each_date() -> None:
+    header = _cell("Unreadable", (0.0, 10.0, 50.0, 20.0))
+    samples = tuple(
+        _cell(canonical, (0.0, y, 50.0, y + 10.0)).model_copy(
+            update={
+                "words": tuple(
+                    Word(
+                        text=value,
+                        bbox=(0.0, y, 50.0, y + 10.0),
+                        source="ocr",
+                        confidence=0.8,
+                    )
+                    for value in positioned
+                )
+            }
+        )
+        for canonical, positioned, y in (
+            ("8 01/02/26", ("8 01/02/26",), 30.0),
+            ("02/02/26 Merchant", ("02/02/26", "Merchant"), 50.0),
+            ("8", ("03/02/26", "8"), 70.0),
+            ("04/02/26", ("04/02/26",), 90.0),
+        )
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.DATE
+    assert "role_evidence:value_profile" in schema.columns[0].diagnostics
+
+
 def test_explicit_merchant_name_dominates_ancillary_location_qualifier() -> None:
     schema = infer_column_roles(
         (_cell("City Merchant name Type", (0.0, 10.0, 60.0, 20.0)),),
@@ -295,7 +325,13 @@ def test_infer_column_roles_does_not_retype_generic_amount_from_table_context() 
 
 @pytest.mark.parametrize(
     "header",
-    ("Commission amount", "Fee amount", "סכום עמלה", "סכוםהעמלה"),
+    (
+        "Commission amount",
+        "Fee amount",
+        "סכום עמלה",
+        "סכוםהעמלה",
+        'עמלת מט"ח',
+    ),
 )
 def test_infer_column_roles_uses_explicit_auxiliary_amount_header(header: str) -> None:
     schema = infer_column_roles(
@@ -305,6 +341,16 @@ def test_infer_column_roles_uses_explicit_auxiliary_amount_header(header: str) -
 
     assert schema.columns[0].role is ColumnRole.AUXILIARY_AMOUNT
     assert "role_evidence:header" in schema.columns[0].diagnostics
+
+
+def test_explicit_original_amount_accepts_its_embedded_currency_qualifier() -> None:
+    schema = infer_column_roles(
+        (_cell("סכום העסקה במטבע המקור", (0.0, 10.0, 60.0, 20.0)),),
+        (_cell("$ 20.00", (0.0, 30.0, 60.0, 40.0)),),
+    )
+
+    assert schema.columns[0].role is ColumnRole.ORIGINAL_AMOUNT
+    assert "alternative_role:currency" not in schema.columns[0].diagnostics
 
 
 def test_infer_column_roles_uses_canonical_cell_text_not_extra_source_words() -> None:

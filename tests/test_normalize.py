@@ -548,7 +548,7 @@ def test_normalize_statement_recovers_currency_spilled_into_adjacent_location(
             "words": (
                 _word("$", 50.0, 53.0, 30.0),
                 _word(location_value, 54.0, 80.0, 30.0),
-            )
+            ),
         }
     )
     region = _region(
@@ -560,9 +560,9 @@ def test_normalize_statement_recovers_currency_spilled_into_adjacent_location(
             ColumnRole.AMOUNT,
         ),
         (
-                _row(
-                    _cell("10.18", 0, 30.0),
-                    location,
+            _row(
+                _cell("10.18", 0, 30.0),
+                location,
                 _cell("Merchant", 2, 30.0),
                 _cell("01/02/2026", 3, 30.0),
                 _cell("40.60", 4, 30.0),
@@ -794,6 +794,113 @@ def test_normalize_statement_uses_bounded_note_to_corroborate_distant_original_s
         assert transaction.description == "DETAILS"
         assert "original_amount:invalid_amount_text" in transaction.ambiguities
         assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_normalize_statement_uses_exact_subordinate_detail_to_recover_ocr_original_amount() -> None:
+    original = _cell("$ 3000 MERCHANT 30.00", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("$", 52.0, 55.0, 30.0, source="ocr"),
+                _word("3000", 56.0, 66.0, 30.0, source="ocr"),
+                _word("MERCHANT", 67.0, 82.0, 30.0, source="ocr"),
+                _word("30.00", 83.0, 96.0, 30.0, source="ocr"),
+            )
+        }
+    )
+    detail = _row(
+        _cell("USD", 1, 41.0).model_copy(
+            update={"words": (_word("USD", 55.0, 65.0, 41.0, source="ocr"),)}
+        ),
+        _cell("30.00", 2, 41.0).model_copy(
+            update={"words": (_word("30.00", 105.0, 120.0, 41.0, source="ocr"),)}
+        ),
+    ).model_copy(update={"diagnostics": ("subordinate_detail_continuation",)})
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original,
+                _cell("MERCHANT", 2, 30.0),
+                _cell("100.00", 3, 30.0),
+            ),
+            detail,
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "100.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount == Decimal("30.00")
+    assert transaction.original_currency == "USD"
+    assert transaction.ambiguities == ()
+    assert result.row_results[1].diagnostics == ("merged_subordinate_detail_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("detail_amount", "detail_diagnostic", "word_source"),
+    (
+        ("31.00", "subordinate_detail_continuation", "ocr"),
+        ("30.00", "", "ocr"),
+        ("30.00", "subordinate_detail_continuation", "digital"),
+    ),
+)
+def test_subordinate_detail_original_recovery_requires_matching_associated_ocr_evidence(
+    detail_amount: str,
+    detail_diagnostic: str,
+    word_source: str,
+) -> None:
+    original = _cell("$ 3000 MERCHANT 30.00", 1, 30.0).model_copy(
+        update={
+            "words": (
+                _word("$", 52.0, 55.0, 30.0, source=word_source),
+                _word("3000", 56.0, 66.0, 30.0, source=word_source),
+                _word("MERCHANT", 67.0, 82.0, 30.0, source=word_source),
+                _word("30.00", 83.0, 96.0, 30.0, source=word_source),
+            )
+        }
+    )
+    detail = _row(
+        _cell("USD", 1, 41.0).model_copy(
+            update={"words": (_word("USD", 55.0, 65.0, 41.0, source="ocr"),)}
+        ),
+        _cell(detail_amount, 2, 41.0).model_copy(
+            update={"words": (_word(detail_amount, 105.0, 120.0, 41.0, source="ocr"),)}
+        ),
+    ).model_copy(update={"diagnostics": ((detail_diagnostic,) if detail_diagnostic else ())})
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original,
+                _cell("MERCHANT", 2, 30.0),
+                _cell("100.00", 3, 30.0),
+            ),
+            detail,
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "100.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.original_amount is None
+    assert transaction.original_currency is None
+    assert "original_amount:invalid_amount_text" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_normalize_statement_recovers_money_before_exact_distant_description_duplicate() -> None:
@@ -1488,8 +1595,9 @@ def test_normalize_statement_accepts_exact_card_identifier_in_unknown_column() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_normalize_statement_ignores_isolated_short_ocr_artifact_in_punctuation_edge_column(
-) -> None:
+def test_normalize_statement_ignores_isolated_short_ocr_artifact_in_punctuation_edge_column() -> (
+    None
+):
     artifact_word = _word("2", 0.0, 40.0, 30.0, source="ocr")
     artifact_cell = _cell("2", 0, 30.0).model_copy(update={"words": (artifact_word,)})
     region = _region(
@@ -1513,6 +1621,58 @@ def test_normalize_statement_ignores_isolated_short_ocr_artifact_in_punctuation_
             ),
         ),
         headers=("|", "Amount", "Description", "Date"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert len(result.transactions) == 2
+    assert result.row_results[0].diagnostics == ()
+    assert result.diagnostics == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_ignores_unique_edge_artifact_under_short_ocr_header() -> None:
+    artifact_word = _word("5", 0.0, 40.0, 30.0, source="ocr")
+    artifact_cell = _cell("5", 0, 30.0).model_copy(update={"words": (artifact_word,)})
+    region = _region(
+        (
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                artifact_cell,
+                _cell("10.00", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("01/02/2026", 3, 30.0),
+            ),
+            _row(
+                _cell("20.00", 1, 50.0),
+                _cell("Cafe", 2, 50.0),
+                _cell("02/02/2026", 3, 50.0),
+            ),
+        ),
+        headers=("Noise", "Amount", "Description", "Date"),
+    )
+    ocr_header_word = _word("Noise", 0.0, 40.0, 10.0, source="ocr")
+    ocr_header = region.table_schema.header_cells[0].model_copy(
+        update={"words": (ocr_header_word,)}
+    )
+    columns = (
+        region.table_schema.columns[0].model_copy(update={"source_cells": (ocr_header,)}),
+        *region.table_schema.columns[1:],
+    )
+    region = region.model_copy(
+        update={
+            "table_schema": region.table_schema.model_copy(
+                update={
+                    "columns": columns,
+                    "header_cells": (ocr_header, *region.table_schema.header_cells[1:]),
+                }
+            )
+        }
     )
 
     result = normalize_statement(_discovery(region, "30.00", "ILS"))
@@ -1802,6 +1962,230 @@ def test_normalize_statement_falls_back_to_positioned_words_for_invalid_glyph_da
     assert transaction.transaction_date == date(2026, 2, 1)
     assert transaction.ambiguities == ()
     assert transaction.evidence[0].raw_text == "01/02/266"
+
+
+@pytest.mark.parametrize(
+    ("raw_date", "expected"),
+    (
+        ("2716/01/26", date(2026, 1, 16)),
+        ("02/02/2685", date(2026, 2, 2)),
+    ),
+)
+def test_normalize_statement_repairs_bounded_ocr_digits_fused_to_date(
+    raw_date: str,
+    expected: date,
+) -> None:
+    date_word = _word(raw_date, 0.0, 40.0, 30.0, source="ocr")
+    date_cell = Cell(
+        page_number=1,
+        bbox=date_word.bbox,
+        text=raw_date,
+        words=(date_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                date_cell,
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == expected
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_recovers_ocr_date_spilled_into_description_band() -> None:
+    compound_word = _word("2701/02/26 Merchant", 20.0, 90.0, 30.0, source="ocr")
+    compound = Cell(
+        page_number=1,
+        bbox=compound_word.bbox,
+        text=compound_word.text,
+        words=(compound_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(compound, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.description == "Merchant"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_recovers_ocr_date_between_description_fragments() -> None:
+    compound_word = _word(
+        "First 7828/01/26 Merchant",
+        20.0,
+        90.0,
+        30.0,
+        source="ocr",
+    )
+    compound = Cell(
+        page_number=1,
+        bbox=compound_word.bbox,
+        text=compound_word.text,
+        words=(compound_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(compound, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 1, 28)
+    assert transaction.description == "First Merchant"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_prefers_boundary_ocr_date_over_invalid_date_artifact() -> None:
+    artifact = _cell("₪", 0, 30.0)
+    compound_word = _word("First 7828/01/26 Merchant", 20.0, 90.0, 30.0, source="ocr")
+    compound = Cell(
+        page_number=1,
+        bbox=compound_word.bbox,
+        text=compound_word.text,
+        words=(compound_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(artifact, compound, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 1, 28)
+    assert transaction.description == "First Merchant"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_recovers_description_spilled_into_ocr_date_band() -> None:
+    date_word = _word("01/02/26", 0.0, 30.0, 30.0, source="ocr")
+    merchant_word = _word("Merchant", 32.0, 70.0, 30.0, source="ocr")
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 70.0, 40.0),
+        text="01/02/26 Merchant",
+        words=(date_word, merchant_word),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(compound, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 2, 1)
+    assert transaction.description == "Merchant"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("raw_dates", "descriptions"),
+    (
+        (("13/03/26", "20/03/26"), ("First", "Second")),
+        (("26/03/13", "26/03/20"), ("First", "Second")),
+    ),
+)
+def test_normalize_statement_preserves_proven_unanchored_short_dates_without_guessing_century(
+    raw_dates: tuple[str, str],
+    descriptions: tuple[str, str],
+) -> None:
+    rows = tuple(
+        _row(
+            Cell(
+                page_number=1,
+                bbox=(20.0, y, 90.0, y + 10.0),
+                text=f"{raw_date} {description}",
+                words=(
+                    _word(raw_date, 20.0, 48.0, y, source="ocr"),
+                    _word(description, 52.0, 90.0, y, source="ocr"),
+                ),
+                confidence=0.8,
+            ),
+            _cell(amount, 2, y),
+        )
+        for raw_date, description, amount, y in zip(
+            raw_dates,
+            descriptions,
+            ("2.00", "4.00"),
+            (30.0, 50.0),
+            strict=True,
+        )
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        rows,
+    )
+
+    result = normalize_statement(_discovery(region, "6.00", "ILS"))
+
+    assert tuple(transaction.transaction_date for transaction in result.transactions) == (
+        None,
+        None,
+    )
+    assert tuple(transaction.description for transaction in result.transactions) == descriptions
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert tuple(transaction.evidence[0].raw_text for transaction in result.transactions) == tuple(
+        f"{raw_date} {description}"
+        for raw_date, description in zip(raw_dates, descriptions, strict=True)
+    )
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_keeps_unanchored_short_date_ordering_ambiguity_explicit() -> None:
+    rows = tuple(
+        _row(
+            Cell(
+                page_number=1,
+                bbox=(20.0, y, 90.0, y + 10.0),
+                text=f"{raw_date} {description}",
+                words=(
+                    _word(raw_date, 20.0, 48.0, y, source="ocr"),
+                    _word(description, 52.0, 90.0, y, source="ocr"),
+                ),
+                confidence=0.8,
+            ),
+            _cell(amount, 2, y),
+        )
+        for raw_date, description, amount, y in (
+            ("01/02/26", "First", "2.00", 30.0),
+            ("01/03/26", "Second", "4.00", 50.0),
+        )
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        rows,
+    )
+
+    result = normalize_statement(_discovery(region, "6.00", "ILS"))
+
+    assert all(
+        "invalid_transaction_date" in transaction.ambiguities for transaction in result.transactions
+    )
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_normalize_statement_recovers_date_from_overlapping_boundary_cell() -> None:
@@ -2239,11 +2623,7 @@ def test_normalize_statement_excludes_printed_total_row_retained_in_region() -> 
         }
     )
     discovery = discovery.model_copy(
-        update={
-            "groups": (
-                group.model_copy(update={"printed_total": printed_total}),
-            )
-        }
+        update={"groups": (group.model_copy(update={"printed_total": printed_total}),)}
     )
 
     result = normalize_statement(discovery)
@@ -2694,6 +3074,54 @@ def test_one_malformed_original_value_does_not_hide_repeated_currency_proof() ->
     assert result.transactions[2].original_currency == "ILS"
     assert "original_amount:unknown_currency" not in result.transactions[1].ambiguities
     assert "original_amount:invalid_grouping_separator" in result.transactions[1].ambiguities
+
+
+def test_ocr_original_amount_is_repaired_by_exact_same_currency_billed_value() -> None:
+    damaged_word = _word("1,601,00", 100.0, 140.0, 50.0, source="ocr")
+    damaged_original = Cell(
+        page_number=1,
+        bbox=damaged_word.bbox,
+        text=damaged_word.text,
+        words=(damaged_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("First", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("OCR damaged", 1, 50.0),
+                damaged_original,
+                _cell("1,601.00", 3, 50.0),
+            ),
+            _row(
+                _cell("03/02/2026", 0, 70.0),
+                _cell("Third", 1, 70.0),
+                _cell("20.00", 2, 70.0),
+                _cell("20.00", 3, 70.0),
+            ),
+        ),
+        headers=("Date", "Description", "Original amount", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "1,631.00", "ILS"))
+
+    transaction = result.transactions[1]
+    assert transaction.original_amount == Decimal("1601.00")
+    assert transaction.original_currency == "ILS"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_mixed_original_values_do_not_inherit_billing_currency() -> None:

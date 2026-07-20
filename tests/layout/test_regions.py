@@ -220,12 +220,8 @@ def test_strong_single_row_accepts_low_alignment_only_when_next_total_matches() 
         }
     )
 
-    assert _has_strong_single_row_evidence(
-        (row,), schema, "stopped_at_total", matching_total
-    )
-    assert not _has_strong_single_row_evidence(
-        (row,), schema, "stopped_at_total", mismatched_total
-    )
+    assert _has_strong_single_row_evidence((row,), schema, "stopped_at_total", matching_total)
+    assert not _has_strong_single_row_evidence((row,), schema, "stopped_at_total", mismatched_total)
 
 
 def test_spilled_currency_fragment_is_proven_by_adjacent_following_amount() -> None:
@@ -327,9 +323,7 @@ def test_trailing_overlaid_ocr_punctuation_is_bounded_to_previous_amount() -> No
     header = logical_rows(_page(header_words))[0]
     previous = logical_rows(_page(previous_words))[0]
     schema = infer_column_roles(header.cells, previous.cells)
-    artifact_word = _word("|", 100.0, 101.0, 34.0, height=2.0).model_copy(
-        update={"source": "ocr"}
-    )
+    artifact_word = _word("|", 100.0, 101.0, 34.0, height=2.0).model_copy(update={"source": "ocr"})
     artifact = Row(
         page_number=1,
         bbox=artifact_word.bbox,
@@ -349,33 +343,21 @@ def test_trailing_overlaid_ocr_punctuation_is_bounded_to_previous_amount() -> No
     assert _trailing_overlaid_ocr_amount_artifact(artifact, previous, schema)
     assert _trailing_overlaid_ocr_amount_artifact(
         artifact.model_copy(
-            update={
-                "cells": (
-                    artifact.cells[0].model_copy(update={"text": "WA"}),
-                )
-            }
+            update={"cells": (artifact.cells[0].model_copy(update={"text": "WA"}),)}
         ),
         previous,
         schema,
     )
     assert not _trailing_overlaid_ocr_amount_artifact(
         artifact.model_copy(
-            update={
-                "cells": (
-                    artifact.cells[0].model_copy(update={"text": "1"}),
-                )
-            }
+            update={"cells": (artifact.cells[0].model_copy(update={"text": "1"}),)}
         ),
         previous,
         schema,
     )
     assert not _trailing_overlaid_ocr_amount_artifact(
         artifact.model_copy(
-            update={
-                "cells": (
-                    artifact.cells[0].model_copy(update={"text": "WORD"}),
-                )
-            }
+            update={"cells": (artifact.cells[0].model_copy(update={"text": "WORD"}),)}
         ),
         previous,
         schema,
@@ -389,9 +371,7 @@ def test_bounded_complementary_rows_merge_overlapping_transaction_cells() -> Non
     complete = logical_rows(_page(complete_words))[0]
     schema = infer_column_roles(header.cells, complete.cells)
     date_word = _word("02/02/2026", 0.0, 22.0, 50.0, height=20.0)
-    artifact_word = _word("/", 100.0, 102.0, 50.0, height=20.0).model_copy(
-        update={"source": "ocr"}
-    )
+    artifact_word = _word("/", 100.0, 102.0, 50.0, height=20.0).model_copy(update={"source": "ocr"})
     amount_word = _word("18.60", 92.0, 110.0, 60.0)
     description_word = _word("Cafe", 35.0, 72.0, 60.0)
     source = logical_rows(_page((date_word, artifact_word)))[0]
@@ -414,6 +394,63 @@ def test_bounded_complementary_rows_merge_overlapping_transaction_cells() -> Non
         "Cafe",
         "18.60",
     )
+
+
+def test_bounded_complementary_rows_merge_amount_before_overlapping_date() -> None:
+    header_words = _header(10.0)
+    complete_words = _data(30.0, "01/02/2026", "Market", "12.40")
+    header = logical_rows(_page(header_words))[0]
+    complete = logical_rows(_page(complete_words))[0]
+    schema = infer_column_roles(header.cells, complete.cells)
+    description_word = _word("Split merchant", 35.0, 72.0, 50.0, height=30.0)
+    amount_word = _word("18.60", 92.0, 110.0, 50.0, height=30.0)
+    date_word = _word("02/02/2026", 0.0, 22.0, 60.0)
+    source = logical_rows(_page((description_word, amount_word)))[0]
+    following = logical_rows(_page((date_word,)))[0]
+    page = _page((*header_words, description_word, amount_word, date_word))
+
+    merged = _bounded_complementary_transaction_rows(
+        page,
+        (header, source, following),
+        1,
+        header,
+        schema,
+    )
+
+    assert merged is not None
+    row, consumed_through = merged
+    assert consumed_through == 2
+    assert tuple(cell.text for cell in row.cells) == (
+        "02/02/2026",
+        "Split merchant",
+        "18.60",
+    )
+
+
+def test_detect_table_regions_merges_amount_before_overlapping_date() -> None:
+    header_words = _header(10.0)
+    first_words = _data(30.0, "01/02/2026", "Market", "12.40")
+    description_word = _word("Split merchant", 35.0, 72.0, 50.0, height=30.0)
+    amount_word = _word("18.60", 92.0, 110.0, 50.0, height=30.0)
+    date_word = _word("02/02/2026", 0.0, 22.0, 60.0)
+    page = _page(
+        (
+            *header_words,
+            *first_words,
+            description_word,
+            amount_word,
+            date_word,
+            _word("Total", 35.0, 72.0, 90.0),
+            _word("31.00", 92.0, 110.0, 90.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "merged_complementary_rows" in regions[0].rows[1].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
 
 
 def test_exact_total_proves_simple_single_row_billed_table() -> None:
@@ -1804,6 +1841,55 @@ def test_foreign_detail_block_accepts_canonical_identifier_beside_header_sidebar
     assert "detail_continuation_rows:5" in regions[0].diagnostics
 
 
+def test_foreign_detail_block_accepts_canonical_identifier_with_split_digits() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("הסדר מיוחד", 30.0, 85.0, 94.0),
+            _word("מזהה כרטיס אינטרנט 2 2", 30.0, 69.0, 105.0),
+            _word("83", 72.0, 85.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+            _word("Total", 30.0, 55.0, 136.0),
+            _word("41.00", 100.0, 125.0, 136.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 8
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:7])
+    assert "detail_continuation_rows:5" in regions[0].diagnostics
+    assert "stopped_at_total" in regions[0].diagnostics
+
+
+def test_foreign_detail_block_rejects_visually_reversed_identifier_marker() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("הסדר מיוחד", 30.0, 85.0, 94.0),
+            _word("טנרטניא סיטרכ ההזמ 2 2 8 3", 30.0, 85.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_accepts_wrapped_short_identifier() -> None:
     page = _page(
         (
@@ -3034,9 +3120,7 @@ def test_detect_table_regions_checks_amount_overlay_before_description_tolerance
         (
             *_header(10.0),
             *_data(30.0, "01/02/2026", "Market", "12.40"),
-            _word("WA", 85.0, 95.0, 42.5, height=30.0).model_copy(
-                update={"source": "ocr"}
-            ),
+            _word("WA", 85.0, 95.0, 42.5, height=30.0).model_copy(update={"source": "ocr"}),
             *_data(60.0, "03/02/2026", "Cafe", "18.60"),
             _word("Total", 35.0, 72.0, 80.0),
             _word("31.00", 92.0, 120.0, 80.0),
@@ -3096,10 +3180,7 @@ def test_detect_table_regions_ignores_isolated_ocr_punctuation_in_amount_band() 
     assert len(regions) == 1
     assert tuple(row.cells[-1].text for row in regions[0].rows) == ("12.40", "18.60")
     assert all(
-        any(
-            diagnostic.startswith("ignored_")
-            for diagnostic in row.cells[-1].diagnostics
-        )
+        any(diagnostic.startswith("ignored_") for diagnostic in row.cells[-1].diagnostics)
         for row in regions[0].rows
     )
 

@@ -100,6 +100,7 @@ _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
             "סכום העמלה",
             "סכוםעמלה",
             "סכוםהעמלה",
+            "עמלת מט ח",
         }
     ),
     ColumnRole.ORIGINAL_AMOUNT: frozenset(
@@ -396,15 +397,22 @@ def _compatible_profile_alternative(
     header_scores: dict[ColumnRole, float],
     profile_scores: dict[ColumnRole, float],
 ) -> bool:
-    return _same_semantic_family(selected, alternative) and (
-        (
-            header_scores.get(selected, 0.0) == 1.0
-            and alternative in _GENERIC_FAMILY_ROLES
-            and header_scores.get(alternative, 0.0) <= 0.82
-        )
-        or (
-            header_scores.get(alternative, 0.0) < 0.65
-            and profile_scores.get(alternative, 0.0) >= 0.65
+    return (
+        selected is ColumnRole.ORIGINAL_AMOUNT
+        and alternative is ColumnRole.CURRENCY
+        and header_scores.get(selected, 0.0) == 1.0
+    ) or (
+        _same_semantic_family(selected, alternative)
+        and (
+            (
+                header_scores.get(selected, 0.0) == 1.0
+                and alternative in _GENERIC_FAMILY_ROLES
+                and header_scores.get(alternative, 0.0) <= 0.82
+            )
+            or (
+                header_scores.get(alternative, 0.0) < 0.65
+                and profile_scores.get(alternative, 0.0) >= 0.65
+            )
         )
     )
 
@@ -559,15 +567,42 @@ def is_installment_shaped(text: str) -> bool:
     return 1 <= current <= total
 
 
-def _profile_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
-    if not texts:
+def _is_bounded_ocr_date_profile_cell(cell: Cell) -> bool:
+    if not cell.words or any(word.source != "ocr" for word in cell.words):
+        return False
+    normalized = unicodedata.normalize("NFC", cell.text).strip()
+    matches = tuple(
+        match
+        for match in _THREE_COMPONENT_DATE_PATTERN.finditer(normalized)
+        if _is_exact_date_shaped(match.group(0))
+    )
+    if len(matches) == 1:
+        match = matches[0]
+        residual = normalized[: match.start()] + normalized[match.end() :]
+        residual_alnum = tuple(char for char in residual if char.isalnum())
+        return len(residual_alnum) <= 1 or (
+            (match.start() == 0 or match.end() == len(normalized))
+            and bool(residual_alnum)
+            and not any(char.isdigit() for char in residual_alnum)
+        )
+    positioned_dates = tuple(
+        word
+        for word in cell.words
+        if _is_exact_date_shaped(unicodedata.normalize("NFC", word.text).strip())
+    )
+    return len(positioned_dates) == 1 and sum(char.isalnum() for char in normalized) <= 1
+
+
+def _profile_scores(cells: Sequence[Cell]) -> dict[ColumnRole, float]:
+    if not cells:
         return {}
     matches: defaultdict[ColumnRole, int] = defaultdict(int)
-    for text in texts:
+    for cell in cells:
+        text = cell.text
         stripped = unicodedata.normalize("NFC", text).strip()
         raw_currency = stripped.upper()
         compact_currency = _normalized_header(stripped).upper()
-        if is_date_shaped(stripped):
+        if is_date_shaped(stripped) or _is_bounded_ocr_date_profile_cell(cell):
             matches[ColumnRole.DATE] += 1
         if raw_currency in _CURRENCY_VALUES or compact_currency in _CURRENCY_VALUES:
             matches[ColumnRole.CURRENCY] += 1
@@ -581,7 +616,7 @@ def _profile_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
 
     scores: dict[ColumnRole, float] = {}
     for role, count in matches.items():
-        fraction = count / len(texts)
+        fraction = count / len(cells)
         ceiling = 0.55 if role is ColumnRole.DESCRIPTION else 0.92
         scores[role] = ceiling * fraction
     return scores
@@ -782,7 +817,7 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
         headers = _cells_for_column(header_cells, column)
         samples = _cells_for_column(sample_cells, column)
         header_scores = _header_scores(_header_evidence_texts(headers))
-        profile_scores = _profile_scores(tuple(cell.text for cell in samples))
+        profile_scores = _profile_scores(samples)
         scores = dict(header_scores)
         exact_header_roles = tuple(role for role, score in header_scores.items() if score == 1.0)
         strongest_header_score = max(header_scores.values(), default=0.0)
