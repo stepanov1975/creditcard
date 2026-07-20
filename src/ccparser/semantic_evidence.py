@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -67,6 +68,14 @@ class EvidenceCluster:
     bbox: BBox
     atom_ids: frozenset[int]
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentedDateCandidate:
+    """A date-shaped token reconstructed from contiguous positioned glyphs."""
+
+    text: str
+    atom_ids: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +408,75 @@ class EvidenceLedger:
             )
         return tuple(sorted(clusters, key=lambda cluster: (cluster.bbox[1], cluster.bbox[0])))
 
+    def fragmented_date_candidates(self, cell: Cell) -> tuple[FragmentedDateCandidate, ...]:
+        """Recover date-shaped tokens from physical glyph order, not logical cell text."""
+
+        cell_atom_ids = self.atoms_for_cell(cell)
+        atom_id_by_glyph_key = {
+            _glyph_key(atom.page_number, atom.glyph): atom.atom_id
+            for atom in self.atoms
+            if atom.atom_id in cell_atom_ids and atom.glyph is not None
+        }
+        positioned = tuple(
+            (glyph, atom_id_by_glyph_key.get(_glyph_key(cell.page_number, glyph)))
+            for glyph in cell.glyphs
+        )
+        if not positioned:
+            return ()
+
+        ordered = tuple(
+            sorted(
+                positioned,
+                key=lambda item: (_center_y(item[0].bbox), item[0].bbox[0], item[0].bbox[2]),
+            )
+        )
+        date_pattern = re.compile(
+            r"(?<!\d)\d{1,4}(?P<separator>[./-])\d{1,2}"
+            r"(?P=separator)\d{1,4}(?!\d)"
+        )
+        candidates: list[FragmentedDateCandidate] = []
+        segment: list[tuple[Glyph, int]] = []
+
+        def flush() -> None:
+            if not segment:
+                return
+            text = "".join(glyph.char for glyph, _ in segment)
+            for match in date_pattern.finditer(text):
+                matched = segment[match.start() : match.end()]
+                candidates.append(
+                    FragmentedDateCandidate(
+                        text=match.group(0),
+                        atom_ids=frozenset(atom_id for _, atom_id in matched),
+                    )
+                )
+            segment.clear()
+
+        previous: Glyph | None = None
+        for glyph, atom_id in ordered:
+            shared_line = (
+                previous is None
+                or abs(_center_y(previous.bbox) - _center_y(glyph.bbox))
+                <= min(_height(previous.bbox), _height(glyph.bbox)) * 0.5
+            )
+            gap = 0.0 if previous is None else glyph.bbox[0] - previous.bbox[2]
+            contiguous = previous is None or (
+                shared_line and gap <= min(_height(previous.bbox), _height(glyph.bbox)) * 0.6
+            )
+            if (
+                atom_id is None
+                or glyph.char.isspace()
+                or (not glyph.char.isdigit() and glyph.char not in "./-")
+                or not contiguous
+            ):
+                flush()
+            if atom_id is not None and (glyph.char.isdigit() or glyph.char in "./-"):
+                segment.append((glyph, atom_id))
+            previous = glyph
+        flush()
+
+        unique = {(candidate.text, candidate.atom_ids): candidate for candidate in candidates}
+        return tuple(unique.values())
+
     def render(self, atom_ids: Iterable[int]) -> str:
         """Render selected atoms using exact positioned glyph and word evidence."""
 
@@ -463,5 +541,6 @@ __all__ = [
     "EvidenceClaim",
     "EvidenceCluster",
     "EvidenceLedger",
+    "FragmentedDateCandidate",
     "SemanticOwner",
 ]

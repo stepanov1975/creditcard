@@ -424,7 +424,11 @@ def _original_currency_spilled_into_location(
     return canonical_currency(currency_word.text) if currency_on_original_edge else None
 
 
-def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
+def _assignment_diagnostics(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+) -> tuple[str, ...]:
     diagnostics: list[str] = []
     for cell in row.cells:
         columns = tuple(
@@ -442,6 +446,9 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
         safe_card_identifier = column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(
             row, cell
         )
+        deferred_semantic_candidate = column.role is ColumnRole.UNKNOWN and bool(
+            ledger.fragmented_date_candidates(cell)
+        )
         safe_edge_artifact = _is_isolated_ocr_edge_artifact_cell(cell, column, region)
         safe_location_identifier = column.role is ColumnRole.LOCATION and (
             _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
@@ -455,12 +462,19 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
             relevant
             and column.role is ColumnRole.UNKNOWN
             and not safe_card_identifier
+            and not deferred_semantic_candidate
             and not safe_edge_artifact
         ):
             diagnostics.append(f"column:{column.index}:role_unknown")
         if relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier:
             diagnostics.append(f"column:{column.index}:unexpected_location_value")
-        if relevant and has_alternative and not safe_card_identifier and not safe_edge_artifact:
+        if (
+            relevant
+            and has_alternative
+            and not safe_card_identifier
+            and not deferred_semantic_candidate
+            and not safe_edge_artifact
+        ):
             diagnostics.extend(
                 f"column:{column.index}:{value}"
                 for value in column.diagnostics
@@ -470,9 +484,15 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
             (
                 column.role is ColumnRole.UNKNOWN
                 and not safe_card_identifier
+                and not deferred_semantic_candidate
                 and not safe_edge_artifact
             )
-            or (has_alternative and not safe_card_identifier and not safe_edge_artifact)
+            or (
+                has_alternative
+                and not safe_card_identifier
+                and not deferred_semantic_candidate
+                and not safe_edge_artifact
+            )
             or (column.role is ColumnRole.LOCATION and not safe_location_identifier)
         ):
             diagnostics.append("unresolved_relevant_cell")
@@ -2012,6 +2032,37 @@ def _dates(
     return transaction_date, posting_date, conversion_date, diagnostics
 
 
+def _conversion_date_from_semantic_evidence(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+    year_context: DiscoveredDateYearContext | None,
+    *,
+    original_currency: str | None,
+    billing_currency: str,
+) -> tuple[date | None, tuple[str, ...]]:
+    if original_currency is None or original_currency == billing_currency:
+        return None, ()
+
+    candidate_cells = tuple(
+        cell
+        for column in region.table_schema.columns
+        if column.role in {ColumnRole.CONVERSION_DATE, ColumnRole.UNKNOWN}
+        for cell in _cells_for_column(row, column)
+    )
+    candidates = tuple(
+        candidate
+        for cell in candidate_cells
+        for candidate in ledger.fragmented_date_candidates(cell)
+    )
+    if not candidates:
+        return None, ()
+    parsed = tuple(_parse_date(candidate.text, year_context)[0] for candidate in candidates)
+    if len(candidates) == 1 and parsed[0] is not None:
+        return parsed[0], ()
+    return None, ("unparsed_conversion_date_candidate",)
+
+
 def _normalize_row(
     *,
     row: Row,
@@ -2025,7 +2076,7 @@ def _normalize_row(
     rows = (row, *continuation_rows)
     ledger = EvidenceLedger.from_rows(rows)
     evidence = _row_evidence(rows)
-    diagnostics = list(_assignment_diagnostics(row, region))
+    diagnostics = list(_assignment_diagnostics(row, region, ledger))
     role_contract_diagnostics = _role_contract_diagnostics(region)
     diagnostics.extend(role_contract_diagnostics)
     if role_contract_diagnostics:
@@ -2241,6 +2292,17 @@ def _normalize_row(
             else:
                 original_amount = original.amount
                 original_currency = original.currency
+
+    if conversion_date is None:
+        conversion_date, conversion_diagnostics = _conversion_date_from_semantic_evidence(
+            row,
+            region,
+            ledger,
+            year_context,
+            original_currency=original_currency,
+            billing_currency=billed.currency,
+        )
+        diagnostics.extend(conversion_diagnostics)
 
     installment_current: int | None = None
     installment_total: int | None = None

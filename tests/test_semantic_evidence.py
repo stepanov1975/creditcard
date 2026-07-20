@@ -133,3 +133,51 @@ def test_render_preserves_standalone_hyphen_word_boundaries() -> None:
     ledger = EvidenceLedger.from_rows((_row(cell),))
 
     assert ledger.render(ledger.atoms_for_cell(cell)) == "HEALTH - INSURANCE"
+
+
+def _fragmented_date_cell(logical_text: str, physical_text: str) -> Cell:
+    glyphs = tuple(_glyph(char, 10.0 + index) for index, char in enumerate(physical_text))
+    return _cell(logical_text, (10.0, 20.0, 70.0, 30.0), glyphs=glyphs)
+
+
+def test_fragmented_date_candidates_follow_physical_digit_geometry() -> None:
+    first = _fragmented_date_cell(". ב 8/0 6/2 6 - לא", "אל8/06/26 -ב .")
+    second = _fragmented_date_cell(". ב 2 5/0 6/2 6 - לא", "אל25/06/26 -ב .")
+    first_ledger = EvidenceLedger.from_rows((_row(first),))
+    second_ledger = EvidenceLedger.from_rows((_row(second),))
+
+    first_candidates = first_ledger.fragmented_date_candidates(first)
+    second_candidates = second_ledger.fragmented_date_candidates(second)
+
+    assert tuple(candidate.text for candidate in first_candidates) == ("8/06/26",)
+    assert tuple(candidate.text for candidate in second_candidates) == ("25/06/26",)
+    assert all(candidate.atom_ids for candidate in (*first_candidates, *second_candidates))
+
+
+def test_fragmented_date_candidates_reject_inconsistent_separators_and_large_gaps() -> None:
+    inconsistent = _fragmented_date_cell("25/06-26", "25/06-26")
+    separated_glyphs = (
+        *tuple(_glyph(char, 10.0 + index) for index, char in enumerate("25/")),
+        *tuple(_glyph(char, 40.0 + index) for index, char in enumerate("06/26")),
+    )
+    separated = _cell(
+        "25/ 06/26",
+        (10.0, 20.0, 60.0, 30.0),
+        glyphs=separated_glyphs,
+    )
+
+    inconsistent_ledger = EvidenceLedger.from_rows((_row(inconsistent),))
+    separated_ledger = EvidenceLedger.from_rows((_row(separated),))
+
+    assert inconsistent_ledger.fragmented_date_candidates(inconsistent) == ()
+    assert separated_ledger.fragmented_date_candidates(separated) == ()
+
+
+def test_fragmented_date_candidates_preserve_multiple_candidates_for_validation() -> None:
+    cell = _fragmented_date_cell("8/06/26 9/06/26", "8/06/26 9/06/26")
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    assert tuple(candidate.text for candidate in ledger.fragmented_date_candidates(cell)) == (
+        "8/06/26",
+        "9/06/26",
+    )

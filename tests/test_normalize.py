@@ -2664,6 +2664,124 @@ def test_normalize_statement_preserves_repeated_hyphenated_numeric_merchant_clus
 
 
 @pytest.mark.parametrize(
+    ("logical_text", "physical_text", "expected"),
+    (
+        (". ב 8/0 6/2 6 - לא", "אל8/06/26 -ב .", date(2026, 6, 8)),
+        (". ב 2 5/0 6/2 6 - לא", "אל25/06/26 -ב .", date(2026, 6, 25)),
+    ),
+)
+def test_normalize_statement_recovers_fragmented_conversion_date_from_foreign_row(
+    logical_text: str,
+    physical_text: str,
+    expected: date,
+) -> None:
+    conversion_evidence = Cell(
+        page_number=1,
+        bbox=(100.0, 30.0, 140.0, 40.0),
+        text=logical_text,
+        glyphs=_glyphs(physical_text, 100.0, 30.0),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("15.49", 0, 30.0),
+                _cell("$5.15", 1, 30.0),
+                conversion_evidence,
+                _cell("Foreign merchant", 3, 30.0),
+                _cell("24/06/2026", 4, 30.0),
+            ),
+        ),
+        headers=("Amount", "Original", "Presented", "Merchant", "Date"),
+    )
+
+    result = normalize_statement(_discovery(region, "15.49", "ILS", year_context=2026))
+
+    assert result.transactions[0].conversion_date == expected
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize("physical_text", ("8/06/26 9/06/26", "32/06/26"))
+def test_normalize_statement_marks_unresolved_conversion_date_candidate(
+    physical_text: str,
+) -> None:
+    conversion_evidence = Cell(
+        page_number=1,
+        bbox=(100.0, 30.0, 140.0, 40.0),
+        text=physical_text,
+        glyphs=_glyphs(physical_text, 100.0, 30.0),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("15.49", 0, 30.0),
+                _cell("$5.15", 1, 30.0),
+                conversion_evidence,
+                _cell("Foreign merchant", 3, 30.0),
+                _cell("24/06/2026", 4, 30.0),
+            ),
+        ),
+        headers=("Amount", "Original", "Presented", "Merchant", "Date"),
+    )
+
+    result = normalize_statement(_discovery(region, "15.49", "ILS", year_context=2026))
+
+    assert result.transactions[0].conversion_date is None
+    assert "unparsed_conversion_date_candidate" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_normalize_statement_does_not_treat_unrelated_date_as_conversion_on_domestic_row() -> None:
+    note = Cell(
+        page_number=1,
+        bbox=(100.0, 30.0, 140.0, 40.0),
+        text="08/06/26",
+        glyphs=_glyphs("08/06/26", 100.0, 30.0),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("15.49", 0, 30.0),
+                _cell("15.49", 1, 30.0),
+                note,
+                _cell("Domestic merchant", 3, 30.0),
+                _cell("24/06/2026", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "15.49", "ILS", year_context=2026))
+
+    assert result.transactions[0].conversion_date is None
+    assert "unparsed_conversion_date_candidate" not in result.transactions[0].ambiguities
+
+
+@pytest.mark.parametrize(
     ("raw_dates", "descriptions"),
     (
         (("13/03/26", "20/03/26"), ("First", "Second")),
