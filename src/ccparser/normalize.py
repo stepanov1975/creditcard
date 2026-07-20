@@ -40,6 +40,13 @@ from ccparser.money import (
     parse_amount,
 )
 from ccparser.reconcile import reconcile
+from ccparser.semantic_evidence import (
+    DescriptionExtraction,
+    EvidenceClaim,
+    EvidenceCluster,
+    EvidenceLedger,
+    SemanticOwner,
+)
 
 
 class _ImmutableNormalizationModel(BaseModel):
@@ -109,6 +116,9 @@ _LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 _CARD_IDENTIFIER_PATTERN = re.compile(r"^\d{4,10}$")
 _CARD_IDENTIFIER_MARKERS = ("card id", "card identifier", "מזהה כרטיס")
 _MIN_DESCRIPTION_SPILL_OVERLAP = 0.2
+_MIN_DATE_DESCRIPTION_CELL_OVERLAP = 0.08
+_HEBREW_GERSHAYIM_PATTERN = re.compile(r'(?<=[\u0590-\u05ff])\s*"\s*(?=[\u0590-\u05ff])')
+_SINGLE_RTL_PARENTHETICAL_PATTERN = re.compile(r"^[()]\s*([\u0590-\u05ff])$")
 
 
 def _normalized_text(text: str) -> str:
@@ -1201,10 +1211,12 @@ def _boundary_date_description_split(
     year_context: DiscoveredDateYearContext | None,
     unanchored_style: DateTokenStyle | None,
 ) -> tuple[date | None, str] | None:
+    cell_width = max(0.0, cell.bbox[2] - cell.bbox[0])
     if (
-        not _cell_has_ocr_evidence(cell)
+        cell_width <= 0
         or _horizontal_overlap(cell.bbox, date_column.bbox) <= 0
-        or _horizontal_overlap(cell.bbox, description_column.bbox) <= 0
+        or _horizontal_overlap(cell.bbox, date_column.bbox) / cell_width
+        < _MIN_DATE_DESCRIPTION_CELL_OVERLAP
     ):
         return None
     normalized = _normalized_text(cell.text)
@@ -1228,6 +1240,24 @@ def _boundary_date_description_split(
         not residual
         or not any(char.isalpha() for char in residual)
         or any(char.isdigit() for char in residual)
+    ):
+        return None
+    description_boundary = (
+        description_column.bbox[2]
+        if _center_x(description_column.bbox) < _center_x(date_column.bbox)
+        else description_column.bbox[0]
+    )
+    residual_word_touches_boundary = any(
+        any(char.isalpha() for char in word.text)
+        and not any(char.isdigit() for char in word.text)
+        and max(0.0, word.bbox[0] - description_boundary, description_boundary - word.bbox[2])
+        <= _height(word.bbox) * 0.2
+        for word in cell.words
+    )
+    if (
+        _horizontal_overlap(cell.bbox, description_column.bbox) / cell_width
+        < _MIN_DATE_DESCRIPTION_CELL_OVERLAP
+        and not residual_word_touches_boundary
     ):
         return None
     return parsed_date, residual
@@ -1267,33 +1297,196 @@ def _boundary_date_description_splits(
     return tuple(unique.values())
 
 
+def _text_direction(text: str) -> str:
+    rtl = sum(unicodedata.bidirectional(char) in {"R", "AL"} for char in text)
+    ltr = sum(unicodedata.bidirectional(char) == "L" for char in text)
+    return "rtl" if rtl > ltr else "ltr"
+
+
+def _cluster_lines(clusters: Sequence[EvidenceCluster]) -> tuple[tuple[EvidenceCluster, ...], ...]:
+    lines: list[list[EvidenceCluster]] = []
+    for cluster in sorted(clusters, key=lambda item: (item.bbox[1], item.bbox[0])):
+        center_y = (cluster.bbox[1] + cluster.bbox[3]) / 2
+        matching = next(
+            (
+                line
+                for line in lines
+                if abs(center_y - (line[0].bbox[1] + line[0].bbox[3]) / 2)
+                <= min(_height(cluster.bbox), _height(line[0].bbox)) * 0.5
+            ),
+            None,
+        )
+        if matching is None:
+            lines.append([cluster])
+        else:
+            matching.append(cluster)
+    return tuple(tuple(sorted(line, key=lambda item: item.bbox[0])) for line in lines)
+
+
+def _primary_description_cluster(
+    clusters: Sequence[EvidenceCluster],
+) -> EvidenceCluster:
+    direction = _text_direction(" ".join(cluster.text for cluster in clusters))
+    return (
+        max(clusters, key=lambda cluster: cluster.bbox[2])
+        if direction == "rtl"
+        else min(clusters, key=lambda cluster: cluster.bbox[0])
+    )
+
+
+def _cluster_signature(cluster: EvidenceCluster) -> str:
+    return _normalized_phrase(cluster.text)
+
+
+def _repeated_distant_description_signatures(region: TableRegion) -> frozenset[str]:
+    counts: dict[str, int] = {}
+    for row in region.rows:
+        row_ledger = EvidenceLedger.from_rows((row,))
+        row_signatures: set[str] = set()
+        for cell in _role_cells(row, region, ColumnRole.DESCRIPTION):
+            for line in _cluster_lines(row_ledger.clusters_for_cell(cell)):
+                if len(line) < 2:
+                    continue
+                primary = _primary_description_cluster(line)
+                row_signatures.update(
+                    signature
+                    for cluster in line
+                    if cluster is not primary and (signature := _cluster_signature(cluster))
+                )
+        for signature in row_signatures:
+            counts[signature] = counts.get(signature, 0) + 1
+    return frozenset(signature for signature, count in counts.items() if count >= 2)
+
+
+def _is_numeric_processor_cluster(cluster: EvidenceCluster) -> bool:
+    compact = "".join(cluster.text.split())
+    return len(compact) >= 6 and compact.isdigit()
+
+
+def _selected_description_cell_atoms(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    repeated_distant_signatures: frozenset[str],
+) -> tuple[frozenset[int], frozenset[int]]:
+    selected: set[int] = set()
+    processor: set[int] = set()
+    for line in _cluster_lines(ledger.clusters_for_cell(cell)):
+        if not line:
+            continue
+        primary = _primary_description_cluster(line)
+        selected.update(primary.atom_ids)
+        for cluster in line:
+            if cluster is primary:
+                continue
+            if _is_numeric_processor_cluster(cluster) or (
+                any(char.isalpha() for char in cluster.text)
+                and _cluster_signature(cluster) in repeated_distant_signatures
+            ):
+                processor.update(cluster.atom_ids)
+            else:
+                selected.update(cluster.atom_ids)
+    return frozenset(selected), frozenset(processor)
+
+
+def _adjacent_unknown_description_atoms(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+) -> tuple[frozenset[int], frozenset[int]]:
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    if len(description_columns) != 1:
+        return frozenset(), frozenset()
+    description_column = description_columns[0]
+    description_cells = _cells_for_column(row, description_column)
+    if len(description_cells) != 1:
+        return frozenset(), frozenset()
+    description_cell = description_cells[0]
+    selected: set[int] = set()
+    ancillary: set[int] = set()
+    for column in region.table_schema.columns:
+        if (
+            column.role is not ColumnRole.UNKNOWN
+            or abs(column.index - description_column.index) != 1
+        ):
+            continue
+        for cell in _cells_for_column(row, column):
+            lines = _cluster_lines(ledger.clusters_for_cell(cell))
+            if len(lines) != 1 or len(lines[0]) < 2:
+                continue
+            clusters = lines[0]
+            cell_is_left = _center_x(cell.bbox) < _center_x(description_cell.bbox)
+            boundary_cluster = (
+                max(clusters, key=lambda cluster: cluster.bbox[2])
+                if cell_is_left
+                else min(clusters, key=lambda cluster: cluster.bbox[0])
+            )
+            gap = (
+                description_cell.bbox[0] - boundary_cluster.bbox[2]
+                if cell_is_left
+                else boundary_cluster.bbox[0] - description_cell.bbox[2]
+            )
+            tolerance = min(_height(cell.bbox), _height(description_cell.bbox))
+            if -tolerance * 0.2 <= gap <= tolerance * 0.6:
+                selected.update(boundary_cluster.atom_ids)
+                ancillary.update(
+                    atom_id
+                    for cluster in clusters
+                    if cluster is not boundary_cluster
+                    for atom_id in cluster.atom_ids
+                )
+    return frozenset(selected), frozenset(ancillary)
+
+
+def _merchant_punctuation(text: str) -> str:
+    normalized = _HEBREW_GERSHAYIM_PATTERN.sub("״", _normalized_text(text))
+    compact = normalized.replace(" ", "")
+    marker = _SINGLE_RTL_PARENTHETICAL_PATTERN.fullmatch(compact)
+    return f"({marker.group(1)})" if marker is not None else normalized
+
+
 def _description(
     rows: Sequence[Row],
     region: TableRegion,
     year_context: DiscoveredDateYearContext | None,
-) -> tuple[str | None, list[str]]:
-    description_rows = tuple(
-        row
-        for row in rows
-        if "subordinate_detail_continuation" not in row.diagnostics
-        and "subordinate_auxiliary_continuation" not in row.diagnostics
-    )
+    ledger: EvidenceLedger,
+) -> DescriptionExtraction:
+    repeated_signatures = _repeated_distant_description_signatures(region)
+    claims: list[EvidenceClaim] = []
     texts: list[str] = []
-    for index, row in enumerate(description_rows):
+    eligible_rows = tuple(
+        row for row in rows if "subordinate_detail_continuation" not in row.diagnostics
+    )
+    previous_row: Row | None = None
+    for index, row in enumerate(eligible_rows):
         row_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
-        if (
+        if "subordinate_auxiliary_continuation" in row.diagnostics:
+            row_cells = tuple(
+                cell
+                for cell in row_cells
+                if _horizontal_overlap(
+                    cell.bbox, _role_columns(region, ColumnRole.DESCRIPTION)[0].bbox
+                )
+                > 0
+            )
+        elif (
             not row_cells
             and index > 0
-            and _is_boundary_description_continuation(
-                row,
-                description_rows[index - 1],
-                region,
-            )
+            and previous_row is not None
+            and _is_boundary_description_continuation(row, previous_row, region)
         ):
             row_cells = row.cells
-        splits = _boundary_date_description_splits(row, region, year_context)
-        split_by_bbox = {cell.bbox: residual for cell, _, residual in splits}
-        completion_text_by_cell: dict[int, str] = {}
+        selected_ids: set[int] = set()
+        processor_ids: set[int] = set()
+        fallback_texts: list[str] = []
+        for cell in row_cells:
+            selected, processor = _selected_description_cell_atoms(
+                ledger,
+                cell,
+                repeated_signatures,
+            )
+            selected_ids.update(selected)
+            processor_ids.update(processor)
+
         date_columns = _role_columns(region, ColumnRole.DATE)
         if len(date_columns) == 1:
             date_cells = _cells_for_column(row, date_columns[0])
@@ -1310,30 +1503,60 @@ def _description(
                 is not None
             ):
                 _, source_cell, boundary_glyph = completion
-                remaining = tuple(
-                    glyph for glyph in source_cell.glyphs if glyph is not boundary_glyph
+                selected_ids.difference_update(
+                    atom.atom_id
+                    for atom in ledger.atoms
+                    if atom.atom_id in ledger.atoms_for_cell(source_cell)
+                    and atom.glyph == boundary_glyph
                 )
-                cleaned = logical_text_for_evidence(remaining, ())
-                if cleaned:
-                    completion_text_by_cell[id(source_cell)] = cleaned
-        if row_cells:
-            texts.extend(
-                completion_text_by_cell.get(
-                    id(cell),
-                    split_by_bbox.get(cell.bbox, cell.text),
-                )
-                for cell in row_cells
+
+        splits = _boundary_date_description_splits(row, region, year_context)
+        if len(splits) == 1:
+            split_cell, _, residual_text = splits[0]
+            split_ids = ledger.atoms_for_cell(split_cell)
+            selected_ids.difference_update(split_ids)
+            residual_ids = frozenset(
+                atom.atom_id
+                for atom in ledger.atoms
+                if atom.atom_id in split_ids
+                and any(char.isalpha() for char in atom.text)
+                and not any(char.isdigit() for char in atom.text)
             )
-        elif len(splits) == 1:
-            texts.append(splits[0][2])
+            if residual_ids:
+                selected_ids.update(residual_ids)
+            else:
+                fallback_texts.append(residual_text)
+        if index == 0:
+            adjacent_ids, ancillary_ids = _adjacent_unknown_description_atoms(
+                row,
+                region,
+                ledger,
+            )
+            selected_ids.update(adjacent_ids)
+            if ancillary_ids:
+                claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, ancillary_ids))
+        rendered = _merchant_punctuation(ledger.render(selected_ids)) if selected_ids else ""
+        row_text = _normalized_text(" ".join((*fallback_texts, rendered)))
+        if row_text:
+            texts.append(_merchant_punctuation(row_text))
+        if selected_ids:
+            claims.append(EvidenceClaim(SemanticOwner.DESCRIPTION, frozenset(selected_ids)))
+        if processor_ids:
+            claims.append(
+                EvidenceClaim(SemanticOwner.PROCESSOR_REFERENCE, frozenset(processor_ids))
+            )
+        previous_row = row
+
     diagnostics: list[str] = []
     if not texts:
         if _role_columns(region, ColumnRole.DESCRIPTION):
             diagnostics.append("missing_description_cell")
-        return None, diagnostics
-    if len(texts) > len(description_rows):
-        diagnostics.append("multiple_description_cells")
-    return _normalized_text(" ".join(texts)), diagnostics
+        return DescriptionExtraction(None, tuple(claims), tuple(diagnostics))
+    return DescriptionExtraction(
+        _normalized_text(" ".join(_merchant_punctuation(text) for text in texts)),
+        tuple(claims),
+        tuple(diagnostics),
+    )
 
 
 def _word_height(word: Word) -> float:
@@ -1800,6 +2023,7 @@ def _normalize_row(
     transaction_id: str,
 ) -> RowNormalizationResult:
     rows = (row, *continuation_rows)
+    ledger = EvidenceLedger.from_rows(rows)
     evidence = _row_evidence(rows)
     diagnostics = list(_assignment_diagnostics(row, region))
     role_contract_diagnostics = _role_contract_diagnostics(region)
@@ -1906,8 +2130,9 @@ def _normalize_row(
             diagnostics=tuple(diagnostics),
         )
 
-    description, description_diagnostics = _description(rows, region, year_context)
-    diagnostics.extend(description_diagnostics)
+    description_extraction = _description(rows, region, year_context, ledger)
+    description = description_extraction.value
+    diagnostics.extend(description_extraction.diagnostics)
     transaction_date, posting_date, conversion_date, date_diagnostics = _dates(
         row,
         region,

@@ -2408,6 +2408,261 @@ def test_normalize_statement_recovers_description_spilled_into_ocr_date_band() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_recovers_leading_merchant_word_from_digital_date_cell() -> None:
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="26/06/26 דלק",
+        words=(
+            _word("דלק", 39.8, 47.0, 30.0),
+            _word("26/06/26", 50.0, 82.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 35.0, 40.0),
+        text="מנטה עוקף חדרה",
+        words=(
+            _word("חדרה", 0.0, 10.0, 30.0),
+            _word("עוקף", 12.0, 22.0, 30.0),
+            _word("מנטה", 24.0, 34.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description_cell, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    assert result.transactions[0].description == "דלק מנטה עוקף חדרה"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_recovers_adjacent_suffix_without_category_text() -> None:
+    category_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 50.0, 40.0),
+        text='בע " מ תקשורת',
+        words=(
+            _word("תקשורת", 2.0, 20.0, 30.0),
+            _word("מ", 35.0, 39.0, 30.0),
+            _word('"', 39.0, 42.0, 30.0),
+            _word("בע", 42.0, 50.1, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description_cell = Cell(
+        page_number=1,
+        bbox=(50.0, 30.0, 100.0, 40.0),
+        text="חברת פרטנר תקשורת",
+        words=(
+            _word("תקשורת", 50.0, 66.0, 30.0),
+            _word("פרטנר", 68.0, 83.0, 30.0),
+            _word("חברת", 85.0, 99.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    suffix = Cell(
+        page_number=1,
+        bbox=(80.0, 41.0, 90.0, 51.0),
+        text=")ה",
+        words=(_word("ה", 81.0, 86.0, 41.0), _word(")", 86.0, 89.0, 41.0)),
+        confidence=1.0,
+    )
+    category_continuation = Cell(
+        page_number=1,
+        bbox=(10.0, 41.0, 20.0, 51.0),
+        text="ומח",
+        words=(_word("ומח", 10.0, 20.0, 41.0),),
+        confidence=1.0,
+    )
+    continuation = _row(suffix, category_continuation).model_copy(
+        update={"diagnostics": ("subordinate_auxiliary_continuation",)}
+    )
+    region = _region(
+        (
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                category_cell,
+                description_cell,
+                _cell("24/06/2026", 2, 30.0),
+                _cell("140.59", 3, 30.0),
+            ),
+            continuation,
+        ),
+        headers=("Category", "Merchant", "Transaction date", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "140.59", "ILS"))
+
+    assert result.transactions[0].description == "חברת פרטנר תקשורת בע״מ (ה)"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_restores_description_space_from_positioned_evidence() -> None:
+    visible = "BACKBLAZE INC"
+    description = Cell(
+        page_number=1,
+        bbox=(50.0, 30.0, 90.0, 40.0),
+        text="BACKBLAZEINC",
+        glyphs=_glyphs(visible, 50.0, 30.0),
+        words=(
+            _word("BACKBLAZE", 50.0, 58.8, 30.0),
+            _word("INC", 60.0, 62.8, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (_row(_cell("24/06/2026", 0, 30.0), description, _cell("15.49", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "15.49", "ILS"))
+
+    assert result.transactions[0].description == "BACKBLAZE INC"
+    assert result.transactions[0].ambiguities == ()
+
+
+def test_normalize_statement_excludes_distant_numeric_processor_reference() -> None:
+    original = Cell(
+        page_number=1,
+        bbox=(50.0, 30.0, 100.0, 40.0),
+        text="$56.94PAYPAL",
+        words=(
+            _word("$", 50.0, 54.0, 30.0),
+            _word("56.94", 55.0, 70.0, 30.0),
+            _word("PAYPAL", 76.0, 98.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=(98.0, 30.0, 149.0, 40.0),
+        text="*PRIVATEIN 4029357",
+        words=(
+            _word("*PRIVATEIN", 100.0, 125.0, 30.0),
+            _word("4029357", 138.0, 149.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("170.57", 0, 30.0),
+                original,
+                description,
+                _cell("19/06/2026", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "170.57", "ILS"))
+
+    assert result.transactions[0].description == "PAYPAL *PRIVATEIN"
+    assert result.transactions[0].ambiguities == ()
+
+
+def test_normalize_statement_excludes_repeated_distant_processor_cluster() -> None:
+    rows: list[Row] = []
+    for y, raw_date in ((30.0, "20/06/2026"), (50.0, "25/06/2026")):
+        original = Cell(
+            page_number=1,
+            bbox=(50.0, y, 100.0, y + 10.0),
+            text="$100.00OPENAI",
+            words=(
+                _word("$", 50.0, 54.0, y),
+                _word("100.00", 55.0, 73.0, y),
+                _word("OPENAI", 76.0, 98.0, y),
+            ),
+            confidence=1.0,
+        )
+        description = Cell(
+            page_number=1,
+            bbox=(98.0, y, 149.0, y + 10.0),
+            text="*CHATGPTS .OPENAI",
+            words=(
+                _word("*CHATGPT", 100.0, 125.0, y),
+                _word("S", 126.0, 130.0, y),
+                _word(".", 141.0, 143.0, y),
+                _word("OPENAI", 143.0, 149.0, y),
+            ),
+            confidence=1.0,
+        )
+        rows.append(
+            _row(
+                _cell("10.00", 0, y),
+                original,
+                description,
+                _cell(raw_date, 3, y),
+            )
+        )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        tuple(rows),
+    )
+
+    result = normalize_statement(_discovery(region, "20.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "OPENAI *CHATGPT S",
+        "OPENAI *CHATGPT S",
+    )
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+
+
+def test_normalize_statement_preserves_repeated_hyphenated_numeric_merchant_cluster() -> None:
+    rows = tuple(
+        _row(
+            _cell(raw_date, 0, y),
+            Cell(
+                page_number=1,
+                bbox=(50.0, y, 99.0, y + 10.0),
+                text="STORE 42 912-184",
+                words=(
+                    _word("STORE", 50.0, 68.0, y),
+                    _word("42", 70.0, 76.0, y),
+                    _word("912-184", 90.0, 99.0, y),
+                ),
+                confidence=1.0,
+            ),
+            _cell("10.00", 2, y),
+        )
+        for raw_date, y in (("20/06/2026", 30.0), ("25/06/2026", 50.0))
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        rows,
+    )
+
+    result = normalize_statement(_discovery(region, "20.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "STORE 42 912-184",
+        "STORE 42 912-184",
+    )
+
+
 @pytest.mark.parametrize(
     ("raw_dates", "descriptions"),
     (

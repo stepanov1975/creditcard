@@ -61,6 +61,24 @@ class EvidenceClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceCluster:
+    """A same-line evidence span separated from its neighbors by a material gap."""
+
+    bbox: BBox
+    atom_ids: frozenset[int]
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptionExtraction:
+    """A reconstructed merchant description and the evidence dispositions it created."""
+
+    value: str | None
+    claims: tuple[EvidenceClaim, ...]
+    diagnostics: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ClaimValidation:
     """Conflicts and meaningful evidence left without an owner."""
 
@@ -91,6 +109,10 @@ class _AtomDraft:
 
 def _normalized(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).split())
+
+
+def _character_signature(text: str) -> tuple[str, ...]:
+    return tuple(sorted(char for char in _normalized(text) if not char.isspace()))
 
 
 def _glyph_key(page_number: int, glyph: Glyph) -> _AtomKey:
@@ -168,7 +190,20 @@ def _canonical_words_from_selected_glyphs(
         )
         gap = word.bbox[0] - previous.bbox[2]
         join_threshold = min(_height(previous.bbox), _height(word.bbox)) * 0.1
-        if shared_line and gap <= join_threshold:
+        standalone_boundary = previous.text in {
+            "-",
+            "\N{EN DASH}",
+            "\N{EM DASH}",
+            "(",
+            ")",
+        } or word.text in {
+            "-",
+            "\N{EN DASH}",
+            "\N{EM DASH}",
+            "(",
+            ")",
+        }
+        if shared_line and gap <= join_threshold and not standalone_boundary:
             groups[-1].append(word)
         else:
             groups.append([word])
@@ -222,7 +257,9 @@ class EvidenceLedger:
                         if previous is None or draft.confidence > previous.confidence:
                             drafts[key] = draft
                         cell_keys.append(key)
-                elif cell.words:
+                elif cell.words and _character_signature(cell.text) == _character_signature(
+                    "".join(word.text for word in cell.words)
+                ):
                     for word in cell.words:
                         text = _normalized(word.text)
                         if not text:
@@ -300,6 +337,68 @@ class EvidenceLedger:
         )
         return frozenset().union(*equality_matches) if equality_matches else frozenset()
 
+    def atoms_in_bbox(self, atom_ids: Iterable[int], bbox: BBox) -> frozenset[int]:
+        """Return selected atom IDs whose positioned centers fall inside a box."""
+
+        selected = frozenset(atom_ids)
+        return frozenset(
+            atom.atom_id
+            for atom in self.atoms
+            if atom.atom_id in selected and _inside_bbox(atom.bbox, bbox)
+        )
+
+    def clusters_for_cell(self, cell: Cell) -> tuple[EvidenceCluster, ...]:
+        """Split one cell into same-line spans using only positioned evidence gaps."""
+
+        cell_atom_ids = self.atoms_for_cell(cell)
+        if not cell_atom_ids:
+            return ()
+        ordered_words = tuple(
+            sorted(cell.words, key=lambda word: (_center_y(word.bbox), word.bbox[0], word.bbox[2]))
+        )
+        if not ordered_words:
+            bbox = _union_bbox(
+                tuple(atom.bbox for atom in self.atoms if atom.atom_id in cell_atom_ids)
+            )
+            return (
+                EvidenceCluster(
+                    bbox=bbox,
+                    atom_ids=cell_atom_ids,
+                    text=self.render(cell_atom_ids),
+                ),
+            )
+        word_groups: list[list[Word]] = [[ordered_words[0]]]
+        for previous, word in pairwise(ordered_words):
+            height = min(_height(previous.bbox), _height(word.bbox))
+            shared_line = abs(_center_y(previous.bbox) - _center_y(word.bbox)) <= height * 0.5
+            gap = word.bbox[0] - previous.bbox[2]
+            if shared_line and gap <= height * 0.6:
+                word_groups[-1].append(word)
+            else:
+                word_groups.append([word])
+        clusters: list[EvidenceCluster] = []
+        claimed_ids: set[int] = set()
+        for group in word_groups:
+            bbox = _union_bbox(tuple(word.bbox for word in group))
+            ids = self.atoms_in_bbox(cell_atom_ids, bbox)
+            if not ids:
+                continue
+            claimed_ids.update(ids)
+            clusters.append(EvidenceCluster(bbox=bbox, atom_ids=ids, text=self.render(ids)))
+        remaining_ids = cell_atom_ids - claimed_ids
+        if remaining_ids:
+            bbox = _union_bbox(
+                tuple(atom.bbox for atom in self.atoms if atom.atom_id in remaining_ids)
+            )
+            clusters.append(
+                EvidenceCluster(
+                    bbox=bbox,
+                    atom_ids=remaining_ids,
+                    text=self.render(remaining_ids),
+                )
+            )
+        return tuple(sorted(clusters, key=lambda cluster: (cluster.bbox[1], cluster.bbox[0])))
+
     def render(self, atom_ids: Iterable[int]) -> str:
         """Render selected atoms using exact positioned glyph and word evidence."""
 
@@ -358,9 +457,11 @@ class EvidenceLedger:
 
 __all__ = [
     "ClaimValidation",
+    "DescriptionExtraction",
     "EvidenceAtom",
     "EvidenceAtomKind",
     "EvidenceClaim",
+    "EvidenceCluster",
     "EvidenceLedger",
     "SemanticOwner",
 ]

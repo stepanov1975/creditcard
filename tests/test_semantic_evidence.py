@@ -116,3 +116,20 @@ def test_render_uses_selected_glyphs_and_word_boxes_to_restore_spaces() -> None:
     ledger = EvidenceLedger.from_rows((_row(cell),))
 
     assert ledger.render(ledger.atoms_for_cell(cell)) == "BACKBLAZE INC"
+
+
+def test_render_preserves_standalone_hyphen_word_boundaries() -> None:
+    text = "HEALTH-INSURANCE"
+    cell = _cell(
+        "HEALTH - INSURANCE",
+        (10.0, 20.0, 50.0, 30.0),
+        glyphs=tuple(_glyph(char, 10.0 + index) for index, char in enumerate(text)),
+        words=(
+            _word("HEALTH", 10.0, 15.8),
+            _word("-", 16.0, 16.8),
+            _word("INSURANCE", 17.0, 25.8),
+        ),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    assert ledger.render(ledger.atoms_for_cell(cell)) == "HEALTH - INSURANCE"
