@@ -1127,6 +1127,101 @@ def test_explicit_future_billing_table_is_outside_current_cycle_scope(heading: s
     )
 
 
+def test_exact_unbilled_singleton_summary_is_outside_current_cycle_scope() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Billed amount", 0.0, 25.0, 110.0),
+            _word("Amount", 35.0, 55.0, 110.0),
+            _word("Description", 65.0, 90.0, 110.0),
+            _word("Date", 105.0, 130.0, 110.0),
+            _word("$5.00", 35.0, 55.0, 130.0),
+            _word("Future merchant", 65.0, 90.0, 130.0),
+            _word("03/02/2026", 105.0, 130.0, 130.0),
+            _word("Total", 65.0, 90.0, 150.0),
+            _word("$5.00", 35.0, 55.0, 150.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+    normalized = normalize_statement(result)
+
+    assert result.classification is DocumentClassification.STATEMENT
+    assert len(result.groups) == 1
+    assert len(result.table_regions) == 1
+    assert result.diagnostics == ()
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert tuple(transaction.billed_amount for transaction in normalized.transactions) == (
+        10,
+        20,
+    )
+
+
+def test_unbilled_singleton_without_later_date_is_not_silently_excluded() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Billed amount", 0.0, 25.0, 110.0),
+            _word("Amount", 35.0, 55.0, 110.0),
+            _word("Description", 65.0, 90.0, 110.0),
+            _word("Date", 105.0, 130.0, 110.0),
+            _word("$5.00", 35.0, 55.0, 130.0),
+            _word("Current merchant", 65.0, 90.0, 130.0),
+            _word("02/02/2026", 105.0, 130.0, 130.0),
+            _word("Total", 65.0, 90.0, 150.0),
+            _word("$5.00", 35.0, 55.0, 150.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert "total_without_table" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
+def test_unbilled_singleton_must_follow_every_explicit_full_date_style() -> None:
+    page = _page(
+        1,
+        (
+            _word("Date", 0.0, 28.0, 20.0),
+            _word("Description", 50.0, 95.0, 20.0),
+            _word("Amount", 118.0, 155.0, 20.0),
+            _word("01/02/26", 0.0, 28.0, 40.0),
+            _word("First", 50.0, 95.0, 40.0),
+            _word("₪10.00", 118.0, 155.0, 40.0),
+            _word("02/02/26", 0.0, 28.0, 60.0),
+            _word("Second", 50.0, 95.0, 60.0),
+            _word("₪20.00", 118.0, 155.0, 60.0),
+            _word("2026-02-05", 0.0, 28.0, 80.0),
+            _word("Latest", 50.0, 95.0, 80.0),
+            _word("₪5.00", 118.0, 155.0, 80.0),
+            _word("Total", 50.0, 95.0, 100.0),
+            _word("₪35.00", 118.0, 155.0, 100.0),
+            _word("Billed amount", 0.0, 25.0, 130.0),
+            _word("Amount", 35.0, 55.0, 130.0),
+            _word("Description", 65.0, 90.0, 130.0),
+            _word("Date", 105.0, 130.0, 130.0),
+            _word("$5.00", 35.0, 55.0, 150.0),
+            _word("Earlier merchant", 65.0, 90.0, 150.0),
+            _word("03/02/26", 105.0, 130.0, 150.0),
+            _word("Total", 65.0, 90.0, 170.0),
+            _word("$5.00", 35.0, 55.0, 170.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.date_year_context is not None
+    assert "total_without_table" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
+
+
 def test_rejected_total_marker_remains_fatal_when_a_table_is_unclaimed() -> None:
     page = _page(
         1,

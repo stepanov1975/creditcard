@@ -82,6 +82,8 @@ _DATE_TOKEN_PATTERN = re.compile(
     r"(?<!\d)\d{1,4}\s*(?P<separator>[./-])\s*\d{1,2}\s*"
     r"(?P=separator)\s*\d{1,4}(?!\d)"
 )
+_MIN_SUPPORTED_FULL_DATE_YEAR = 1900
+_MAX_SUPPORTED_FULL_DATE_YEAR = 2100
 _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
     DateTokenStyle.DAY_FIRST_SLASH: re.compile(
         r"(?<!\d)(?P<day>\d{1,2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<year>\d{2})(?!\d)"
@@ -572,17 +574,6 @@ def _parse_date(
         return None, "invalid_date"
 
 
-def _year_context_years(
-    year_context: DiscoveredDateYearContext | None,
-) -> frozenset[int]:
-    if year_context is None:
-        return frozenset()
-    years = {year for _, year in year_context.year_by_suffix}
-    if year_context.year is not None:
-        years.add(year_context.year)
-    return frozenset(years)
-
-
 def _cell_has_ocr_evidence(cell: Cell) -> bool:
     return any(word.source == "ocr" for word in cell.words) or any(
         glyph.source == "ocr" for glyph in cell.glyphs
@@ -626,19 +617,17 @@ def _parse_cell_date(
     year_context: DiscoveredDateYearContext | None,
 ) -> tuple[date | None, str | None]:
     parsed = _parse_date(cell.text, year_context)
-    allowed_years = _year_context_years(year_context)
-    parsed_year_mismatch = (
+    parsed_year_out_of_range = (
         parsed[0] is not None
         and _cell_has_ocr_evidence(cell)
-        and bool(allowed_years)
-        and parsed[0].year not in allowed_years
+        and not _MIN_SUPPORTED_FULL_DATE_YEAR <= parsed[0].year <= _MAX_SUPPORTED_FULL_DATE_YEAR
     )
-    if parsed_year_mismatch or parsed[1] == "invalid_date":
+    if parsed_year_out_of_range or parsed[1] == "invalid_date":
         repaired = _parse_ocr_contaminated_cell_date(cell, year_context)
         if repaired[0] is not None:
             return repaired
-    if parsed_year_mismatch:
-        return None, "date_year_context_mismatch"
+    if parsed_year_out_of_range:
+        return None, "invalid_date"
     if parsed[1] != "invalid_date":
         return parsed
     word_candidates = tuple(
@@ -646,7 +635,6 @@ def _parse_cell_date(
         for word in cell.words
         if (candidate := _parse_date(word.text, year_context))[0] is not None
         and candidate[1] is None
-        and (not allowed_years or candidate[0].year in allowed_years)
     )
     return word_candidates[0] if len(word_candidates) == 1 else parsed
 
@@ -2131,6 +2119,115 @@ def _is_printed_total_row(row: Row, group: StatementGroupDiscovery) -> bool:
     )
 
 
+def _compatible_cross_page_region_geometry(
+    previous: TableRegion,
+    current: TableRegion,
+) -> bool:
+    previous_columns = previous.table_schema.columns
+    current_columns = current.table_schema.columns
+    return (
+        current.page_number == previous.page_number + 1
+        and len(previous_columns) == len(current_columns)
+        and all(
+            previous_column.role is current_column.role
+            and abs(previous_column.relative_x0 - current_column.relative_x0) <= 0.05
+            and abs(previous_column.relative_x1 - current_column.relative_x1) <= 0.05
+            for previous_column, current_column in zip(
+                previous_columns,
+                current_columns,
+                strict=True,
+            )
+        )
+    )
+
+
+def _cross_page_leading_detail_handoffs(
+    regions: Sequence[TableRegion],
+    group: StatementGroupDiscovery,
+) -> tuple[dict[int, tuple[Row, ...]], frozenset[int]]:
+    handoffs: dict[int, tuple[Row, ...]] = {}
+    owned_leading_rows: set[int] = set()
+    for previous_region, current_region in pairwise(regions):
+        if not _compatible_cross_page_region_geometry(previous_region, current_region):
+            continue
+        current_rows = tuple(
+            sorted(current_region.rows, key=lambda item: (item.bbox[1], item.bbox[0]))
+        )
+        leading_rows = tuple(
+            row
+            for row in current_rows
+            if "leading_subordinate_detail_continuation" in row.diagnostics
+        )
+        if not leading_rows or current_rows[: len(leading_rows)] != leading_rows:
+            continue
+        following_rows = current_rows[len(leading_rows) :]
+        if not following_rows:
+            continue
+        previous_rows = tuple(
+            sorted(previous_region.rows, key=lambda item: (item.bbox[1], item.bbox[0]))
+        )
+        previous_base_rows: list[Row] = []
+        previous_index = 0
+        while previous_index < len(previous_rows):
+            previous_row = previous_rows[previous_index]
+            if _is_printed_total_row(previous_row, group):
+                previous_index += 1
+                continue
+            previous_base_rows.append(previous_row)
+            continuation_index = previous_index + 1
+            continuation_previous = previous_row
+            while continuation_index < len(previous_rows) and _is_continuation(
+                previous_rows[continuation_index],
+                continuation_previous,
+                previous_region,
+            ):
+                continuation_previous = previous_rows[continuation_index]
+                continuation_index += 1
+            previous_index = continuation_index
+        if not previous_base_rows:
+            continue
+        previous_row = previous_base_rows[-1]
+        following_row = following_rows[0]
+        previous_billed_column = _proven_billed_amount_column(previous_region)
+        current_billed_column = _proven_billed_amount_column(current_region)
+        if previous_billed_column is None or current_billed_column is None:
+            continue
+        previous_billed_cells = _cells_for_column(previous_row, previous_billed_column)
+        following_billed_cells = _cells_for_column(following_row, current_billed_column)
+        previous_billed = (
+            parse_amount(
+                previous_billed_cells[0].text,
+                currency_hint=group.printed_total.currency,
+            )
+            if len(previous_billed_cells) == 1
+            else None
+        )
+        if (
+            len(previous_billed_cells) != 1
+            or not is_money_shaped(previous_billed_cells[0].text)
+            or previous_billed is None
+            or previous_billed.amount in {None, Decimal("0")}
+            or len(following_billed_cells) != 1
+            or not is_money_shaped(following_billed_cells[0].text)
+        ):
+            continue
+        handoffs[id(previous_row)] = tuple(
+            row.model_copy(
+                update={
+                    "diagnostics": tuple(
+                        "subordinate_detail_continuation"
+                        if diagnostic == "leading_subordinate_detail_continuation"
+                        else diagnostic
+                        for diagnostic in row.diagnostics
+                    )
+                }
+            )
+            for row in leading_rows
+        )
+        owned_leading_rows.update(id(row) for row in leading_rows)
+    return handoffs, frozenset(owned_leading_rows)
+
+
 def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization:
     """Normalize discovered current-cycle rows and reconcile exact printed totals."""
 
@@ -2145,10 +2242,17 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
         if total is not None:
             totals.append(total)
         row_ordinal = 0
-        for region in sorted(
-            group.table_regions,
-            key=lambda item: (item.page_number, item.bbox[1], item.bbox[0]),
-        ):
+        ordered_regions = tuple(
+            sorted(
+                group.table_regions,
+                key=lambda item: (item.page_number, item.bbox[1], item.bbox[0]),
+            )
+        )
+        cross_page_handoffs, owned_leading_rows = _cross_page_leading_detail_handoffs(
+            ordered_regions,
+            group,
+        )
+        for region in ordered_regions:
             date_column_kinds = _structural_date_column_kinds(
                 region,
                 discovery.date_year_context,
@@ -2157,6 +2261,24 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
             index = 0
             while index < len(rows):
                 row = rows[index]
+                if "leading_subordinate_detail_continuation" in row.diagnostics:
+                    if id(row) in owned_leading_rows:
+                        index += 1
+                        continue
+                    row_ordinal += 1
+                    row_results.append(
+                        RowNormalizationResult(
+                            page_number=row.page_number,
+                            bbox=row.bbox,
+                            raw_text=_row_text((row,)),
+                            evidence=_row_evidence((row,)),
+                            confidence=row.confidence,
+                            diagnostics=("unowned_leading_subordinate_detail_continuation",),
+                        )
+                    )
+                    rows_not_emitted += 1
+                    index += 1
+                    continue
                 row_ordinal += 1
                 if _is_printed_total_row(row, group):
                     row_results.append(
@@ -2180,6 +2302,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     continuations.append(rows[continuation_index])
                     previous = rows[continuation_index]
                     continuation_index += 1
+                continuations.extend(cross_page_handoffs.get(id(row), ()))
                 transaction_id = f"{group.group_id}-p{row.page_number:03d}-r{row_ordinal:04d}"
                 row_result = _normalize_row(
                     row=row,

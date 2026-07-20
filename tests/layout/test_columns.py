@@ -323,6 +323,25 @@ def test_infer_column_roles_does_not_retype_generic_amount_from_table_context() 
     )
 
 
+def test_infer_column_roles_types_sole_generic_peer_of_explicit_billed_amount_as_original() -> None:
+    schema = infer_column_roles(
+        (
+            _cell("Billed amount", (0.0, 10.0, 35.0, 20.0)),
+            _cell("Amount", (45.0, 10.0, 75.0, 20.0)),
+        ),
+        (
+            _cell("12.40", (0.0, 30.0, 35.0, 40.0)),
+            _cell("3.00", (45.0, 30.0, 75.0, 40.0)),
+        ),
+    )
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+    )
+    assert "role_evidence:generic_original_peer" in schema.columns[1].diagnostics
+
+
 @pytest.mark.parametrize(
     "header",
     (

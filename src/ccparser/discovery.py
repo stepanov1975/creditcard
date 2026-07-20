@@ -427,6 +427,8 @@ def _is_future_billing_total(
     candidate: Row,
     future_regions: Sequence[TableRegion],
     current_regions: Sequence[TableRegion],
+    rows: Sequence[Row],
+    date_year_context: DiscoveredDateYearContext | None,
 ) -> bool:
     preceding = tuple(
         region
@@ -436,7 +438,172 @@ def _is_future_billing_total(
     if not preceding:
         return False
     nearest = max(preceding, key=lambda region: _reading_key_bbox(region.page_number, region.bbox))
-    return any(nearest is region for region in future_regions)
+    if any(nearest is region for region in future_regions):
+        return True
+
+    candidate_key = _reading_key_bbox(candidate.page_number, candidate.bbox)
+    structural_rows = _merged_header_bands(
+        tuple(row for row in rows if row.page_number == candidate.page_number)
+    )
+    header_candidates = tuple(
+        row
+        for row in structural_rows
+        if _reading_key_bbox(row.page_number, row.bbox) < candidate_key
+        and _literal_header_role_count(row) >= 2
+    )
+    if not header_candidates:
+        return False
+    header = max(
+        header_candidates,
+        key=lambda row: _reading_key_bbox(row.page_number, row.bbox),
+    )
+    header_key = _reading_key_bbox(header.page_number, header.bbox)
+    section_rows = tuple(
+        row
+        for row in structural_rows
+        if header_key < _reading_key_bbox(row.page_number, row.bbox) < candidate_key
+    )
+    if len(section_rows) != 1 or any(_literal_header_role_count(row) >= 2 for row in section_rows):
+        return False
+    schema = infer_column_roles(
+        header.cells,
+        tuple(cell for row in section_rows for cell in row.cells),
+    )
+    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
+    original_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
+    )
+    if (
+        billed_column is None
+        or len(original_columns) != 1
+        or sum(column.role is ColumnRole.DATE for column in schema.columns) != 1
+        or sum(column.role is ColumnRole.DESCRIPTION for column in schema.columns) != 1
+    ):
+        return False
+
+    evidence_cells = (*header.cells, *section_rows[0].cells, *candidate.cells)
+    provenance_sources = tuple(
+        source
+        for cell in evidence_cells
+        for source in (
+            *(word.source for word in cell.words),
+            *(glyph.source for glyph in cell.glyphs),
+        )
+    )
+    if not provenance_sources or any(source != "digital" for source in provenance_sources):
+        return False
+    observed_currencies = {
+        currency
+        for cell in evidence_cells
+        for value in (cell.text, *(word.text for word in cell.words))
+        for currency in currencies_in_text(value)
+    }
+    if len(observed_currencies) != 1:
+        return False
+    section_currency = next(iter(observed_currencies))
+
+    def parsed_values(values: Iterable[str]) -> frozenset[tuple[Decimal, str]]:
+        parsed: set[tuple[Decimal, str]] = set()
+        for value in values:
+            currencies = currencies_in_text(value)
+            if len(currencies) > 1 or any(currency != section_currency for currency in currencies):
+                continue
+            result = parse_amount(
+                value,
+                currency_hint=section_currency,
+            )
+            if result.amount is not None and result.currency is not None:
+                parsed.add((result.amount, result.currency))
+        return frozenset(parsed)
+
+    billed_cells: list[Cell] = []
+    original_values: set[tuple[Decimal, str]] = set()
+    for row in section_rows:
+        for cell in row.cells:
+            center = _center_x(cell.bbox)
+            values = (cell.text, *(word.text for word in cell.words))
+            if billed_column.bbox[0] <= center <= billed_column.bbox[2]:
+                billed_cells.append(cell)
+            elif original_columns[0].bbox[0] <= center <= original_columns[0].bbox[2]:
+                original_values.update(parsed_values(values))
+    candidate_values = parsed_values(
+        (*[cell.text for cell in candidate.cells], *[word.text for word in candidate.words])
+    )
+    if billed_cells or len(candidate_values) != 1 or candidate_values != frozenset(original_values):
+        return False
+
+    def parsed_dates(cells: Sequence[Cell]) -> frozenset[date]:
+        dates: set[date] = set()
+        full_patterns = tuple(_FULL_DATE_TOKEN_PATTERNS.values())
+        year_mapping = (
+            dict(date_year_context.year_by_suffix) if date_year_context is not None else {}
+        )
+        if (
+            date_year_context is not None
+            and not year_mapping
+            and date_year_context.year is not None
+        ):
+            year_mapping[date_year_context.year % 100] = date_year_context.year
+        for cell in cells:
+            for full_pattern in full_patterns:
+                for match in full_pattern.finditer(cell.text):
+                    year = int(match.group("year"))
+                    try:
+                        dates.add(date(year, int(match.group("month")), int(match.group("day"))))
+                    except ValueError:
+                        continue
+            if date_year_context is not None:
+                for match in _SHORT_DATE_TOKEN_PATTERNS[date_year_context.style].finditer(
+                    cell.text
+                ):
+                    resolved_year = year_mapping.get(int(match.group("year")))
+                    if resolved_year is None:
+                        continue
+                    try:
+                        dates.add(
+                            date(
+                                resolved_year,
+                                int(match.group("month")),
+                                int(match.group("day")),
+                            )
+                        )
+                    except ValueError:
+                        continue
+        return frozenset(dates)
+
+    section_date_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.DATE
+    )
+    section_date_cells = tuple(
+        cell
+        for cell in section_rows[0].cells
+        if section_date_columns[0].bbox[0]
+        <= _center_x(cell.bbox)
+        <= section_date_columns[0].bbox[2]
+    )
+    preceding_current_regions = tuple(
+        region
+        for region in current_regions
+        if _reading_key_bbox(region.page_number, region.bbox) < candidate_key
+    )
+    current_date_cells = _table_date_cells(preceding_current_regions)
+    date_provenance_sources = tuple(
+        source
+        for cell in (*section_date_cells, *current_date_cells)
+        for source in (
+            *(word.source for word in cell.words),
+            *(glyph.source for glyph in cell.glyphs),
+        )
+    )
+    section_dates = parsed_dates(section_date_cells)
+    current_dates = parsed_dates(current_date_cells)
+    return (
+        bool(date_provenance_sources)
+        and all(source == "digital" for source in date_provenance_sources)
+        and len(section_dates) == 1
+        and bool(current_dates)
+        and next(iter(section_dates)) > max(current_dates)
+    )
 
 
 def _evidence(cell: Cell) -> EvidenceReference:
@@ -1929,6 +2096,11 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
         )
     )
+    provisional_date_year_context = _date_year_context(
+        page_rows,
+        regions,
+        evidence.metadata,
+    )
     future_regions = tuple(
         region for region in regions if _is_future_billing_region(region, page_rows)
     )
@@ -1946,7 +2118,13 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         row
         for row in observed_total_marker_rows
         if _page_row_key(row) not in proven_total_overlay_keys
-        and not _is_future_billing_total(row, future_regions, regions)
+        and not _is_future_billing_total(
+            row,
+            future_regions,
+            regions,
+            page_rows,
+            provisional_date_year_context,
+        )
         and not _is_points_ledger_total(row, page_rows, regions)
         and not _is_rate_ledger_total(row, page_rows, regions)
         and not _is_fee_tax_summary_total(row, page_rows)

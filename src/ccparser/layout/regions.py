@@ -778,9 +778,8 @@ def _has_strong_single_row_evidence(
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
     )
-    has_embedded_date_proof = (
-        _transaction_shape_count(row) >= 2
-        and explicit_billed_column is not None
+    has_embedded_date_geometry = (
+        explicit_billed_column is not None
         and len(original_columns) == 1
         and any(
             contains_date_token(value)
@@ -826,6 +825,9 @@ def _has_strong_single_row_evidence(
         and known_role_count >= 2
         and _transaction_shape_count(row) >= 2
     )
+    has_embedded_date_proof = has_embedded_date_geometry and (
+        _transaction_shape_count(row) >= 2 or exact_total_match
+    )
     strong_structure = (
         known_role_count >= 4 and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
     ) or exact_ocr_singleton
@@ -833,6 +835,91 @@ def _has_strong_single_row_evidence(
         strong_structure
         and alignment >= _minimum_row_alignment(schema)
         and (alignment >= 0.75 or exact_total_match)
+    )
+
+
+def _is_digit_free_currency_header_spill(row: Row) -> bool:
+    values = (*[cell.text for cell in row.cells], *[word.text for word in row.words])
+    return (
+        bool(values)
+        and not any(char.isdigit() for value in values for char in value)
+        and any(is_currency_shaped(value) for value in values)
+        and _transaction_shape_count(row) <= 1
+    )
+
+
+def _bounded_leading_detail_before_transaction(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+) -> Row | None:
+    if start_index + 1 >= len(rows):
+        return None
+    source = rows[start_index]
+    following_source = rows[start_index + 1]
+    if (
+        _is_total_row(source)
+        or _is_total_row(following_source)
+        or _literal_header_role_count(source) >= 2
+        or _literal_header_role_count(following_source) >= 2
+    ):
+        return None
+    projected = _project_row_to_header_bands(page_evidence, source, header)
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
+    if billed_column is None:
+        amount_columns = tuple(
+            column for column in schema.columns if column.role is ColumnRole.AMOUNT
+        )
+        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    if billed_column is None:
+        return None
+    billed_cells = tuple(
+        cell
+        for cell in projected.cells
+        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+    )
+    occupied_roles = {
+        column.role
+        for cell in projected.cells
+        for column in schema.columns
+        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+    }
+    detail_roles = {
+        ColumnRole.AUXILIARY_AMOUNT,
+        ColumnRole.EXCHANGE_RATE,
+        ColumnRole.CONVERSION_DATE,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.DESCRIPTION,
+    }
+    typical_height = statistics.median(
+        _height(cell.bbox) for cell in (*projected.cells, *following.cells)
+    )
+    gap = max(0.0, following.bbox[1] - projected.bbox[3])
+    values = (*[cell.text for cell in projected.cells], *[word.text for word in projected.words])
+    if not (
+        projected.cells
+        and not billed_cells
+        and not _has_transaction_date_evidence(projected)
+        and _transaction_shape_count(projected) <= 1
+        and len(occupied_roles & detail_roles) >= 3
+        and any(char.isdigit() for value in values for char in value)
+        and any(is_currency_shaped(value) for value in values)
+        and gap <= typical_height * 1.5
+        and _has_valid_billed_amount(following, schema)
+        and _has_transaction_date_evidence(following)
+        and _transaction_shape_count(following) >= 3
+        and _row_alignment(following, schema) >= _minimum_row_alignment(schema)
+    ):
+        return None
+    return projected.model_copy(
+        update={
+            "diagnostics": tuple(
+                dict.fromkeys((*projected.diagnostics, "leading_subordinate_detail_continuation"))
+            )
+        }
     )
 
 
@@ -2586,7 +2673,10 @@ def _detect_from_header(
                 consumed_through = overlaid_through
                 ignored_overlaid_ocr_count += 1
                 continue
-        if not regular_rows and _transaction_shape_count(projected) == 0:
+        if not regular_rows and (
+            _transaction_shape_count(projected) == 0
+            or _is_digit_free_currency_header_spill(projected)
+        ):
             if ignored_preamble_count >= MAX_HEADER_PREAMBLE_ROWS:
                 stop_reason = "stopped_at_structure_change"
                 stop_index = index
@@ -2594,6 +2684,19 @@ def _detect_from_header(
             ignored_preamble_count += 1
             previous = projected
             continue
+        if not regular_rows:
+            leading_detail = _bounded_leading_detail_before_transaction(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+            if leading_detail is not None:
+                accepted.append(leading_detail)
+                detail_continuation_count += 1
+                previous = leading_detail
+                continue
         if detail_continuation_allowed:
             card_identifier_block = _bounded_card_identifier_detail_block(
                 page_evidence,

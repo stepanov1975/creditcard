@@ -350,6 +350,132 @@ def test_normalize_statement_merges_description_continuation_across_column_bound
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_rejects_leading_detail_without_a_proven_previous_owner() -> None:
+    leading = _row(
+        _cell("conversion detail", 1, 30.0),
+        _cell("$3.00 note", 2, 30.0),
+    ).model_copy(update={"diagnostics": ("leading_subordinate_detail_continuation",)})
+    transaction = _row(
+        _cell("01/02/2026", 0, 50.0),
+        _cell("Market", 1, 50.0),
+        _cell("$4.00", 2, 50.0),
+        _cell("12.40", 3, 50.0),
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        ),
+        (leading, transaction),
+    )
+
+    result = normalize_statement(_discovery(region, "12.40", "ILS"))
+
+    assert result.reconciliation.status is Status.UNRECONCILED
+    assert len(result.transactions) == 1
+    assert len(result.row_results) == 2
+    assert result.row_results[0].transaction is None
+    assert result.row_results[0].diagnostics == ("unowned_leading_subordinate_detail_continuation",)
+    assert result.diagnostics == ("rows_not_emitted:1",)
+
+
+def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_transaction() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+    previous_transaction = _row(
+        _cell("31/01/2026", 0, 30.0),
+        _cell("Previous", 1, 30.0),
+        _cell("$3.00", 2, 30.0),
+        _cell("10.00", 3, 30.0),
+    )
+    previous_region = _region(roles, (previous_transaction,))
+    leading = _row(
+        _cell("conversion detail", 1, 30.0, page=2),
+        _cell("USD 3.00", 2, 30.0, page=2),
+    ).model_copy(update={"diagnostics": ("leading_subordinate_detail_continuation",)})
+    next_transaction = _row(
+        _cell("01/02/2026", 0, 50.0, page=2),
+        _cell("Next", 1, 50.0, page=2),
+        _cell("$4.00", 2, 50.0, page=2),
+        _cell("12.40", 3, 50.0, page=2),
+    )
+    next_region = _region(roles, (leading, next_transaction)).model_copy(update={"page_number": 2})
+    discovery = _discovery(previous_region, "22.40", "ILS")
+    group = discovery.groups[0].model_copy(update={"table_regions": (previous_region, next_region)})
+    discovery = discovery.model_copy(
+        update={
+            "groups": (group,),
+            "table_regions": (previous_region, next_region),
+        }
+    )
+
+    result = normalize_statement(discovery)
+
+    assert result.reconciliation.status is Status.RECONCILED
+    assert len(result.transactions) == 2
+    assert any(
+        evidence.page_number == 2 and evidence.raw_text == "USD 3.00"
+        for evidence in result.transactions[0].evidence
+    )
+    assert all(evidence.raw_text != "USD 3.00" for evidence in result.transactions[1].evidence)
+    assert tuple(row_result.diagnostics for row_result in result.row_results) == (
+        (),
+        ("merged_subordinate_detail_continuation",),
+        (),
+    )
+
+
+def test_normalize_statement_does_not_attach_leading_detail_to_zero_billed_row() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+    zero_billed = _row(
+        _cell("31/01/2026", 0, 30.0),
+        _cell("Zero", 1, 30.0),
+        _cell("$0.00", 2, 30.0),
+        _cell("0.00", 3, 30.0),
+    )
+    previous_region = _region(roles, (zero_billed,))
+    leading = _row(
+        _cell("conversion detail", 1, 30.0, page=2),
+        _cell("USD 3.00", 2, 30.0, page=2),
+    ).model_copy(update={"diagnostics": ("leading_subordinate_detail_continuation",)})
+    next_transaction = _row(
+        _cell("01/02/2026", 0, 50.0, page=2),
+        _cell("Next", 1, 50.0, page=2),
+        _cell("$4.00", 2, 50.0, page=2),
+        _cell("12.40", 3, 50.0, page=2),
+    )
+    next_region = _region(roles, (leading, next_transaction)).model_copy(update={"page_number": 2})
+    discovery = _discovery(previous_region, "12.40", "ILS")
+    group = discovery.groups[0].model_copy(update={"table_regions": (previous_region, next_region)})
+    discovery = discovery.model_copy(
+        update={
+            "groups": (group,),
+            "table_regions": (previous_region, next_region),
+        }
+    )
+
+    result = normalize_statement(discovery)
+
+    assert result.reconciliation.status is Status.UNRECONCILED
+    assert len(result.transactions) == 1
+    assert any(
+        row_result.diagnostics == ("unowned_leading_subordinate_detail_continuation",)
+        for row_result in result.row_results
+    )
+    assert result.diagnostics == ("rows_not_emitted:1",)
+
+
 def test_normalize_statement_merges_continuation_covered_by_split_merchant_cells() -> None:
     original = _cell("$10.00 MERCHANT", 1, 30.0).model_copy(
         update={
@@ -2748,6 +2874,34 @@ def test_normalize_statement_accepts_explicit_full_date_outside_short_date_conte
         (
             _row(
                 _cell("31/12/2025", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2025, 12, 31)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_accepts_ocr_full_date_outside_short_date_context() -> None:
+    date_word = _word("31/12/2025", 0.0, 40.0, 30.0, source="ocr")
+    date_cell = Cell(
+        page_number=1,
+        bbox=date_word.bbox,
+        text=date_word.text,
+        words=(date_word,),
+        confidence=0.8,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                date_cell,
                 _cell("Merchant", 1, 30.0),
                 _cell("4.00", 2, 30.0),
             ),

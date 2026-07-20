@@ -801,6 +801,42 @@ def _disambiguate_qualified_original_amount(
     )
 
 
+def _disambiguate_generic_original_peer(
+    columns: Sequence[ColumnSpec],
+    header_cells: Sequence[Cell],
+) -> tuple[ColumnSpec, ...]:
+    amount_columns = tuple(column for column in columns if column.role is ColumnRole.AMOUNT)
+    if (
+        len(amount_columns) != 2
+        or any(column.role is ColumnRole.ORIGINAL_AMOUNT for column in columns)
+        or (billed := explicit_billed_amount_column(columns, header_cells)) is None
+    ):
+        return tuple(columns)
+    peer = next(column for column in amount_columns if column is not billed)
+    peer_texts = _header_evidence_texts(_cells_for_column(header_cells, peer))
+    if not any(
+        _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
+        and not _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
+        for text in peer_texts
+    ):
+        return tuple(columns)
+    return tuple(
+        column.model_copy(
+            update={
+                "role": ColumnRole.ORIGINAL_AMOUNT,
+                "diagnostics": tuple(
+                    dict.fromkeys((*column.diagnostics, "role_evidence:generic_original_peer"))
+                ),
+            }
+        )
+        if column is peer
+        else column
+        for column in columns
+    )
+
+
 def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell]) -> TableSchema:
     """Combine general financial header vocabulary with typed value profiles."""
 
@@ -906,6 +942,7 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
         )
 
     semantic_columns = list(_disambiguate_qualified_original_amount(semantic_columns, header_cells))
+    semantic_columns = list(_disambiguate_generic_original_peer(semantic_columns, header_cells))
 
     bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
     known_fraction = (

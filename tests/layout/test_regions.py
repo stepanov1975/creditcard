@@ -1414,6 +1414,86 @@ def test_strong_single_transaction_accepts_date_joined_to_description() -> None:
     assert "single_row_strong_evidence" in regions[0].diagnostics
 
 
+def test_exact_singleton_accepts_generic_original_peer_and_embedded_date() -> None:
+    page = _page(
+        (
+            _word("Billed amount", 0.0, 25.0, 10.0),
+            _word("Amount", 35.0, 55.0, 10.0),
+            _word("Description", 65.0, 90.0, 10.0),
+            _word("Date", 105.0, 130.0, 10.0),
+            _word("12.40", 0.0, 25.0, 30.0),
+            _word("$3.00", 35.0, 55.0, 30.0),
+            _word("Market01/02/2026", 65.0, 130.0, 30.0),
+            _word("12.40", 0.0, 25.0, 50.0),
+            _word("Total", 65.0, 90.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(column.role for column in regions[0].table_schema.columns) == (
+        ColumnRole.AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.DATE,
+    )
+    assert "single_row_strong_evidence" in regions[0].diagnostics
+
+
+def test_singleton_skips_bounded_digit_free_currency_header_spill() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            _word("$", 18.0, 28.0, 25.0),
+            _word("12.40", 0.0, 10.0, 40.0),
+            _word("3.70", 18.0, 28.0, 40.0),
+            _word("03/02/2026", 36.0, 46.0, 40.0),
+            _word("4.00", 72.0, 82.0, 40.0),
+            _word("Market", 90.0, 100.0, 40.0),
+            _word("01/02/2026", 108.0, 120.0, 40.0),
+            _word("Total", 90.0, 100.0, 60.0),
+            _word("12.40", 0.0, 10.0, 60.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 1
+    assert "ignored_preamble_rows:1" in regions[0].diagnostics
+    assert "single_row_strong_evidence" in regions[0].diagnostics
+
+
+def test_singleton_retains_bounded_leading_conversion_detail_before_transaction() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            _word("detail", 108.0, 120.0, 30.0),
+            _word("merchant 1234", 90.0, 100.0, 30.0),
+            _word("$3.00 note", 72.0, 82.0, 30.0),
+            _word("3.70x", 54.0, 64.0, 30.0),
+            _word("03.02x", 36.0, 46.0, 30.0),
+            _word("$", 18.0, 28.0, 30.0),
+            _word("12.40", 0.0, 10.0, 50.0),
+            _word("3.70", 18.0, 28.0, 50.0),
+            _word("03/02/2026", 36.0, 46.0, 50.0),
+            _word("$4.00", 72.0, 82.0, 50.0),
+            _word("Market", 90.0, 100.0, 50.0),
+            _word("01/02/2026", 108.0, 120.0, 50.0),
+            _word("Total", 90.0, 100.0, 70.0),
+            _word("42.40", 0.0, 10.0, 70.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "leading_subordinate_detail_continuation" in regions[0].rows[0].diagnostics
+    assert "single_row_strong_evidence" in regions[0].diagnostics
+
+
 def test_detect_table_regions_does_not_match_date_inside_update_header() -> None:
     page = _page(
         (
