@@ -470,6 +470,161 @@ def _merge_header_rows(header: Row, fragments: Sequence[Row]) -> Row:
     )
 
 
+def _split_overlaid_header_fragment(
+    header: Row,
+    source: Row,
+) -> tuple[Row, Row, Row] | None:
+    if (
+        _literal_header_role_count(header) < 2
+        or not source.words
+        or source.page_number != header.page_number
+    ):
+        return None
+    table_left = min(cell.bbox[0] for cell in header.cells)
+    table_right = max(cell.bbox[2] for cell in header.cells)
+    table_words = tuple(
+        word for word in source.words if table_left <= _center_x(word.bbox) <= table_right
+    )
+    if len(table_words) < 5:
+        return None
+    ordered_centers = tuple(sorted({_center_y(word.bbox) for word in table_words}))
+    if len(ordered_centers) < 2:
+        return None
+    preceding_center, following_center = max(
+        pairwise(ordered_centers),
+        key=lambda centers: centers[1] - centers[0],
+    )
+    typical_height = statistics.median(_height(word.bbox) for word in table_words)
+    if following_center - preceding_center < typical_height * 0.5:
+        return None
+    boundary = (preceding_center + following_center) / 2
+    fragment_words = tuple(word for word in table_words if _center_y(word.bbox) < boundary)
+    data_words = tuple(word for word in source.words if word not in fragment_words)
+    if (
+        len(fragment_words) < 2
+        or len(data_words) < 3
+        or any(
+            is_money_shaped(word.text)
+            or is_date_shaped(word.text)
+            or is_currency_shaped(word.text)
+            for word in fragment_words
+        )
+    ):
+        return None
+
+    source_glyphs = tuple(
+        dict.fromkeys((*source.glyphs, *(glyph for cell in source.cells for glyph in cell.glyphs)))
+    )
+    fragment_glyphs = tuple(
+        glyph
+        for glyph in source_glyphs
+        if any(
+            word.bbox[0] <= _center_x(glyph.bbox) <= word.bbox[2]
+            and word.bbox[1] <= _center_y(glyph.bbox) <= word.bbox[3]
+            for word in fragment_words
+        )
+    )
+    fragment_cells = tuple(
+        Cell(
+            page_number=source.page_number,
+            bbox=_union_bbox(
+                (
+                    word.bbox,
+                    *(
+                        glyph.bbox
+                        for glyph in fragment_glyphs
+                        if word.bbox[0] <= _center_x(glyph.bbox) <= word.bbox[2]
+                        and word.bbox[1] <= _center_y(glyph.bbox) <= word.bbox[3]
+                    ),
+                )
+            ),
+            text=word.text,
+            glyphs=tuple(
+                glyph
+                for glyph in fragment_glyphs
+                if word.bbox[0] <= _center_x(glyph.bbox) <= word.bbox[2]
+                and word.bbox[1] <= _center_y(glyph.bbox) <= word.bbox[3]
+            ),
+            words=(word,),
+            confidence=word.confidence,
+            diagnostics=("split_overlaid_header_fragment",),
+        )
+        for word in fragment_words
+    )
+    fragment = Row(
+        page_number=source.page_number,
+        bbox=_union_bbox(tuple(cell.bbox for cell in fragment_cells)),
+        cells=fragment_cells,
+        glyphs=fragment_glyphs,
+        words=fragment_words,
+        confidence=statistics.mean(cell.confidence for cell in fragment_cells),
+        diagnostics=("split_overlaid_header_fragment",),
+    )
+    if not _is_header_fragment(header, fragment):
+        return None
+
+    data_cells: list[Cell] = []
+    for cell in source.cells:
+        words = tuple(word for word in cell.words if word not in fragment_words)
+        glyphs = tuple(glyph for glyph in cell.glyphs if glyph not in fragment_glyphs)
+        evidence_boxes = tuple((*[word.bbox for word in words], *[glyph.bbox for glyph in glyphs]))
+        if not evidence_boxes:
+            continue
+        confidence_values = tuple(
+            (*[word.confidence for word in words], *[glyph.confidence for glyph in glyphs])
+        )
+        data_cells.append(
+            cell.model_copy(
+                update={
+                    "bbox": _union_bbox(evidence_boxes),
+                    "text": logical_text_for_evidence(glyphs, words),
+                    "glyphs": glyphs,
+                    "words": words,
+                    "confidence": statistics.mean(confidence_values),
+                    "diagnostics": tuple(
+                        dict.fromkeys((*cell.diagnostics, "split_overlaid_header_data"))
+                    ),
+                }
+            )
+        )
+    if not data_cells:
+        return None
+    data_glyphs = tuple(glyph for glyph in source_glyphs if glyph not in fragment_glyphs)
+    data = source.model_copy(
+        update={
+            "bbox": _union_bbox(tuple(cell.bbox for cell in data_cells)),
+            "cells": tuple(data_cells),
+            "glyphs": data_glyphs,
+            "words": data_words,
+            "diagnostics": tuple(
+                dict.fromkeys((*source.diagnostics, "split_overlaid_header_data"))
+            ),
+        }
+    )
+    merged_header = _merge_adjacent_description_header_cells(
+        _merge_header_rows(header, (fragment,))
+    )
+    table_data = data.model_copy(
+        update={
+            "cells": tuple(
+                cell
+                for cell in data.cells
+                if table_left <= _center_x(cell.bbox) <= table_right
+            )
+        }
+    )
+    schema = infer_column_roles(merged_header.cells, table_data.cells)
+    roles = tuple(column.role for column in schema.columns)
+    if (
+        roles.count(ColumnRole.AMOUNT) != 1
+        or roles.count(ColumnRole.ORIGINAL_AMOUNT) != 1
+        or _transaction_shape_count(table_data) < 2
+        or not _has_valid_billed_amount(table_data, schema)
+    ):
+        return None
+    return merged_header, fragment, data
+
+
 def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
     merged: list[Row] = []
     index = 0
@@ -480,6 +635,16 @@ def _merged_header_bands(rows: Sequence[Row]) -> tuple[Row, ...]:
         fragments: list[Row] = []
         skipped_overlay_rows: list[Row] = []
         if _literal_header_role_count(header) >= 2:
+            overlaid = (
+                _split_overlaid_header_fragment(header, rows[index + 1])
+                if index + 1 < len(rows)
+                else None
+            )
+            if overlaid is not None:
+                merged_header, _, data = overlaid
+                merged.extend((merged_header, data))
+                index += 2
+                continue
             fragment_index = index + 1
             while fragment_index < len(rows) and len(fragments) < 2:
                 candidate = rows[fragment_index]

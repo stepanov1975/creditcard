@@ -104,6 +104,8 @@ _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
 }
 _INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
 _LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
+_CARD_IDENTIFIER_PATTERN = re.compile(r"^\d{4,10}$")
+_CARD_IDENTIFIER_MARKERS = ("card id", "card identifier", "מזהה כרטיס")
 _MIN_DESCRIPTION_SPILL_OVERLAP = 0.2
 
 
@@ -268,6 +270,22 @@ def _is_relevant_cell(cell: Cell) -> bool:
     )
 
 
+def _is_safe_card_identifier_cell(row: Row, cell: Cell) -> bool:
+    identifiers = tuple(
+        candidate
+        for candidate in row.cells
+        if _CARD_IDENTIFIER_PATTERN.fullmatch(_normalized_text(candidate.text)) is not None
+    )
+    return (
+        len(identifiers) == 1
+        and identifiers[0] is cell
+        and _contains_marker(
+            " ".join(candidate.text for candidate in row.cells),
+            _CARD_IDENTIFIER_MARKERS,
+        )
+    )
+
+
 def _original_currency_spilled_into_location(
     cell: Cell,
     region: TableRegion,
@@ -369,6 +387,9 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
                 diagnostics.append("unresolved_relevant_cell")
             continue
         column = columns[0]
+        safe_card_identifier = (
+            column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(row, cell)
+        )
         safe_location_identifier = (
             column.role is ColumnRole.LOCATION
             and (
@@ -380,19 +401,19 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
             value == "ambiguous_role" or value.startswith("alternative_role:")
             for value in column.diagnostics
         )
-        if relevant and column.role is ColumnRole.UNKNOWN:
+        if relevant and column.role is ColumnRole.UNKNOWN and not safe_card_identifier:
             diagnostics.append(f"column:{column.index}:role_unknown")
         if relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier:
             diagnostics.append(f"column:{column.index}:unexpected_location_value")
-        if relevant and has_alternative:
+        if relevant and has_alternative and not safe_card_identifier:
             diagnostics.extend(
                 f"column:{column.index}:{value}"
                 for value in column.diagnostics
                 if value == "ambiguous_role" or value.startswith("alternative_role:")
             )
         if relevant and (
-            column.role is ColumnRole.UNKNOWN
-            or has_alternative
+            (column.role is ColumnRole.UNKNOWN and not safe_card_identifier)
+            or (has_alternative and not safe_card_identifier)
             or (column.role is ColumnRole.LOCATION and not safe_location_identifier)
         ):
             diagnostics.append("unresolved_relevant_cell")

@@ -259,6 +259,34 @@ def _text_from_words(words: Sequence[Word]) -> str:
     return _normalized(" ".join(rendered_lines))
 
 
+def _text_from_lossless_words(words: Sequence[Word]) -> str:
+    """Order exact word-owned glyph text by directional runs."""
+
+    rendered_lines: list[str] = []
+    for line in _cluster_lines(_deduplicated_words(words)):
+        physical = sorted(line, key=lambda word: _center_x(word.bbox))
+        base_direction = _dominant_direction(tuple(word.text for word in physical))
+        runs: list[tuple[str, list[Word]]] = []
+        for word in physical:
+            direction = _strong_direction(word.text) or (
+                runs[-1][0] if runs else base_direction
+            )
+            if runs and runs[-1][0] == direction:
+                runs[-1][1].append(word)
+            else:
+                runs.append((direction, [word]))
+        ordered_runs = runs if base_direction == "ltr" else list(reversed(runs))
+        ordered_words = tuple(
+            word
+            for direction, run in ordered_runs
+            for word in (reversed(run) if direction == "rtl" else run)
+        )
+        line_text = _normalized(" ".join(word.text for word in ordered_words))
+        if line_text:
+            rendered_lines.append(line_text)
+    return _normalized(" ".join(rendered_lines))
+
+
 def _ocr_corroborated_currency_glyphs(
     glyphs: Sequence[Glyph],
     words: Sequence[Word],
@@ -299,7 +327,6 @@ def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str |
         not visible_glyphs
         or not words
         or rtl_word_count < 2
-        or any(char.isdigit() for glyph in visible_glyphs for char in glyph.char)
     ):
         return None
     assigned: list[list[Glyph]] = [[] for _ in words]
@@ -316,7 +343,7 @@ def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str |
         if not glyph_text or _character_signature(glyph_text) != _character_signature(word.text):
             return None
         canonical_words.append(word.model_copy(update={"text": glyph_text}))
-    candidate = _text_from_words(canonical_words)
+    candidate = _text_from_lossless_words(canonical_words)
     glyph_text = _text_from_glyphs(visible_glyphs)
     return (
         candidate if _character_signature(candidate) == _character_signature(glyph_text) else None

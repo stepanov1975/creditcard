@@ -1461,6 +1461,59 @@ def test_normalize_statement_keeps_critical_and_noncritical_row_ambiguities_expl
     assert "rows_not_emitted:1" in result.diagnostics
 
 
+def test_normalize_statement_accepts_exact_card_identifier_in_unknown_column() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("Google Pay מזהה כרטיס", 2, 30.0),
+                _cell("9313", 3, 30.0),
+                _cell("10.00", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.row_results[0].diagnostics == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_rejects_visually_reversed_card_identifier_marker() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("Google Pay כרטיס מזהה", 2, 30.0),
+                _cell("9313", 3, 30.0),
+                _cell("10.00", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions == ()
+    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+
+
 def test_normalize_statement_does_not_choose_between_generic_amount_columns() -> None:
     region = _region(
         (

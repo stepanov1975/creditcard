@@ -95,6 +95,25 @@ def test_logical_text_uses_lossless_words_when_overlapping_glyphs_interleave() -
     assert logical_text_for_evidence(glyphs, words) == "המרה שער"
 
 
+def test_logical_text_canonicalizes_hebrew_run_inside_mixed_ltr_detail() -> None:
+    numeric = tuple(_glyph(char, 10.0 + index * 4.0) for index, char in enumerate("9313"))
+    google = tuple(_glyph(char, 32.0 + index * 4.0) for index, char in enumerate("Google"))
+    pay = tuple(_glyph(char, 60.0 + index * 4.0) for index, char in enumerate("Pay"))
+    card = _rtl_glyphs("כרטיס", 104.0, 10.0)
+    identifier = _rtl_glyphs("מזהה", 128.0, 10.0)
+    words = (
+        Word(text="9313", bbox=(9.0, 9.0, 27.0, 21.0), source="digital", confidence=1.0),
+        Word(text="Google", bbox=(31.0, 9.0, 57.0, 21.0), source="digital", confidence=1.0),
+        Word(text="Pay", bbox=(59.0, 9.0, 73.0, 21.0), source="digital", confidence=1.0),
+        Word(text="כרטיס", bbox=(83.0, 9.0, 105.0, 21.0), source="digital", confidence=1.0),
+        Word(text="מזהה", bbox=(111.0, 9.0, 129.0, 21.0), source="digital", confidence=1.0),
+    )
+
+    assert logical_text_for_evidence(
+        (*numeric, *google, *pay, *card, *identifier), words
+    ) == "9313 Google Pay מזהה כרטיס"
+
+
 def test_logical_text_keeps_numeric_punctuation_joined_from_glyph_geometry() -> None:
     glyphs = tuple(_glyph(char, 10.0 + index * 5.0) for index, char in enumerate("12.40"))
     words = (

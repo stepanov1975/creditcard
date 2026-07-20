@@ -1999,6 +1999,97 @@ def test_projection_keeps_word_glyphs_in_the_word_owned_header_band() -> None:
     assert tuple(glyph for cell in projected.cells for glyph in cell.glyphs) == source_cell.glyphs
 
 
+def test_merged_header_bands_splits_header_fragments_overlaid_on_first_data_row() -> None:
+    header_words = (
+        _word("סכום", 0.0, 40.0, 10.0),
+        _word("סכום", 50.0, 90.0, 10.0),
+        _word("שם בית העסק", 100.0, 140.0, 10.0),
+        _word("תאריך", 150.0, 190.0, 10.0),
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 190.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in reversed(header_words)
+        ),
+        words=header_words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:rtl",),
+    )
+    fragments = (
+        _word("חיוב", 10.0, 35.0, 21.0),
+        _word("עסקה", 60.0, 85.0, 21.0),
+        _word("עסקה", 160.0, 185.0, 21.0),
+    )
+    values = (
+        _word("₪10.00", 10.0, 35.0, 31.0),
+        _word("₪10.00", 60.0, 85.0, 31.0),
+        _word("Market", 105.0, 135.0, 31.0),
+        _word("01/02/2026", 150.0, 185.0, 31.0),
+    )
+    overlaid_cells = (
+        Cell(
+            page_number=1,
+            bbox=(150.0, 21.0, 185.0, 41.0),
+            text="עסקה 01/02/2026",
+            words=(fragments[2], values[3]),
+            confidence=1.0,
+        ),
+        Cell(
+            page_number=1,
+            bbox=values[2].bbox,
+            text=values[2].text,
+            words=(values[2],),
+            confidence=1.0,
+        ),
+        Cell(
+            page_number=1,
+            bbox=(50.0, 21.0, 90.0, 41.0),
+            text="עסקה ₪10.00",
+            words=(fragments[1], values[1]),
+            confidence=1.0,
+        ),
+        Cell(
+            page_number=1,
+            bbox=(0.0, 21.0, 40.0, 41.0),
+            text="חיוב ₪10.00",
+            words=(fragments[0], values[0]),
+            confidence=1.0,
+        ),
+    )
+    overlaid = Row(
+        page_number=1,
+        bbox=(0.0, 21.0, 185.0, 41.0),
+        cells=overlaid_cells,
+        words=(*fragments, *values),
+        confidence=1.0,
+        diagnostics=("dominant_direction:rtl",),
+    )
+
+    rows = _merged_header_bands((header, overlaid))
+
+    assert len(rows) == 2
+    assert "header_rows:2" in rows[0].diagnostics
+    assert [column.role for column in infer_column_roles(rows[0].cells, rows[1].cells).columns] == [
+        ColumnRole.AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.DATE,
+    ]
+    assert {cell.text for cell in rows[1].cells} == {
+        "01/02/2026",
+        "Market",
+        "₪10.00",
+    }
+
+
 def test_projection_vertical_band_ignores_unknown_header_sidebar_cells() -> None:
     header_words = (*_auxiliary_table_header(10.0), _word("Sidebar", 150.0, 190.0, 10.0))
     continued = _word("continued", 65.0, 85.0, 61.0)
