@@ -33,4 +33,3 @@ Run all of the following before committing changes:
   third-party typing limitation.
 - Add complete type annotations to public and internal functions. Avoid `Any`
   where a concrete protocol, model, or union can express the contract.
-
