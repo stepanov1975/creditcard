@@ -346,11 +346,6 @@ class EvidenceLedger:
         )
         return frozenset().union(*equality_matches) if equality_matches else frozenset()
 
-    def cells_for_atom(self, atom_id: int) -> tuple[Cell, ...]:
-        """Return every source cell whose evidence contains an atom."""
-
-        return tuple(cell for cell, atom_ids in self._cell_memberships if atom_id in atom_ids)
-
     def atoms_in_bbox(self, atom_ids: Iterable[int], bbox: BBox) -> frozenset[int]:
         """Return selected atom IDs whose positioned centers fall inside a box."""
 
@@ -429,11 +424,30 @@ class EvidenceLedger:
         if not positioned:
             return ()
 
-        ordered = tuple(
-            sorted(
-                positioned,
-                key=lambda item: (_center_y(item[0].bbox), item[0].bbox[0], item[0].bbox[2]),
+        lines: list[list[tuple[Glyph, int | None]]] = []
+        for item in sorted(positioned, key=lambda value: _center_y(value[0].bbox)):
+            glyph = item[0]
+            matching_line = next(
+                (
+                    candidate
+                    for candidate in lines
+                    if abs(_center_y(candidate[0][0].bbox) - _center_y(glyph.bbox))
+                    <= min(_height(candidate[0][0].bbox), _height(glyph.bbox)) * 0.5
+                ),
+                None,
             )
+            if matching_line is None:
+                lines.append([item])
+            else:
+                matching_line.append(item)
+        ordered_lines = tuple(
+            tuple(
+                sorted(
+                    line,
+                    key=lambda item: (item[0].bbox[0], item[0].bbox[2]),
+                )
+            )
+            for line in sorted(lines, key=lambda line: _center_y(line[0][0].bbox))
         )
         date_pattern = re.compile(
             r"(?<!\d)\d{1,4}(?P<separator>[./-])\d{1,2}"
@@ -456,28 +470,25 @@ class EvidenceLedger:
                 )
             segment.clear()
 
-        previous: Glyph | None = None
-        for glyph, atom_id in ordered:
-            shared_line = (
-                previous is None
-                or abs(_center_y(previous.bbox) - _center_y(glyph.bbox))
-                <= min(_height(previous.bbox), _height(glyph.bbox)) * 0.5
-            )
-            gap = 0.0 if previous is None else glyph.bbox[0] - previous.bbox[2]
-            contiguous = previous is None or (
-                shared_line and gap <= min(_height(previous.bbox), _height(glyph.bbox)) * 0.6
-            )
-            if (
-                atom_id is None
-                or glyph.char.isspace()
-                or (not glyph.char.isdigit() and glyph.char not in "./-")
-                or not contiguous
-            ):
-                flush()
-            if atom_id is not None and (glyph.char.isdigit() or glyph.char in "./-"):
-                segment.append((glyph, atom_id))
-            previous = glyph
-        flush()
+        for ordered_line in ordered_lines:
+            previous: Glyph | None = None
+            for glyph, atom_id in ordered_line:
+                gap = 0.0 if previous is None else glyph.bbox[0] - previous.bbox[2]
+                contiguous = (
+                    previous is None
+                    or gap <= min(_height(previous.bbox), _height(glyph.bbox)) * 0.6
+                )
+                if (
+                    atom_id is None
+                    or glyph.char.isspace()
+                    or (not glyph.char.isdigit() and glyph.char not in "./-")
+                    or not contiguous
+                ):
+                    flush()
+                if atom_id is not None and (glyph.char.isdigit() or glyph.char in "./-"):
+                    segment.append((glyph, atom_id))
+                previous = glyph
+            flush()
 
         unique = {(candidate.text, candidate.atom_ids): candidate for candidate in candidates}
         return tuple(unique.values())

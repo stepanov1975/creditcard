@@ -181,3 +181,16 @@ def test_fragmented_date_candidates_preserve_multiple_candidates_for_validation(
         "8/06/26",
         "9/06/26",
     )
+
+
+def test_fragmented_date_candidates_tolerate_same_line_vertical_jitter() -> None:
+    glyphs = tuple(
+        _glyph(char, 10.0 + index, 20.0 + (0.15 if index % 2 else 0.0))
+        for index, char in enumerate("25/06/26")
+    )
+    cell = _cell("25/06/26", (10.0, 20.0, 30.0, 31.0), glyphs=glyphs)
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    assert tuple(candidate.text for candidate in ledger.fragmented_date_candidates(cell)) == (
+        "25/06/26",
+    )

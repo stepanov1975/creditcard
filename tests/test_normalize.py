@@ -1535,7 +1535,7 @@ def test_original_money_word_subset_requires_unique_semantic_columns(
 def test_normalize_statement_merges_proven_multicell_subordinate_detail_rows() -> None:
     roles = (
         ColumnRole.DATE,
-        ColumnRole.UNKNOWN,
+        ColumnRole.DESCRIPTION,
         ColumnRole.EXCHANGE_RATE,
         ColumnRole.AMOUNT,
     )
@@ -1664,6 +1664,38 @@ def test_normalize_statement_merges_auxiliary_fragment_without_changing_descript
     )
     assert result.row_results[1].diagnostics == ("merged_auxiliary_continuation",)
     assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_separated_description_continuation_clusters_remain_ambiguous() -> None:
+    continuation_cell = _cell("ALPHA BETA", 1, 41.0).model_copy(
+        update={
+            "words": (
+                _word("ALPHA", 50.0, 60.0, 41.0),
+                _word("BETA", 80.0, 90.0, 41.0),
+            )
+        }
+    )
+    continuation = _row(continuation_cell).model_copy(
+        update={"diagnostics": ("subordinate_auxiliary_continuation",)}
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+            ),
+            continuation,
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert "ambiguous_description_continuation" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_band() -> None:
@@ -2905,6 +2937,11 @@ def test_normalize_statement_keeps_unanchored_short_date_ordering_ambiguity_expl
 
     result = normalize_statement(_discovery(region, "6.00", "ILS"))
 
+    assert len(result.transactions) == 2
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "First",
+        "Second",
+    )
     assert all(
         "invalid_transaction_date" in transaction.ambiguities for transaction in result.transactions
     )
@@ -3563,6 +3600,61 @@ def test_repeated_header_backed_unknown_text_band_is_ancillary() -> None:
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_repeated_unknown_profile_requires_an_alphanumeric_header() -> None:
+    rows = (
+        _row(
+            _cell("01/02/2026", 0, 30.0),
+            _cell("First merchant", 1, 30.0),
+            _cell("London", 2, 30.0),
+            _cell("Retail", 3, 30.0),
+            _cell("10.00", 4, 30.0),
+        ),
+        _row(
+            _cell("02/02/2026", 0, 50.0),
+            _cell("Second merchant", 1, 50.0),
+            _cell("Paris", 2, 50.0),
+            _cell("Services", 3, 50.0),
+            _cell("20.00", 4, 50.0),
+        ),
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        rows,
+        headers=("Date", "Description", "City", "|", "Amount"),
+    )
+    unknown_column = region.table_schema.columns[3].model_copy(
+        update={
+            "source_cells": (
+                region.table_schema.header_cells[3],
+                rows[0].cells[3],
+                rows[1].cells[3],
+            )
+        }
+    )
+    columns = (
+        *region.table_schema.columns[:3],
+        unknown_column,
+        region.table_schema.columns[4],
+    )
+    region = region.model_copy(
+        update={"table_schema": region.table_schema.model_copy(update={"columns": columns})}
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert all(
+        "unconsumed_transaction_semantic_text" in transaction.ambiguities
+        for transaction in result.transactions
+    )
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_unrecovered_date_description_boundary_text_is_semantically_unconsumed() -> None:
     date_cell = Cell(
         page_number=1,
@@ -3701,6 +3793,69 @@ def test_plain_identifier_in_singleton_unknown_header_remains_ambiguous() -> Non
     assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
     assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_missing_description_retains_billed_transaction_with_semantic_ambiguity() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("10.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].billed_amount == Decimal("10.00")
+    assert result.transactions[0].description is None
+    assert "missing_description_cell" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_missing_description_role_is_an_explicit_semantic_ambiguity() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("10.00", 1, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].description is None
+    assert "missing_description_cell" in result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_missing_date_role_is_an_explicit_semantic_ambiguity() -> None:
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("Merchant", 0, 30.0),
+                _cell("10.00", 1, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].transaction_date is None
+    assert "missing_date_cell" in result.transactions[0].ambiguities
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
@@ -4156,7 +4311,7 @@ def test_negative_billed_adjustment_may_omit_unprinted_original_amount() -> None
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_positive_billed_row_still_requires_printed_original_amount() -> None:
+def test_positive_billed_row_retains_missing_original_amount_as_ambiguity() -> None:
     region = _region(
         (
             ColumnRole.DATE,
@@ -4175,8 +4330,11 @@ def test_positive_billed_row_still_requires_printed_original_amount() -> None:
 
     result = normalize_statement(_discovery(region, "2.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "missing_original_amount_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert result.transactions[0].billed_amount == Decimal("2.00")
+    assert result.transactions[0].original_amount is None
+    assert "missing_original_amount_cell" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
     assert result.reconciliation.status is Status.UNRECONCILED
 
 

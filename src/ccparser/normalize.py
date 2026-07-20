@@ -1231,7 +1231,6 @@ def _boundary_date_description_split(
     date_column: ColumnSpec,
     description_column: ColumnSpec,
     year_context: DiscoveredDateYearContext | None,
-    unanchored_style: DateTokenStyle | None,
 ) -> tuple[date | None, str] | None:
     cell_width = max(0.0, cell.bbox[2] - cell.bbox[0])
     if (
@@ -1246,17 +1245,7 @@ def _boundary_date_description_split(
     if len(matches) != 1:
         return None
     match = matches[0]
-    parsed_date, diagnostic = _parse_cell_date(cell, year_context)
-    has_proven_unanchored_date = (
-        (
-            year_context is None
-            and _valid_short_date_token_for_style(match.group(0), unanchored_style) is not None
-        )
-        if unanchored_style is not None
-        else False
-    )
-    if (parsed_date is None or diagnostic is not None) and not has_proven_unanchored_date:
-        return None
+    parsed_date, _ = _parse_cell_date(cell, year_context)
     residual = _normalized_text(normalized[: match.start()] + normalized[match.end() :])
     if (
         not residual
@@ -1294,11 +1283,6 @@ def _boundary_date_description_splits(
     description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
     if len(date_columns) != 1 or len(description_columns) != 1:
         return ()
-    unanchored_style = (
-        _proven_unanchored_short_date_style(region, date_columns[0])
-        if year_context is None
-        else None
-    )
     candidates = tuple(
         (cell, parsed_date, residual)
         for cell in row.cells
@@ -1308,7 +1292,6 @@ def _boundary_date_description_splits(
                 date_columns[0],
                 description_columns[0],
                 year_context,
-                unanchored_style,
             )
         )
         for parsed_date, residual in (split,)
@@ -1410,6 +1393,25 @@ def _selected_description_cell_atoms(
     return frozenset(selected), frozenset(processor)
 
 
+def _has_competing_description_clusters(
+    ledger: EvidenceLedger,
+    cells: Sequence[Cell],
+    repeated_distant_signatures: frozenset[str],
+) -> bool:
+    for cell in cells:
+        for line in _cluster_lines(ledger.clusters_for_cell(cell)):
+            candidates = tuple(
+                cluster
+                for cluster in line
+                if any(char.isalpha() for char in cluster.text)
+                and not _is_numeric_processor_cluster(cluster)
+                and _cluster_signature(cluster) not in repeated_distant_signatures
+            )
+            if len(candidates) > 1:
+                return True
+    return False
+
+
 def _adjacent_unknown_description_atoms(
     row: Row,
     region: TableRegion,
@@ -1475,6 +1477,7 @@ def _description(
     repeated_signatures = _repeated_distant_description_signatures(region)
     claims: list[EvidenceClaim] = []
     texts: list[str] = []
+    diagnostics: list[str] = []
     eligible_rows = tuple(
         row for row in rows if "subordinate_detail_continuation" not in row.diagnostics
     )
@@ -1500,6 +1503,12 @@ def _description(
         selected_ids: set[int] = set()
         processor_ids: set[int] = set()
         fallback_texts: list[str] = []
+        if index > 0 and _has_competing_description_clusters(
+            ledger,
+            row_cells,
+            repeated_signatures,
+        ):
+            diagnostics.append("ambiguous_description_continuation")
         for cell in row_cells:
             selected, processor = _selected_description_cell_atoms(
                 ledger,
@@ -1570,10 +1579,8 @@ def _description(
             )
         previous_row = row
 
-    diagnostics: list[str] = []
     if not texts:
-        if _role_columns(region, ColumnRole.DESCRIPTION):
-            diagnostics.append("missing_description_cell")
+        diagnostics.append("missing_description_cell")
         return DescriptionExtraction(None, tuple(claims), tuple(diagnostics))
     return DescriptionExtraction(
         _normalized_text(" ".join(_merchant_punctuation(text) for text in texts)),
@@ -1906,6 +1913,8 @@ def _dates(
 ) -> tuple[date | None, date | None, date | None, list[str]]:
     columns = _role_columns(region, ColumnRole.DATE)
     diagnostics: list[str] = []
+    if not columns:
+        diagnostics.append("missing_date_cell")
     parsed: list[tuple[str | None, date | None, str | None]] = []
     for column in columns:
         cells = _cells_for_column(row, column)
@@ -1922,11 +1931,18 @@ def _dates(
                     year_context,
                 )
                 if len(columns) == 1 and len(boundary_splits) == 1:
+                    split_cell, split_date, _ = boundary_splits[0]
+                    split_diagnostic = (
+                        None
+                        if split_date is not None
+                        or _has_proven_unanchored_short_date(split_cell, unanchored_style)
+                        else "invalid_date"
+                    )
                     parsed.append(
                         (
                             _header_kind(column) or structural_kinds.get(column.index),
-                            boundary_splits[0][1],
-                            None,
+                            split_date,
+                            split_diagnostic,
                         )
                     )
                 else:
@@ -2135,7 +2151,13 @@ def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
         if not any("continuation" in diagnostic for diagnostic in row.diagnostics)
     )
     for column in _role_columns(region, ColumnRole.UNKNOWN):
-        header_text = _normalized_text(" ".join(cell.text for cell in column.source_cells))
+        header_cells = tuple(
+            cell
+            for cell in region.table_schema.header_cells
+            if cell in column.source_cells
+            or column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        )
+        header_text = _normalized_text(" ".join(cell.text for cell in header_cells))
         values = tuple(
             cell
             for row in base_rows
@@ -2737,28 +2759,6 @@ def _normalize_row(
                 diagnostics.append(installment_diagnostic)
             elif installment is not None:
                 installment_current, installment_total = installment
-
-    unconsumed_role_diagnostics = {
-        "missing_date_cell",
-        "multiple_date_cells",
-        "missing_description_cell",
-        "multiple_description_cells",
-        "missing_original_amount_cell",
-        "multiple_original_amount_cells",
-        "missing_original_currency_cell",
-        "multiple_original_currency_cells",
-        "missing_installment_cell",
-        "multiple_installment_cells",
-    }
-    if unconsumed_role_diagnostics.intersection(diagnostics):
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
 
     _, semantic_diagnostics = _semantic_claims_and_diagnostics(
         rows=rows,
