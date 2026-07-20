@@ -6,6 +6,7 @@ import re
 import statistics
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from datetime import date
 from decimal import Decimal
 from itertools import pairwise
@@ -2041,6 +2042,7 @@ def _conversion_date_from_semantic_evidence(
     *,
     original_currency: str | None,
     billing_currency: str,
+    transaction_date: date | None,
 ) -> tuple[date | None, tuple[str, ...]]:
     if original_currency is None or original_currency == billing_currency:
         return None, ()
@@ -2058,10 +2060,53 @@ def _conversion_date_from_semantic_evidence(
     )
     if not candidates:
         return None, ()
-    parsed = tuple(_parse_date(candidate.text, year_context)[0] for candidate in candidates)
+    parsed = tuple(
+        _parse_date_near_anchor(candidate.text, year_context, transaction_date)
+        for candidate in candidates
+    )
     if len(candidates) == 1 and parsed[0] is not None:
         return parsed[0], ()
     return None, ("unparsed_conversion_date_candidate",)
+
+
+def _parse_date_near_anchor(
+    text: str,
+    year_context: DiscoveredDateYearContext | None,
+    anchor: date | None,
+) -> date | None:
+    parsed = _parse_date(text, year_context)[0]
+    if parsed is not None or anchor is None:
+        return parsed
+    if year_context is None:
+        match = _DATE_PATTERN.fullmatch(_normalized_text(text))
+        if match is None:
+            return None
+        first, _, second, third = match.groups()
+        candidates: set[date] = set()
+        for year in range(anchor.year - 1, anchor.year + 2):
+            if year % 100 == int(third):
+                with suppress(ValueError):
+                    candidates.add(date(year, int(second), int(first)))
+            if year % 100 == int(first):
+                with suppress(ValueError):
+                    candidates.add(date(year, int(second), int(third)))
+        nearby = tuple(
+            candidate for candidate in candidates if abs((candidate - anchor).days) <= 31
+        )
+        return nearby[0] if len(nearby) == 1 else None
+    local_years = tuple(
+        year for year in range(anchor.year - 1, anchor.year + 2) if 1900 <= year <= 2100
+    )
+    local_context = year_context.model_copy(
+        update={
+            "year": None,
+            "year_by_suffix": tuple(sorted((year % 100, year) for year in local_years)),
+        }
+    )
+    parsed = _parse_date(text, local_context)[0]
+    if parsed is None or abs((parsed - anchor).days) > 31:
+        return None
+    return parsed
 
 
 def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
@@ -2122,11 +2167,11 @@ def _matching_date_atom_ids(
         return frozenset()
     matching: set[int] = set()
     for candidate in ledger.fragmented_date_candidates(cell):
-        if _parse_date(candidate.text, year_context)[0] == expected:
+        if _parse_date_near_anchor(candidate.text, year_context, expected) == expected:
             matching.update(candidate.atom_ids)
     for atom_id in ledger.atoms_for_cell(cell):
         atom = ledger.atoms[atom_id]
-        if _parse_date(atom.text, year_context)[0] == expected:
+        if _parse_date_near_anchor(atom.text, year_context, expected) == expected:
             matching.add(atom_id)
     if (
         not matching
@@ -2651,6 +2696,7 @@ def _normalize_row(
             year_context,
             original_currency=original_currency,
             billing_currency=billed.currency,
+            transaction_date=transaction_date,
         )
         diagnostics.extend(conversion_diagnostics)
 

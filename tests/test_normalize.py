@@ -2784,6 +2784,44 @@ def test_normalize_statement_does_not_treat_unrelated_date_as_conversion_on_dome
     assert "unparsed_conversion_date_candidate" not in result.transactions[0].ambiguities
 
 
+@pytest.mark.parametrize("statement_year", (None, 2023))
+def test_conversion_date_uses_nearby_transaction_year_across_statement_year_boundary(
+    statement_year: int | None,
+) -> None:
+    conversion_evidence = Cell(
+        page_number=1,
+        bbox=(100.0, 30.0, 140.0, 40.0),
+        text="Converted on 16/11/22",
+        glyphs=_glyphs("Converted on 16/11/22", 100.0, 30.0),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("197.22", 0, 30.0),
+                _cell("GBP 47.94", 1, 30.0),
+                conversion_evidence,
+                _cell("Foreign merchant", 3, 30.0),
+                _cell("15/11/2022", 4, 30.0),
+            ),
+        ),
+        headers=("Amount", "Original", "Presented", "Merchant", "Date"),
+    )
+
+    result = normalize_statement(_discovery(region, "197.22", "ILS", year_context=statement_year))
+
+    assert result.transactions[0].conversion_date == date(2022, 11, 16)
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 @pytest.mark.parametrize(
     ("raw_dates", "descriptions"),
     (

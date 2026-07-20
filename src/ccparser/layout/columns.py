@@ -386,6 +386,17 @@ def _header_match_score(text: str, term: str) -> float:
             return 1.0
         if compact_term in compact_text:
             return 0.82
+        text_tokens = text.split()
+        term_tokens = term.split()
+        if (
+            len(term_tokens) >= 3
+            and len(text_tokens) == len(term_tokens)
+            and text_tokens[:-1] == term_tokens[:-1]
+            and _is_hebrew_phrase(term_tokens[-1])
+            and any(char.isalpha() for char in text_tokens[-1])
+            and not _is_hebrew_phrase(text_tokens[-1])
+        ):
+            return 0.82
     if _contains_token_phrase(text, term):
         return 0.82
     return 0.0
