@@ -2712,7 +2712,10 @@ def test_normalize_statement_recovers_fragmented_conversion_date_from_foreign_ro
     assert result.reconciliation.status is Status.RECONCILED
 
 
-@pytest.mark.parametrize("physical_text", ("8/06/26 9/06/26", "32/06/26"))
+@pytest.mark.parametrize(
+    "physical_text",
+    ("8/06/26 9/06/26", "32/06/26", "25/06-26"),
+)
 def test_normalize_statement_marks_unresolved_conversion_date_candidate(
     physical_text: str,
 ) -> None:

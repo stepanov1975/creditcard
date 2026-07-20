@@ -90,6 +90,7 @@ _DATE_TOKEN_PATTERN = re.compile(
     r"(?<!\d)\d{1,4}\s*(?P<separator>[./-])\s*\d{1,2}\s*"
     r"(?P=separator)\s*\d{1,4}(?!\d)"
 )
+_DATE_CUE_PATTERN = re.compile(r"(?<!\d)\d{1,4}[./-]\d{1,2}[./-]\d{1,4}(?!\d)")
 _MIN_SUPPORTED_FULL_DATE_YEAR = 1900
 _MAX_SUPPORTED_FULL_DATE_YEAR = 2100
 _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
@@ -2059,7 +2060,8 @@ def _conversion_date_from_semantic_evidence(
         for candidate in ledger.fragmented_date_candidates(cell)
     )
     if not candidates:
-        return None, ()
+        has_date_cue = any(_has_fragmented_date_cue(cell) for cell in candidate_cells)
+        return (None, ("unparsed_conversion_date_candidate",)) if has_date_cue else (None, ())
     parsed = tuple(
         _parse_date_near_anchor(candidate.text, year_context, transaction_date)
         for candidate in candidates
@@ -2067,6 +2069,22 @@ def _conversion_date_from_semantic_evidence(
     if len(candidates) == 1 and parsed[0] is not None:
         return parsed[0], ()
     return None, ("unparsed_conversion_date_candidate",)
+
+
+def _has_fragmented_date_cue(cell: Cell) -> bool:
+    physical = "".join(
+        glyph.char
+        for glyph in sorted(
+            cell.glyphs,
+            key=lambda glyph: (
+                (glyph.bbox[1] + glyph.bbox[3]) / 2,
+                glyph.bbox[0],
+                glyph.bbox[2],
+            ),
+        )
+    )
+    sources = (cell.text, physical) if physical else (cell.text,)
+    return any(_DATE_CUE_PATTERN.search("".join(source.split())) is not None for source in sources)
 
 
 def _parse_date_near_anchor(
