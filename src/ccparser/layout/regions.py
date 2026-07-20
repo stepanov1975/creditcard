@@ -708,17 +708,52 @@ def _project_row_to_header_bands(
     cell_glyphs = tuple(glyph for cell in row.cells for glyph in cell.glyphs)
     row_words = (*row.words, *(word for word in cell_words if word not in row.words))
     row_glyphs = (*row.glyphs, *(glyph for glyph in cell_glyphs if glyph not in row.glyphs))
-    for index, (left, right) in enumerate(header_bands):
+
+    def band_index(center_x: float) -> int | None:
+        for candidate_index, (left, right) in enumerate(header_bands):
+            if left <= center_x < right or (
+                candidate_index == len(header_bands) - 1 and center_x == right
+            ):
+                return candidate_index
+        return None
+
+    word_band_indices = tuple(band_index(_center_x(word.bbox)) for word in row_words)
+    glyph_band_indices: list[int | None] = []
+    for glyph in row_glyphs:
+        center_x = _center_x(glyph.bbox)
+        center_y = _center_y(glyph.bbox)
+        containing_words = tuple(
+            word_index
+            for word_index, word in enumerate(row_words)
+            if word_band_indices[word_index] is not None
+            and word.bbox[0] <= center_x <= word.bbox[2]
+            and word.bbox[1] <= center_y <= word.bbox[3]
+        )
+        owner = (
+            min(
+                containing_words,
+                key=lambda word_index: (
+                    abs(center_x - _center_x(row_words[word_index].bbox))
+                    + abs(center_y - _center_y(row_words[word_index].bbox)),
+                    word_index,
+                ),
+            )
+            if containing_words
+            else None
+        )
+        glyph_band_indices.append(
+            word_band_indices[owner] if owner is not None else band_index(center_x)
+        )
+    for index, _ in enumerate(header_bands):
         glyphs = tuple(
             glyph
-            for glyph in row_glyphs
-            if left <= _center_x(glyph.bbox) <= right
-            and top <= _center_y(glyph.bbox) <= bottom
+            for glyph, owner_index in zip(row_glyphs, glyph_band_indices, strict=True)
+            if owner_index == index and top <= _center_y(glyph.bbox) <= bottom
         )
         words = tuple(
             word
-            for word in row_words
-            if left <= _center_x(word.bbox) <= right and top <= _center_y(word.bbox) <= bottom
+            for word, owner_index in zip(row_words, word_band_indices, strict=True)
+            if owner_index == index and top <= _center_y(word.bbox) <= bottom
         )
         text = logical_text_for_evidence(glyphs, words)
         if not text:

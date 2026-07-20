@@ -1943,6 +1943,62 @@ def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
     assert next_detail not in projected_words
 
 
+def test_projection_keeps_word_glyphs_in_the_word_owned_header_band() -> None:
+    header_words = (
+        _word("Billed amount", 0.0, 40.0, 10.0),
+        _word("Original amount", 60.0, 100.0, 10.0),
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 100.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    billed = _word("10.00", 45.0, 52.0, 30.0)
+    original = _word("20.00", 60.0, 67.0, 30.0)
+    billed_glyphs = tuple(
+        _glyph(char, x, 30.0)
+        for char, x in zip("10.00", (46.0, 47.0, 48.0, 49.0, 50.5), strict=True)
+    )
+    original_glyphs = tuple(
+        _glyph(char, x, 30.0)
+        for char, x in zip("20.00", (60.0, 61.0, 62.0, 63.0, 64.0), strict=True)
+    )
+    source_cell = Cell(
+        page_number=1,
+        bbox=(45.0, 30.0, 67.0, 40.0),
+        text="10.00 20.00",
+        glyphs=(*billed_glyphs, *original_glyphs),
+        words=(billed, original),
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=source_cell.bbox,
+        cells=(source_cell,),
+        glyphs=source_cell.glyphs,
+        words=source_cell.words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    page = _page((*header_words, billed, original), source_cell.glyphs)
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    assert [cell.text for cell in projected.cells] == ["10.00", "20.00"]
+    assert tuple(glyph for cell in projected.cells for glyph in cell.glyphs) == source_cell.glyphs
+
+
 def test_projection_vertical_band_ignores_unknown_header_sidebar_cells() -> None:
     header_words = (*_auxiliary_table_header(10.0), _word("Sidebar", 150.0, 190.0, 10.0))
     continued = _word("continued", 65.0, 85.0, 61.0)

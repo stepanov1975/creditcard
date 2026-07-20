@@ -8,6 +8,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
+from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -161,6 +162,48 @@ def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
     return proven_billed_amount_column(region.table_schema, transaction_rows)
 
 
+def _amount_from_exact_words_between_boundary_glyphs(
+    cell: Cell,
+    column: ColumnSpec,
+    currency_hint: str | None,
+) -> AmountParseResult | None:
+    if (
+        not 1 <= len(cell.words) <= 2
+        or any(word.source != "digital" for word in cell.words)
+        or not cell.glyphs
+    ):
+        return None
+    word_bbox = (
+        min(word.bbox[0] for word in cell.words),
+        min(word.bbox[1] for word in cell.words),
+        max(word.bbox[2] for word in cell.words),
+        max(word.bbox[3] for word in cell.words),
+    )
+    if not (column.bbox[0] <= word_bbox[0] and word_bbox[2] <= column.bbox[2]):
+        return None
+    word_text = " ".join(word.text for word in cell.words)
+    parsed = parse_amount(word_text, currency_hint=currency_hint)
+    if parsed.amount is None or parsed.currency is None:
+        return None
+    compact_cell = "".join(_normalized_text(cell.text).split())
+    compact_words = "".join(_normalized_text(word_text).split())
+    if compact_cell.count(compact_words) != 1:
+        return None
+    boundary_glyphs = tuple(
+        glyph
+        for glyph in cell.glyphs
+        if not glyph.char.isspace() and not _bbox_center_inside(glyph.bbox, word_bbox)
+    )
+    if not boundary_glyphs or any(glyph.source != "digital" for glyph in boundary_glyphs):
+        return None
+    if any(
+        not (glyph.bbox[0] < column.bbox[0] or glyph.bbox[2] > column.bbox[2])
+        for glyph in boundary_glyphs
+    ):
+        return None
+    return parsed
+
+
 def _proven_implicit_original_currency(
     region: TableRegion,
     billing_currency: str,
@@ -196,6 +239,14 @@ def _proven_implicit_original_currency(
         if len(original_cells) != 1 or currencies_in_text(original_cells[0].text):
             return None
         original = parse_amount(original_cells[0].text, currency_hint=billing_currency)
+        if original.amount is None or original.currency is None:
+            recovered = _amount_from_exact_words_between_boundary_glyphs(
+                original_cells[0],
+                original_columns[0],
+                billing_currency,
+            )
+            if recovered is not None:
+                original = recovered
         billed = parse_amount(billed_cells[0].text, currency_hint=billing_currency)
         if billed.amount is None or billed.currency is None:
             continue
@@ -217,6 +268,92 @@ def _is_relevant_cell(cell: Cell) -> bool:
     )
 
 
+def _original_currency_spilled_into_location(
+    cell: Cell,
+    region: TableRegion,
+) -> str | None:
+    original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
+    location_columns = _role_columns(region, ColumnRole.LOCATION)
+    if (
+        len(original_columns) != 1
+        or len(location_columns) != 1
+        or abs(original_columns[0].index - location_columns[0].index) != 1
+        or len(cell.words) < 2
+        or any(word.source != "digital" for word in cell.words)
+    ):
+        return None
+    currency_words = tuple(
+        word
+        for word in cell.words
+        if not any(char.isdigit() for char in word.text)
+        and canonical_currency(word.text) is not None
+    )
+    if len(currency_words) != 1:
+        return None
+    currency_word = currency_words[0]
+    residual_words = tuple(word for word in cell.words if word is not currency_word)
+    residual_text = _normalized_text(" ".join(word.text for word in residual_words))
+    has_proven_location_value = (
+        len(residual_words) == 1
+        and _LOCATION_IDENTIFIER_PATTERN.fullmatch(residual_text) is not None
+    ) or (
+        any(char.isalpha() for char in residual_text)
+        and not any(char.isdigit() for char in residual_text)
+        and not is_money_shaped(residual_text)
+        and not is_currency_shaped(residual_text)
+        and _DATE_PATTERN.fullmatch(residual_text) is None
+    )
+    if not has_proven_location_value:
+        return None
+    compact_cell = "".join(_normalized_text(cell.text).split())
+    compact_words = "".join(
+        "".join(_normalized_text(word.text).split())
+        for word in sorted(cell.words, key=lambda word: word.bbox[0])
+    )
+    original_on_left = _center_x(original_columns[0].bbox) < _center_x(location_columns[0].bbox)
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    glyph_only_residual = (
+        compact_cell[len(compact_words) :]
+        if original_on_left and compact_cell.startswith(compact_words)
+        else (
+            compact_cell[: -len(compact_words)]
+            if not original_on_left and compact_cell.endswith(compact_words)
+            else ""
+        )
+    )
+    description_on_outer_edge = (
+        len(description_columns) == 1
+        and description_columns[0].index
+        == location_columns[0].index + (1 if original_on_left else -1)
+        and max(
+            0.0,
+            min(cell.bbox[2], description_columns[0].bbox[2])
+            - max(cell.bbox[0], description_columns[0].bbox[0]),
+        )
+        > 0
+    )
+    if compact_cell != compact_words and not (
+        glyph_only_residual
+        and all(char.isalpha() for char in glyph_only_residual)
+        and description_on_outer_edge
+    ):
+        return None
+    residual_edge_center = _center_x(
+        (
+            min(word.bbox[0] for word in residual_words),
+            min(word.bbox[1] for word in residual_words),
+            max(word.bbox[2] for word in residual_words),
+            max(word.bbox[3] for word in residual_words),
+        )
+    )
+    currency_on_original_edge = (
+        _center_x(currency_word.bbox) < residual_edge_center
+        if original_on_left
+        else _center_x(currency_word.bbox) > residual_edge_center
+    )
+    return canonical_currency(currency_word.text) if currency_on_original_edge else None
+
+
 def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
     diagnostics: list[str] = []
     for cell in row.cells:
@@ -234,7 +371,10 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
         column = columns[0]
         safe_location_identifier = (
             column.role is ColumnRole.LOCATION
-            and _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
+            and (
+                _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text)) is not None
+                or _original_currency_spilled_into_location(cell, region) is not None
+            )
         )
         has_alternative = any(
             value == "ambiguous_role" or value.startswith("alternative_role:")
@@ -700,9 +840,37 @@ def _is_boundary_description_continuation(
         if any(char.isalpha() for char in candidate.text)
         and not is_money_shaped(candidate.text)
         and not is_currency_shaped(candidate.text)
+        and isolated_date_token(candidate.text) is None
     )
-    if not any(
-        _horizontal_coverage(cell.bbox, candidate.bbox) >= 0.9 for candidate in merchant_cells
+    ordered_merchant_cells = tuple(sorted(merchant_cells, key=lambda candidate: candidate.bbox[0]))
+    typical_merchant_height = (
+        statistics.median(_height(candidate.bbox) for candidate in ordered_merchant_cells)
+        if ordered_merchant_cells
+        else 0.0
+    )
+    contiguous_merchant_span = len(ordered_merchant_cells) >= 2 and all(
+        following.bbox[0] - preceding.bbox[2] <= typical_merchant_height * 0.6
+        for preceding, following in pairwise(ordered_merchant_cells)
+    )
+    merchant_span = (
+        (
+            ordered_merchant_cells[0].bbox[0],
+            min(candidate.bbox[1] for candidate in ordered_merchant_cells),
+            ordered_merchant_cells[-1].bbox[2],
+            max(candidate.bbox[3] for candidate in ordered_merchant_cells),
+        )
+        if contiguous_merchant_span
+        else None
+    )
+    if not (
+        any(
+            _horizontal_coverage(cell.bbox, candidate.bbox) >= 0.9
+            for candidate in merchant_cells
+        )
+        or (
+            merchant_span is not None
+            and _horizontal_coverage(cell.bbox, merchant_span) >= 0.9
+        )
     ):
         return False
     typical_height = statistics.median(
@@ -1237,10 +1405,32 @@ def _normalize_row(
                     original_currency_hint = canonical_currency(original_currency_cells[0].text)
                     if original_currency_hint is None:
                         diagnostics.append("unknown_original_currency")
+            elif original_currency_hint is None:
+                location_columns = _role_columns(region, ColumnRole.LOCATION)
+                if len(location_columns) == 1:
+                    location_cells = _cells_for_column(row, location_columns[0])
+                    spilled_currencies = {
+                        currency
+                        for cell in location_cells
+                        if (
+                            currency := _original_currency_spilled_into_location(cell, region)
+                        )
+                        is not None
+                    }
+                    if len(spilled_currencies) == 1:
+                        original_currency_hint = next(iter(spilled_currencies))
             original = parse_amount(
                 original_cells[0].text,
                 currency_hint=original_currency_hint,
             )
+            if original.amount is None or original.currency is None:
+                recovered = _amount_from_exact_words_between_boundary_glyphs(
+                    original_cells[0],
+                    original_columns[0],
+                    original_currency_hint,
+                )
+                if recovered is not None:
+                    original = recovered
             spill = None
             if original.amount is None or original.currency is None:
                 spill = _original_amount_with_description_spill(
@@ -1357,6 +1547,17 @@ def _printed_total(group: StatementGroupDiscovery) -> tuple[PrintedTotal | None,
     )
 
 
+def _is_printed_total_row(row: Row, group: StatementGroupDiscovery) -> bool:
+    evidence = (
+        group.printed_total.label_evidence,
+        group.printed_total.value_evidence,
+    )
+    return all(
+        item.page_number == row.page_number and _bbox_center_inside(item.bbox, row.bbox)
+        for item in evidence
+    )
+
+
 def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization:
     """Normalize discovered current-cycle rows and reconcile exact printed totals."""
 
@@ -1384,6 +1585,19 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
             while index < len(rows):
                 row = rows[index]
                 row_ordinal += 1
+                if _is_printed_total_row(row, group):
+                    row_results.append(
+                        RowNormalizationResult(
+                            page_number=row.page_number,
+                            bbox=row.bbox,
+                            raw_text=_row_text((row,)),
+                            evidence=_row_evidence((row,)),
+                            confidence=row.confidence,
+                            diagnostics=("printed_total_row",),
+                        )
+                    )
+                    index += 1
+                    continue
                 continuations: list[Row] = []
                 continuation_index = index + 1
                 previous = row

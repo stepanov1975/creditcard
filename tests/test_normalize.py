@@ -350,6 +350,55 @@ def test_normalize_statement_merges_description_continuation_across_column_bound
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_merges_continuation_covered_by_split_merchant_cells() -> None:
+    original = _cell("$10.00 MERCHANT", 1, 30.0).model_copy(
+        update={
+            "bbox": (50.0, 30.0, 110.0, 40.0),
+            "words": (
+                _word("$10.00", 50.0, 70.0, 30.0),
+                _word("MERCHANT", 75.0, 105.0, 30.0),
+            ),
+        }
+    )
+    name = _cell("NAME", 2, 30.0).model_copy(
+        update={
+            "bbox": (110.0, 30.0, 140.0, 40.0),
+            "words": (_word("NAME", 110.0, 140.0, 30.0),),
+        }
+    )
+    continuation = _cell("CITY", 1, 41.0).model_copy(
+        update={
+            "bbox": (70.0, 41.0, 120.0, 51.0),
+            "words": (_word("CITY", 70.0, 120.0, 41.0),),
+        }
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("40.00", 0, 30.0),
+                original,
+                name,
+                _cell("01/02/2026", 3, 30.0),
+            ),
+            _row(continuation),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "40.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].description == "MERCHANT NAME CITY"
+    assert result.transactions[0].original_amount == Decimal("10.00")
+    assert result.row_results[1].diagnostics == ("merged_description_continuation",)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 @pytest.mark.parametrize(
     ("text", "bbox"),
     (
@@ -477,6 +526,158 @@ def test_normalize_statement_recovers_money_when_spill_has_only_glyph_text() -> 
     assert transaction.original_currency == "USD"
     assert transaction.description == "MER CHANT DETAILS"
     assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("location_text", "location_value", "location_bbox"),
+    (
+        ("$ 1234567890", "1234567890", (50.0, 30.0, 90.0, 40.0)),
+        ("$ MERCHANT/CITY", "MERCHANT/CITY", (50.0, 30.0, 90.0, 40.0)),
+        ("$ MERCHANT/CITY I", "MERCHANT/CITY", (50.0, 30.0, 105.0, 40.0)),
+    ),
+)
+def test_normalize_statement_recovers_currency_spilled_into_adjacent_location(
+    location_text: str,
+    location_value: str,
+    location_bbox: tuple[float, float, float, float],
+) -> None:
+    location = _cell(location_text, 2, 30.0).model_copy(
+        update={
+            "bbox": location_bbox,
+            "words": (
+                _word("$", 50.0, 53.0, 30.0),
+                _word(location_value, 54.0, 80.0, 30.0),
+            )
+        }
+    )
+    region = _region(
+        (
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.LOCATION,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+            ColumnRole.AMOUNT,
+        ),
+        (
+                _row(
+                    _cell("10.18", 0, 30.0),
+                    location,
+                _cell("Merchant", 2, 30.0),
+                _cell("01/02/2026", 3, 30.0),
+                _cell("40.60", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "40.60", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].original_amount == Decimal("10.18")
+    assert result.transactions[0].original_currency == "USD"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_uses_exact_amount_word_between_boundary_glyphs() -> None:
+    original = _cell("A 60.00 0", 1, 30.0).model_copy(
+        update={
+            "bbox": (48.0, 30.0, 92.0, 40.0),
+            "words": (_word("60.00", 60.0, 80.0, 30.0),),
+            "glyphs": (
+                Glyph(
+                    char="0",
+                    bbox=(48.0, 30.0, 52.0, 40.0),
+                    origin=(48.0, 39.0),
+                    font="Synthetic",
+                    size=10.0,
+                    source="digital",
+                    confidence=1.0,
+                ),
+                *_glyphs("60.00", 60.0, 30.0),
+                Glyph(
+                    char="A",
+                    bbox=(88.0, 30.0, 92.0, 40.0),
+                    origin=(88.0, 39.0),
+                    font="Synthetic",
+                    size=10.0,
+                    source="digital",
+                    confidence=1.0,
+                ),
+            ),
+        }
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("60.00", 0, 30.0),
+                original,
+                _cell("Merchant", 2, 30.0),
+                _cell("01/02/2026", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "60.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].original_amount == Decimal("60.00")
+    assert result.transactions[0].original_currency == "ILS"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_uses_exact_money_words_before_boundary_glyph() -> None:
+    original = _cell("60.00 ₪ A", 1, 30.0).model_copy(
+        update={
+            "bbox": (60.0, 30.0, 92.0, 40.0),
+            "words": (
+                _word("60.00", 60.0, 80.0, 30.0),
+                _word("₪", 81.0, 85.0, 30.0),
+            ),
+            "glyphs": (
+                *_glyphs("60.00", 60.0, 30.0),
+                *_glyphs("₪", 81.0, 30.0),
+                Glyph(
+                    char="A",
+                    bbox=(88.0, 30.0, 92.0, 40.0),
+                    origin=(88.0, 39.0),
+                    font="Synthetic",
+                    size=10.0,
+                    source="digital",
+                    confidence=1.0,
+                ),
+            ),
+        }
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("60.00", 0, 30.0),
+                original,
+                _cell("Merchant", 2, 30.0),
+                _cell("01/02/2026", 3, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "60.00", "ILS"))
+
+    assert result.transactions[0].original_amount == Decimal("60.00")
+    assert result.transactions[0].original_currency == "ILS"
+    assert result.transactions[0].ambiguities == ()
     assert result.reconciliation.status is Status.RECONCILED
 
 
@@ -1917,6 +2118,52 @@ def test_normalize_statement_marks_reconciliation_unreconciled_when_a_row_is_not
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
     assert result.reconciliation.status is Status.UNRECONCILED
     assert "rows_not_emitted:1" in result.reconciliation.diagnostics
+
+
+def test_normalize_statement_excludes_printed_total_row_retained_in_region() -> None:
+    transaction = _row(
+        _cell("01/02/2026", 0, 30.0),
+        _cell("Clean", 1, 30.0),
+        _cell("2.00", 2, 30.0),
+    )
+    total_row = _row(
+        _cell("Total", 1, 50.0),
+        _cell("2.00", 2, 50.0),
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (transaction, total_row),
+    )
+    discovery = _discovery(region, "2.00", "ILS")
+    group = discovery.groups[0]
+    printed_total = group.printed_total.model_copy(
+        update={
+            "label_evidence": EvidenceReference(
+                page_number=1,
+                bbox=total_row.cells[0].bbox,
+                raw_text="Total",
+            ),
+            "value_evidence": EvidenceReference(
+                page_number=1,
+                bbox=total_row.cells[1].bbox,
+                raw_text="2.00",
+            ),
+        }
+    )
+    discovery = discovery.model_copy(
+        update={
+            "groups": (
+                group.model_copy(update={"printed_total": printed_total}),
+            )
+        }
+    )
+
+    result = normalize_statement(discovery)
+
+    assert len(result.transactions) == 1
+    assert result.row_results[1].diagnostics == ("printed_total_row",)
+    assert "rows_not_emitted:1" not in result.diagnostics
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation() -> None:
