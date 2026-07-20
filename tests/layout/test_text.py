@@ -114,6 +114,27 @@ def test_logical_text_canonicalizes_hebrew_run_inside_mixed_ltr_detail() -> None
     ) == "9313 Google Pay מזהה כרטיס"
 
 
+def test_logical_text_attaches_visual_trailing_sign_to_decimal_in_rtl_line() -> None:
+    amount = tuple(_glyph(char, 10.0 + index * 4.0) for index, char in enumerate("0.33"))
+    sign = (_glyph("-", 28.0),)
+    date = tuple(
+        _glyph(char, 34.0 + index * 4.0) for index, char in enumerate("16/04/25")
+    )
+    charge = _rtl_glyphs("חיוב", 92.0, 10.0)
+    total = _rtl_glyphs("סה", 108.0, 10.0)
+    words = (
+        Word(text="0.33", bbox=(9.0, 9.0, 27.0, 21.0), source="digital", confidence=1.0),
+        Word(text="-", bbox=(27.0, 9.0, 33.0, 21.0), source="digital", confidence=1.0),
+        Word(text="16/04/25", bbox=(33.0, 9.0, 70.0, 21.0), source="digital", confidence=1.0),
+        Word(text="חיוב", bbox=(75.0, 9.0, 93.0, 21.0), source="digital", confidence=1.0),
+        Word(text="סה", bbox=(99.0, 9.0, 109.0, 21.0), source="digital", confidence=1.0),
+    )
+
+    assert logical_text_for_evidence(
+        (*amount, *sign, *date, *charge, *total), words
+    ) == "סה חיוב -0.33 16/04/25"
+
+
 def test_logical_text_keeps_numeric_punctuation_joined_from_glyph_geometry() -> None:
     glyphs = tuple(_glyph(char, 10.0 + index * 5.0) for index, char in enumerate("12.40"))
     words = (

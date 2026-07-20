@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
 
-from ccparser.evidence.currency import CURRENCY_OCR_SYMBOLS, custom_currency_glyph_candidates
+from ccparser.evidence.currency import (
+    CURRENCY_OCR_SYMBOLS,
+    custom_currency_glyph_candidates,
+)
 from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
+
+_VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(
+    r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$"
+)
 
 
 def _width(bbox: BBox) -> float:
@@ -281,7 +289,24 @@ def _text_from_lossless_words(words: Sequence[Word]) -> str:
             for direction, run in ordered_runs
             for word in (reversed(run) if direction == "rtl" else run)
         )
-        line_text = _normalized(" ".join(word.text for word in ordered_words))
+        rendered_words: list[str] = []
+        index = 0
+        while index < len(ordered_words):
+            word = ordered_words[index]
+            if (
+                index + 1 < len(ordered_words)
+                and _VISUAL_TRAILING_SIGN_NUMBER_PATTERN.fullmatch(_normalized(word.text))
+                is not None
+                and _normalized(ordered_words[index + 1].text) in {"+", "-"}
+            ):
+                rendered_words.append(
+                    _normalized(ordered_words[index + 1].text) + _normalized(word.text)
+                )
+                index += 2
+                continue
+            rendered_words.append(word.text)
+            index += 1
+        line_text = _normalized(" ".join(rendered_words))
         if line_text:
             rendered_lines.append(line_text)
     return _normalized(" ".join(rendered_lines))

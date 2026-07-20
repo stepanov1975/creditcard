@@ -805,6 +805,68 @@ def test_total_in_explicit_fee_tax_summary_is_not_a_statement_total(fee_label: s
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
 
 
+@pytest.mark.parametrize(
+    "fee_label",
+    ("Total commissions paid", "סה כ העמלות ששולמו"),
+)
+def test_explicit_paid_fee_summary_is_not_a_statement_total(fee_label: str) -> None:
+    first_page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            _word(fee_label, 20.0, 100.0, 40.0),
+            _word("₪1.00", 118.0, 155.0, 40.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+
+    assert len(result.groups) == 1
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("before_tax", "tax", "including_tax"),
+    (
+        ("Total fees before VAT", "Total VAT", "Total including VAT"),
+        ("סה כ עמלות לפני מע מ", "סה כ מע מ", "סה כ כולל מע מ"),
+    ),
+)
+def test_multiline_fee_tax_summary_totals_are_not_statement_totals(
+    before_tax: str,
+    tax: str,
+    including_tax: str,
+) -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word(before_tax, 20.0, 100.0, 120.0),
+            _word("₪1.00", 118.0, 155.0, 120.0),
+            _word(tax, 20.0, 100.0, 135.0),
+            _word("₪0.17", 118.0, 155.0, 135.0),
+            _word(including_tax, 20.0, 100.0, 150.0),
+            _word("₪1.17", 118.0, 155.0, 150.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert len(result.groups) == 1
+    assert result.diagnostics == ()
+    assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
 def test_rate_header_without_two_percentage_fields_does_not_exempt_later_total() -> None:
     page = _page(
         1,
@@ -966,6 +1028,8 @@ def test_explicit_future_billing_table_is_outside_current_cycle_scope(heading: s
             _word("₪30.00", 118.0, 155.0, 80.0),
             _word(heading, 20.0, 105.0, 105.0),
             *_table(120.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 180.0),
+            _word("₪12.00", 118.0, 155.0, 180.0),
         ),
     )
 

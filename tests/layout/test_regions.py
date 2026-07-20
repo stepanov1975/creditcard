@@ -6,6 +6,7 @@ from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
+    _has_strong_single_row_evidence,
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
@@ -134,6 +135,93 @@ def test_page_row_key_distinguishes_overlapping_rows_with_the_same_bbox() -> Non
     assert _page_row_key(first) != _page_row_key(second)
     assert _page_row_key(first) == _page_row_key(first.model_copy())
     assert len(frozenset((_page_row_key(first), _page_row_key(second)))) == 2
+
+
+def test_strong_single_row_accepts_low_alignment_only_when_next_total_matches() -> None:
+    roles = (
+        ColumnRole.AMOUNT,
+        ColumnRole.UNKNOWN,
+        ColumnRole.UNKNOWN,
+        ColumnRole.CONVERSION_DATE,
+        ColumnRole.AMOUNT,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.DATE,
+    )
+    labels = (
+        "Billed amount",
+        "Fee",
+        "Exchange rate",
+        "Conversion date",
+        "Amount",
+        "Original amount",
+        "Description",
+        "Date",
+    )
+    header_cells = tuple(
+        Cell(
+            page_number=1,
+            bbox=(index * 20.0, 10.0, index * 20.0 + 18.0, 20.0),
+            text=label,
+            confidence=1.0,
+        )
+        for index, label in enumerate(labels)
+    )
+    schema = TableSchema(
+        page_number=1,
+        bbox=(0.0, 10.0, 158.0, 50.0),
+        columns=tuple(
+            ColumnSpec(
+                index=index,
+                page_number=1,
+                bbox=(index * 20.0, 10.0, index * 20.0 + 18.0, 50.0),
+                relative_x0=index / len(roles),
+                relative_x1=(index + 1) / len(roles),
+                role=role,
+                source_cells=(header_cells[index],),
+                confidence=1.0,
+            )
+            for index, role in enumerate(roles)
+        ),
+        header_cells=header_cells,
+        sample_cells=(),
+        confidence=1.0,
+    )
+    row = Row(
+        page_number=1,
+        bbox=(0.0, 30.0, 158.0, 40.0),
+        cells=(
+            Cell(page_number=1, bbox=(0.0, 30.0, 18.0, 40.0), text="-4.80", confidence=1.0),
+            Cell(page_number=1, bbox=(100.0, 30.0, 118.0, 40.0), text="$-4.80", confidence=1.0),
+            Cell(page_number=1, bbox=(120.0, 30.0, 138.0, 40.0), text="Merchant", confidence=1.0),
+            Cell(page_number=1, bbox=(140.0, 30.0, 158.0, 40.0), text="01/02/2026", confidence=1.0),
+        ),
+        confidence=1.0,
+    )
+    matching_total = Row(
+        page_number=1,
+        bbox=(0.0, 45.0, 98.0, 55.0),
+        cells=(
+            Cell(page_number=1, bbox=(40.0, 45.0, 78.0, 55.0), text="Total", confidence=1.0),
+            Cell(page_number=1, bbox=(0.0, 45.0, 18.0, 55.0), text="-4.80", confidence=1.0),
+        ),
+        confidence=1.0,
+    )
+    mismatched_total = matching_total.model_copy(
+        update={
+            "cells": (
+                matching_total.cells[0],
+                matching_total.cells[1].model_copy(update={"text": "-4.81"}),
+            )
+        }
+    )
+
+    assert _has_strong_single_row_evidence(
+        (row,), schema, "stopped_at_total", matching_total
+    )
+    assert not _has_strong_single_row_evidence(
+        (row,), schema, "stopped_at_total", mismatched_total
+    )
 
 
 def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_band() -> None:

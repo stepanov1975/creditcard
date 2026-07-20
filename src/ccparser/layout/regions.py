@@ -6,6 +6,7 @@ import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
+from decimal import Decimal
 from itertools import pairwise
 
 from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
@@ -27,7 +28,7 @@ from ccparser.layout.text import (
     logical_text_for_evidence,
     positioned_evidence_for_bbox,
 )
-from ccparser.money import currencies_in_text, is_currency_shaped, is_money_shaped
+from ccparser.money import currencies_in_text, is_currency_shaped, is_money_shaped, parse_amount
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -753,6 +754,7 @@ def _has_strong_single_row_evidence(
     rows: Sequence[Row],
     schema: TableSchema,
     stop_reason: str | None,
+    total_row: Row | None = None,
 ) -> bool:
     if len(rows) != 1 or stop_reason != "stopped_at_total":
         return False
@@ -774,10 +776,49 @@ def _has_strong_single_row_evidence(
             for value in (*[cell.text for cell in row.cells], *[word.text for word in row.words])
         )
     )
+    billed_cells = (
+        tuple(
+            cell
+            for cell in row.cells
+            if explicit_billed_column.bbox[0]
+            <= _center_x(cell.bbox)
+            <= explicit_billed_column.bbox[2]
+        )
+        if explicit_billed_column is not None
+        else ()
+    )
+    total_amount_cells = (
+        tuple(
+            cell
+            for cell in total_row.cells
+            if is_money_shaped(cell.text)
+        )
+        if total_row is not None and _is_total_row(total_row)
+        else ()
+    )
+
+    def amount_value(cell: Cell) -> Decimal | None:
+        currencies = currencies_in_text(cell.text)
+        if len(currencies) > 1:
+            return None
+        parsed = parse_amount(
+            cell.text,
+            currency_hint=currencies[0] if currencies else "ILS",
+        )
+        return parsed.amount
+
+    exact_total_match = (
+        len(billed_cells) == 1
+        and len(total_amount_cells) == 1
+        and amount_value(billed_cells[0]) is not None
+        and amount_value(billed_cells[0]) == amount_value(total_amount_cells[0])
+    )
+    alignment = _row_alignment(row, schema)
     return (
         known_role_count >= 4
         and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
-        and _row_alignment(row, schema) >= max(_minimum_row_alignment(schema), 0.75)
+        and alignment >= _minimum_row_alignment(schema)
+        and (alignment >= 0.75 or exact_total_match)
     )
 
 
@@ -2058,7 +2099,12 @@ def _inherited_region_after_total(
         detail_continuation_allowed = True
         previous = projected
 
-    strong_single_row = _has_strong_single_row_evidence(regular_rows, schema, stop_reason)
+    strong_single_row = _has_strong_single_row_evidence(
+        regular_rows,
+        schema,
+        stop_reason,
+        rows[stop_index] if stop_reason == "stopped_at_total" else None,
+    )
     repeated_rows_with_total = len(regular_rows) >= 2 and stop_reason == "stopped_at_total"
     continued_to_page_end = (
         len(regular_rows) >= 2
@@ -2329,7 +2375,12 @@ def _detect_from_header(
         detail_continuation_allowed = True
         previous = projected
 
-    strong_single_row = _has_strong_single_row_evidence(regular_rows, schema, stop_reason)
+    strong_single_row = _has_strong_single_row_evidence(
+        regular_rows,
+        schema,
+        stop_reason,
+        rows[stop_index] if stop_reason == "stopped_at_total" else None,
+    )
     if len(regular_rows) < 2 and not strong_single_row:
         return None, header_index + 1
 

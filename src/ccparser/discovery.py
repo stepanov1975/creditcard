@@ -225,7 +225,17 @@ _FEE_SUMMARY_MARKERS = frozenset(
         "סהכעמלות",
     }
 )
-_TAX_SUMMARY_MARKERS = frozenset({"tax", "vat", "מס", "מעמ"})
+_PAID_FEE_SUMMARY_MARKERS = frozenset(
+    {
+        "commissions paid",
+        "fees paid",
+        "total commissions paid",
+        "total fees paid",
+        "העמלות ששולמו",
+        "עמלות ששולמו",
+    }
+)
+_TAX_SUMMARY_MARKERS = frozenset({"tax", "vat", "מס", "מעמ", "מע מ"})
 _RATE_HEADER_MARKERS = frozenset(
     {
         "annual percentage rate",
@@ -396,6 +406,22 @@ def _is_future_billing_region(region: TableRegion, rows: Sequence[Row]) -> bool:
             _contains_phrase(cell.text, _FUTURE_BILLING_HEADING_MARKERS) for cell in heading.cells
         )
     )
+
+
+def _is_future_billing_total(
+    candidate: Row,
+    future_regions: Sequence[TableRegion],
+    current_regions: Sequence[TableRegion],
+) -> bool:
+    preceding = tuple(
+        region
+        for region in (*future_regions, *current_regions)
+        if region.page_number == candidate.page_number and region.bbox[3] <= candidate.bbox[1]
+    )
+    if not preceding:
+        return False
+    nearest = max(preceding, key=lambda region: _reading_key_bbox(region.page_number, region.bbox))
+    return any(nearest is region for region in future_regions)
 
 
 def _evidence(cell: Cell) -> EvidenceReference:
@@ -861,19 +887,84 @@ def _is_rate_ledger_total(
     return False
 
 
-def _is_fee_tax_summary_total(candidate: Row) -> bool:
+def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
     text = " ".join(cell.text for cell in candidate.cells)
-    currency_evidence_count = sum(
-        bool(currencies_in_text(value))
-        for value in (
-            tuple(word.text for word in candidate.words)
-            or tuple(cell.text for cell in candidate.cells)
+    def currency_evidence_count(row: Row) -> int:
+        return sum(
+            bool(currencies_in_text(value))
+            for value in (
+                tuple(word.text for word in row.words)
+                or tuple(cell.text for cell in row.cells)
+            )
         )
-    )
-    return (
+
+    candidate_currency_evidence_count = currency_evidence_count(candidate)
+    explicit_fee_tax_summary = (
         _contains_phrase(text, _FEE_SUMMARY_MARKERS)
         and _contains_phrase(text, _TAX_SUMMARY_MARKERS)
-        and currency_evidence_count >= 2
+        and candidate_currency_evidence_count >= 2
+    )
+    explicit_paid_fee_summary = (
+        _contains_phrase(text, _TOTAL_MARKERS)
+        and _contains_phrase(text, _FEE_SUMMARY_MARKERS)
+        and _contains_phrase(text, _PAID_FEE_SUMMARY_MARKERS)
+        and candidate_currency_evidence_count >= 1
+    )
+    summary_rows = tuple(
+        sorted(
+            (
+                row
+                for row in rows
+                if row.page_number == candidate.page_number
+                and any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
+                and (
+                    _contains_phrase(
+                        " ".join(cell.text for cell in row.cells),
+                        _FEE_SUMMARY_MARKERS,
+                    )
+                    or _contains_phrase(
+                        " ".join(cell.text for cell in row.cells), _TAX_SUMMARY_MARKERS
+                    )
+                )
+            ),
+            key=lambda row: row.bbox[1],
+        )
+    )
+    multiline_fee_tax_summary = False
+    candidate_indices = tuple(
+        index for index, row in enumerate(summary_rows) if row is candidate
+    )
+    if len(candidate_indices) == 1:
+        start = candidate_indices[0]
+        end = start
+        while start > 0 and _vertical_gap(
+            summary_rows[start - 1].bbox, summary_rows[start].bbox
+        ) <= max(_row_height(summary_rows[start - 1]), _row_height(summary_rows[start])) * 2:
+            start -= 1
+        while end + 1 < len(summary_rows) and _vertical_gap(
+            summary_rows[end].bbox, summary_rows[end + 1].bbox
+        ) <= max(_row_height(summary_rows[end]), _row_height(summary_rows[end + 1])) * 2:
+            end += 1
+        block = summary_rows[start : end + 1]
+        block_texts = tuple(" ".join(cell.text for cell in row.cells) for row in block)
+        multiline_fee_tax_summary = (
+            len(block) >= 2
+            and all(currency_evidence_count(row) >= 1 for row in block)
+            and any(
+                _contains_phrase(value, _FEE_SUMMARY_MARKERS)
+                and _contains_phrase(value, _TAX_SUMMARY_MARKERS)
+                for value in block_texts
+            )
+            and all(
+                _contains_phrase(value, _FEE_SUMMARY_MARKERS)
+                or _contains_phrase(value, _TAX_SUMMARY_MARKERS)
+                for value in block_texts
+            )
+        )
+    return (
+        explicit_fee_tax_summary
+        or explicit_paid_fee_summary
+        or multiline_fee_tax_summary
     )
 
 
@@ -1584,16 +1675,18 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
         )
     )
-    regions = tuple(
-        region for region in regions if not _is_future_billing_region(region, page_rows)
+    future_regions = tuple(
+        region for region in regions if _is_future_billing_region(region, page_rows)
     )
+    regions = tuple(region for region in regions if region not in future_regions)
     total_marker_rows = tuple(
         row
         for row in observed_total_marker_rows
         if _page_row_key(row) not in proven_total_overlay_keys
+        and not _is_future_billing_total(row, future_regions, regions)
         and not _is_points_ledger_total(row, page_rows, regions)
         and not _is_rate_ledger_total(row, page_rows, regions)
-        and not _is_fee_tax_summary_total(row)
+        and not _is_fee_tax_summary_total(row, page_rows)
     )
     observed_document_currencies = {
         currency
