@@ -79,6 +79,7 @@ MAX_AMBIGUOUS_LEADING_ROWS = 2
 MAX_AMBIGUOUS_LEADING_PROOF_LOOKAHEAD = 4
 MAX_OVERLAID_OCR_LOOKAHEAD_ROWS = 3
 MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS = 2
+MAX_FOREIGN_DETAIL_OUTSIDE_ROWS = 3
 CARD_IDENTIFIER_MIN_DIGITS = 4
 CARD_IDENTIFIER_MAX_DIGITS = 10
 MAX_FOREIGN_CONVERSION_DETAIL_ROWS = 4
@@ -1044,7 +1045,11 @@ def _has_canonical_card_identifier_lead(row: Row) -> bool:
 
 def _has_canonical_card_identifier_tail(row: Row) -> bool:
     tokens = _normalized_marker(" ".join(cell.text for cell in row.cells)).split()
-    has_card_marker = "card" in tokens or any(token.startswith("כרטיס") for token in tokens)
+    has_card_marker = (
+        "card" in tokens
+        or "internet" in tokens
+        or any(token.startswith(("אינטרנט", "כרטיס")) for token in tokens)
+    )
     identifiers = set(
         re.findall(
             rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
@@ -1124,7 +1129,7 @@ def _foreign_conversion_detail_block(
                 or _literal_header_role_count(source) >= 2
                 or _structural_gap(preceding, source, (*observed, *details))
                 or not _detail_rows_are_adjacent(preceding, source)
-                or skipped_outside_rows >= MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS
+                or skipped_outside_rows >= MAX_FOREIGN_DETAIL_OUTSIDE_ROWS
             ):
                 return None
             skipped_outside_rows += 1
@@ -1170,6 +1175,14 @@ def _foreign_conversion_detail_block(
                 _is_auxiliary_identifier_detail(projected)
                 or _has_canonical_card_identifier_detail(projected)
                 or _has_canonical_card_identifier_detail(source)
+                or (
+                    bool(details)
+                    and _has_canonical_card_identifier_lead(details[-1])
+                    and (
+                        _has_canonical_card_identifier_tail(projected)
+                        or _has_canonical_card_identifier_tail(source)
+                    )
+                )
             )
         )
         allowed_wrapped_identifier_lead = False
@@ -1379,6 +1392,11 @@ def _has_canonical_card_identifier_detail(row: Row) -> bool:
     return len(identifiers) == 1
 
 
+def _has_canonical_internet_card_identifier_lead(row: Row) -> bool:
+    compact = _normalized_marker(" ".join(cell.text for cell in row.cells)).replace(" ", "")
+    return "מזההכרטיסאינטרנט" in compact or "cardidentifierinternet" in compact
+
+
 def _bounded_card_identifier_detail_block(
     page_evidence: PageEvidence,
     rows: Sequence[Row],
@@ -1453,6 +1471,99 @@ def _bounded_card_identifier_detail_block(
         for detail, excluded_count in zip(details, excluded_counts, strict=True)
     )
     return (marked_details[0], marked_details[1]), start_index + 1
+
+
+def _bounded_card_identifier_tail(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+    previous: Row,
+) -> Row | None:
+    if (
+        start_index + 1 >= len(rows)
+        or not _has_valid_billed_amount(previous, schema)
+        or _row_alignment(previous, schema) < _minimum_row_alignment(schema)
+        or not _has_canonical_internet_card_identifier_lead(previous)
+    ):
+        return None
+    source = rows[start_index]
+    following_source = rows[start_index + 1]
+    if (
+        not _row_intersects_horizontal_band(source, header.bbox)
+        or not _row_intersects_horizontal_band(following_source, header.bbox)
+        or any(_is_total_row(candidate) for candidate in (source, following_source))
+        or any(
+            _literal_header_role_count(candidate) >= 2
+            for candidate in (source, following_source)
+        )
+        or not _detail_rows_are_adjacent(previous, source)
+        or not _detail_rows_are_adjacent(source, following_source)
+    ):
+        return None
+    projected = _project_row_to_header_bands(page_evidence, source, header)
+    excluded_count = _projection_preserves_table_band_evidence(
+        source,
+        projected,
+        header,
+        schema,
+    )
+    identifiers = set(
+        re.findall(
+            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
+            " ".join(cell.text for cell in source.cells),
+        )
+    )
+    matching_columns = tuple(
+        tuple(
+            column
+            for column in schema.columns
+            if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        )
+        for cell in projected.cells
+    )
+    if (
+        not 1 <= len(projected.cells) <= 2
+        or excluded_count is None
+        or len(identifiers) != 1
+        or any(contains_date_token(cell.text) for cell in projected.cells)
+        or _transaction_shape_count(projected) > 1
+        or _has_valid_billed_amount(projected, schema)
+        or _row_alignment(projected, schema) <= 0
+        or any(len(columns) != 1 for columns in matching_columns)
+        or any(
+            columns[0].role not in {ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION}
+            for columns in matching_columns
+        )
+    ):
+        return None
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    if (
+        not following.cells
+        or not _has_valid_billed_amount(following, schema)
+        or _row_alignment(following, schema) < _minimum_row_alignment(schema)
+        or _transaction_shape_count(following) < 2
+    ):
+        return None
+    return projected.model_copy(
+        update={
+            "diagnostics": tuple(
+                dict.fromkeys(
+                    (
+                        *projected.diagnostics,
+                        "subordinate_detail_continuation",
+                        "bounded_card_identifier_tail",
+                        *(
+                            (f"ignored_outside_table_band_cells:{excluded_count}",)
+                            if excluded_count
+                            else ()
+                        ),
+                    )
+                )
+            )
+        }
+    )
 
 
 def _bounded_hebrew_note_detail(
@@ -1847,6 +1958,21 @@ def _detect_from_header(
                 previous = card_details[-1]
                 continue
         if detail_continuation_allowed:
+            card_identifier_tail = _bounded_card_identifier_tail(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+                previous,
+            )
+            if card_identifier_tail is not None:
+                accepted.append(card_identifier_tail)
+                detail_continuation_count += 1
+                detail_continuation_allowed = False
+                previous = card_identifier_tail
+                continue
+        if detail_continuation_allowed:
             detail_block = _foreign_conversion_detail_block(
                 page_evidence,
                 rows,
@@ -2053,12 +2179,35 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
             if row.bbox[1] <= center_y <= row.bbox[3]
         )
         if candidate_indices:
-            owner = min(
-                candidate_indices,
-                key=lambda index: (
-                    abs(center_y - _center_y(geometric_rows[index].bbox)),
-                    index,
-                ),
+            center_x = _center_x(glyph.bbox)
+            containing_word_distances = {
+                index: min(
+                    abs(center_x - _center_x(word.bbox))
+                    + abs(center_y - _center_y(word.bbox))
+                    for word in geometric_rows[index].words
+                    if word.bbox[0] <= center_x <= word.bbox[2]
+                    and word.bbox[1] <= center_y <= word.bbox[3]
+                )
+                for index in candidate_indices
+                if any(
+                    word.bbox[0] <= center_x <= word.bbox[2]
+                    and word.bbox[1] <= center_y <= word.bbox[3]
+                    for word in geometric_rows[index].words
+                )
+            }
+            owner = (
+                min(
+                    containing_word_distances,
+                    key=lambda index: (containing_word_distances[index], index),
+                )
+                if containing_word_distances
+                else min(
+                    candidate_indices,
+                    key=lambda index: (
+                        abs(center_y - _center_y(geometric_rows[index].bbox)),
+                        index,
+                    ),
+                )
             )
             glyphs_by_row[owner].append(glyph)
     logical_rows: list[Row] = []

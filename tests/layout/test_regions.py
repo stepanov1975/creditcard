@@ -184,6 +184,34 @@ def test_logical_rows_assigns_overlapping_glyph_to_nearest_row_once() -> None:
     assert overlapping not in rows[1].glyphs
 
 
+def test_logical_rows_prefers_the_row_owning_the_containing_word() -> None:
+    sidebar_glyph = Glyph(
+        char="x",
+        bbox=(2.0, 41.0, 3.0, 43.0),
+        origin=(2.0, 43.0),
+        font="Synthetic",
+        size=2.0,
+        source="digital",
+        confidence=1.0,
+    )
+    rows = logical_rows(
+        _page(
+            (
+                _word("First", 40.0, 70.0, 20.0),
+                _word("Tall sidebar", 0.0, 30.0, 22.0, height=22.0),
+                _word("Second", 40.0, 70.0, 35.0),
+            ),
+            (sidebar_glyph,),
+        )
+    )
+
+    assert len(rows) == 2
+    assert tuple(word.text for word in rows[0].words) == ("Tall sidebar", "First")
+    assert tuple(word.text for word in rows[1].words) == ("Second",)
+    assert rows[0].glyphs == (sidebar_glyph,)
+    assert sidebar_glyph not in rows[1].glyphs
+
+
 def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> None:
     billed_word = _word("₪10.00", 10.0, 25.0, 30.0)
     description_word = _word("Market", 40.0, 60.0, 30.0)
@@ -1499,6 +1527,35 @@ def test_foreign_detail_block_accepts_canonical_hebrew_wrapped_identifier() -> N
     assert "detail_continuation_rows:6" in regions[0].diagnostics
 
 
+@pytest.mark.parametrize("identifier_tail", ("כרטיסאינטרנט 8614", "אינטרנט 8614"))
+def test_foreign_detail_block_accepts_fifth_canonical_identifier_tail(
+    identifier_tail: str,
+) -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            _word("Sidebar", 150.0, 185.0, 10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("הומר בשער יציג", 30.0, 85.0, 61.0),
+            _word("עמלה", 30.0, 85.0, 72.0),
+            _word("הנחה", 30.0, 85.0, 83.0),
+            _word("הסדר מיוחד מזהה כרטיס", 30.0, 85.0, 94.0),
+            _word(identifier_tail, 30.0, 85.0, 105.0),
+            _word("sidebar continuation", 150.0, 185.0, 105.0),
+            *_foreign_data(116.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        width=200.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 8
+    assert all("subordinate_detail_continuation" in row.diagnostics for row in regions[0].rows[2:7])
+    assert "detail_continuation_rows:5" in regions[0].diagnostics
+
+
 def test_foreign_detail_block_skips_bounded_strictly_outside_rows() -> None:
     page = _page(
         (
@@ -1718,6 +1775,52 @@ def test_detect_table_regions_bridges_bounded_card_identifier_detail_block() -> 
     assert all("subordinate_detail_continuation" in row.diagnostics for row in details)
     assert all("bounded_card_identifier_detail_block" in row.diagnostics for row in details)
     assert "detail_continuation_rows:2" in regions[0].diagnostics
+
+
+def test_detect_table_regions_retains_bounded_card_identifier_tail() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(
+                50.0,
+                "02/02/2026",
+                "Merchant prefix",
+                "מזהה כרטיס אינטרנט",
+                "₪20.00",
+            ),
+            _word("Merchant suffix", 30.0, 55.0, 61.0),
+            _word("8312", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 4
+    tail = regions[0].rows[2]
+    assert "subordinate_detail_continuation" in tail.diagnostics
+    assert "bounded_card_identifier_tail" in tail.diagnostics
+    assert "detail_continuation_rows:1" in regions[0].diagnostics
+
+
+def test_bounded_card_identifier_tail_requires_canonical_internet_lead() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Merchant", "מזהה כרטיס", "₪20.00"),
+            _word("8312", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 2
+    assert "stopped_at_structure_change" in regions[0].diagnostics
 
 
 def test_projection_uses_table_cells_for_vertical_band() -> None:
