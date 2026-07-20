@@ -23,7 +23,7 @@ from ccparser.discovery import (
     StatementDiscovery,
     StatementGroupDiscovery,
 )
-from ccparser.evidence import DocumentEvidence, OcrError
+from ccparser.evidence import DocumentEvidence, ExtractionQuality, OcrError, PageEvidence
 from ccparser.evidence.models import BBox, Glyph, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import (
@@ -473,6 +473,121 @@ def test_parse_statement_serializes_rollover_year_context_mapping(tmp_path: Path
         "Cycle start 31/12/2025",
         "Cycle end 01/01/2026",
     )
+
+
+def test_parse_statement_retries_bounded_numeric_ocr_and_uses_exact_rediscovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "statement.pdf"
+    content = b"synthetic OCR statement"
+    source.write_bytes(content)
+    quality = ExtractionQuality(
+        character_count=0,
+        usable_character_count=0,
+        word_count=0,
+        replacement_character_ratio=0.0,
+        control_character_ratio=0.0,
+        image_area_ratio=1.0,
+        requires_ocr=True,
+        reasons=("image_dominant_without_words",),
+    )
+    evidence = DocumentEvidence(
+        source_sha256=hashlib.sha256(content).hexdigest(),
+        pages=(PageEvidence(page_number=1, width=100.0, height=100.0, quality=quality),),
+    )
+    repaired_evidence = evidence.model_copy(update={"metadata": (("repair", "complete"),)})
+    initial_discovery = _structured_discovery(DocumentClassification.STATEMENT).model_copy(
+        update={"reason_codes": ("initial_discovery",)}
+    )
+    repaired_discovery = initial_discovery.model_copy(
+        update={"reason_codes": ("repaired_discovery",)}
+    )
+    discovery_inputs: list[DocumentEvidence] = []
+    repair_calls: list[tuple[tuple[str, ...], tuple[Decimal, ...]]] = []
+
+    def discover(value: DocumentEvidence) -> StatementDiscovery:
+        discovery_inputs.append(value)
+        return repaired_discovery if value is repaired_evidence else initial_discovery
+
+    def normalize(value: StatementDiscovery) -> StatementNormalization:
+        return _normalizer(
+            Status.RECONCILED if value is repaired_discovery else Status.UNRECONCILED
+        )(value)
+
+    def repair(
+        value: DocumentEvidence,
+        pdf_bytes: bytes,
+        provider: object,
+        *,
+        currency_hints: tuple[str, ...],
+        expected_totals: tuple[Decimal, ...],
+    ) -> DocumentEvidence:
+        assert value is evidence
+        assert pdf_bytes == content
+        assert provider is not None
+        repair_calls.append((currency_hints, expected_totals))
+        return repaired_evidence
+
+    monkeypatch.setattr(parser_module, "repair_table_numeric_ocr", repair)
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: evidence,
+        discoverer=discover,
+        normalizer=normalize,
+        ocr_provider=object(),
+    )
+
+    assert discovery_inputs == [evidence, repaired_evidence]
+    assert repair_calls == [(("ILS",), (Decimal("10.00"),))]
+    assert result.status is Status.RECONCILED
+    assert result.discovery is not None
+    assert result.discovery.reason_codes == ("repaired_discovery",)
+
+
+@pytest.mark.parametrize(
+    ("requires_ocr", "initial_status"),
+    ((False, Status.UNRECONCILED), (True, Status.RECONCILED)),
+)
+def test_parse_statement_skips_numeric_ocr_retry_without_both_need_and_ocr_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requires_ocr: bool,
+    initial_status: Status,
+) -> None:
+    source = tmp_path / "statement.pdf"
+    content = b"synthetic statement"
+    source.write_bytes(content)
+    quality = ExtractionQuality(
+        character_count=0 if requires_ocr else 100,
+        usable_character_count=0 if requires_ocr else 100,
+        word_count=0 if requires_ocr else 10,
+        replacement_character_ratio=0.0,
+        control_character_ratio=0.0,
+        image_area_ratio=1.0 if requires_ocr else 0.0,
+        requires_ocr=requires_ocr,
+        reasons=("image_dominant_without_words",) if requires_ocr else (),
+    )
+    evidence = DocumentEvidence(
+        source_sha256=hashlib.sha256(content).hexdigest(),
+        pages=(PageEvidence(page_number=1, width=100.0, height=100.0, quality=quality),),
+    )
+
+    def unexpected_repair(*args: object, **kwargs: object) -> DocumentEvidence:
+        raise AssertionError("numeric OCR repair must not run")
+
+    monkeypatch.setattr(parser_module, "repair_table_numeric_ocr", unexpected_repair)
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: evidence,
+        discoverer=lambda value: _structured_discovery(DocumentClassification.STATEMENT),
+        normalizer=_normalizer(initial_status),
+        ocr_provider=object(),
+    )
+
+    assert result.status is initial_status
 
 
 def _two_group_discovery(classification: DocumentClassification) -> StatementDiscovery:

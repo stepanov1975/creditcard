@@ -703,9 +703,11 @@ def _has_lossless_compound_total_overlay_signature(
 def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
     return tuple(
         sorted(
-            marker
-            for marker in _TOTAL_MARKERS
-            if any(_contains_phrase(cell.text, (marker,)) for cell in row.cells)
+            {
+                "".join(_normalized_phrase(marker).split())
+                for marker in _TOTAL_MARKERS
+                if any(_contains_phrase(cell.text, (marker,)) for cell in row.cells)
+            }
         )
     )
 
@@ -904,12 +906,12 @@ def _is_rate_ledger_total(
 
 def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
     text = " ".join(cell.text for cell in candidate.cells)
+
     def currency_evidence_count(row: Row) -> int:
         return sum(
             bool(currencies_in_text(value))
             for value in (
-                tuple(word.text for word in row.words)
-                or tuple(cell.text for cell in row.cells)
+                tuple(word.text for word in row.words) or tuple(cell.text for cell in row.cells)
             )
         )
 
@@ -946,19 +948,21 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
         )
     )
     multiline_fee_tax_summary = False
-    candidate_indices = tuple(
-        index for index, row in enumerate(summary_rows) if row is candidate
-    )
+    candidate_indices = tuple(index for index, row in enumerate(summary_rows) if row is candidate)
     if len(candidate_indices) == 1:
         start = candidate_indices[0]
         end = start
-        while start > 0 and _vertical_gap(
-            summary_rows[start - 1].bbox, summary_rows[start].bbox
-        ) <= max(_row_height(summary_rows[start - 1]), _row_height(summary_rows[start])) * 2:
+        while (
+            start > 0
+            and _vertical_gap(summary_rows[start - 1].bbox, summary_rows[start].bbox)
+            <= max(_row_height(summary_rows[start - 1]), _row_height(summary_rows[start])) * 2
+        ):
             start -= 1
-        while end + 1 < len(summary_rows) and _vertical_gap(
-            summary_rows[end].bbox, summary_rows[end + 1].bbox
-        ) <= max(_row_height(summary_rows[end]), _row_height(summary_rows[end + 1])) * 2:
+        while (
+            end + 1 < len(summary_rows)
+            and _vertical_gap(summary_rows[end].bbox, summary_rows[end + 1].bbox)
+            <= max(_row_height(summary_rows[end]), _row_height(summary_rows[end + 1])) * 2
+        ):
             end += 1
         block = summary_rows[start : end + 1]
         block_texts = tuple(" ".join(cell.text for cell in row.cells) for row in block)
@@ -976,11 +980,7 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
                 for value in block_texts
             )
         )
-    return (
-        explicit_fee_tax_summary
-        or explicit_paid_fee_summary
-        or multiline_fee_tax_summary
-    )
+    return explicit_fee_tax_summary or explicit_paid_fee_summary or multiline_fee_tax_summary
 
 
 def _amount_cells_in_nearest_billed_band(
@@ -1547,9 +1547,7 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
         anchors: list[Cell] = []
         for column in columns:
             associated = tuple(
-                cell
-                for cell in region.table_schema.header_cells
-                if cell in column.source_cells
+                cell for cell in region.table_schema.header_cells if cell in column.source_cells
             )
             if len(associated) != 1:
                 return ()
@@ -1803,9 +1801,7 @@ def _is_duplicate_group_summary_label(
         for region in group.table_regions
         if region.page_number == row.page_number
     )
-    if not same_page_regions or any(
-        region.bbox[1] <= row.bbox[3] for region in same_page_regions
-    ):
+    if not same_page_regions or any(region.bbox[1] <= row.bbox[3] for region in same_page_regions):
         return False
     group_totals = {
         parsed.amount
@@ -1830,10 +1826,7 @@ def _is_duplicate_group_summary_label(
             break
         for cell in following.cells:
             for value in (cell.text, *(word.text for word in cell.words)):
-                if not (
-                    currencies_in_text(value)
-                    or re.search(r"\d[.,]\d{2}(?!\d)", value)
-                ):
+                if not (currencies_in_text(value) or re.search(r"\d[.,]\d{2}(?!\d)", value)):
                     continue
                 parsed_values = {
                     parsed.amount
@@ -1868,11 +1861,9 @@ def _is_noncontributing_zero_summary(
         for region in group.table_regions
     )
     return any(
-        _reading_key_bbox(region.page_number, region.bbox) < row_key
-        for region in matching_regions
+        _reading_key_bbox(region.page_number, region.bbox) < row_key for region in matching_regions
     ) and any(
-        _reading_key_bbox(region.page_number, region.bbox) > row_key
-        for region in matching_regions
+        _reading_key_bbox(region.page_number, region.bbox) > row_key for region in matching_regions
     )
 
 
@@ -1972,9 +1963,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
     rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
-    unassociated_total_rows: list[
-        tuple[Row, DiscoveredPrintedTotal, tuple[str, ...]]
-    ] = []
+    unassociated_total_rows: list[tuple[Row, DiscoveredPrintedTotal, tuple[str, ...]]] = []
     standalone_total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
@@ -2088,22 +2077,17 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             )
             continue
         diagnostics.extend(association_diagnostics)
-    rejected_total_rows.sort(
-        key=lambda item: _reading_key_bbox(item[0].page_number, item[0].bbox)
-    )
+    rejected_total_rows.sort(key=lambda item: _reading_key_bbox(item[0].page_number, item[0].bbox))
 
     resolved_rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
     for rejected_row, candidate in rejected_total_rows:
         if candidate.diagnostics == ("noncontributing_zero_summary",):
             pass
-        elif (
-            "ambiguous_total_value" in candidate.diagnostics
-            and _is_duplicate_group_summary_label(
-                rejected_row,
-                groups,
-                logical_rows_by_page[rejected_row.page_number],
-                page_heights[rejected_row.page_number],
-            )
+        elif "ambiguous_total_value" in candidate.diagnostics and _is_duplicate_group_summary_label(
+            rejected_row,
+            groups,
+            logical_rows_by_page[rejected_row.page_number],
+            page_heights[rejected_row.page_number],
         ):
             candidate = candidate.model_copy(
                 update={"diagnostics": ("duplicate_group_summary_label",)}

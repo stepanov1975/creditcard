@@ -119,10 +119,10 @@ def _cluster_word_lines(words: Sequence[Word]) -> list[list[Word]]:
         for line in lines:
             line_bbox = _line_reference_bbox(line)
             distance = abs(_center_y(word.bbox) - _center_y(line_bbox))
-            tolerance = 0.45 * max(_height(word.bbox), _height(line_bbox))
+            tolerance = 0.6 * max(_height(word.bbox), _height(line_bbox))
             if (
                 _height_compatible(word, line)
-                and (_vertical_overlap(word.bbox, line_bbox) >= 0.3 or distance <= tolerance)
+                and distance <= tolerance
                 and distance < best_distance
             ):
                 best = line

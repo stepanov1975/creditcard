@@ -285,19 +285,20 @@ def _split_header_fragment(
     return tuple(split_fragments)
 
 
-_AMOUNT_HEADER_ROLES = frozenset(
+_SPLITTABLE_HEADER_ROLES = frozenset(
     {
         ColumnRole.AMOUNT,
         ColumnRole.AUXILIARY_AMOUNT,
+        ColumnRole.EXCHANGE_RATE,
         ColumnRole.ORIGINAL_AMOUNT,
     }
 )
 
 
-def _strong_amount_header_role(cell: Cell) -> ColumnRole | None:
+def _strong_splittable_header_role(cell: Cell) -> ColumnRole | None:
     scores = _header_scores(_header_evidence_texts((cell,)))
     roles = tuple(
-        role for role, score in scores.items() if role in _AMOUNT_HEADER_ROLES and score >= 0.82
+        role for role, score in scores.items() if role in _SPLITTABLE_HEADER_ROLES and score >= 0.82
     )
     return roles[0] if len(roles) == 1 else None
 
@@ -351,8 +352,8 @@ def _split_compound_header_cell(cell: Cell) -> tuple[Cell, Cell] | None:
             )
         first, second = split_cells
         if (
-            _strong_amount_header_role(first) is not None
-            and _strong_amount_header_role(second) is not None
+            _strong_splittable_header_role(first) is not None
+            and _strong_splittable_header_role(second) is not None
         ):
             return first, second
     return None
@@ -873,6 +874,36 @@ def _representative_vertical_band(row: Row) -> tuple[float, float]:
     return center - typical_height * 0.75, center + typical_height * 0.75
 
 
+def _repeated_vertical_separator_words(words: Sequence[Word]) -> tuple[Word, ...]:
+    candidates = tuple(
+        word
+        for word in words
+        if word.source == "digital"
+        and word.text in {"I", "l", "|"}
+        and _height(word.bbox) > 0
+        and _width(word.bbox) / _height(word.bbox) <= 0.3
+    )
+    proven: list[Word] = []
+    for candidate in candidates:
+        aligned = tuple(
+            word
+            for word in candidates
+            if _vertical_overlap_ratio(candidate.bbox, word.bbox) >= 0.9
+            and max(_height(candidate.bbox), _height(word.bbox))
+            / min(_height(candidate.bbox), _height(word.bbox))
+            <= 1.1
+        )
+        centers = sorted(_center_x(word.bbox) for word in aligned)
+        maximum_width = max((_width(word.bbox) for word in aligned), default=0.0)
+        if (
+            len(aligned) >= 3
+            and maximum_width > 0
+            and all(second - first >= maximum_width * 3 for first, second in pairwise(centers))
+        ):
+            proven.extend(word for word in aligned if word not in proven)
+    return tuple(proven)
+
+
 def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
     if is_money_shaped(cell.text) or not cell.words:
         return cell
@@ -968,10 +999,22 @@ def _project_row_to_header_bands(
     top, bottom = _representative_vertical_band(vertical_source)
     cell_words = tuple(word for cell in row.cells for word in cell.words)
     cell_glyphs = tuple(glyph for cell in row.cells for glyph in cell.glyphs)
-    row_words = (*row.words, *(word for word in cell_words if word not in row.words))
-    row_glyphs = (*row.glyphs, *(glyph for glyph in cell_glyphs if glyph not in row.glyphs))
-    if not any(
-        table_left <= _center_x(item.bbox) <= table_right for item in (*row_words, *row_glyphs)
+    row_words = row.words or cell_words
+    row_glyphs = row.glyphs or cell_glyphs
+    separator_words = _repeated_vertical_separator_words(row_words)
+    if separator_words:
+        row_words = tuple(word for word in row_words if word not in separator_words)
+        row_glyphs = tuple(
+            glyph
+            for glyph in row_glyphs
+            if not any(
+                word.bbox[0] <= _center_x(glyph.bbox) <= word.bbox[2]
+                and word.bbox[1] <= _center_y(glyph.bbox) <= word.bbox[3]
+                for word in separator_words
+            )
+        )
+    if not any(table_left <= _center_x(word.bbox) <= table_right for word in row_words) and not any(
+        table_left <= _center_x(glyph.bbox) <= table_right for glyph in row_glyphs
     ):
         return row.model_copy(update={"cells": ()})
 
@@ -1056,7 +1099,23 @@ def _project_row_to_header_bands(
         "ltr",
     )
     ordered_cells = tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
-    return row.model_copy(update={"cells": ordered_cells})
+    return row.model_copy(
+        update={
+            "cells": ordered_cells,
+            "diagnostics": tuple(
+                dict.fromkeys(
+                    (
+                        *row.diagnostics,
+                        *(
+                            (f"ignored_repeated_vertical_separators:{len(separator_words)}",)
+                            if separator_words
+                            else ()
+                        ),
+                    )
+                )
+            ),
+        }
+    )
 
 
 def _preview_rows(

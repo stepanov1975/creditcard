@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
@@ -36,7 +37,9 @@ from ccparser.models import (
     Status,
     TableRegionSummary,
 )
+from ccparser.money import parse_amount
 from ccparser.normalize import StatementNormalization, normalize_statement
+from ccparser.ocr_repair import repair_table_numeric_ocr
 from ccparser.output import write_batch_outputs
 
 MAX_WORKERS = 32
@@ -297,6 +300,24 @@ def _is_exact_unambiguous(
     )
 
 
+def _numeric_ocr_repair_inputs(
+    discovery: StatementDiscovery,
+) -> tuple[tuple[str, ...], tuple[Decimal, ...]]:
+    currency_hints = tuple(group.printed_total.currency for group in discovery.groups)
+    expected_totals = tuple(
+        parsed.amount
+        for group in discovery.groups
+        if (
+            parsed := parse_amount(
+                group.printed_total.amount_text,
+                currency_hint=group.printed_total.currency,
+            )
+        ).amount
+        is not None
+    )
+    return currency_hints, expected_totals
+
+
 def parse_statement(
     path: str | Path,
     strict: bool = False,
@@ -330,7 +351,6 @@ def parse_statement(
         evidence = extract(source, provider)
         discovery = discover(evidence)
         discovery_diagnostics = _diagnostics(discovery)
-        discovery_summary = _discovery_summary(discovery)
         if discovery.classification is DocumentClassification.NOT_STATEMENT:
             return StatementResult(
                 status=Status.NOT_STATEMENT,
@@ -340,7 +360,7 @@ def parse_statement(
                 source_name=source.name,
                 source_sha256=evidence.source_sha256,
                 statement_id=evidence.source_sha256,
-                discovery=discovery_summary,
+                discovery=_discovery_summary(discovery),
             )
         if discovery.classification is DocumentClassification.AMBIGUOUS:
             return StatementResult(
@@ -351,10 +371,33 @@ def parse_statement(
                 source_name=source.name,
                 source_sha256=evidence.source_sha256,
                 statement_id=evidence.source_sha256,
-                discovery=discovery_summary,
+                discovery=_discovery_summary(discovery),
             )
         normalization = normalize(discovery)
         normalized_result = normalization.reconciliation
+        if not _is_exact_unambiguous(
+            normalization,
+            normalized_result,
+        ) and any(page.quality.requires_ocr for page in evidence.pages):
+            currency_hints, expected_totals = _numeric_ocr_repair_inputs(discovery)
+            repaired_evidence = repair_table_numeric_ocr(
+                evidence,
+                source.read_bytes(),
+                provider,
+                currency_hints=currency_hints,
+                expected_totals=expected_totals,
+            )
+            if repaired_evidence != evidence:
+                repaired_discovery = discover(repaired_evidence)
+                if repaired_discovery.classification is DocumentClassification.STATEMENT:
+                    repaired_normalization = normalize(repaired_discovery)
+                    repaired_result = repaired_normalization.reconciliation
+                    if _is_exact_unambiguous(repaired_normalization, repaired_result):
+                        evidence = repaired_evidence
+                        discovery = repaired_discovery
+                        discovery_diagnostics = _diagnostics(discovery)
+                        normalization = repaired_normalization
+                        normalized_result = repaired_result
         status = (
             Status.RECONCILED
             if _is_exact_unambiguous(normalization, normalized_result)
@@ -377,7 +420,7 @@ def parse_statement(
             source_name=source.name,
             source_sha256=evidence.source_sha256,
             statement_id=evidence.source_sha256,
-            discovery=discovery_summary,
+            discovery=_discovery_summary(discovery),
             row_results=_row_summaries(normalization),
             normalization_confidence=normalization.confidence,
             normalization_diagnostics=normalization.diagnostics,

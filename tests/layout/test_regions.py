@@ -2333,6 +2333,109 @@ def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
     assert next_detail not in projected_words
 
 
+def test_projection_does_not_reimport_foreign_words_from_overlapping_cell_bbox() -> None:
+    header_words = _auxiliary_table_header(10.0)
+    continued = _word("continued", 65.0, 85.0, 61.0)
+    next_detail = _word("next detail", 65.0, 85.0, 68.5)
+    page = _page((*header_words, continued, next_detail))
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 125.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=(65.0, 61.0, 85.0, 78.5),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=(65.0, 61.0, 85.0, 78.5),
+                text="continued next detail",
+                words=(continued, next_detail),
+                confidence=1.0,
+            ),
+        ),
+        words=(continued,),
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    assert tuple(word for cell in projected.cells for word in cell.words) == (continued,)
+
+
+def test_projection_removes_repeated_aligned_vertical_separator_words() -> None:
+    header_words = (
+        _word("Date", 0.0, 25.0, 10.0),
+        _word("Description", 40.0, 70.0, 10.0),
+        _word("Original amount", 80.0, 110.0, 10.0),
+        _word("Billed amount", 120.0, 150.0, 10.0),
+    )
+    data_words = (
+        _word("01/02/2026", 0.0, 25.0, 30.0),
+        _word("I", 34.0, 36.0, 29.0, height=13.0),
+        _word("Merchant", 40.0, 70.0, 30.0),
+        _word("I", 74.0, 76.0, 29.0, height=13.0),
+        _word("$5.00", 80.0, 110.0, 30.0),
+        _word("I", 114.0, 116.0, 29.0, height=13.0),
+        _word("18.00", 120.0, 150.0, 30.0),
+    )
+    page = _page((*header_words, *data_words), width=160.0)
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 150.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=(0.0, 29.0, 150.0, 42.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in data_words
+        ),
+        words=data_words,
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(page, source, header)
+
+    assert tuple(word.text for cell in projected.cells for word in cell.words) == (
+        "01/02/2026",
+        "Merchant",
+        "$5.00",
+        "18.00",
+    )
+    assert "ignored_repeated_vertical_separators:3" in projected.diagnostics
+
+
 def test_projection_keeps_word_glyphs_in_the_word_owned_header_band() -> None:
     header_words = (
         _word("Billed amount", 0.0, 40.0, 10.0),
@@ -2869,6 +2972,37 @@ def test_merged_header_bands_splits_two_strong_amount_phrases_in_one_base_cell()
         ColumnRole.AMOUNT,
         ColumnRole.AUXILIARY_AMOUNT,
     )
+
+
+def test_merged_header_bands_splits_fee_amount_from_exchange_rate() -> None:
+    words = (
+        _word("Commission", 0.0, 20.0, 10.0),
+        _word("amount", 21.0, 38.0, 10.0),
+        _word("Exchange", 45.0, 65.0, 10.0),
+        _word("rate", 66.0, 80.0, 10.0),
+    )
+    compound = Cell(
+        page_number=1,
+        bbox=(0.0, 10.0, 80.0, 20.0),
+        text="Commission amount Exchange rate",
+        words=words,
+        confidence=1.0,
+    )
+    header = Row(
+        page_number=1,
+        bbox=compound.bbox,
+        cells=(compound,),
+        words=words,
+        confidence=1.0,
+    )
+
+    split_header = _merged_header_bands((header,))[0]
+
+    assert tuple(cell.text for cell in split_header.cells) == (
+        "Commission amount",
+        "Exchange rate",
+    )
+    assert all("split_compound_header_cell" in cell.diagnostics for cell in split_header.cells)
 
 
 def test_split_compound_header_preserves_glyph_corrected_rtl_text_and_all_provenance() -> None:

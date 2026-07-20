@@ -60,17 +60,13 @@ def _sole_billed_column(schema: TableSchema) -> ColumnSpec | None:
     explicit = explicit_billed_amount_column(schema.columns, schema.header_cells)
     if explicit is not None:
         return explicit
-    amount_columns = tuple(
-        column for column in schema.columns if column.role is ColumnRole.AMOUNT
-    )
+    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     return amount_columns[0] if len(amount_columns) == 1 else None
 
 
 def _header_cell_for_column(header: Row, column: ColumnSpec) -> Cell | None:
     cells = tuple(
-        cell
-        for cell in header.cells
-        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        cell for cell in header.cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
     )
     return cells[0] if len(cells) == 1 else None
 
@@ -80,9 +76,7 @@ def _transaction_context_cells(
     schema: TableSchema,
     billed_column: ColumnSpec,
 ) -> tuple[Cell, ...] | None:
-    date_columns = tuple(
-        column for column in schema.columns if column.role is ColumnRole.DATE
-    )
+    date_columns = tuple(column for column in schema.columns if column.role is ColumnRole.DATE)
     description_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.DESCRIPTION
     )
@@ -145,9 +139,7 @@ def _amount_cell_clip(
 
 def _unique_currency_hint(currency_hints: Sequence[str]) -> str | None:
     canonical = {
-        currency
-        for hint in currency_hints
-        if (currency := canonical_currency(hint)) is not None
+        currency for hint in currency_hints if (currency := canonical_currency(hint)) is not None
     }
     return next(iter(canonical)) if len(canonical) == 1 else None
 
@@ -172,8 +164,7 @@ def _target_amount_words(
     currency_words = tuple(
         word
         for word in words
-        if is_currency_shaped(word.text)
-        and canonical_currency(word.text) == currency_hint
+        if is_currency_shaped(word.text) and canonical_currency(word.text) == currency_hint
     )
     retained = (*currency_words, amount_word)
     return tuple(dict.fromkeys(sorted(retained, key=lambda word: (word.bbox[0], word.bbox[1]))))

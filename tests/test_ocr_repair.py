@@ -34,9 +34,7 @@ class _ClipOcr:
         assert clip is not None
         return (
             _ocr_word("₪", 2.0, 7.0, 30.0),
-            _ocr_word("14.90", 9.0, 28.0, 30.0).model_copy(
-                update={"confidence": 0.96}
-            ),
+            _ocr_word("14.90", 9.0, 28.0, 30.0).model_copy(update={"confidence": 0.96}),
         )
 
 

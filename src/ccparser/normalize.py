@@ -584,7 +584,9 @@ def _year_context_years(
 
 
 def _cell_has_ocr_evidence(cell: Cell) -> bool:
-    return any(item.source == "ocr" for item in (*cell.words, *cell.glyphs))
+    return any(word.source == "ocr" for word in cell.words) or any(
+        glyph.source == "ocr" for glyph in cell.glyphs
+    )
 
 
 def _parse_ocr_contaminated_cell_date(
@@ -626,7 +628,10 @@ def _parse_cell_date(
     parsed = _parse_date(cell.text, year_context)
     allowed_years = _year_context_years(year_context)
     parsed_year_mismatch = (
-        parsed[0] is not None and bool(allowed_years) and parsed[0].year not in allowed_years
+        parsed[0] is not None
+        and _cell_has_ocr_evidence(cell)
+        and bool(allowed_years)
+        and parsed[0].year not in allowed_years
     )
     if parsed_year_mismatch or parsed[1] == "invalid_date":
         repaired = _parse_ocr_contaminated_cell_date(cell, year_context)
@@ -774,6 +779,72 @@ def _glyph_identity(glyph: Glyph) -> tuple[object, ...]:
         glyph.source,
         glyph.confidence,
     )
+
+
+type _BoundaryDateCompletion = tuple[date, Cell, Glyph]
+
+
+def _adjacent_boundary_date_completion(
+    row: Row,
+    column: ColumnSpec,
+    assigned_cell: Cell,
+    year_context: DiscoveredDateYearContext | None,
+) -> _BoundaryDateCompletion | None:
+    base_glyphs = tuple(glyph for glyph in assigned_cell.glyphs if not glyph.char.isspace())
+    if not base_glyphs:
+        return None
+    base_text = logical_text_for_evidence(base_glyphs, ())
+    if (
+        _normalized_text(base_text) != _normalized_text(assigned_cell.text)
+        or _parse_date(base_text, year_context)[0] is not None
+    ):
+        return None
+    sources = {glyph.source for glyph in base_glyphs}
+    if len(sources) != 1:
+        return None
+    typical_width = statistics.median(
+        max(0.0, glyph.bbox[2] - glyph.bbox[0]) for glyph in base_glyphs
+    )
+    if typical_width <= 0:
+        return None
+    base_left = min(glyph.bbox[0] for glyph in base_glyphs)
+    base_right = max(glyph.bbox[2] for glyph in base_glyphs)
+    candidates: list[_BoundaryDateCompletion] = []
+    for cell in row.cells:
+        if cell is assigned_cell or column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]:
+            continue
+        clipped = tuple(
+            glyph
+            for glyph in cell.glyphs
+            if not glyph.char.isspace()
+            and column.bbox[0] <= _center_x(glyph.bbox) <= column.bbox[2]
+        )
+        if len(clipped) != 1:
+            continue
+        glyph = clipped[0]
+        if not glyph.char.isdigit() or glyph.source not in sources:
+            continue
+        vertical_overlap = max(
+            0.0,
+            min(assigned_cell.bbox[3], glyph.bbox[3]) - max(assigned_cell.bbox[1], glyph.bbox[1]),
+        )
+        smaller_height = min(_height(assigned_cell.bbox), _height(glyph.bbox))
+        if smaller_height <= 0 or vertical_overlap / smaller_height < 0.8:
+            continue
+        adjacency_tolerance = typical_width * 0.35
+        if glyph.bbox[0] >= base_right - adjacency_tolerance:
+            gap = max(0.0, glyph.bbox[0] - base_right)
+        elif glyph.bbox[2] <= base_left + adjacency_tolerance:
+            gap = max(0.0, base_left - glyph.bbox[2])
+        else:
+            continue
+        if gap > adjacency_tolerance:
+            continue
+        candidate_text = logical_text_for_evidence((*base_glyphs, glyph), ())
+        parsed_date, diagnostic = _parse_date(candidate_text, year_context)
+        if parsed_date is not None and diagnostic is None:
+            candidates.append((parsed_date, cell, glyph))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _outside_glyphs_have_lossless_word_backing(
@@ -1234,8 +1305,37 @@ def _description(
             row_cells = row.cells
         splits = _boundary_date_description_splits(row, region, year_context)
         split_by_bbox = {cell.bbox: residual for cell, _, residual in splits}
+        completion_text_by_cell: dict[int, str] = {}
+        date_columns = _role_columns(region, ColumnRole.DATE)
+        if len(date_columns) == 1:
+            date_cells = _cells_for_column(row, date_columns[0])
+            if (
+                len(date_cells) == 1
+                and (
+                    completion := _adjacent_boundary_date_completion(
+                        row,
+                        date_columns[0],
+                        date_cells[0],
+                        year_context,
+                    )
+                )
+                is not None
+            ):
+                _, source_cell, boundary_glyph = completion
+                remaining = tuple(
+                    glyph for glyph in source_cell.glyphs if glyph is not boundary_glyph
+                )
+                cleaned = logical_text_for_evidence(remaining, ())
+                if cleaned:
+                    completion_text_by_cell[id(source_cell)] = cleaned
         if row_cells:
-            texts.extend(split_by_bbox.get(cell.bbox, cell.text) for cell in row_cells)
+            texts.extend(
+                completion_text_by_cell.get(
+                    id(cell),
+                    split_by_bbox.get(cell.bbox, cell.text),
+                )
+                for cell in row_cells
+            )
         elif len(splits) == 1:
             texts.append(splits[0][2])
     diagnostics: list[str] = []
@@ -1456,6 +1556,57 @@ def _original_amount_with_description_spill(
             residual_width > 0 and overlap / residual_width >= _MIN_DESCRIPTION_SPILL_OVERLAP
         )
         is_geometrically_adjacent = typical_height > 0 and 0 <= gap <= typical_height * 0.6
+        has_same_line_description_adjacency = typical_height > 0 and any(
+            abs(
+                (residual_word.bbox[1] + residual_word.bbox[3]) / 2
+                - (description_word.bbox[1] + description_word.bbox[3]) / 2
+            )
+            <= typical_height * 0.2
+            and (
+                (
+                    description_on_right
+                    and 0
+                    <= description_word.bbox[0] - residual_word.bbox[2]
+                    <= typical_height * 0.6
+                )
+                or (
+                    not description_on_right
+                    and 0
+                    <= residual_word.bbox[0] - description_word.bbox[2]
+                    <= typical_height * 0.6
+                )
+            )
+            for residual_word in residual_words
+            for description_word in description_words
+        )
+        residual_top = min(word.bbox[1] for word in residual_words)
+        has_shared_wrapped_description_origin = (
+            typical_height > 0
+            and horizontal_overlap > 0
+            and vertical_overlap > 0
+            and (
+                (
+                    description_on_right
+                    and residual_left < description_band[0]
+                    and residual_right <= description_band[0] + typical_height * 0.2
+                    and any(
+                        abs(word.bbox[0] - residual_left) <= typical_height * 0.2
+                        and word.bbox[1] >= residual_top + typical_height * 0.5
+                        for word in description_words
+                    )
+                )
+                or (
+                    not description_on_right
+                    and residual_right > description_band[2]
+                    and residual_left >= description_band[2] - typical_height * 0.2
+                    and any(
+                        abs(word.bbox[2] - residual_right) <= typical_height * 0.2
+                        and word.bbox[1] >= residual_top + typical_height * 0.5
+                        for word in description_words
+                    )
+                )
+            )
+        )
         residual_signature = tuple(
             (
                 unicodedata.normalize("NFC", word.text).casefold(),
@@ -1490,7 +1641,9 @@ def _original_amount_with_description_spill(
         ) in corroborated_amounts
         if (
             not is_geometrically_adjacent
+            and not has_same_line_description_adjacency
             and not spills_into_description_band
+            and not has_shared_wrapped_description_origin
             and not has_exact_distant_duplicate
             and not has_bounded_note_corroboration
         ):
@@ -1556,6 +1709,20 @@ def _dates(
                 cells[0],
                 year_context,
             )
+        if (
+            date_diagnostic == "invalid_date"
+            and (
+                completion := _adjacent_boundary_date_completion(
+                    row,
+                    column,
+                    cells[0],
+                    year_context,
+                )
+            )
+            is not None
+        ):
+            parsed_date, _, _ = completion
+            date_diagnostic = None
         if date_diagnostic == "invalid_date":
             parsed_date, date_diagnostic = _parse_overlapping_boundary_date(
                 row,
@@ -1958,7 +2125,8 @@ def _is_printed_total_row(row: Row, group: StatementGroupDiscovery) -> bool:
         group.printed_total.value_evidence,
     )
     return all(
-        item.page_number == row.page_number and _bbox_center_inside(item.bbox, row.bbox)
+        item.page_number == row.page_number
+        and any(_bbox_center_inside(item.bbox, cell.bbox) for cell in row.cells)
         for item in evidence
     )
 

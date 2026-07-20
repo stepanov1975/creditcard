@@ -796,6 +796,129 @@ def test_normalize_statement_uses_bounded_note_to_corroborate_distant_original_s
         assert result.reconciliation.status is Status.UNRECONCILED
 
 
+@pytest.mark.parametrize("has_aligned_wrapped_line", (True, False))
+def test_original_amount_spill_uses_shared_wrapped_description_origin(
+    has_aligned_wrapped_line: bool,
+) -> None:
+    original = Cell(
+        page_number=1,
+        bbox=(50.0, 30.0, 99.0, 40.0),
+        text="₪14.90 GOOGLE",
+        words=(
+            _word("₪", 52.0, 56.0, 30.0),
+            _word("14.90", 58.0, 72.0, 30.0),
+            _word("GOOGLE", 80.0, 99.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    wrapped_x0 = 80.0 if has_aligned_wrapped_line else 88.0
+    description = Cell(
+        page_number=1,
+        bbox=(80.0, 30.0, 140.0, 48.0),
+        text="VIDEO SERVICE",
+        words=(
+            _word("VIDEO", 108.0, 132.0, 30.0),
+            _word("SERVICE", wrapped_x0, 120.0, 38.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original,
+                description,
+                _cell("14.90", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "14.90", "ILS"))
+
+    transaction = result.transactions[0]
+    if has_aligned_wrapped_line:
+        assert transaction.original_amount == Decimal("14.90")
+        assert transaction.original_currency == "ILS"
+        assert transaction.description == "GOOGLE VIDEO SERVICE"
+        assert transaction.ambiguities == ()
+        assert result.reconciliation.status is Status.RECONCILED
+    else:
+        assert transaction.original_amount is None
+        assert transaction.original_currency is None
+        assert transaction.description == "VIDEO SERVICE"
+        assert "original_amount:invalid_amount_text" in transaction.ambiguities
+        assert result.reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize("has_same_line_adjacency", (True, False))
+def test_original_amount_spill_uses_line_aware_description_adjacency(
+    has_same_line_adjacency: bool,
+) -> None:
+    original = Cell(
+        page_number=1,
+        bbox=(50.0, 30.0, 99.0, 48.0),
+        text="₪14.90 GOOGLE IRELAND",
+        words=(
+            _word("₪", 52.0, 56.0, 30.0),
+            _word("14.90", 58.0, 68.0, 30.0),
+            _word("GOOGLE", 70.0, 90.0, 30.0),
+            _word("IRELAND", 70.0, 99.0, 38.0),
+        ),
+        confidence=1.0,
+    )
+    description_x0 = 92.0 if has_same_line_adjacency else 98.0
+    description = Cell(
+        page_number=1,
+        bbox=(92.0, 30.0, 140.0, 48.0),
+        text="CLOUD EMEA",
+        words=(
+            _word("CLOUD", description_x0, 116.0, 30.0),
+            _word("EMEA", 118.0, 138.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                original,
+                description,
+                _cell("14.90", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Original amount", "Description", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "14.90", "ILS"))
+
+    transaction = result.transactions[0]
+    if has_same_line_adjacency:
+        assert transaction.original_amount == Decimal("14.90")
+        assert transaction.original_currency == "ILS"
+        assert transaction.description == "GOOGLE IRELAND CLOUD EMEA"
+        assert transaction.ambiguities == ()
+        assert result.reconciliation.status is Status.RECONCILED
+    else:
+        assert transaction.original_amount is None
+        assert transaction.original_currency is None
+        assert transaction.description == "CLOUD EMEA"
+        assert "original_amount:invalid_amount_text" in transaction.ambiguities
+        assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_normalize_statement_uses_exact_subordinate_detail_to_recover_ocr_original_amount() -> None:
     original = _cell("$ 3000 MERCHANT 30.00", 1, 30.0).model_copy(
         update={
@@ -1964,6 +2087,63 @@ def test_normalize_statement_falls_back_to_positioned_words_for_invalid_glyph_da
     assert transaction.evidence[0].raw_text == "01/02/266"
 
 
+def test_normalize_statement_completes_date_from_one_adjacent_boundary_digit() -> None:
+    date_cell = Cell(
+        page_number=1,
+        bbox=(51.0, 30.0, 60.0, 40.0),
+        text="26/01/202",
+        glyphs=_glyphs("26/01/202", 51.0, 30.0),
+        confidence=1.0,
+    )
+    description_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 78.0, 40.0),
+        text="2 סוחר",
+        glyphs=(*_glyphs("רחוס", 0.0, 30.0), *_glyphs("2", 60.0, 30.0)),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description_cell, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2022))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2022, 1, 26)
+    assert transaction.description == "סוחר"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_rejects_nonadjacent_boundary_date_digit() -> None:
+    date_cell = Cell(
+        page_number=1,
+        bbox=(51.0, 30.0, 60.0, 40.0),
+        text="26/01/202",
+        glyphs=_glyphs("26/01/202", 51.0, 30.0),
+        confidence=1.0,
+    )
+    description_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 78.0, 40.0),
+        text="2 סוחר",
+        glyphs=(*_glyphs("רחוס", 0.0, 30.0), *_glyphs("2", 65.0, 30.0)),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description_cell, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2022))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date is None
+    assert "invalid_transaction_date" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 @pytest.mark.parametrize(
     ("raw_date", "expected"),
     (
@@ -2562,6 +2742,26 @@ def test_normalize_statement_rejects_short_date_when_context_year_suffix_differs
     assert "transaction_date:date_year_context_mismatch" in transaction.ambiguities
 
 
+def test_normalize_statement_accepts_explicit_full_date_outside_short_date_context() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("31/12/2025", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("4.00", 2, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2025, 12, 31)
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_marks_reconciliation_unreconciled_when_a_row_is_not_emitted() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -2631,6 +2831,48 @@ def test_normalize_statement_excludes_printed_total_row_retained_in_region() -> 
     assert len(result.transactions) == 1
     assert result.row_results[1].diagnostics == ("printed_total_row",)
     assert "rows_not_emitted:1" not in result.diagnostics
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_does_not_exclude_tall_row_near_printed_total() -> None:
+    transaction = _row(
+        Cell(
+            page_number=1,
+            bbox=(0.0, 30.0, 40.0, 55.0),
+            text="01/02/2026",
+            confidence=1.0,
+        ),
+        _cell("Clean", 1, 30.0),
+        _cell("2.00", 2, 30.0),
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (transaction,),
+    )
+    discovery = _discovery(region, "2.00", "ILS")
+    group = discovery.groups[0]
+    printed_total = group.printed_total.model_copy(
+        update={
+            "label_evidence": EvidenceReference(
+                page_number=1,
+                bbox=(50.0, 45.0, 90.0, 55.0),
+                raw_text="Total",
+            ),
+            "value_evidence": EvidenceReference(
+                page_number=1,
+                bbox=(100.0, 45.0, 140.0, 55.0),
+                raw_text="2.00",
+            ),
+        }
+    )
+    discovery = discovery.model_copy(
+        update={"groups": (group.model_copy(update={"printed_total": printed_total}),)}
+    )
+
+    result = normalize_statement(discovery)
+
+    assert len(result.transactions) == 1
+    assert result.row_results[0].diagnostics == ()
     assert result.reconciliation.status is Status.RECONCILED
 
 

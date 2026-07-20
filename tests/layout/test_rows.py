@@ -172,3 +172,20 @@ def test_cluster_rows_does_not_expand_a_line_band_through_medium_side_annotation
         tuple(cell.text for cell in row.cells if cell.text.endswith(".00"))
         for row in transaction_rows
     ] == [("10.00",), ("20.00",), ("30.00",)]
+
+
+def test_cluster_rows_separates_overlapping_multiline_rtl_header_baselines() -> None:
+    words = (
+        _word("החיוב", (10.0, 10.0, 30.0, 20.0)),
+        _word("סכום", (32.0, 10.0, 50.0, 20.0)),
+        _word("₪", (20.0, 16.5, 24.0, 26.5)),
+        _word("-", (24.0, 16.5, 28.0, 26.5)),
+        _word("ב", (28.0, 16.5, 32.0, 26.5)),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    assert tuple(tuple(cell.text for cell in row.cells) for row in rows) == (
+        ("סכום החיוב",),
+        ("ב - ₪",),
+    )

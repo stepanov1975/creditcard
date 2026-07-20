@@ -13,9 +13,7 @@ from ccparser.evidence.currency import (
 )
 from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
 
-_VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(
-    r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$"
-)
+_VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$")
 
 
 def _width(bbox: BBox) -> float:
@@ -77,10 +75,8 @@ def _cluster_lines[T: (Glyph, Word)](items: Sequence[T]) -> list[list[T]]:
         for line in lines:
             line_bbox = _union_bbox(tuple(value.bbox for value in line))
             distance = abs(_center_y(item.bbox) - _center_y(line_bbox))
-            tolerance = 0.45 * max(_height(item.bbox), _height(line_bbox))
-            if (
-                _vertical_overlap(item.bbox, line_bbox) >= 0.3 or distance <= tolerance
-            ) and distance < best_distance:
+            tolerance = 0.6 * max(_height(item.bbox), _height(line_bbox))
+            if distance <= tolerance and distance < best_distance:
                 best_line = line
                 best_distance = distance
         if best_line is None:
@@ -116,11 +112,7 @@ def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
         currency_suffix_boundary = (
             any(char.isdigit() for char in glyph.char)
             and previous.char in CURRENCY_OCR_SYMBOLS
-            and any(
-                char.isdigit()
-                for preceding in groups[-1][:-1]
-                for char in preceding.char
-            )
+            and any(char.isdigit() for preceding in groups[-1][:-1] for char in preceding.char)
         )
         if gap > typical_height * 0.4 or direction_changed or currency_suffix_boundary:
             groups.append([glyph])
@@ -289,9 +281,7 @@ def _text_from_lossless_words(words: Sequence[Word]) -> str:
         base_direction = _dominant_direction(tuple(word.text for word in physical))
         runs: list[tuple[str, list[Word]]] = []
         for word in physical:
-            direction = _strong_direction(word.text) or (
-                runs[-1][0] if runs else base_direction
-            )
+            direction = _strong_direction(word.text) or (runs[-1][0] if runs else base_direction)
             if runs and runs[-1][0] == direction:
                 runs[-1][1].append(word)
             else:
@@ -361,11 +351,7 @@ def _character_signature(text: str) -> tuple[str, ...]:
 def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str | None:
     visible_glyphs = tuple(glyph for glyph in glyphs if not glyph.char.isspace())
     rtl_word_count = sum(_strong_direction(word.text) == "rtl" for word in words)
-    if (
-        not visible_glyphs
-        or not words
-        or rtl_word_count < 2
-    ):
+    if not visible_glyphs or not words or rtl_word_count < 2:
         return None
     assigned: list[list[Glyph]] = [[] for _ in words]
     for glyph in visible_glyphs:

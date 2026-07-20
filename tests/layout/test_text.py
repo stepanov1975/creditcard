@@ -109,17 +109,16 @@ def test_logical_text_canonicalizes_hebrew_run_inside_mixed_ltr_detail() -> None
         Word(text="מזהה", bbox=(111.0, 9.0, 129.0, 21.0), source="digital", confidence=1.0),
     )
 
-    assert logical_text_for_evidence(
-        (*numeric, *google, *pay, *card, *identifier), words
-    ) == "9313 Google Pay מזהה כרטיס"
+    assert (
+        logical_text_for_evidence((*numeric, *google, *pay, *card, *identifier), words)
+        == "9313 Google Pay מזהה כרטיס"
+    )
 
 
 def test_logical_text_attaches_visual_trailing_sign_to_decimal_in_rtl_line() -> None:
     amount = tuple(_glyph(char, 10.0 + index * 4.0) for index, char in enumerate("0.33"))
     sign = (_glyph("-", 28.0),)
-    date = tuple(
-        _glyph(char, 34.0 + index * 4.0) for index, char in enumerate("16/04/25")
-    )
+    date = tuple(_glyph(char, 34.0 + index * 4.0) for index, char in enumerate("16/04/25"))
     charge = _rtl_glyphs("חיוב", 92.0, 10.0)
     total = _rtl_glyphs("סה", 108.0, 10.0)
     words = (
@@ -130,9 +129,10 @@ def test_logical_text_attaches_visual_trailing_sign_to_decimal_in_rtl_line() -> 
         Word(text="סה", bbox=(99.0, 9.0, 109.0, 21.0), source="digital", confidence=1.0),
     )
 
-    assert logical_text_for_evidence(
-        (*amount, *sign, *date, *charge, *total), words
-    ) == "סה חיוב -0.33 16/04/25"
+    assert (
+        logical_text_for_evidence((*amount, *sign, *date, *charge, *total), words)
+        == "סה חיוב -0.33 16/04/25"
+    )
 
 
 def test_logical_text_keeps_numeric_punctuation_joined_from_glyph_geometry() -> None:
@@ -272,6 +272,28 @@ def test_logical_text_orders_lines_top_to_bottom_and_returns_empty_without_evide
 
     assert logical_text_for_bbox(page, (0.0, 0.0, 80.0, 30.0)) == "Top"
     assert logical_text_for_bbox(page, (80.0, 60.0, 100.0, 90.0)) == ""
+
+
+def test_logical_text_separates_overlapping_multiline_rtl_header_baselines() -> None:
+    words = (
+        Word(
+            text="החיוב",
+            bbox=(10.0, 10.0, 30.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="סכום",
+            bbox=(32.0, 10.0, 50.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(text="₪", bbox=(20.0, 16.5, 24.0, 26.5), source="digital", confidence=1.0),
+        Word(text="-", bbox=(24.0, 16.5, 28.0, 26.5), source="digital", confidence=1.0),
+        Word(text="ב", bbox=(28.0, 16.5, 32.0, 26.5), source="digital", confidence=1.0),
+    )
+
+    assert logical_text_for_evidence((), words) == "סכום החיוב ב - ₪"
 
 
 def test_logical_text_assigns_numeric_glyph_groups_whole_across_a_bbox_boundary() -> None:

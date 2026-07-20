@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from ccparser.discovery import DateTokenStyle, DocumentClassification, discover_statement
+from ccparser.discovery import (
+    DateTokenStyle,
+    DocumentClassification,
+    _row_total_marker_signature,
+    discover_statement,
+)
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
+from ccparser.layout import Cell, Row
 from ccparser.models import Status
 from ccparser.normalize import normalize_statement
 
@@ -206,9 +212,7 @@ def test_discover_statement_resolves_nearby_duplicate_summary_label() -> None:
 
     assert result.diagnostics == ()
     assert len(result.rejected_total_candidates) == 1
-    assert result.rejected_total_candidates[0].diagnostics == (
-        "duplicate_group_summary_label",
-    )
+    assert result.rejected_total_candidates[0].diagnostics == ("duplicate_group_summary_label",)
 
 
 def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -> None:
@@ -530,6 +534,30 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
     assert result.rejected_total_candidates == ()
     assert result.diagnostics == ()
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+def test_total_marker_signature_canonicalizes_compact_hebrew_acronym_aliases() -> None:
+    def row(text: str) -> Row:
+        word = _word(text, 10.0, 50.0, 10.0)
+        return Row(
+            page_number=1,
+            bbox=word.bbox,
+            cells=(
+                Cell(
+                    page_number=1,
+                    bbox=word.bbox,
+                    text=text,
+                    words=(word,),
+                    confidence=1.0,
+                ),
+            ),
+            words=(word,),
+            confidence=1.0,
+        )
+
+    assert _row_total_marker_signature(row("סה כ חיוב")) == _row_total_marker_signature(
+        row("סהכחיוב")
+    )
 
 
 @pytest.mark.parametrize("candidate_currency", ("", "$"))
@@ -1163,9 +1191,7 @@ def test_zero_total_between_proven_groups_is_audited_as_noncontributing_summary(
     assert len(result.groups) == 2
     assert result.diagnostics == ()
     assert len(result.rejected_total_candidates) == 1
-    assert result.rejected_total_candidates[0].diagnostics == (
-        "noncontributing_zero_summary",
-    )
+    assert result.rejected_total_candidates[0].diagnostics == ("noncontributing_zero_summary",)
     assert normalized.reconciliation.status is Status.RECONCILED
 
 
@@ -1240,9 +1266,7 @@ def test_transaction_history_export_route_and_title_override_statement_like_tabl
     assert result.classification is DocumentClassification.NOT_STATEMENT
     assert result.groups == ()
     assert result.table_regions == ()
-    assert result.reason_codes == (
-        "positive_non_statement_transaction_history_evidence",
-    )
+    assert result.reason_codes == ("positive_non_statement_transaction_history_evidence",)
     assert result.diagnostics == ()
 
 
@@ -2621,8 +2645,9 @@ def test_consecutive_page_continuation_ignores_unknown_page_counter_column() -> 
     assert normalized.reconciliation.groups[0].difference == 0
 
 
-def test_consecutive_page_continuation_uses_header_anchors_when_ocr_edge_mark_distorts_bands(
-) -> None:
+def test_consecutive_page_continuation_uses_header_anchors_when_ocr_edge_mark_distorts_bands() -> (
+    None
+):
     def rtl_table(y: float, first: str, second: str) -> tuple[Word, ...]:
         return (
             _word("Amount", 196.0, 280.0, y),
