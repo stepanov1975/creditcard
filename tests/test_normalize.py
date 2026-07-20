@@ -17,7 +17,8 @@ from ccparser.discovery import (
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
-from ccparser.normalize import normalize_statement, parse_amount
+from ccparser.normalize import _cross_cell_date_tokens, normalize_statement, parse_amount
+from ccparser.semantic_evidence import EvidenceLedger
 
 
 def _cell(text: str, column: int, y: float, *, page: int = 1) -> Cell:
@@ -2148,6 +2149,41 @@ def test_normalize_statement_preserves_conversion_date_as_ancillary_evidence() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_unreadable_explicit_conversion_date_prevents_strict_success() -> None:
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.CONVERSION_DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("15.49", 0, 30.0),
+                _cell("$5.15", 1, 30.0),
+                _cell("Unreadable", 2, 30.0),
+                _cell("Foreign merchant", 3, 30.0),
+                _cell("24/06/2026", 4, 30.0),
+            ),
+        ),
+        headers=(
+            "Amount",
+            "Original amount",
+            "Conversion date",
+            "Merchant",
+            "Date",
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "15.49", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.conversion_date is None
+    assert "invalid_conversion_date" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
 def test_normalize_statement_uses_proven_year_for_each_short_date_suffix() -> None:
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -2613,7 +2649,10 @@ def test_normalize_statement_excludes_distant_numeric_processor_reference() -> N
     assert result.transactions[0].ambiguities == ()
 
 
-def test_normalize_statement_excludes_repeated_distant_processor_cluster() -> None:
+@pytest.mark.parametrize("glyph_backed", (False, True))
+def test_normalize_statement_excludes_repeated_processor_cluster_with_row_evidence(
+    glyph_backed: bool,
+) -> None:
     rows: list[Row] = []
     for y, raw_date in ((30.0, "20/06/2026"), (50.0, "25/06/2026")):
         original = Cell(
@@ -2625,6 +2664,7 @@ def test_normalize_statement_excludes_repeated_distant_processor_cluster() -> No
                 _word("100.00", 55.0, 73.0, y),
                 _word("OPENAI", 76.0, 98.0, y),
             ),
+            glyphs=_glyphs("$100.00OPENAI", 50.0, y) if glyph_backed else (),
             confidence=1.0,
         )
         description = Cell(
@@ -2662,6 +2702,74 @@ def test_normalize_statement_excludes_repeated_distant_processor_cluster() -> No
     assert tuple(transaction.description for transaction in result.transactions) == (
         "OPENAI *CHATGPT S",
         "OPENAI *CHATGPT S",
+    )
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+
+
+@pytest.mark.parametrize("suffix", (".HEALTH", "@HEALTH"))
+def test_normalize_statement_preserves_uncorroborated_punctuation_prefixed_merchant_suffix(
+    suffix: str,
+) -> None:
+    rows = tuple(
+        _row(
+            _cell(raw_date, 0, y),
+            Cell(
+                page_number=1,
+                bbox=(50.0, y, 99.0, y + 10.0),
+                text=f"INSURER {suffix}",
+                words=(
+                    _word("INSURER", 50.0, 68.0, y),
+                    _word(suffix, 84.0, 99.0, y),
+                ),
+                confidence=1.0,
+            ),
+            _cell("10.00", 2, y),
+        )
+        for raw_date, y in (("20/06/2026", 30.0), ("25/06/2026", 50.0))
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        rows,
+    )
+
+    result = normalize_statement(_discovery(region, "20.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        f"INSURER {suffix}",
+        f"INSURER {suffix}",
+    )
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+
+
+def test_normalize_statement_preserves_repeated_alphabetic_merchant_suffix() -> None:
+    rows = tuple(
+        _row(
+            _cell(raw_date, 0, y),
+            Cell(
+                page_number=1,
+                bbox=(50.0, y, 99.0, y + 10.0),
+                text="INSURER LIFE HEALTH",
+                words=(
+                    _word("INSURER", 50.0, 64.0, y),
+                    _word("LIFE", 78.0, 84.0, y),
+                    _word("HEALTH", 85.0, 99.0, y),
+                ),
+                confidence=1.0,
+            ),
+            _cell("10.00", 2, y),
+        )
+        for raw_date, y in (("20/06/2026", 30.0), ("25/06/2026", 50.0))
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        rows,
+    )
+
+    result = normalize_statement(_discovery(region, "20.00", "ILS"))
+
+    assert tuple(transaction.description for transaction in result.transactions) == (
+        "INSURER LIFE HEALTH",
+        "INSURER LIFE HEALTH",
     )
     assert all(not transaction.ambiguities for transaction in result.transactions)
 
@@ -2742,6 +2850,271 @@ def test_normalize_statement_recovers_fragmented_conversion_date_from_foreign_ro
     assert result.transactions[0].conversion_date == expected
     assert result.transactions[0].ambiguities == ()
     assert result.reconciliation.status is Status.RECONCILED
+
+
+def _split_conversion_date_region(
+    *,
+    left_date_fragment: str = "26/0",
+    right_date_fragment: str = "6/21",
+    left_glyph_x: float | None = None,
+    right_glyph_y: float = 30.0,
+    transaction_date_text: str = "24/06/2021",
+    right_role: ColumnRole = ColumnRole.UNKNOWN,
+    left_context: str = "converted to ILS",
+) -> TableRegion:
+    left_physical = f"{left_context} {left_date_fragment}"
+    positioned_left_x = 145.0 - len(left_physical) if left_glyph_x is None else left_glyph_x
+    left_fragment = Cell(
+        page_number=1,
+        bbox=(100.0, 30.0, 145.0, 60.0),
+        text=f"{left_date_fragment} converted to ILS",
+        glyphs=_glyphs(left_physical, positioned_left_x, 30.0),
+        confidence=1.0,
+    )
+    right_fragment = Cell(
+        page_number=1,
+        bbox=(145.0, 30.0, 190.0, 60.0),
+        text=f"Country . on {right_date_fragment}",
+        glyphs=_glyphs(f"{right_date_fragment} - on . Country", 145.2, right_glyph_y),
+        confidence=1.0,
+    )
+    return _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            right_role,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("19.63", 0, 30.0),
+                _cell("$5.99", 1, 30.0),
+                left_fragment,
+                right_fragment,
+                _cell("Foreign merchant", 4, 30.0),
+                _cell(transaction_date_text, 5, 30.0),
+            ),
+        ),
+        headers=(
+            "Amount",
+            "Original amount",
+            "Card presented",
+            "Transaction detail",
+            "Merchant",
+            "Date",
+        ),
+    )
+
+
+def test_normalize_statement_recovers_conversion_date_split_across_adjacent_unknown_cells() -> None:
+    region = _split_conversion_date_region()
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+
+    assert result.transactions[0].conversion_date == date(2021, 6, 26)
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("left_glyph_x", "right_glyph_y"),
+    ((100.0, 30.0), (None, 50.0)),
+)
+def test_normalize_statement_rejects_cross_cell_date_fragments_without_geometric_adjacency(
+    left_glyph_x: float | None,
+    right_glyph_y: float,
+) -> None:
+    region = _split_conversion_date_region(
+        left_glyph_x=left_glyph_x,
+        right_glyph_y=right_glyph_y,
+    )
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+
+    assert result.transactions[0].conversion_date is None
+    assert result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize("transaction_date_text", ("24/06/2021", "Unreadable"))
+def test_normalize_statement_rejects_cross_cell_conversion_date_without_near_anchor(
+    transaction_date_text: str,
+) -> None:
+    region = _split_conversion_date_region(
+        left_date_fragment="01/0",
+        right_date_fragment="1/21",
+        transaction_date_text=transaction_date_text,
+    )
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+
+    assert result.transactions[0].conversion_date is None
+    assert result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_normalize_statement_recovers_split_conversion_date_with_explicit_peer_role() -> None:
+    region = _split_conversion_date_region(right_role=ColumnRole.CONVERSION_DATE)
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+
+    assert result.transactions[0].conversion_date == date(2021, 6, 26)
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_cross_cell_conversion_date_evidence_excludes_unrelated_numeric_atoms() -> None:
+    region = _split_conversion_date_region(left_context="reference 999 converted to ILS")
+    row = region.rows[0]
+    ledger = EvidenceLedger.from_rows((row,))
+
+    evidence = _cross_cell_date_tokens(row, region, ledger)
+
+    assert len(evidence) == 1
+    unrelated_digit_ids = frozenset(
+        atom.atom_id for atom in ledger.atoms if atom.text == "9" and atom.bbox[0] < 130.0
+    )
+    assert unrelated_digit_ids
+    assert evidence[0].atom_ids.isdisjoint(unrelated_digit_ids)
+
+
+@pytest.mark.parametrize(
+    ("explicit_date", "expected_status"),
+    (("26/06/2021", Status.RECONCILED), ("25/06/2021", Status.UNRECONCILED)),
+)
+def test_split_conversion_date_is_audited_against_explicit_conversion_date(
+    explicit_date: str,
+    expected_status: Status,
+) -> None:
+    left_physical = "converted to ILS 26/0"
+    left_fragment = Cell(
+        page_number=1,
+        bbox=(150.0, 30.0, 195.0, 60.0),
+        text="26/0 converted to ILS",
+        glyphs=_glyphs(left_physical, 195.0 - len(left_physical), 30.0),
+        confidence=1.0,
+    )
+    right_fragment = Cell(
+        page_number=1,
+        bbox=(195.0, 30.0, 240.0, 60.0),
+        text="Country . on 6/21",
+        glyphs=_glyphs("6/21 - on . Country", 195.2, 30.0),
+        confidence=1.0,
+    )
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.CONVERSION_DATE,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("19.63", 0, 30.0),
+                _cell("$5.99", 1, 30.0),
+                _cell(explicit_date, 2, 30.0),
+                left_fragment,
+                right_fragment,
+                _cell("Foreign merchant", 5, 30.0),
+                _cell("24/06/2021", 6, 30.0),
+            ),
+        ),
+        headers=(
+            "Amount",
+            "Original amount",
+            "Conversion date",
+            "Card presented",
+            "Transaction detail",
+            "Merchant",
+            "Date",
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+    transaction = result.transactions[0]
+
+    assert transaction.conversion_date == date.fromisoformat(
+        "2021-06-26" if expected_status is Status.RECONCILED else "2021-06-25"
+    )
+    assert result.reconciliation.status is expected_status
+    assert ("conflicting_conversion_date_evidence" in transaction.ambiguities) is (
+        expected_status is Status.UNRECONCILED
+    )
+
+
+@pytest.mark.parametrize(
+    ("second_left", "second_right"),
+    (("32/0", "6/21"), ("01/0", "1/21")),
+)
+def test_split_conversion_date_requires_one_raw_candidate_before_parsing(
+    second_left: str,
+    second_right: str,
+) -> None:
+    def fragment_cell(
+        column: int,
+        physical: str,
+        *,
+        align_right: bool,
+    ) -> Cell:
+        boundary = column * 50.0 + (45.0 if align_right else -5.0)
+        x0 = boundary - len(physical) if align_right else boundary + 0.2
+        return Cell(
+            page_number=1,
+            bbox=(column * 50.0, 30.0, column * 50.0 + 45.0, 60.0),
+            text=physical,
+            glyphs=_glyphs(physical, x0, 30.0),
+            confidence=1.0,
+        )
+
+    first_left = "converted to ILS 26/0"
+    first_right = "6/21 - Country"
+    second_left_text = f"converted to ILS {second_left}"
+    second_right_text = f"{second_right} - Country"
+    region = _region(
+        (
+            ColumnRole.AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                _cell("19.63", 0, 30.0),
+                _cell("$5.99", 1, 30.0),
+                fragment_cell(2, first_left, align_right=True),
+                fragment_cell(3, first_right, align_right=False),
+                fragment_cell(4, second_left_text, align_right=True),
+                fragment_cell(5, second_right_text, align_right=False),
+                _cell("Foreign merchant", 6, 30.0),
+                _cell("24/06/2021", 7, 30.0),
+            ),
+        ),
+        headers=(
+            "Amount",
+            "Original amount",
+            "Detail A",
+            "Detail B",
+            "Detail C",
+            "Detail D",
+            "Merchant",
+            "Date",
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "19.63", "ILS", year_context=2021))
+
+    assert result.transactions[0].conversion_date is None
+    assert "unparsed_conversion_date_candidate" in result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 @pytest.mark.parametrize(
@@ -3598,6 +3971,143 @@ def test_repeated_header_backed_unknown_text_band_is_ancillary() -> None:
 
     assert all(not transaction.ambiguities for transaction in result.transactions)
     assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("headers", "values"),
+    (
+        (
+            ("Category", "Transaction detail", "Card presented", "Notes"),
+            ("Retail", "Foreign refund", "No", "Subject to terms"),
+        ),
+        (
+            ("ענף", "פירוט", "כרטיס הוצג", "הערות"),
+            ("קמעונאות", "זיכוי חוץ", "לא", "כפוף לתקנון"),
+        ),
+        (
+            ("Category", "Transaction detail", "Card presented", "Eligibility terms"),
+            ("Retail", "Foreign refund", "No", "Previous month benefit"),
+        ),
+        (
+            ("ענף", "פירוט", "כרטיס הוצג", "הזכאות חושבה לפי החיוב"),
+            ("קמעונאות", "זיכוי חוץ", "לא", "שלך מחודש קודם"),
+        ),
+    ),
+)
+def test_explicit_singleton_ancillary_headers_are_claimed(
+    headers: tuple[str, str, str, str],
+    values: tuple[str, str, str, str],
+) -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                *(_cell(value, index, 30.0) for index, value in enumerate(values, start=2)),
+                _cell("10.00", 6, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", *headers, "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert result.transactions[0].description == "Merchant"
+    assert result.transactions[0].ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+@pytest.mark.parametrize(
+    ("header", "value"),
+    (
+        ("Transaction detail", "USD 12.34"),
+        ("Transaction detail", "Original amount: USD 12.34"),
+        ("Transaction detail", "Original amount: 12.34"),
+        ("Transaction detail", "FX USD 12.34"),
+        ("Transaction detail", "Converted 03/04/2026"),
+        ("Transaction detail", "Installment 1/3"),
+        ("Notes", "03/04/2026"),
+        ("Card presented", "1/3"),
+    ),
+)
+def test_explicit_ancillary_header_cannot_hide_typed_semantic_evidence(
+    header: str,
+    value: str,
+) -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell(value, 2, 30.0),
+                _cell("10.00", 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", header, "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+@pytest.mark.parametrize(
+    ("amount", "printed_total", "expected_kind", "expected_status"),
+    (
+        ("10.00", "10.00", TransactionKind.CHARGE, Status.UNRECONCILED),
+        ("-10.00", "-10.00", TransactionKind.CREDIT, Status.RECONCILED),
+    ),
+)
+def test_explicit_category_header_contributes_supported_category_semantics(
+    amount: str,
+    printed_total: str,
+    expected_kind: TransactionKind,
+    expected_status: Status,
+) -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("Refund", 2, 30.0),
+                _cell(amount, 3, 30.0),
+            ),
+        ),
+        headers=("Date", "Description", "Category", "Billed amount"),
+    )
+
+    result = normalize_statement(_discovery(region, printed_total, "ILS"))
+    transaction = result.transactions[0]
+
+    assert transaction.category is TransactionCategory.REFUND
+    assert transaction.kind is expected_kind
+    assert result.reconciliation.status is expected_status
+    assert ("category_sign_contradiction" in transaction.ambiguities) is (
+        expected_status is Status.UNRECONCILED
+    )
 
 
 def test_repeated_unknown_profile_requires_an_alphanumeric_header() -> None:

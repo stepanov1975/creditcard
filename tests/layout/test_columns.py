@@ -23,6 +23,32 @@ def _cell(
     )
 
 
+def _ocr_cell(text: str, bbox: tuple[float, float, float, float]) -> Cell:
+    tokens = text.split()
+    token_width = (bbox[2] - bbox[0]) / len(tokens)
+    words = tuple(
+        Word(
+            text=token,
+            bbox=(
+                bbox[0] + index * token_width,
+                bbox[1],
+                bbox[0] + (index + 1) * token_width,
+                bbox[3],
+            ),
+            source="ocr",
+            confidence=0.8,
+        )
+        for index, token in enumerate(tokens)
+    )
+    return Cell(
+        page_number=1,
+        bbox=bbox,
+        text=text,
+        words=words,
+        confidence=0.8,
+    )
+
+
 def _row(y: float, cells: tuple[Cell, ...]) -> Row:
     return Row(
         page_number=1,
@@ -173,6 +199,82 @@ def test_description_header_survives_one_non_hebrew_ocr_tail_token() -> None:
 
     assert schema.columns[0].role is ColumnRole.DESCRIPTION
     assert "role_evidence:header" in schema.columns[0].diagnostics
+
+
+def test_description_header_survives_two_ocr_corrupted_edge_tokens_when_profile_agrees() -> None:
+    header = _ocr_cell("poy בית ow", (0.0, 10.0, 60.0, 20.0))
+    samples = tuple(
+        _ocr_cell(value, (0.0, y, 60.0, y + 10.0))
+        for value, y in zip(
+            (
+                "ALPHA MARKET",
+                "BETA SERVICES",
+                "GAMMA STORE",
+                "DELTA ONLINE",
+                "EPSILON GOODS",
+                "ZETA DIGITAL",
+                "ETA MARKET",
+                "SHOP 123456",
+                "CAFE 987654",
+            ),
+            range(30, 120, 10),
+            strict=True,
+        )
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.DESCRIPTION
+    assert "role_evidence:header" in schema.columns[0].diagnostics
+    assert "role_evidence:value_profile" in schema.columns[0].diagnostics
+    assert "role_evidence:ocr_description_recovery" in schema.columns[0].diagnostics
+
+
+def test_corrupted_description_header_recovery_requires_ocr_source() -> None:
+    header = _cell("poy בית ow", (0.0, 10.0, 60.0, 20.0))
+    samples = (
+        _cell("ALPHA MARKET", (0.0, 30.0, 60.0, 40.0)),
+        _cell("BETA SERVICES", (0.0, 50.0, 60.0, 60.0)),
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.UNKNOWN
+
+
+def test_corrupted_description_header_recovery_requires_description_values() -> None:
+    header = _ocr_cell("poy בית ow", (0.0, 10.0, 60.0, 20.0))
+    samples = (
+        _ocr_cell("12.34", (0.0, 30.0, 60.0, 40.0)),
+        _ocr_cell("56.78", (0.0, 50.0, 60.0, 60.0)),
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.AMOUNT
+
+
+@pytest.mark.parametrize(
+    ("header_text", "values"),
+    (
+        ("Account name code", ("ALEX SMITH", "MARIA JONES")),
+        ("Cardholder name field", ("ALEX SMITH", "MARIA JONES")),
+        ("Product name code", ("PREMIUM BENEFIT", "TRAVEL REWARDS")),
+    ),
+)
+def test_corrupted_description_header_recovery_rejects_generic_name_anchors(
+    header_text: str,
+    values: tuple[str, str],
+) -> None:
+    header = _ocr_cell(header_text, (0.0, 10.0, 60.0, 20.0))
+    samples = tuple(
+        _ocr_cell(value, (0.0, y, 60.0, y + 10.0))
+        for value, y in zip(values, (30.0, 50.0), strict=True)
+    )
+
+    schema = infer_column_roles((header,), samples)
+
+    assert schema.columns[0].role is ColumnRole.UNKNOWN
 
 
 def test_value_profile_breaks_tied_header_concepts() -> None:

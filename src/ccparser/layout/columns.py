@@ -44,6 +44,7 @@ _CURRENCY_VALUES = frozenset(
         "ש ח",
     }
 )
+_OCR_DESCRIPTION_HEADER_ANCHORS = frozenset({"merchant", "בית", "עסק"})
 
 _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
     ColumnRole.DATE: frozenset(
@@ -633,6 +634,24 @@ def _profile_scores(cells: Sequence[Cell]) -> dict[ColumnRole, float]:
     return scores
 
 
+def _is_corrupted_ocr_description_header(
+    headers: Sequence[Cell],
+    header_scores: dict[ColumnRole, float],
+    profile_scores: dict[ColumnRole, float],
+) -> bool:
+    if (
+        len(headers) != 1
+        or max(header_scores.values(), default=0.0) >= 0.65
+        or profile_scores.get(ColumnRole.DESCRIPTION, 0.0) < 0.4
+    ):
+        return False
+    header = headers[0]
+    if not header.words or any(word.source != "ocr" for word in header.words):
+        return False
+    tokens = _normalized_header(header.text).split()
+    return 2 <= len(tokens) <= 4 and bool(set(tokens).intersection(_OCR_DESCRIPTION_HEADER_ANCHORS))
+
+
 def _cells_to_rows(cells: Sequence[Cell]) -> tuple[Row, ...]:
     groups: list[list[Cell]] = []
     for cell in sorted(cells, key=lambda value: (_center_y(value.bbox), value.bbox[0])):
@@ -865,6 +884,13 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
         samples = _cells_for_column(sample_cells, column)
         header_scores = _header_scores(_header_evidence_texts(headers))
         profile_scores = _profile_scores(samples)
+        recovered_ocr_description = _is_corrupted_ocr_description_header(
+            headers,
+            header_scores,
+            profile_scores,
+        )
+        if recovered_ocr_description:
+            header_scores[ColumnRole.DESCRIPTION] = 0.82
         scores = dict(header_scores)
         exact_header_roles = tuple(role for role, score in header_scores.items() if score == 1.0)
         strongest_header_score = max(header_scores.values(), default=0.0)
@@ -942,6 +968,8 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
                 diagnostics.append("role_evidence:header")
             if profile_scores.get(top_role, 0.0) > 0.0:
                 diagnostics.append("role_evidence:value_profile")
+            if recovered_ocr_description and top_role is ColumnRole.DESCRIPTION:
+                diagnostics.append("role_evidence:ocr_description_recovery")
         semantic_columns.append(
             column.model_copy(
                 update={

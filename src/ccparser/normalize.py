@@ -7,6 +7,7 @@ import statistics
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from itertools import pairwise
@@ -78,6 +79,13 @@ class StatementNormalization(_ImmutableNormalizationModel):
     diagnostics: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _CrossCellDateEvidence:
+    text: str
+    cells: frozenset[Cell]
+    atom_ids: frozenset[int]
+
+
 _CATEGORY_VOCABULARY: tuple[tuple[TransactionCategory, tuple[str, ...]], ...] = (
     (TransactionCategory.REFUND, ("credit", "refund", "זיכוי", "החזר")),
     (TransactionCategory.INTEREST, ("interest", "ריבית")),
@@ -91,6 +99,33 @@ _DATE_TOKEN_PATTERN = re.compile(
     r"(?P=separator)\s*\d{1,4}(?!\d)"
 )
 _DATE_CUE_PATTERN = re.compile(r"(?<!\d)\d{1,4}[./-]\d{1,2}[./-]\d{1,4}(?!\d)")
+_EMBEDDED_AMOUNT_PATTERN = re.compile(
+    r"(?<!\d)[-+]?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:[.,]\d{1,2})?(?!\d)"
+)
+_EMBEDDED_INSTALLMENT_PATTERN = re.compile(r"(?<!\d)\d{1,3}\s*/\s*\d{1,3}(?!\d)")
+_EMBEDDED_AMOUNT_CUES = (
+    "original amount",
+    "transaction amount",
+    "foreign amount",
+    "exchange rate",
+    "conversion rate",
+    "fx",
+    "סכום במקור",
+    "סכום עסקה",
+    "שער המרה",
+    "מט ח",
+)
+_EMBEDDED_DATE_CUES = (
+    "conversion date",
+    "date of conversion",
+    "exchange date",
+    "converted",
+    "conversion",
+    "תאריך המרה",
+    "תאריך ההמרה",
+    "המרה",
+)
+_EMBEDDED_INSTALLMENT_CUES = ("installment", "payment number", "תשלום", "תשלומים")
 _MIN_SUPPORTED_FULL_DATE_YEAR = 1900
 _MAX_SUPPORTED_FULL_DATE_YEAR = 2100
 _SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
@@ -121,6 +156,25 @@ _MIN_DESCRIPTION_SPILL_OVERLAP = 0.2
 _MIN_DATE_DESCRIPTION_CELL_OVERLAP = 0.08
 _HEBREW_GERSHAYIM_PATTERN = re.compile(r'(?<=[\u0590-\u05ff])\s*"\s*(?=[\u0590-\u05ff])')
 _SINGLE_RTL_PARENTHETICAL_PATTERN = re.compile(r"^[()]\s*([\u0590-\u05ff])$")
+_EXPLICIT_CATEGORY_HEADER_MARKERS = frozenset(
+    {"category", "transaction type", "סוג עסקה", "סוג העסקה"}
+)
+_EXPLICIT_ANCILLARY_HEADER_MARKERS = frozenset(
+    {
+        "industry",
+        "transaction detail",
+        "card presented",
+        "notes",
+        "remarks",
+        "eligibility",
+        "ענף",
+        "פירוט",
+        "כרטיס הוצג",
+        "הערה",
+        "הערות",
+        "הזכאות",
+    }
+)
 
 
 def _normalized_text(text: str) -> str:
@@ -281,6 +335,19 @@ def _is_relevant_cell(cell: Cell) -> bool:
         or is_currency_shaped(text)
         or _DATE_PATTERN.fullmatch(text) is not None
         or _INSTALLMENT_PATTERN.fullmatch(text) is not None
+        or (bool(currencies_in_text(text)) and any(char.isdigit() for char in text))
+        or (
+            _contains_marker(text, _EMBEDDED_AMOUNT_CUES)
+            and _EMBEDDED_AMOUNT_PATTERN.search(text) is not None
+        )
+        or (
+            _contains_marker(text, _EMBEDDED_DATE_CUES)
+            and _DATE_CUE_PATTERN.search(text) is not None
+        )
+        or (
+            _contains_marker(text, _EMBEDDED_INSTALLMENT_CUES)
+            and _EMBEDDED_INSTALLMENT_PATTERN.search(text) is not None
+        )
     )
 
 
@@ -432,6 +499,9 @@ def _assignment_diagnostics(
     ledger: EvidenceLedger,
 ) -> tuple[str, ...]:
     diagnostics: list[str] = []
+    explicit_ancillary_unknowns = _explicit_ancillary_unknown_columns(region)
+    explicit_category_unknowns = _explicit_category_unknown_columns(region)
+    cross_cell_date_sources = _cross_cell_date_source_cells(row, region, ledger)
     for cell in row.cells:
         columns = tuple(
             column
@@ -448,8 +518,13 @@ def _assignment_diagnostics(
         safe_card_identifier = column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(
             row, cell
         )
-        deferred_semantic_candidate = column.role is ColumnRole.UNKNOWN and bool(
-            ledger.fragmented_date_candidates(cell)
+        safe_ancillary_unknown = (
+            column.role is ColumnRole.UNKNOWN
+            and column.index in explicit_ancillary_unknowns | explicit_category_unknowns
+            and not relevant
+        )
+        deferred_semantic_candidate = column.role is ColumnRole.UNKNOWN and (
+            bool(ledger.fragmented_date_candidates(cell)) or cell in cross_cell_date_sources
         )
         safe_edge_artifact = _is_isolated_ocr_edge_artifact_cell(cell, column, region)
         safe_location_identifier = column.role is ColumnRole.LOCATION and (
@@ -464,6 +539,7 @@ def _assignment_diagnostics(
             relevant
             and column.role is ColumnRole.UNKNOWN
             and not safe_card_identifier
+            and not safe_ancillary_unknown
             and not deferred_semantic_candidate
             and not safe_edge_artifact
         ):
@@ -474,6 +550,7 @@ def _assignment_diagnostics(
             relevant
             and has_alternative
             and not safe_card_identifier
+            and not safe_ancillary_unknown
             and not deferred_semantic_candidate
             and not safe_edge_artifact
         ):
@@ -486,12 +563,14 @@ def _assignment_diagnostics(
             (
                 column.role is ColumnRole.UNKNOWN
                 and not safe_card_identifier
+                and not safe_ancillary_unknown
                 and not deferred_semantic_candidate
                 and not safe_edge_artifact
             )
             or (
                 has_alternative
                 and not safe_card_identifier
+                and not safe_ancillary_unknown
                 and not deferred_semantic_candidate
                 and not safe_edge_artifact
             )
@@ -1091,6 +1170,46 @@ def _category_sign_contradiction(category: TransactionCategory, kind: Transactio
     return False
 
 
+def _explicit_category(
+    row: Row,
+    region: TableRegion,
+) -> tuple[TransactionCategory, tuple[str, ...]]:
+    columns = tuple(
+        column
+        for column in _role_columns(region, ColumnRole.UNKNOWN)
+        if column.index in _explicit_category_unknown_columns(region)
+    )
+    if len(columns) > 1:
+        return TransactionCategory.UNKNOWN, ("multiple_category_columns",)
+    if not columns:
+        return TransactionCategory.UNKNOWN, ()
+    cells = _cells_for_column(row, columns[0])
+    if len(cells) > 1:
+        return TransactionCategory.UNKNOWN, ("multiple_category_cells",)
+    if not cells:
+        return TransactionCategory.UNKNOWN, ()
+    return _category(cells[0].text, False), ()
+
+
+def _resolved_category(
+    description: str | None,
+    has_installment: bool,
+    row: Row,
+    region: TableRegion,
+) -> tuple[TransactionCategory, tuple[str, ...]]:
+    description_category = _category(description, has_installment)
+    explicit_category, diagnostics = _explicit_category(row, region)
+    if (
+        description_category is not TransactionCategory.UNKNOWN
+        and explicit_category is not TransactionCategory.UNKNOWN
+        and description_category is not explicit_category
+    ):
+        return description_category, (*diagnostics, "conflicting_category_semantics")
+    if description_category is not TransactionCategory.UNKNOWN:
+        return description_category, diagnostics
+    return explicit_category, diagnostics
+
+
 def _horizontal_coverage(candidate: BBox, container: BBox) -> float:
     width = candidate[2] - candidate[0]
     if width <= 0:
@@ -1343,12 +1462,34 @@ def _cluster_signature(cluster: EvidenceCluster) -> str:
     return _normalized_phrase(cluster.text)
 
 
-def _repeated_distant_description_signatures(region: TableRegion) -> frozenset[str]:
+def _alphabetic_span_signatures(text: str) -> frozenset[str]:
+    spans: list[str] = []
+    current: list[str] = []
+    for char in text:
+        if char.isalpha():
+            current.append(char)
+        elif current:
+            spans.append("".join(current))
+            current = []
+    if current:
+        spans.append("".join(current))
+    return frozenset(signature for span in spans if (signature := _normalized_phrase(span)))
+
+
+def _corroborated_processor_reference_signatures(region: TableRegion) -> frozenset[str]:
     counts: dict[str, int] = {}
     for row in region.rows:
         row_ledger = EvidenceLedger.from_rows((row,))
+        description_cells = frozenset(_role_cells(row, region, ColumnRole.DESCRIPTION))
+        external_signatures = frozenset(
+            signature
+            for cell in row.cells
+            if cell not in description_cells
+            for source_text in (cell.text, *(word.text for word in cell.words))
+            for signature in _alphabetic_span_signatures(source_text)
+        )
         row_signatures: set[str] = set()
-        for cell in _role_cells(row, region, ColumnRole.DESCRIPTION):
+        for cell in description_cells:
             for line in _cluster_lines(row_ledger.clusters_for_cell(cell)):
                 if len(line) < 2:
                     continue
@@ -1356,7 +1497,9 @@ def _repeated_distant_description_signatures(region: TableRegion) -> frozenset[s
                 row_signatures.update(
                     signature
                     for cluster in line
-                    if cluster is not primary and (signature := _cluster_signature(cluster))
+                    if cluster is not primary
+                    and _normalized_text(cluster.text).startswith((".", "@"))
+                    and (signature := _cluster_signature(cluster)) in external_signatures
                 )
         for signature in row_signatures:
             counts[signature] = counts.get(signature, 0) + 1
@@ -1368,10 +1511,22 @@ def _is_numeric_processor_cluster(cluster: EvidenceCluster) -> bool:
     return len(compact) >= 6 and compact.isdigit()
 
 
+def _is_processor_reference_cluster(
+    cluster: EvidenceCluster,
+    corroborated_signatures: frozenset[str],
+) -> bool:
+    normalized = _normalized_text(cluster.text)
+    return _is_numeric_processor_cluster(cluster) or (
+        normalized.startswith((".", "@"))
+        and any(char.isalpha() for char in normalized)
+        and _cluster_signature(cluster) in corroborated_signatures
+    )
+
+
 def _selected_description_cell_atoms(
     ledger: EvidenceLedger,
     cell: Cell,
-    repeated_distant_signatures: frozenset[str],
+    corroborated_signatures: frozenset[str],
 ) -> tuple[frozenset[int], frozenset[int]]:
     selected: set[int] = set()
     processor: set[int] = set()
@@ -1383,10 +1538,7 @@ def _selected_description_cell_atoms(
         for cluster in line:
             if cluster is primary:
                 continue
-            if _is_numeric_processor_cluster(cluster) or (
-                any(char.isalpha() for char in cluster.text)
-                and _cluster_signature(cluster) in repeated_distant_signatures
-            ):
+            if _is_processor_reference_cluster(cluster, corroborated_signatures):
                 processor.update(cluster.atom_ids)
             else:
                 selected.update(cluster.atom_ids)
@@ -1396,7 +1548,7 @@ def _selected_description_cell_atoms(
 def _has_competing_description_clusters(
     ledger: EvidenceLedger,
     cells: Sequence[Cell],
-    repeated_distant_signatures: frozenset[str],
+    corroborated_signatures: frozenset[str],
 ) -> bool:
     for cell in cells:
         for line in _cluster_lines(ledger.clusters_for_cell(cell)):
@@ -1404,8 +1556,10 @@ def _has_competing_description_clusters(
                 cluster
                 for cluster in line
                 if any(char.isalpha() for char in cluster.text)
-                and not _is_numeric_processor_cluster(cluster)
-                and _cluster_signature(cluster) not in repeated_distant_signatures
+                and not _is_processor_reference_cluster(
+                    cluster,
+                    corroborated_signatures,
+                )
             )
             if len(candidates) > 1:
                 return True
@@ -1474,7 +1628,7 @@ def _description(
     year_context: DiscoveredDateYearContext | None,
     ledger: EvidenceLedger,
 ) -> DescriptionExtraction:
-    repeated_signatures = _repeated_distant_description_signatures(region)
+    processor_signatures = _corroborated_processor_reference_signatures(region)
     claims: list[EvidenceClaim] = []
     texts: list[str] = []
     diagnostics: list[str] = []
@@ -1506,14 +1660,14 @@ def _description(
         if index > 0 and _has_competing_description_clusters(
             ledger,
             row_cells,
-            repeated_signatures,
+            processor_signatures,
         ):
             diagnostics.append("ambiguous_description_continuation")
         for cell in row_cells:
             selected, processor = _selected_description_cell_atoms(
                 ledger,
                 cell,
-                repeated_signatures,
+                processor_signatures,
             )
             selected_ids.update(selected)
             processor_ids.update(processor)
@@ -1910,7 +2064,7 @@ def _dates(
     region: TableRegion,
     year_context: DiscoveredDateYearContext | None,
     structural_kinds: Mapping[int, str],
-) -> tuple[date | None, date | None, date | None, list[str]]:
+) -> tuple[date | None, date | None, date | None, list[str], tuple[Cell, ...]]:
     columns = _role_columns(region, ColumnRole.DATE)
     diagnostics: list[str] = []
     if not columns:
@@ -2024,6 +2178,12 @@ def _dates(
                             ("invalid_posting_date", f"posting_date:{date_diagnostic}")
                         )
     conversion_columns = _role_columns(region, ColumnRole.CONVERSION_DATE)
+    unresolved_conversion_cells = [
+        cell
+        for column in conversion_columns
+        for cell in _cells_for_column(row, column)
+        if _normalized_text(cell.text)
+    ]
     if len(conversion_columns) == 1:
         conversion_cells = _cells_for_column(row, conversion_columns[0])
         if len(conversion_cells) == 1:
@@ -2048,7 +2208,15 @@ def _dates(
                 )
             if conversion_diagnostic is None:
                 conversion_date = parsed_conversion_date
-    return transaction_date, posting_date, conversion_date, diagnostics
+                if conversion_cells[0] in unresolved_conversion_cells:
+                    unresolved_conversion_cells.remove(conversion_cells[0])
+    return (
+        transaction_date,
+        posting_date,
+        conversion_date,
+        diagnostics,
+        tuple(unresolved_conversion_cells),
+    )
 
 
 def _conversion_date_from_semantic_evidence(
@@ -2060,31 +2228,60 @@ def _conversion_date_from_semantic_evidence(
     original_currency: str | None,
     billing_currency: str,
     transaction_date: date | None,
-) -> tuple[date | None, tuple[str, ...]]:
+    existing_conversion_date: date | None,
+) -> tuple[date | None, tuple[str, ...], frozenset[Cell]]:
     if original_currency is None or original_currency == billing_currency:
-        return None, ()
+        return None, (), frozenset()
 
     candidate_cells = tuple(
         cell
         for column in region.table_schema.columns
-        if column.role in {ColumnRole.CONVERSION_DATE, ColumnRole.UNKNOWN}
+        if column.role is ColumnRole.UNKNOWN
+        or (column.role is ColumnRole.CONVERSION_DATE and existing_conversion_date is None)
         for cell in _cells_for_column(row, column)
     )
     candidates = tuple(
-        candidate
+        (cell, candidate)
         for cell in candidate_cells
         for candidate in ledger.fragmented_date_candidates(cell)
     )
+    raw_cross_cell_evidence = _cross_cell_date_tokens(row, region, ledger)
+    parsed_cross_cell_evidence = _parsed_cross_cell_conversion_evidence(
+        row,
+        region,
+        ledger,
+        year_context,
+        transaction_date,
+    )
+    if raw_cross_cell_evidence:
+        if (
+            not candidates
+            and len(raw_cross_cell_evidence) == 1
+            and len(parsed_cross_cell_evidence) == 1
+        ):
+            return (
+                parsed_cross_cell_evidence[0][0],
+                (),
+                parsed_cross_cell_evidence[0][1].cells,
+            )
+        return None, ("unparsed_conversion_date_candidate",), frozenset()
     if not candidates:
         has_date_cue = any(_has_fragmented_date_cue(cell) for cell in candidate_cells)
-        return (None, ("unparsed_conversion_date_candidate",)) if has_date_cue else (None, ())
+        return (
+            (None, ("unparsed_conversion_date_candidate",), frozenset())
+            if has_date_cue
+            else (None, (), frozenset())
+        )
     parsed = tuple(
-        _parse_date_near_anchor(candidate.text, year_context, transaction_date)
-        for candidate in candidates
+        (
+            cell,
+            _parse_date_near_anchor(candidate.text, year_context, transaction_date),
+        )
+        for cell, candidate in candidates
     )
-    if len(candidates) == 1 and parsed[0] is not None:
-        return parsed[0], ()
-    return None, ("unparsed_conversion_date_candidate",)
+    if len(candidates) == 1 and parsed[0][1] is not None:
+        return parsed[0][1], (), frozenset((parsed[0][0],))
+    return None, ("unparsed_conversion_date_candidate",), frozenset()
 
 
 def _has_fragmented_date_cue(cell: Cell) -> bool:
@@ -2101,6 +2298,173 @@ def _has_fragmented_date_cue(cell: Cell) -> bool:
     )
     sources = (cell.text, physical) if physical else (cell.text,)
     return any(_DATE_CUE_PATTERN.search("".join(source.split())) is not None for source in sources)
+
+
+def _atom_ids_bbox(ledger: EvidenceLedger, atom_ids: Iterable[int]) -> BBox:
+    atoms = tuple(ledger.atoms[atom_id] for atom_id in atom_ids)
+    return (
+        min(atom.bbox[0] for atom in atoms),
+        min(atom.bbox[1] for atom in atoms),
+        max(atom.bbox[2] for atom in atoms),
+        max(atom.bbox[3] for atom in atoms),
+    )
+
+
+def _physical_atom_lines(
+    ledger: EvidenceLedger,
+    cell: Cell,
+) -> tuple[tuple[int, ...], ...]:
+    positioned = tuple(
+        atom_id
+        for atom_id in ledger.atoms_for_cell(cell)
+        if ledger.atoms[atom_id].glyph is not None or ledger.atoms[atom_id].word is not None
+    )
+    lines: list[list[int]] = []
+    for atom_id in sorted(
+        positioned,
+        key=lambda value: (
+            (ledger.atoms[value].bbox[1] + ledger.atoms[value].bbox[3]) / 2,
+            ledger.atoms[value].bbox[0],
+            ledger.atoms[value].bbox[2],
+        ),
+    ):
+        atom = ledger.atoms[atom_id]
+        center_y = (atom.bbox[1] + atom.bbox[3]) / 2
+        matching = next(
+            (
+                line
+                for line in lines
+                if abs(
+                    center_y - (ledger.atoms[line[0]].bbox[1] + ledger.atoms[line[0]].bbox[3]) / 2
+                )
+                <= min(_height(atom.bbox), _height(ledger.atoms[line[0]].bbox)) * 0.5
+            ),
+            None,
+        )
+        if matching is None:
+            lines.append([atom_id])
+        else:
+            matching.append(atom_id)
+    return tuple(
+        tuple(sorted(line, key=lambda value: ledger.atoms[value].bbox[0])) for line in lines
+    )
+
+
+def _line_characters(
+    ledger: EvidenceLedger,
+    line: Sequence[int],
+) -> tuple[tuple[str, int | None], ...]:
+    characters: list[tuple[str, int | None]] = []
+    previous_id: int | None = None
+    for atom_id in line:
+        atom = ledger.atoms[atom_id]
+        if previous_id is not None:
+            previous = ledger.atoms[previous_id]
+            gap = atom.bbox[0] - previous.bbox[2]
+            if gap > min(_height(previous.bbox), _height(atom.bbox)) * 0.6:
+                characters.append(("\x00", None))
+        characters.extend((char, atom_id) for char in atom.text)
+        previous_id = atom_id
+    return tuple(characters)
+
+
+def _vertically_aligned(first: BBox, second: BBox) -> bool:
+    overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+    smaller_height = min(_height(first), _height(second))
+    return smaller_height > 0 and overlap / smaller_height >= 0.8
+
+
+def _cross_cell_date_tokens(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+) -> tuple[_CrossCellDateEvidence, ...]:
+    positioned_cells = tuple(
+        sorted(
+            (
+                (column, cell)
+                for column in region.table_schema.columns
+                if column.role in {ColumnRole.CONVERSION_DATE, ColumnRole.UNKNOWN}
+                for cell in _cells_for_column(row, column)
+            ),
+            key=lambda item: item[0].index,
+        )
+    )
+    candidates: list[_CrossCellDateEvidence] = []
+    for (left_column, left_cell), (right_column, right_cell) in pairwise(positioned_cells):
+        if right_column.index - left_column.index != 1:
+            continue
+        shared_boundary = (left_column.bbox[2] + right_column.bbox[0]) / 2
+        for left_line in _physical_atom_lines(ledger, left_cell):
+            left_line_bbox = _atom_ids_bbox(ledger, left_line)
+            left_characters = _line_characters(ledger, left_line)
+            for right_line in _physical_atom_lines(ledger, right_cell):
+                right_line_bbox = _atom_ids_bbox(ledger, right_line)
+                if not _vertically_aligned(left_line_bbox, right_line_bbox):
+                    continue
+                right_characters = _line_characters(ledger, right_line)
+                characters = (*left_characters, *right_characters)
+                combined = "".join(char for char, _ in characters)
+                boundary = len(left_characters)
+                for match in _DATE_TOKEN_PATTERN.finditer(combined):
+                    if not match.start() < boundary < match.end():
+                        continue
+                    matched = characters[match.start() : match.end()]
+                    atom_ids = frozenset(
+                        atom_id
+                        for char, atom_id in matched
+                        if atom_id is not None and (char.isdigit() or char in "./-")
+                    )
+                    left_ids = atom_ids & ledger.atoms_for_cell(left_cell)
+                    right_ids = atom_ids & ledger.atoms_for_cell(right_cell)
+                    if not left_ids or not right_ids:
+                        continue
+                    left_bbox = _atom_ids_bbox(ledger, left_ids)
+                    right_bbox = _atom_ids_bbox(ledger, right_ids)
+                    tolerance = min(_height(left_bbox), _height(right_bbox)) * 0.6
+                    gap = right_bbox[0] - left_bbox[2]
+                    if (
+                        tolerance <= 0
+                        or not -tolerance * 0.2 <= gap <= tolerance
+                        or abs(left_bbox[2] - shared_boundary) > tolerance
+                        or abs(right_bbox[0] - shared_boundary) > tolerance
+                    ):
+                        continue
+                    candidates.append(
+                        _CrossCellDateEvidence(
+                            text=match.group(0),
+                            cells=frozenset((left_cell, right_cell)),
+                            atom_ids=atom_ids,
+                        )
+                    )
+    return tuple(candidates)
+
+
+def _cross_cell_date_source_cells(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+) -> frozenset[Cell]:
+    return frozenset(
+        cell for evidence in _cross_cell_date_tokens(row, region, ledger) for cell in evidence.cells
+    )
+
+
+def _parsed_cross_cell_conversion_evidence(
+    row: Row,
+    region: TableRegion,
+    ledger: EvidenceLedger,
+    year_context: DiscoveredDateYearContext | None,
+    transaction_date: date | None,
+) -> tuple[tuple[date, _CrossCellDateEvidence], ...]:
+    if transaction_date is None:
+        return ()
+    parsed: list[tuple[date, _CrossCellDateEvidence]] = []
+    for evidence in _cross_cell_date_tokens(row, region, ledger):
+        value = _parse_date_near_anchor(evidence.text, year_context, transaction_date)
+        if value is not None and abs((value - transaction_date).days) <= 31:
+            parsed.append((value, evidence))
+    return tuple(parsed)
 
 
 def _parse_date_near_anchor(
@@ -2143,6 +2507,37 @@ def _parse_date_near_anchor(
     return parsed
 
 
+def _column_header_text(region: TableRegion, column: ColumnSpec) -> str:
+    header_cells = tuple(
+        cell
+        for cell in region.table_schema.header_cells
+        if cell in column.source_cells or column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+    )
+    return _normalized_text(" ".join(cell.text for cell in header_cells))
+
+
+def _explicit_ancillary_unknown_columns(region: TableRegion) -> frozenset[int]:
+    return frozenset(
+        column.index
+        for column in _role_columns(region, ColumnRole.UNKNOWN)
+        if _contains_marker(
+            _column_header_text(region, column),
+            _EXPLICIT_ANCILLARY_HEADER_MARKERS,
+        )
+    )
+
+
+def _explicit_category_unknown_columns(region: TableRegion) -> frozenset[int]:
+    return frozenset(
+        column.index
+        for column in _role_columns(region, ColumnRole.UNKNOWN)
+        if _contains_marker(
+            _column_header_text(region, column),
+            _EXPLICIT_CATEGORY_HEADER_MARKERS,
+        )
+    )
+
+
 def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
     stable: set[int] = set()
     base_rows = tuple(
@@ -2151,13 +2546,7 @@ def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
         if not any("continuation" in diagnostic for diagnostic in row.diagnostics)
     )
     for column in _role_columns(region, ColumnRole.UNKNOWN):
-        header_cells = tuple(
-            cell
-            for cell in region.table_schema.header_cells
-            if cell in column.source_cells
-            or column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
-        )
-        header_text = _normalized_text(" ".join(cell.text for cell in header_cells))
+        header_text = _column_header_text(region, column)
         values = tuple(
             cell
             for row in base_rows
@@ -2283,6 +2672,8 @@ def _semantic_claims_and_diagnostics(
     )
 
     stable_unknowns = _stable_unknown_columns(region)
+    explicit_ancillary_unknowns = _explicit_ancillary_unknown_columns(region)
+    explicit_category_unknowns = _explicit_category_unknown_columns(region)
     description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
     description_index = description_columns[0].index if len(description_columns) == 1 else None
     boundary_atom_ids: set[int] = set()
@@ -2300,6 +2691,20 @@ def _semantic_claims_and_diagnostics(
             }
             for diagnostic in row.diagnostics
         )
+        cross_cell_conversion_atom_ids = frozenset(
+            atom_id
+            for candidate_date, evidence in _parsed_cross_cell_conversion_evidence(
+                row,
+                region,
+                ledger,
+                year_context,
+                transaction_date,
+            )
+            if original_currency is not None
+            and original_currency != billing_currency
+            and candidate_date == conversion_date
+            for atom_id in evidence.atom_ids
+        )
         for cell in row.cells:
             columns = tuple(
                 column
@@ -2311,6 +2716,14 @@ def _semantic_claims_and_diagnostics(
             column = columns[0]
             cell_ids = ledger.atoms_for_cell(cell)
             if is_detail_continuation:
+                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                continue
+            if cross_cell_date_ids := cell_ids & cross_cell_conversion_atom_ids:
+                _add_remaining_claim(
+                    claims,
+                    SemanticOwner.CONVERSION_DATE,
+                    cross_cell_date_ids,
+                )
                 _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
                 continue
             if column.role is ColumnRole.DATE:
@@ -2445,6 +2858,10 @@ def _semantic_claims_and_diagnostics(
                 elif _is_isolated_ocr_edge_artifact_cell(cell, column, region):
                     _add_remaining_claim(claims, SemanticOwner.LAYOUT_NOISE, cell_ids)
                 elif column.index in stable_unknowns or row_has_safe_card_identifier:
+                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                elif column.index in explicit_category_unknowns and not _is_relevant_cell(cell):
+                    _add_remaining_claim(claims, SemanticOwner.CATEGORY, cell_ids)
+                elif column.index in explicit_ancillary_unknowns and not _is_relevant_cell(cell):
                     _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
                 elif description_index is not None and abs(column.index - description_index) == 1:
                     boundary_atom_ids.update(
@@ -2610,12 +3027,13 @@ def _normalize_row(
     description = description_extraction.value
     semantic_claims = list(description_extraction.claims)
     diagnostics.extend(description_extraction.diagnostics)
-    transaction_date, posting_date, conversion_date, date_diagnostics = _dates(
-        row,
-        region,
-        year_context,
-        date_column_kinds,
-    )
+    (
+        transaction_date,
+        posting_date,
+        conversion_date,
+        date_diagnostics,
+        unresolved_conversion_cells,
+    ) = _dates(row, region, year_context, date_column_kinds)
     diagnostics.extend(date_diagnostics)
 
     original_amount: Decimal | None = None
@@ -2728,8 +3146,8 @@ def _normalize_row(
                 original_amount = original.amount
                 original_currency = original.currency
 
-    if conversion_date is None:
-        conversion_date, conversion_diagnostics = _conversion_date_from_semantic_evidence(
+    semantic_conversion_date, conversion_diagnostics, conversion_source_cells = (
+        _conversion_date_from_semantic_evidence(
             row,
             region,
             ledger,
@@ -2737,8 +3155,16 @@ def _normalize_row(
             original_currency=original_currency,
             billing_currency=billed.currency,
             transaction_date=transaction_date,
+            existing_conversion_date=conversion_date,
         )
-        diagnostics.extend(conversion_diagnostics)
+    )
+    diagnostics.extend(conversion_diagnostics)
+    if conversion_date is None:
+        conversion_date = semantic_conversion_date
+    elif semantic_conversion_date is not None and semantic_conversion_date != conversion_date:
+        diagnostics.append("conflicting_conversion_date_evidence")
+    if any(cell not in conversion_source_cells for cell in unresolved_conversion_cells):
+        diagnostics.append("invalid_conversion_date")
 
     installment_current: int | None = None
     installment_total: int | None = None
@@ -2778,7 +3204,13 @@ def _normalize_row(
     diagnostics.extend(semantic_diagnostics)
 
     kind = TransactionKind.CREDIT if billed.amount < 0 else TransactionKind.CHARGE
-    category = _category(description, installment_current is not None)
+    category, category_diagnostics = _resolved_category(
+        description,
+        installment_current is not None,
+        row,
+        region,
+    )
+    diagnostics.extend(category_diagnostics)
     if _category_sign_contradiction(category, kind):
         diagnostics.append("category_sign_contradiction")
     transaction = Transaction(
