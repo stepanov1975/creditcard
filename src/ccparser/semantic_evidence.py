@@ -346,6 +346,11 @@ class EvidenceLedger:
         )
         return frozenset().union(*equality_matches) if equality_matches else frozenset()
 
+    def cells_for_atom(self, atom_id: int) -> tuple[Cell, ...]:
+        """Return every source cell whose evidence contains an atom."""
+
+        return tuple(cell for cell, atom_ids in self._cell_memberships if atom_id in atom_ids)
+
     def atoms_in_bbox(self, atom_ids: Iterable[int], bbox: BBox) -> frozenset[int]:
         """Return selected atom IDs whose positioned centers fall inside a box."""
 

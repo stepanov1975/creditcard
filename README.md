@@ -68,6 +68,11 @@ Document statuses are:
 Use `--strict` when automation should exit with code 2 unless the complete run
 is `reconciled`. Invalid input or runtime failures exit with code 1.
 
+Normalization also accounts for meaningful transaction-row evidence. Unassigned
+merchant-boundary text, unexplained semantic text, and unresolved conversion-date
+candidates remain attached to the billed transaction as ambiguities, so an exact
+arithmetic total alone cannot produce a strict success.
+
 ## Audit a document directory
 
 Audit is a dry run by default:

@@ -1546,6 +1546,7 @@ def _description(
                 selected_ids.update(residual_ids)
             else:
                 fallback_texts.append(residual_text)
+                claims.append(EvidenceClaim(SemanticOwner.DESCRIPTION, split_ids))
         if index == 0:
             adjacent_ids, ancillary_ids = _adjacent_unknown_description_atoms(
                 row,
@@ -2063,6 +2064,355 @@ def _conversion_date_from_semantic_evidence(
     return None, ("unparsed_conversion_date_candidate",)
 
 
+def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
+    stable: set[int] = set()
+    base_rows = tuple(
+        row
+        for row in region.rows
+        if not any("continuation" in diagnostic for diagnostic in row.diagnostics)
+    )
+    for column in _role_columns(region, ColumnRole.UNKNOWN):
+        header_text = _normalized_text(" ".join(cell.text for cell in column.source_cells))
+        values = tuple(
+            cell
+            for row in base_rows
+            for cell in _cells_for_column(row, column)
+            if any(char.isalnum() for char in cell.text)
+        )
+        if not header_text or not any(char.isalnum() for char in header_text) or len(values) < 2:
+            continue
+        profiles: dict[str, int] = {}
+        for cell in values:
+            text = _normalized_text(cell.text)
+            profile = (
+                "money"
+                if is_money_shaped(text)
+                else "date"
+                if isolated_date_token(text) is not None
+                else "numeric"
+                if all(char.isdigit() or char.isspace() for char in text)
+                else "alphabetic"
+                if any(char.isalpha() for char in text) and not any(char.isdigit() for char in text)
+                else "mixed"
+            )
+            profiles[profile] = profiles.get(profile, 0) + 1
+        if max(profiles.values()) * 2 >= len(values):
+            stable.add(column.index)
+    return frozenset(stable)
+
+
+def _add_remaining_claim(
+    claims: list[EvidenceClaim],
+    owner: SemanticOwner,
+    atom_ids: Iterable[int],
+) -> None:
+    already_claimed = frozenset(atom_id for claim in claims for atom_id in claim.atom_ids)
+    remaining = frozenset(atom_ids) - already_claimed
+    if remaining:
+        claims.append(EvidenceClaim(owner, remaining))
+
+
+def _matching_date_atom_ids(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    expected: date | None,
+    year_context: DiscoveredDateYearContext | None,
+) -> frozenset[int]:
+    if expected is None:
+        return frozenset()
+    matching: set[int] = set()
+    for candidate in ledger.fragmented_date_candidates(cell):
+        if _parse_date(candidate.text, year_context)[0] == expected:
+            matching.update(candidate.atom_ids)
+    for atom_id in ledger.atoms_for_cell(cell):
+        atom = ledger.atoms[atom_id]
+        if _parse_date(atom.text, year_context)[0] == expected:
+            matching.add(atom_id)
+    if (
+        not matching
+        and not any(char.isalpha() for char in cell.text)
+        and _parse_cell_date(cell, year_context)[0] == expected
+    ):
+        matching.update(ledger.atoms_for_cell(cell))
+    return frozenset(matching)
+
+
+def _financial_atom_ids(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    *,
+    currency_hint: str | None,
+) -> frozenset[int]:
+    parsed = parse_amount(cell.text, currency_hint=currency_hint)
+    cell_atom_ids = ledger.atoms_for_cell(cell)
+    if parsed.amount is not None and parsed.currency is not None:
+        return cell_atom_ids
+    return frozenset(
+        atom_id
+        for atom_id in cell_atom_ids
+        if not any(char.isalpha() for char in ledger.atoms[atom_id].text)
+        or canonical_currency(ledger.atoms[atom_id].text) is not None
+    )
+
+
+def _description_spill_atom_ids(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    text: str,
+) -> frozenset[int]:
+    normalized_target = _normalized_phrase(text)
+    target_tokens = frozenset(normalized_target.split())
+    return frozenset(
+        atom_id
+        for atom_id in ledger.atoms_for_cell(cell)
+        if any(char.isalpha() for char in ledger.atoms[atom_id].text)
+        and (
+            (atom_text := _normalized_phrase(ledger.atoms[atom_id].text)) in target_tokens
+            or atom_text in normalized_target
+            or normalized_target in atom_text
+        )
+    )
+
+
+def _semantic_claims_and_diagnostics(
+    *,
+    rows: Sequence[Row],
+    region: TableRegion,
+    ledger: EvidenceLedger,
+    initial_claims: Sequence[EvidenceClaim],
+    amount_cell: Cell,
+    billing_currency: str,
+    original_currency: str | None,
+    description: str | None,
+    transaction_date: date | None,
+    posting_date: date | None,
+    conversion_date: date | None,
+    year_context: DiscoveredDateYearContext | None,
+    date_column_kinds: Mapping[int, str],
+) -> tuple[tuple[EvidenceClaim, ...], tuple[str, ...]]:
+    claims = list(initial_claims)
+    _add_remaining_claim(
+        claims,
+        SemanticOwner.BILLED_VALUE,
+        ledger.atoms_for_cell(amount_cell),
+    )
+
+    stable_unknowns = _stable_unknown_columns(region)
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    description_index = description_columns[0].index if len(description_columns) == 1 else None
+    boundary_atom_ids: set[int] = set()
+
+    for row in rows:
+        row_has_safe_card_identifier = any(
+            _is_safe_card_identifier_cell(row, cell) for cell in row.cells
+        )
+        is_detail_continuation = any(
+            diagnostic
+            in {
+                "subordinate_detail_continuation",
+                "subordinate_auxiliary_continuation",
+                "bounded_hebrew_note_detail",
+            }
+            for diagnostic in row.diagnostics
+        )
+        for cell in row.cells:
+            columns = tuple(
+                column
+                for column in region.table_schema.columns
+                if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+            )
+            if len(columns) != 1:
+                continue
+            column = columns[0]
+            cell_ids = ledger.atoms_for_cell(cell)
+            if is_detail_continuation:
+                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                continue
+            if column.role is ColumnRole.DATE:
+                kind = _header_kind(column) or date_column_kinds.get(column.index)
+                expected = posting_date if kind == "posting" else transaction_date
+                owner = (
+                    SemanticOwner.POSTING_DATE
+                    if kind == "posting"
+                    else SemanticOwner.TRANSACTION_DATE
+                )
+                matched_date_ids = _matching_date_atom_ids(
+                    ledger,
+                    cell,
+                    expected,
+                    year_context,
+                )
+                _add_remaining_claim(claims, owner, matched_date_ids)
+                if expected is not None:
+                    _add_remaining_claim(
+                        claims,
+                        owner,
+                        (
+                            atom_id
+                            for atom_id in cell_ids
+                            if not any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                        ),
+                    )
+                elif (
+                    year_context is None
+                    and (style := _proven_unanchored_short_date_style(region, column)) is not None
+                    and _has_proven_unanchored_short_date(cell, style)
+                ):
+                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                boundary_atom_ids.update(
+                    atom_id
+                    for atom_id in cell_ids
+                    if any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                )
+            elif column.role is ColumnRole.CONVERSION_DATE:
+                _add_remaining_claim(
+                    claims,
+                    SemanticOwner.CONVERSION_DATE,
+                    _matching_date_atom_ids(ledger, cell, conversion_date, year_context),
+                )
+                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+            elif column.role in {
+                ColumnRole.AMOUNT,
+                ColumnRole.BILLING_CURRENCY,
+                ColumnRole.CURRENCY,
+            }:
+                _add_remaining_claim(claims, SemanticOwner.BILLED_VALUE, cell_ids)
+            elif column.role in {
+                ColumnRole.ORIGINAL_AMOUNT,
+                ColumnRole.ORIGINAL_CURRENCY,
+            }:
+                if description is not None:
+                    description_phrase = _normalized_phrase(description)
+                    _add_remaining_claim(
+                        claims,
+                        SemanticOwner.DESCRIPTION,
+                        (
+                            atom_id
+                            for atom_id in cell_ids
+                            if any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                            and (atom_phrase := _normalized_phrase(ledger.atoms[atom_id].text))
+                            and (
+                                atom_phrase in description_phrase
+                                or description_phrase in atom_phrase
+                            )
+                        ),
+                    )
+                _add_remaining_claim(
+                    claims,
+                    SemanticOwner.ORIGINAL_VALUE,
+                    _financial_atom_ids(
+                        ledger,
+                        cell,
+                        currency_hint=original_currency,
+                    ),
+                )
+                if description_index is not None and abs(column.index - description_index) == 1:
+                    _add_remaining_claim(
+                        claims,
+                        SemanticOwner.LAYOUT_NOISE,
+                        (
+                            atom_id
+                            for atom_id in cell_ids
+                            if (atom := ledger.atoms[atom_id]).glyph is not None
+                            and (atom.bbox[0] < column.bbox[0] or atom.bbox[2] > column.bbox[2])
+                        ),
+                    )
+                    boundary_atom_ids.update(
+                        atom_id
+                        for atom_id in cell_ids
+                        if any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                    )
+            elif column.role is ColumnRole.INSTALLMENT:
+                _add_remaining_claim(claims, SemanticOwner.INSTALLMENT, cell_ids)
+            elif column.role is ColumnRole.LOCATION:
+                safe_location = (
+                    not _is_relevant_cell(cell)
+                    or _LOCATION_IDENTIFIER_PATTERN.fullmatch(_normalized_text(cell.text))
+                    is not None
+                    or _original_currency_spilled_into_location(cell, region) is not None
+                )
+                if safe_location:
+                    _add_remaining_claim(claims, SemanticOwner.LOCATION, cell_ids)
+            elif column.role in {
+                ColumnRole.AUXILIARY_AMOUNT,
+                ColumnRole.EXCHANGE_RATE,
+            }:
+                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+            elif column.role is ColumnRole.UNKNOWN:
+                conversion_candidates = ledger.fragmented_date_candidates(cell)
+                is_foreign_conversion_evidence = (
+                    original_currency is not None
+                    and original_currency != billing_currency
+                    and bool(conversion_candidates)
+                )
+                if is_foreign_conversion_evidence:
+                    _add_remaining_claim(
+                        claims,
+                        SemanticOwner.CONVERSION_DATE,
+                        _matching_date_atom_ids(
+                            ledger,
+                            cell,
+                            conversion_date,
+                            year_context,
+                        ),
+                    )
+                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                elif _is_isolated_ocr_edge_artifact_cell(cell, column, region):
+                    _add_remaining_claim(claims, SemanticOwner.LAYOUT_NOISE, cell_ids)
+                elif column.index in stable_unknowns or row_has_safe_card_identifier:
+                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                elif description_index is not None and abs(column.index - description_index) == 1:
+                    boundary_atom_ids.update(
+                        atom_id
+                        for atom_id in cell_ids
+                        if any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                    )
+            elif column.role is ColumnRole.DESCRIPTION:
+                if transaction_date is not None:
+                    _add_remaining_claim(
+                        claims,
+                        SemanticOwner.LAYOUT_NOISE,
+                        (
+                            atom_id
+                            for atom_id in cell_ids
+                            if any(char.isdigit() for char in ledger.atoms[atom_id].text)
+                            and not any(char.isalpha() for char in ledger.atoms[atom_id].text)
+                        ),
+                    )
+                date_columns = _role_columns(region, ColumnRole.DATE)
+                if year_context is None and len(date_columns) == 1:
+                    unanchored_style = _proven_unanchored_short_date_style(
+                        region,
+                        date_columns[0],
+                    )
+                    if unanchored_style is not None:
+                        _add_remaining_claim(
+                            claims,
+                            SemanticOwner.ANCILLARY,
+                            (
+                                atom_id
+                                for atom_id in cell_ids
+                                if _SHORT_DATE_TOKEN_PATTERNS[unanchored_style].fullmatch(
+                                    _normalized_text(ledger.atoms[atom_id].text)
+                                )
+                                is not None
+                            ),
+                        )
+
+    validation = ledger.validate_claims(claims)
+    diagnostics = list(validation.diagnostics)
+    unresolved = frozenset(
+        atom_id
+        for atom_id in validation.unclaimed_atom_ids
+        if ledger.atoms[atom_id].confidence >= 0.8
+    )
+    if unresolved & boundary_atom_ids:
+        diagnostics.append("unconsumed_description_boundary_text")
+    if unresolved - boundary_atom_ids:
+        diagnostics.append("unconsumed_transaction_semantic_text")
+    return tuple(claims), tuple(dict.fromkeys(diagnostics))
+
+
 def _normalize_row(
     *,
     row: Row,
@@ -2171,18 +2521,9 @@ def _normalize_row(
             confidence=amount_cells[0].confidence,
             diagnostics=("noncontributing_zero_billed_row",),
         )
-    if "unresolved_relevant_cell" in diagnostics:
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
-
     description_extraction = _description(rows, region, year_context, ledger)
     description = description_extraction.value
+    semantic_claims = list(description_extraction.claims)
     diagnostics.extend(description_extraction.diagnostics)
     transaction_date, posting_date, conversion_date, date_diagnostics = _dates(
         row,
@@ -2278,6 +2619,15 @@ def _normalize_row(
                 )
                 if spill is not None:
                     original, spill_text, description_on_right, already_in_description = spill
+                    _add_remaining_claim(
+                        semantic_claims,
+                        SemanticOwner.DESCRIPTION,
+                        _description_spill_atom_ids(
+                            ledger,
+                            original_cells[0],
+                            spill_text,
+                        ),
+                    )
                     if not already_in_description:
                         if description is None:
                             description = spill_text
@@ -2345,6 +2695,23 @@ def _normalize_row(
             confidence=0.0,
             diagnostics=tuple(diagnostics),
         )
+
+    _, semantic_diagnostics = _semantic_claims_and_diagnostics(
+        rows=rows,
+        region=region,
+        ledger=ledger,
+        initial_claims=semantic_claims,
+        amount_cell=amount_cells[0],
+        billing_currency=billed.currency,
+        original_currency=original_currency,
+        description=description,
+        transaction_date=transaction_date,
+        posting_date=posting_date,
+        conversion_date=conversion_date,
+        year_context=year_context,
+        date_column_kinds=date_column_kinds,
+    )
+    diagnostics.extend(semantic_diagnostics)
 
     kind = TransactionKind.CREDIT if billed.amount < 0 else TransactionKind.CHARGE
     category = _category(description, installment_current is not None)

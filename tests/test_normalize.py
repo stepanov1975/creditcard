@@ -1932,7 +1932,7 @@ def test_normalize_statement_ignores_unique_edge_artifact_under_short_ocr_header
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_normalize_statement_rejects_visually_reversed_card_identifier_marker() -> None:
+def test_normalize_statement_retains_visually_reversed_card_identifier_as_ambiguous() -> None:
     region = _region(
         (
             ColumnRole.DATE,
@@ -1954,8 +1954,11 @@ def test_normalize_statement_rejects_visually_reversed_card_identifier_marker() 
 
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_normalize_statement_does_not_choose_between_generic_amount_columns() -> None:
@@ -3403,7 +3406,7 @@ def test_normalize_statement_does_not_exclude_tall_row_near_printed_total() -> N
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation() -> None:
+def test_unknown_band_with_second_money_cell_retains_billed_row_as_ambiguous() -> None:
     region = _region(
         (
             ColumnRole.DATE,
@@ -3423,8 +3426,10 @@ def test_unknown_band_with_second_money_cell_blocks_emission_and_reconciliation(
 
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
@@ -3457,7 +3462,36 @@ def test_zero_billed_row_is_retained_as_noncontributing_evidence() -> None:
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
 
 
-def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity() -> None:
+def test_singleton_unknown_text_band_is_retained_with_semantic_ambiguity() -> None:
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.LOCATION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("London", 2, 30.0),
+                _cell("Retail category", 3, 30.0),
+                _cell("10.00", 4, 30.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    assert len(result.transactions) == 1
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert len(result.transactions[0].evidence) == 5
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
+
+
+def test_repeated_header_backed_unknown_text_band_is_ancillary() -> None:
     region = _region(
         (
             ColumnRole.DATE,
@@ -3468,9 +3502,44 @@ def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity()
         (
             _row(
                 _cell("01/02/2026", 0, 30.0),
-                _cell("Merchant", 1, 30.0),
-                _cell("Retail category", 2, 30.0),
+                _cell("First merchant", 1, 30.0),
+                _cell("Retail", 2, 30.0),
                 _cell("10.00", 3, 30.0),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 50.0),
+                _cell("Second merchant", 1, 50.0),
+                _cell("Services", 2, 50.0),
+                _cell("20.00", 3, 50.0),
+            ),
+        ),
+        headers=("Date", "Description", "Category", "Amount"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert all(not transaction.ambiguities for transaction in result.transactions)
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_unrecovered_date_description_boundary_text_is_semantically_unconsumed() -> None:
+    date_cell = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 40.0, 40.0),
+        text="01/02/2026 Lost",
+        words=(
+            _word("01/02/2026", 0.0, 20.0, 30.0),
+            _word("Lost", 25.0, 35.0, 30.0),
+        ),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                date_cell,
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
             ),
         ),
     )
@@ -3478,9 +3547,9 @@ def test_unknown_text_band_is_retained_as_evidence_without_financial_ambiguity()
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     assert len(result.transactions) == 1
-    assert result.transactions[0].ambiguities == ()
-    assert len(result.transactions[0].evidence) == 4
-    assert result.reconciliation.status is Status.RECONCILED
+    assert result.transactions[0].description == "Merchant"
+    assert "unconsumed_description_boundary_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 @pytest.mark.parametrize("header", ("City", "Location", "עיר"))
@@ -3559,12 +3628,14 @@ def test_location_band_rejects_financial_date_and_installment_shapes(value: str)
 
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
-def test_plain_identifier_in_unknown_header_remains_fatal() -> None:
+def test_plain_identifier_in_singleton_unknown_header_remains_ambiguous() -> None:
     region = _region(
         (
             ColumnRole.DATE,
@@ -3585,8 +3656,11 @@ def test_plain_identifier_in_unknown_header_remains_fatal() -> None:
 
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_location_identifier_does_not_override_missing_billed_cell() -> None:
@@ -3667,9 +3741,12 @@ def test_location_identifier_does_not_override_alignment_conflict() -> None:
 
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
-    assert result.transactions == ()
-    assert "unmatched_cell" in result.row_results[0].diagnostics
-    assert "unresolved_relevant_cell" in result.row_results[0].diagnostics
+    assert len(result.transactions) == 1
+    assert "unmatched_cell" in result.transactions[0].ambiguities
+    assert "unresolved_relevant_cell" in result.transactions[0].ambiguities
+    assert "unconsumed_transaction_semantic_text" in result.transactions[0].ambiguities
+    assert result.reconciliation.groups[0].difference == Decimal("0.00")
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_repeated_equal_original_values_inherit_proven_billing_currency() -> None:
