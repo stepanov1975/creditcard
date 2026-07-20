@@ -28,7 +28,13 @@ from ccparser.layout.text import (
     logical_text_for_evidence,
     positioned_evidence_for_bbox,
 )
-from ccparser.money import currencies_in_text, is_currency_shaped, is_money_shaped, parse_amount
+from ccparser.money import (
+    canonical_currency,
+    currencies_in_text,
+    is_currency_shaped,
+    is_money_shaped,
+    parse_amount,
+)
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -104,6 +110,10 @@ def _center_y(bbox: BBox) -> float:
 
 def _width(bbox: BBox) -> float:
     return max(0.0, bbox[2] - bbox[0])
+
+
+def _horizontal_gap(first: BBox, second: BBox) -> float:
+    return max(0.0, second[0] - first[2], first[0] - second[2])
 
 
 def _vertical_overlap_ratio(first: BBox, second: BBox) -> float:
@@ -1956,6 +1966,99 @@ def _bounded_overlaid_ocr_amount_artifact(
     return None
 
 
+def _spilled_currency_fragment_before_transaction(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+) -> bool:
+    if start_index + 1 >= len(rows):
+        return False
+    source = rows[start_index]
+    following_source = rows[start_index + 1]
+    if (
+        _is_total_row(source)
+        or _literal_header_role_count(source) >= 2
+        or _is_total_row(following_source)
+        or _literal_header_role_count(following_source) >= 2
+        or _vertical_overlap_ratio(source.bbox, following_source.bbox) < 0.5
+    ):
+        return False
+    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
+    if billed_column is None:
+        amount_columns = tuple(
+            column for column in schema.columns if column.role is ColumnRole.AMOUNT
+        )
+        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    if billed_column is None:
+        return False
+    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    billed_cells = tuple(
+        cell
+        for cell in following.cells
+        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+    )
+    if (
+        len(billed_cells) != 1
+        or not is_money_shaped(billed_cells[0].text)
+        or _transaction_shape_count(following) < 2
+        or _row_alignment(following, schema) < _minimum_row_alignment(schema)
+    ):
+        return False
+    currency_words = tuple(
+        word
+        for word in source.words
+        if word.source == "digital" and is_currency_shaped(word.text)
+    )
+    if len(currency_words) != 1:
+        return False
+    currency_word = currency_words[0]
+    billed_cell = billed_cells[0]
+    following_currencies = currencies_in_text(billed_cell.text)
+    if following_currencies:
+        matching_glyphs = tuple(
+            glyph
+            for glyph in following_source.glyphs
+            if currency_word.bbox[0] <= _center_x(glyph.bbox) <= currency_word.bbox[2]
+            and currency_word.bbox[1] <= _center_y(glyph.bbox) <= currency_word.bbox[3]
+        )
+        if (
+            len(following_currencies) != 1
+            or canonical_currency(currency_word.text) != following_currencies[0]
+            or logical_text_for_evidence(matching_glyphs, (currency_word,))
+            != currency_word.text
+        ):
+            return False
+    horizontal_gap = _horizontal_gap(currency_word.bbox, billed_cell.bbox)
+    if (
+        abs(_center_y(currency_word.bbox) - _center_y(billed_cell.bbox))
+        > min(_height(currency_word.bbox), _height(billed_cell.bbox)) * 0.2
+        or horizontal_gap > min(_height(currency_word.bbox), _height(billed_cell.bbox)) * 0.5
+    ):
+        return False
+    projected = _project_row_to_header_bands(page_evidence, source, header)
+    currency_cells = tuple(
+        cell for cell in projected.cells if currency_word in cell.words
+    )
+    if currency_cells and (
+        len(currency_cells) != 1 or not is_currency_shaped(currency_cells[0].text)
+    ):
+        return False
+    residual_cells = tuple(cell for cell in projected.cells if cell not in currency_cells)
+    return (
+        1 <= len(residual_cells) <= 2
+        and _transaction_shape_count(projected.model_copy(update={"cells": residual_cells})) == 0
+        and all(
+            any(char.isalpha() for char in cell.text)
+            and not is_money_shaped(cell.text)
+            and not is_date_shaped(cell.text)
+            and not is_currency_shaped(cell.text)
+            for cell in residual_cells
+        )
+    )
+
+
 def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
     billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
     if billed_column is None:
@@ -2039,6 +2142,7 @@ def _inherited_region_after_total(
     continuation_count = 0
     detail_continuation_count = 0
     ignored_outside_band_count = 0
+    ignored_spilled_currency_count = 0
     stop_reason: str | None = None
     stop_index = len(rows)
     previous = rows[total_index]
@@ -2084,6 +2188,18 @@ def _inherited_region_after_total(
             detail_continuation_count += 1
             detail_continuation_allowed = False
             previous = projected
+            continue
+        if (
+            not _has_valid_billed_amount(projected, schema)
+            and _spilled_currency_fragment_before_transaction(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+        ):
+            ignored_spilled_currency_count += 1
             continue
         if (
             _is_points_count_ledger_row(projected)
@@ -2135,6 +2251,10 @@ def _inherited_region_after_total(
         diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
     if ignored_outside_band_count:
         diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
+    if ignored_spilled_currency_count:
+        diagnostics.append(
+            f"ignored_spilled_currency_fragment_rows:{ignored_spilled_currency_count}"
+        )
     diagnostics.append("continued_to_page_end" if continued_to_page_end else "stopped_at_total")
     return (
         TableRegion(
@@ -2183,6 +2303,7 @@ def _detect_from_header(
     detail_continuation_count = 0
     auxiliary_continuation_count = 0
     ignored_overlaid_ocr_count = 0
+    ignored_spilled_currency_count = 0
     ambiguous_leading_count = 0
     ignored_outside_band_count = 0
     ignored_preamble_count = 0
@@ -2330,6 +2451,18 @@ def _detect_from_header(
             detail_continuation_allowed = False
             previous = projected
             continue
+        if (
+            not _has_valid_billed_amount(projected, schema)
+            and _spilled_currency_fragment_before_transaction(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+        ):
+            ignored_spilled_currency_count += 1
+            continue
         if not _has_valid_billed_amount(projected, schema):
             overlaid_through = _bounded_overlaid_ocr_amount_artifact(
                 page_evidence,
@@ -2409,6 +2542,10 @@ def _detect_from_header(
         diagnostics.append(f"ignored_preamble_rows:{ignored_preamble_count}")
     if ignored_overlaid_ocr_count:
         diagnostics.append(f"ignored_overlaid_ocr_rows:{ignored_overlaid_ocr_count}")
+    if ignored_spilled_currency_count:
+        diagnostics.append(
+            f"ignored_spilled_currency_fragment_rows:{ignored_spilled_currency_count}"
+        )
     if ambiguous_leading_count:
         diagnostics.append(f"ambiguous_leading_rows:{ambiguous_leading_count}")
     if stop_reason is not None:

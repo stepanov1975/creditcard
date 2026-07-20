@@ -7,11 +7,13 @@ from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
     _has_strong_single_row_evidence,
+    _horizontal_gap,
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
     _project_row_to_header_bands,
     _projection_preserves_table_band_evidence,
+    _spilled_currency_fragment_before_transaction,
     _split_compound_header_cell,
     _split_header_fragment,
     detect_table_regions,
@@ -222,6 +224,99 @@ def test_strong_single_row_accepts_low_alignment_only_when_next_total_matches() 
     assert not _has_strong_single_row_evidence(
         (row,), schema, "stopped_at_total", mismatched_total
     )
+
+
+def test_spilled_currency_fragment_is_proven_by_adjacent_following_amount() -> None:
+    header_words = (
+        _word("Billed amount", 0.0, 24.0, 10.0),
+        _word("Note", 30.0, 54.0, 10.0),
+        _word("Description", 60.0, 94.0, 10.0),
+        _word("Date", 100.0, 130.0, 10.0),
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 130.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    currency = _word("₪", 0.0, 5.0, 40.0)
+    fragment = _word("fragment", 60.0, 90.0, 30.0)
+    source = Row(
+        page_number=1,
+        bbox=(0.0, 30.0, 90.0, 50.0),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=fragment.bbox,
+                text=fragment.text,
+                words=(fragment,),
+                confidence=1.0,
+            ),
+            Cell(
+                page_number=1,
+                bbox=currency.bbox,
+                text=currency.text,
+                words=(currency,),
+                confidence=1.0,
+            ),
+        ),
+        words=(fragment, currency),
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    billed = _word("-8.97", 6.0, 22.0, 40.0)
+    merchant = _word("Merchant", 65.0, 92.0, 40.0)
+    transaction_date = _word("01/02/2026", 102.0, 129.0, 40.0)
+    following = Row(
+        page_number=1,
+        bbox=(6.0, 40.0, 129.0, 50.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in (billed, merchant, transaction_date)
+        ),
+        words=(billed, merchant, transaction_date),
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    schema = infer_column_roles(header.cells, following.cells)
+    page = _page((*header_words, fragment, currency, billed, merchant, transaction_date))
+
+    assert _spilled_currency_fragment_before_transaction(
+        page,
+        (header, source, following),
+        1,
+        header,
+        schema,
+    )
+    assert not _spilled_currency_fragment_before_transaction(
+        page,
+        (header, source, following.model_copy(update={"bbox": (6.0, 60.0, 129.0, 70.0)})),
+        1,
+        header,
+        schema,
+    )
+
+
+def test_horizontal_gap_is_zero_for_overlapping_boxes() -> None:
+    assert _horizontal_gap((0.0, 0.0, 7.0, 10.0), (6.0, 0.0, 22.0, 10.0)) == 0.0
+    assert _horizontal_gap((0.0, 0.0, 5.0, 10.0), (6.0, 0.0, 22.0, 10.0)) == 1.0
 
 
 def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_band() -> None:
