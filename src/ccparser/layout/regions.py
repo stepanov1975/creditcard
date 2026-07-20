@@ -1059,6 +1059,16 @@ def _has_canonical_card_identifier_tail(row: Row) -> bool:
     return has_card_marker and len(identifiers) == 1
 
 
+def _has_unique_card_identifier_value(row: Row) -> bool:
+    identifiers = set(
+        re.findall(
+            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
+            " ".join(cell.text for cell in row.cells),
+        )
+    )
+    return len(identifiers) == 1
+
+
 def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
@@ -1181,6 +1191,7 @@ def _foreign_conversion_detail_block(
                     and (
                         _has_canonical_card_identifier_tail(projected)
                         or _has_canonical_card_identifier_tail(source)
+                        or _has_unique_card_identifier_value(source)
                     )
                 )
             )
@@ -1573,7 +1584,7 @@ def _bounded_hebrew_note_detail(
     header: Row,
     schema: TableSchema,
     previous: Row,
-) -> Row | None:
+) -> tuple[Row, int, int] | None:
     if start_index + 1 >= len(rows):
         return None
     billed_column = proven_billed_amount_column(schema, (previous,))
@@ -1587,9 +1598,28 @@ def _bounded_hebrew_note_detail(
     ):
         return None
     source = rows[start_index]
-    following_source = rows[start_index + 1]
+    following_index = start_index + 1
+    skipped_outside_rows = 0
+    while (
+        following_index < len(rows)
+        and not _row_intersects_horizontal_band(rows[following_index], header.bbox)
+    ):
+        candidate = rows[following_index]
+        if (
+            _is_total_row(candidate)
+            or _literal_header_role_count(candidate) >= 2
+            or skipped_outside_rows >= MAX_AUXILIARY_OUTSIDE_LOOKAHEAD_ROWS
+            or not _detail_rows_are_adjacent(source, candidate)
+        ):
+            return None
+        skipped_outside_rows += 1
+        following_index += 1
+    if following_index >= len(rows):
+        return None
+    following_source = rows[following_index]
     if (
-        _is_total_row(source)
+        not _row_intersects_horizontal_band(source, header.bbox)
+        or _is_total_row(source)
         or _literal_header_role_count(source) >= 2
         or not _detail_rows_are_adjacent(previous, source)
         or not _row_intersects_horizontal_band(following_source, header.bbox)
@@ -1619,18 +1649,22 @@ def _bounded_hebrew_note_detail(
         or _row_alignment(following, schema) < _minimum_row_alignment(schema)
     ):
         return None
-    return projected.model_copy(
-        update={
-            "diagnostics": tuple(
-                dict.fromkeys(
-                    (
-                        *projected.diagnostics,
-                        "subordinate_detail_continuation",
-                        "bounded_hebrew_note_detail",
+    return (
+        projected.model_copy(
+            update={
+                "diagnostics": tuple(
+                    dict.fromkeys(
+                        (
+                            *projected.diagnostics,
+                            "subordinate_detail_continuation",
+                            "bounded_hebrew_note_detail",
+                        )
                     )
                 )
-            )
-        }
+            }
+        ),
+        following_index - 1,
+        skipped_outside_rows,
     )
 
 
@@ -2000,10 +2034,12 @@ def _detect_from_header(
                 previous,
             )
             if note_detail is not None:
-                accepted.append(note_detail)
+                note_row, consumed_through, skipped_outside_rows = note_detail
+                accepted.append(note_row)
                 detail_continuation_count += 1
+                ignored_outside_band_count += skipped_outside_rows
                 detail_continuation_allowed = False
-                previous = note_detail
+                previous = note_row
                 continue
         if (
             detail_continuation_allowed

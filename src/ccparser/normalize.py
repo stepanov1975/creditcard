@@ -853,6 +853,39 @@ def _original_amount_with_description_spill(
         original_columns[0].bbox
     )
     candidates: list[tuple[AmountParseResult, str, bool, bool]] = []
+    word_amount_text = " ".join(word.text for word in words)
+    word_amount = parse_amount(word_amount_text, currency_hint=currency_hint)
+    compact_cell_text = "".join(_normalized_text(original_cell.text).split())
+    compact_word_amount = "".join(_normalized_text(word_amount_text).split())
+    residual_text = ""
+    if description_on_right and compact_cell_text.startswith(compact_word_amount):
+        residual_text = compact_cell_text[len(compact_word_amount) :]
+    elif not description_on_right and compact_cell_text.endswith(compact_word_amount):
+        residual_text = compact_cell_text[: -len(compact_word_amount)]
+    description_cell = description_cells[0]
+    horizontal_overlap = max(
+        0.0,
+        min(original_cell.bbox[2], description_cell.bbox[2])
+        - max(original_cell.bbox[0], description_cell.bbox[0]),
+    )
+    vertical_overlap = max(
+        0.0,
+        min(original_cell.bbox[3], description_cell.bbox[3])
+        - max(original_cell.bbox[1], description_cell.bbox[1]),
+    )
+    if (
+        word_amount.amount is not None
+        and word_amount.currency is not None
+        and residual_text
+        and any(char.isalpha() for char in residual_text)
+        and not is_money_shaped(residual_text)
+        and not is_currency_shaped(residual_text)
+        and _DATE_PATTERN.fullmatch(residual_text) is None
+        and _INSTALLMENT_PATTERN.fullmatch(residual_text) is None
+        and horizontal_overlap > 0
+        and vertical_overlap > 0
+    ):
+        candidates.append((word_amount, residual_text, description_on_right, False))
     for split in range(1, len(words)):
         amount_words, residual_words = (
             (words[:split], words[split:])

@@ -1234,6 +1234,28 @@ def test_sparse_wide_table_bridges_single_band_hebrew_note_before_next_row() -> 
     assert "bounded_hebrew_note_detail" in regions[0].rows[1].diagnostics
 
 
+def test_bounded_hebrew_note_skips_strictly_outside_punctuation_row() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=True),
+            _word("הערה USD", 90.0, 100.0, 41.0),
+            _word(".", 150.0, 151.0, 48.5),
+            *_wide_sparse_data(59.0, include_conversion_date=True),
+            _word("Total", 90.0, 100.0, 79.0),
+            _word("24.80", 0.0, 10.0, 79.0),
+        ),
+        width=160.0,
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 3
+    assert "bounded_hebrew_note_detail" in regions[0].rows[1].diagnostics
+    assert "ignored_outside_band_rows:1" in regions[0].diagnostics
+
+
 def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() -> None:
     page = _page(
         (
@@ -1527,7 +1549,10 @@ def test_foreign_detail_block_accepts_canonical_hebrew_wrapped_identifier() -> N
     assert "detail_continuation_rows:6" in regions[0].diagnostics
 
 
-@pytest.mark.parametrize("identifier_tail", ("כרטיסאינטרנט 8614", "אינטרנט 8614"))
+@pytest.mark.parametrize(
+    "identifier_tail",
+    ("כרטיסאינטרנט 8614", "אינטרנט 8614", "8614"),
+)
 def test_foreign_detail_block_accepts_fifth_canonical_identifier_tail(
     identifier_tail: str,
 ) -> None:
