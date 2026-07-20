@@ -286,6 +286,36 @@ def _is_safe_card_identifier_cell(row: Row, cell: Cell) -> bool:
     )
 
 
+def _is_isolated_ocr_edge_artifact_cell(
+    cell: Cell,
+    column: ColumnSpec,
+    region: TableRegion,
+) -> bool:
+    columns = region.table_schema.columns
+    header_cells = tuple(
+        candidate
+        for candidate in region.table_schema.header_cells
+        if candidate in column.source_cells
+    )
+    relevant_column_cells = tuple(
+        candidate
+        for candidate_row in region.rows
+        for candidate in _cells_for_column(candidate_row, column)
+        if _is_relevant_cell(candidate)
+    )
+    return (
+        column.role is ColumnRole.UNKNOWN
+        and column.index
+        in {min(item.index for item in columns), max(item.index for item in columns)}
+        and len(header_cells) == 1
+        and not any(char.isalnum() for char in header_cells[0].text)
+        and bool(cell.words)
+        and all(word.source == "ocr" for word in cell.words)
+        and sum(char.isalnum() for char in cell.text) <= 1
+        and relevant_column_cells == (cell,)
+    )
+
+
 def _original_currency_spilled_into_location(
     cell: Cell,
     region: TableRegion,
@@ -390,6 +420,7 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
         safe_card_identifier = (
             column.role is ColumnRole.UNKNOWN and _is_safe_card_identifier_cell(row, cell)
         )
+        safe_edge_artifact = _is_isolated_ocr_edge_artifact_cell(cell, column, region)
         safe_location_identifier = (
             column.role is ColumnRole.LOCATION
             and (
@@ -401,19 +432,28 @@ def _assignment_diagnostics(row: Row, region: TableRegion) -> tuple[str, ...]:
             value == "ambiguous_role" or value.startswith("alternative_role:")
             for value in column.diagnostics
         )
-        if relevant and column.role is ColumnRole.UNKNOWN and not safe_card_identifier:
+        if (
+            relevant
+            and column.role is ColumnRole.UNKNOWN
+            and not safe_card_identifier
+            and not safe_edge_artifact
+        ):
             diagnostics.append(f"column:{column.index}:role_unknown")
         if relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier:
             diagnostics.append(f"column:{column.index}:unexpected_location_value")
-        if relevant and has_alternative and not safe_card_identifier:
+        if relevant and has_alternative and not safe_card_identifier and not safe_edge_artifact:
             diagnostics.extend(
                 f"column:{column.index}:{value}"
                 for value in column.diagnostics
                 if value == "ambiguous_role" or value.startswith("alternative_role:")
             )
         if relevant and (
-            (column.role is ColumnRole.UNKNOWN and not safe_card_identifier)
-            or (has_alternative and not safe_card_identifier)
+            (
+                column.role is ColumnRole.UNKNOWN
+                and not safe_card_identifier
+                and not safe_edge_artifact
+            )
+            or (has_alternative and not safe_card_identifier and not safe_edge_artifact)
             or (column.role is ColumnRole.LOCATION and not safe_location_identifier)
         ):
             diagnostics.append("unresolved_relevant_cell")

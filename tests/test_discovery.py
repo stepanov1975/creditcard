@@ -159,6 +159,58 @@ def test_discover_statement_builds_deterministic_separate_currency_groups() -> N
     assert result.confidence >= 0.8
 
 
+def test_discover_statement_attaches_unique_singleton_that_exactly_closes_total() -> None:
+    first_page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪35.00", 118.0, 155.0, 80.0),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            _word("Date", 0.0, 28.0, 20.0),
+            _word("Description", 50.0, 95.0, 20.0),
+            _word("Amount", 118.0, 155.0, 20.0),
+            _word("03/02/2026", 0.0, 28.0, 40.0),
+            _word("Hotel", 50.0, 95.0, 40.0),
+            _word("₪5.00", 118.0, 155.0, 40.0),
+        ),
+    )
+
+    result = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(result)
+
+    assert len(result.groups) == 1
+    assert len(result.groups[0].table_regions) == 2
+    assert "exact_singleton_reconciliation" in result.groups[0].diagnostics
+    assert len(normalized.transactions) == 3
+    assert normalized.reconciliation.status is Status.RECONCILED
+
+
+def test_discover_statement_resolves_nearby_duplicate_summary_label() -> None:
+    page = _page(
+        1,
+        (
+            _word("Total amount", 50.0, 95.0, 0.0),
+            _word("₪30.00", 118.0, 155.0, 15.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.diagnostics == ()
+    assert len(result.rejected_total_candidates) == 1
+    assert result.rejected_total_candidates[0].diagnostics == (
+        "duplicate_group_summary_label",
+    )
+
+
 def test_discover_statement_keeps_unknown_or_multiple_total_values_ambiguous() -> None:
     page = _page(
         1,
@@ -1090,6 +1142,33 @@ def test_second_valid_total_candidate_still_blocks_a_fully_claimed_table() -> No
     assert result.rejected_total_candidates == ()
 
 
+def test_zero_total_between_proven_groups_is_audited_as_noncontributing_summary() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+            _word("Total charges", 50.0, 95.0, 100.0),
+            _word("₪0.00", 118.0, 155.0, 100.0),
+            *_table(120.0, "₪", "5.00", "7.00"),
+            _word("Total", 50.0, 95.0, 180.0),
+            _word("₪12.00", 118.0, 155.0, 180.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+    normalized = normalize_statement(result)
+
+    assert len(result.groups) == 2
+    assert result.diagnostics == ()
+    assert len(result.rejected_total_candidates) == 1
+    assert result.rejected_total_candidates[0].diagnostics == (
+        "noncontributing_zero_summary",
+    )
+    assert normalized.reconciliation.status is Status.RECONCILED
+
+
 def test_discover_statement_uses_positive_form_evidence_and_not_absence() -> None:
     form = _page(
         1,
@@ -1137,6 +1216,34 @@ def test_discover_statement_accepts_one_cell_cancellation_purpose() -> None:
 
     assert result.classification is DocumentClassification.NOT_STATEMENT
     assert result.reason_codes == ("positive_non_statement_cancellation_evidence",)
+
+
+def test_transaction_history_export_route_and_title_override_statement_like_table() -> None:
+    page = _page(
+        1,
+        (
+            _word("Transaction details", 10.0, 145.0, 5.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪0.00", 118.0, 155.0, 90.0),
+            _word(
+                "https://cards.example/Transactions/Transactions.aspx",
+                5.0,
+                155.0,
+                220.0,
+            ),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.NOT_STATEMENT
+    assert result.groups == ()
+    assert result.table_regions == ()
+    assert result.reason_codes == (
+        "positive_non_statement_transaction_history_evidence",
+    )
+    assert result.diagnostics == ()
 
 
 def test_cancellation_purpose_never_overrides_filtered_total_marker_evidence() -> None:
@@ -2510,6 +2617,42 @@ def test_consecutive_page_continuation_ignores_unknown_page_counter_column() -> 
     assert discovery.classification is DocumentClassification.STATEMENT
     assert len(discovery.groups) == 1
     assert discovery.groups[0].table_regions == discovery.table_regions
+    assert tuple(region.page_number for region in discovery.groups[0].table_regions) == (1, 2)
+    assert normalized.reconciliation.groups[0].difference == 0
+
+
+def test_consecutive_page_continuation_uses_header_anchors_when_ocr_edge_mark_distorts_bands(
+) -> None:
+    def rtl_table(y: float, first: str, second: str) -> tuple[Word, ...]:
+        return (
+            _word("Amount", 196.0, 280.0, y),
+            _word("Description", 300.0, 430.0, y),
+            _word("Date", 494.0, 532.0, y),
+            _word(f"₪{first}", 198.0, 230.0, y + 20.0),
+            _word("Market", 330.0, 380.0, y + 20.0),
+            _word("01/02/2026", 494.0, 532.0, y + 20.0),
+            _word(f"₪{second}", 198.0, 230.0, y + 40.0),
+            _word("Cafe", 345.0, 380.0, y + 40.0),
+            _word("02/02/2026", 494.0, 532.0, y + 40.0),
+        )
+
+    first_page = _page(1, rtl_table(190.0, "10.00", "20.00"), width=595.0)
+    second_page = _page(
+        2,
+        (
+            _word("|", 34.0, 35.0, 10.0),
+            *rtl_table(10.0, "5.00", "7.00"),
+            _word("Total", 310.0, 380.0, 70.0),
+            _word("₪42.00", 198.0, 230.0, 70.0),
+        ),
+        width=595.0,
+    )
+
+    discovery = discover_statement(_document(first_page, second_page))
+    normalized = normalize_statement(discovery)
+
+    assert discovery.classification is DocumentClassification.STATEMENT
+    assert len(discovery.groups) == 1
     assert tuple(region.page_number for region in discovery.groups[0].table_regions) == (1, 2)
     assert normalized.reconciliation.groups[0].difference == 0
 

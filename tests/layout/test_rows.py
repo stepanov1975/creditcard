@@ -88,6 +88,28 @@ def test_cluster_rows_deduplicates_overlapping_digital_and_ocr_words() -> None:
     assert rows[0].words == (words[0],)
 
 
+def test_cluster_rows_deduplicates_same_ocr_text_when_one_box_contains_the_other() -> None:
+    words = (
+        Word(
+            text="06/01/23",
+            bbox=(100.0, 10.0, 140.0, 20.0),
+            source="ocr",
+            confidence=0.95,
+        ),
+        Word(
+            text="06/01/23",
+            bbox=(100.0, 10.0, 160.0, 20.0),
+            source="ocr",
+            confidence=0.90,
+        ),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    assert tuple(cell.text for cell in rows[0].cells) == ("06/01/23",)
+    assert rows[0].words == (words[0],)
+
+
 def test_cluster_rows_confidence_measures_vertical_coherence_within_cluster() -> None:
     aligned = cluster_rows(
         (

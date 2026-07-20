@@ -774,6 +774,14 @@ def _has_strong_single_row_evidence(
         schema.columns,
         schema.header_cells,
     )
+    amount_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.AMOUNT
+    )
+    billed_column = (
+        explicit_billed_column
+        if explicit_billed_column is not None
+        else (amount_columns[0] if len(amount_columns) == 1 else None)
+    )
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
     )
@@ -790,11 +798,11 @@ def _has_strong_single_row_evidence(
         tuple(
             cell
             for cell in row.cells
-            if explicit_billed_column.bbox[0]
+            if billed_column.bbox[0]
             <= _center_x(cell.bbox)
-            <= explicit_billed_column.bbox[2]
+            <= billed_column.bbox[2]
         )
-        if explicit_billed_column is not None
+        if billed_column is not None
         else ()
     )
     total_amount_cells = (
@@ -824,9 +832,19 @@ def _has_strong_single_row_evidence(
         and amount_value(billed_cells[0]) == amount_value(total_amount_cells[0])
     )
     alignment = _row_alignment(row, schema)
-    return (
+    exact_ocr_singleton = (
+        exact_total_match
+        and bool(row.words)
+        and all(word.source == "ocr" for word in row.words)
+        and known_role_count >= 2
+        and _transaction_shape_count(row) >= 2
+    )
+    strong_structure = (
         known_role_count >= 4
         and (_transaction_shape_count(row) >= 3 or has_embedded_date_proof)
+    ) or exact_ocr_singleton
+    return (
+        strong_structure
         and alignment >= _minimum_row_alignment(schema)
         and (alignment >= 0.75 or exact_total_match)
     )
@@ -870,7 +888,7 @@ def _representative_vertical_band(row: Row) -> tuple[float, float]:
         return row.bbox[1], row.bbox[3]
     center = statistics.median((cell.bbox[1] + cell.bbox[3]) / 2 for cell in row.cells)
     typical_height = statistics.median(_height(cell.bbox) for cell in row.cells)
-    return center - typical_height / 2, center + typical_height / 2
+    return center - typical_height * 0.75, center + typical_height * 0.75
 
 
 def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
@@ -880,7 +898,10 @@ def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
         word
         for word in cell.words
         if word.source == "ocr"
-        and unicodedata.normalize("NFC", word.text).strip() in _ISOLATED_OCR_PUNCTUATION
+        and (
+            normalized := unicodedata.normalize("NFC", word.text).strip()
+        )
+        and all(char in _ISOLATED_OCR_PUNCTUATION for char in normalized)
     )
     if not removed:
         return cell
@@ -894,6 +915,56 @@ def _without_isolated_ocr_money_punctuation(cell: Cell) -> Cell:
             "diagnostics": tuple(
                 dict.fromkeys(
                     (*cell.diagnostics, f"ignored_isolated_ocr_punctuation:{len(removed)}")
+                )
+            ),
+        }
+    )
+
+
+def _without_separated_ocr_money_artifacts(cell: Cell) -> Cell:
+    if is_money_shaped(cell.text) or len(cell.words) < 2:
+        return cell
+    money_words = tuple(
+        word
+        for word in cell.words
+        if is_money_shaped(word.text) or is_currency_shaped(word.text)
+    )
+    decimal_money_words = tuple(
+        word
+        for word in money_words
+        if re.search(r"[.,]\d{1,2}(?!\d)", word.text) is not None
+    )
+    retained = (
+        tuple(
+            word
+            for word in money_words
+            if word is decimal_money_words[0] or is_currency_shaped(word.text)
+        )
+        if len(decimal_money_words) == 1
+        else money_words
+    )
+    removed = tuple(word for word in cell.words if word not in retained)
+    if (
+        not retained
+        or not removed
+        or any(word.source != "ocr" for word in removed)
+        or any(
+            max(kept.bbox[0], artifact.bbox[0])
+            < min(kept.bbox[2], artifact.bbox[2])
+            for kept in retained
+            for artifact in removed
+        )
+    ):
+        return cell
+    candidate = logical_text_for_evidence((), retained)
+    if not is_money_shaped(candidate):
+        return cell
+    return cell.model_copy(
+        update={
+            "text": candidate,
+            "diagnostics": tuple(
+                dict.fromkeys(
+                    (*cell.diagnostics, f"ignored_separated_ocr_money_artifacts:{len(removed)}")
                 )
             ),
         }
@@ -924,6 +995,11 @@ def _project_row_to_header_bands(
     cell_glyphs = tuple(glyph for cell in row.cells for glyph in cell.glyphs)
     row_words = (*row.words, *(word for word in cell_words if word not in row.words))
     row_glyphs = (*row.glyphs, *(glyph for glyph in cell_glyphs if glyph not in row.glyphs))
+    if not any(
+        table_left <= _center_x(item.bbox) <= table_right
+        for item in (*row_words, *row_glyphs)
+    ):
+        return row.model_copy(update={"cells": ()})
 
     def band_index(center_x: float) -> int | None:
         for candidate_index, (left, right) in enumerate(header_bands):
@@ -979,7 +1055,8 @@ def _project_row_to_header_bands(
             (*[glyph.confidence for glyph in glyphs], *[word.confidence for word in words])
         )
         cells.append(
-            _without_isolated_ocr_money_punctuation(
+            _without_separated_ocr_money_artifacts(
+                _without_isolated_ocr_money_punctuation(
                 Cell(
                     page_number=row.page_number,
                     bbox=_union_bbox(evidence_boxes),
@@ -990,6 +1067,7 @@ def _project_row_to_header_bands(
                         statistics.mean(confidence_values) if confidence_values else row.confidence
                     ),
                     diagnostics=(f"projected_header_band:{index}",),
+                )
                 )
             )
         )
@@ -1929,16 +2007,31 @@ def _bounded_overlaid_ocr_amount_artifact(
     """Return the last noise-row index for a tall OCR artifact over a proven next row."""
 
     source = rows[start_index]
+    projected_source = _project_row_to_header_bands(page_evidence, source, header)
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    source_amount_cells = (
+        tuple(
+            cell
+            for cell in projected_source.cells
+            if amount_columns[0].bbox[0]
+            <= _center_x(cell.bbox)
+            <= amount_columns[0].bbox[2]
+        )
+        if len(amount_columns) == 1
+        else ()
+    )
+    outside_amount_cells = tuple(
+        cell for cell in projected_source.cells if cell not in source_amount_cells
+    )
     if (
-        len(source.cells) != 1
-        or len(amount_columns) != 1
+        len(source_amount_cells) != 1
+        or any(char.isalnum() for cell in outside_amount_cells for char in cell.text)
         or _is_total_row(source)
         or _literal_header_role_count(source) >= 2
-        or _transaction_shape_count(source) != 0
+        or _transaction_shape_count(projected_source) != 0
         or not (
             amount_columns[0].bbox[0]
-            <= _center_x(source.cells[0].bbox)
+            <= _center_x(source_amount_cells[0].bbox)
             <= amount_columns[0].bbox[2]
         )
     ):
@@ -1964,6 +2057,77 @@ def _bounded_overlaid_ocr_amount_artifact(
         if any(char.isalnum() for cell in following_source.cells for char in cell.text):
             return None
     return None
+
+
+def _trailing_overlaid_ocr_amount_artifact(
+    source: Row,
+    previous: Row,
+    schema: TableSchema,
+) -> bool:
+    amount_columns = tuple(
+        column for column in schema.columns if column.role is ColumnRole.AMOUNT
+    )
+    artifact_text = " ".join(cell.text for cell in source.cells)
+    alphabetic_count = sum(char.isalpha() for char in artifact_text)
+    has_digit = any(char.isdigit() for char in artifact_text)
+    is_bounded_fragment = not has_digit and 1 <= alphabetic_count <= 2
+    return (
+        len(source.cells) == 1
+        and len(amount_columns) == 1
+        and bool(source.words)
+        and all(word.source == "ocr" for word in source.words)
+        and (
+            not any(char.isalnum() for char in artifact_text)
+            or is_bounded_fragment
+        )
+        and amount_columns[0].bbox[0]
+        <= _center_x(source.cells[0].bbox)
+        <= amount_columns[0].bbox[2]
+        and _vertical_overlap_ratio(source.bbox, previous.bbox) >= 0.5
+    )
+
+
+def _bounded_complementary_transaction_rows(
+    page_evidence: PageEvidence,
+    rows: Sequence[Row],
+    start_index: int,
+    header: Row,
+    schema: TableSchema,
+) -> tuple[Row, int] | None:
+    if start_index + 1 >= len(rows):
+        return None
+    source = rows[start_index]
+    following = rows[start_index + 1]
+    if (
+        source.page_number != following.page_number
+        or _is_total_row(source)
+        or _is_total_row(following)
+        or _literal_header_role_count(source) >= 2
+        or _literal_header_role_count(following) >= 2
+        or _vertical_overlap_ratio(source.bbox, following.bbox) < 0.5
+    ):
+        return None
+    combined = Row(
+        page_number=source.page_number,
+        bbox=_union_bbox((source.bbox, following.bbox)),
+        cells=(*source.cells, *following.cells),
+        glyphs=tuple(dict.fromkeys((*source.glyphs, *following.glyphs))),
+        words=tuple(dict.fromkeys((*source.words, *following.words))),
+        confidence=statistics.mean((source.confidence, following.confidence)),
+        diagnostics=tuple(
+            dict.fromkeys(
+                (*source.diagnostics, *following.diagnostics, "merged_complementary_rows")
+            )
+        ),
+    )
+    projected = _project_row_to_header_bands(page_evidence, combined, header)
+    if (
+        not _has_valid_billed_amount(projected, schema)
+        or _transaction_shape_count(projected) < 2
+        or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+    ):
+        return None
+    return projected, start_index + 1
 
 
 def _spilled_currency_fragment_before_transaction(
@@ -2142,12 +2306,16 @@ def _inherited_region_after_total(
     continuation_count = 0
     detail_continuation_count = 0
     ignored_outside_band_count = 0
+    ignored_overlaid_ocr_count = 0
     ignored_spilled_currency_count = 0
     stop_reason: str | None = None
     stop_index = len(rows)
+    consumed_through = total_index
     previous = rows[total_index]
     detail_continuation_allowed = False
     for index, row in enumerate(rows[total_index + 1 :], start=total_index + 1):
+        if index <= consumed_through:
+            continue
         if not _row_intersects_horizontal_band(row, header.bbox):
             ignored_outside_band_count += 1
             continue
@@ -2168,6 +2336,13 @@ def _inherited_region_after_total(
         projected = _project_row_to_header_bands(page_evidence, row, header)
         if not projected.cells:
             ignored_outside_band_count += 1
+            continue
+        if regular_rows and _trailing_overlaid_ocr_amount_artifact(
+            projected,
+            regular_rows[-1],
+            schema,
+        ):
+            ignored_overlaid_ocr_count += 1
             continue
         if regular_rows and _is_description_continuation(projected, previous, schema):
             accepted.append(projected)
@@ -2201,6 +2376,21 @@ def _inherited_region_after_total(
         ):
             ignored_spilled_currency_count += 1
             continue
+        if not _has_valid_billed_amount(projected, schema):
+            complementary = _bounded_complementary_transaction_rows(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+            if complementary is not None:
+                projected, consumed_through = complementary
+                accepted.append(projected)
+                regular_rows.append(projected)
+                detail_continuation_allowed = True
+                previous = projected
+                continue
         if (
             _is_points_count_ledger_row(projected)
             or _transaction_shape_count(projected) < 2
@@ -2251,6 +2441,8 @@ def _inherited_region_after_total(
         diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
     if ignored_outside_band_count:
         diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
+    if ignored_overlaid_ocr_count:
+        diagnostics.append(f"ignored_overlaid_ocr_rows:{ignored_overlaid_ocr_count}")
     if ignored_spilled_currency_count:
         diagnostics.append(
             f"ignored_spilled_currency_fragment_rows:{ignored_spilled_currency_count}"
@@ -2334,6 +2526,25 @@ def _detect_from_header(
         if not projected.cells:
             ignored_outside_band_count += 1
             continue
+        if regular_rows and _trailing_overlaid_ocr_amount_artifact(
+            projected,
+            regular_rows[-1],
+            schema,
+        ):
+            ignored_overlaid_ocr_count += 1
+            continue
+        if not _has_valid_billed_amount(projected, schema):
+            overlaid_through = _bounded_overlaid_ocr_amount_artifact(
+                page_evidence,
+                rows,
+                index,
+                header,
+                schema,
+            )
+            if overlaid_through is not None:
+                consumed_through = overlaid_through
+                ignored_overlaid_ocr_count += 1
+                continue
         if not regular_rows and _transaction_shape_count(projected) == 0:
             if ignored_preamble_count >= MAX_HEADER_PREAMBLE_ROWS:
                 stop_reason = "stopped_at_structure_change"
@@ -2464,16 +2675,19 @@ def _detect_from_header(
             ignored_spilled_currency_count += 1
             continue
         if not _has_valid_billed_amount(projected, schema):
-            overlaid_through = _bounded_overlaid_ocr_amount_artifact(
+            complementary = _bounded_complementary_transaction_rows(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
             )
-            if overlaid_through is not None:
-                consumed_through = overlaid_through
-                ignored_overlaid_ocr_count += 1
+            if complementary is not None:
+                projected, consumed_through = complementary
+                accepted.append(projected)
+                regular_rows.append(projected)
+                detail_continuation_allowed = True
+                previous = projected
                 continue
         if not regular_rows and _leading_ambiguity_is_proven_by_repetition(
             page_evidence,
@@ -2710,3 +2924,65 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
         page_evidence,
         _merged_header_bands(logical_rows(page_evidence)),
     )
+
+
+def _singleton_transaction_candidates(
+    page_evidence: PageEvidence,
+    existing_regions: Sequence[TableRegion],
+) -> tuple[TableRegion, ...]:
+    rows = _merged_header_bands(logical_rows(page_evidence))
+    existing_row_bboxes = {
+        row.bbox for region in existing_regions for row in region.rows
+    }
+    candidates: list[TableRegion] = []
+    observed_bboxes: set[BBox] = set()
+    for header_index, header in enumerate(rows):
+        schema = _candidate_schema(page_evidence, rows, header_index)
+        if not _plausible_header(schema):
+            continue
+        consumed_through = header_index
+        for index, source in enumerate(rows[header_index + 1 :], start=header_index + 1):
+            if index <= consumed_through:
+                continue
+            if _literal_header_role_count(source) >= 2:
+                break
+            if _is_total_row(source) or not _row_intersects_horizontal_band(
+                source,
+                header.bbox,
+            ):
+                continue
+            projected = _project_row_to_header_bands(page_evidence, source, header)
+            if not _has_valid_billed_amount(projected, schema):
+                complementary = _bounded_complementary_transaction_rows(
+                    page_evidence,
+                    rows,
+                    index,
+                    header,
+                    schema,
+                )
+                if complementary is not None:
+                    projected, consumed_through = complementary
+            if (
+                projected.bbox in existing_row_bboxes
+                or projected.bbox in observed_bboxes
+                or not _has_valid_billed_amount(projected, schema)
+                or _transaction_shape_count(projected) < 2
+                or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
+            ):
+                continue
+            final_schema = infer_column_roles(header.cells, projected.cells)
+            candidates.append(
+                TableRegion(
+                    page_number=header.page_number,
+                    bbox=_union_bbox((header.bbox, projected.bbox)),
+                    header=header,
+                    rows=(projected,),
+                    table_schema=final_schema,
+                    confidence=statistics.mean(
+                        (final_schema.confidence, projected.confidence)
+                    ),
+                    diagnostics=("singleton_transaction_candidate",),
+                )
+            )
+            observed_bboxes.add(projected.bbox)
+    return tuple(candidates)

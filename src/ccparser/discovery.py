@@ -7,6 +7,7 @@ import statistics
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
 
@@ -22,8 +23,10 @@ from ccparser.layout.columns import (
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row
 from ccparser.layout.regions import (
     _detect_table_regions_from_rows,
+    _literal_header_role_count,
     _merged_header_bands,
     _page_row_key,
+    _singleton_transaction_candidates,
 )
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
@@ -189,6 +192,18 @@ _CONTINUATION_HEADING_MARKERS = frozenset(
         "המשך פירוט עסקאות",
         "המשך פירוט עסקות",
     }
+)
+_TRANSACTION_HISTORY_TITLE_MARKERS = frozenset(
+    {
+        "transaction details",
+        "transactions details",
+        "פירוט עסקאות",
+        "פירוט עסקות",
+    }
+)
+_TRANSACTION_HISTORY_ROUTE_PATTERN = re.compile(
+    r"https?://\S*/transactions(?:/|\b)",
+    re.IGNORECASE,
 )
 _FUTURE_BILLING_HEADING_MARKERS = frozenset(
     {
@@ -1435,6 +1450,21 @@ def _positive_cancellation_correspondence_evidence(rows: Sequence[Row]) -> bool:
     )
 
 
+def _positive_transaction_history_export_evidence(rows: Sequence[Row]) -> bool:
+    has_title = any(
+        _contains_phrase(cell.text, _TRANSACTION_HISTORY_TITLE_MARKERS)
+        for row in rows
+        for cell in row.cells
+    )
+    has_export_route = any(
+        _TRANSACTION_HISTORY_ROUTE_PATTERN.search(value) is not None
+        for row in rows
+        for cell in row.cells
+        for value in (cell.text, *(word.text for word in cell.words))
+    )
+    return has_title and has_export_route
+
+
 def _deduplicated(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
@@ -1499,11 +1529,45 @@ def _schemas_compatible(first: TableRegion, second: TableRegion) -> bool:
 
     first_geometry = core_geometry(first_known)
     second_geometry = core_geometry(second_known)
-    return bool(first_geometry) and all(
+    geometry_compatible = bool(first_geometry) and all(
         abs(first_x0 - second_x0) <= 0.08 and abs(first_x1 - second_x1) <= 0.08
         for (first_x0, first_x1), (second_x0, second_x1) in zip(
             first_geometry,
             second_geometry,
+            strict=True,
+        )
+    )
+    if geometry_compatible:
+        return True
+
+    def semantic_header_geometry(
+        region: TableRegion,
+        columns: Sequence[ColumnSpec],
+    ) -> tuple[float, ...]:
+        anchors: list[Cell] = []
+        for column in columns:
+            associated = tuple(
+                cell
+                for cell in region.table_schema.header_cells
+                if cell in column.source_cells
+            )
+            if len(associated) != 1:
+                return ()
+            anchors.append(associated[0])
+        left = min(anchor.bbox[0] for anchor in anchors)
+        right = max(anchor.bbox[2] for anchor in anchors)
+        width = right - left
+        if width <= 0:
+            return ()
+        return tuple((_center_x(anchor.bbox) - left) / width for anchor in anchors)
+
+    first_header_geometry = semantic_header_geometry(first, first_known)
+    second_header_geometry = semantic_header_geometry(second, second_known)
+    return bool(first_header_geometry) and all(
+        abs(first_anchor - second_anchor) <= 0.05
+        for first_anchor, second_anchor in zip(
+            first_header_geometry,
+            second_header_geometry,
             strict=True,
         )
     )
@@ -1613,6 +1677,205 @@ def _associate_regions(
     return (), ("ambiguous_group_region_association",)
 
 
+def _region_billed_amounts(
+    region: TableRegion,
+    currency: str,
+) -> tuple[Decimal, ...] | None:
+    billed_column = proven_billed_amount_column(region.table_schema, region.rows)
+    if billed_column is None:
+        return None
+    amounts: list[Decimal] = []
+    for row in region.rows:
+        if any("continuation" in diagnostic for diagnostic in row.diagnostics):
+            continue
+        cells = tuple(
+            cell
+            for cell in row.cells
+            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
+        )
+        if len(cells) != 1:
+            return None
+        parsed = parse_amount(cells[0].text, currency_hint=currency)
+        if parsed.amount is None or parsed.currency != currency:
+            return None
+        if parsed.amount:
+            amounts.append(parsed.amount)
+    return tuple(amounts)
+
+
+def _attach_exact_singleton_regions(
+    groups: Sequence[StatementGroupDiscovery],
+    candidates: Sequence[TableRegion],
+) -> tuple[tuple[StatementGroupDiscovery, ...], tuple[TableRegion, ...]]:
+    def compatible(existing: TableRegion, candidate: TableRegion) -> bool:
+        if _schemas_compatible(existing, candidate):
+            return True
+        anchor_pairs = []
+        for role in (ColumnRole.AMOUNT, ColumnRole.DATE):
+            existing_columns = tuple(
+                column for column in existing.table_schema.columns if column.role is role
+            )
+            candidate_columns = tuple(
+                column for column in candidate.table_schema.columns if column.role is role
+            )
+            if len(existing_columns) != 1 or len(candidate_columns) != 1:
+                return False
+            anchor_pairs.append((existing_columns[0], candidate_columns[0]))
+        return all(
+            abs(
+                _center_x(existing_column.bbox) / max(existing.header.bbox[2], 1.0)
+                - _center_x(candidate_column.bbox) / max(candidate.header.bbox[2], 1.0)
+            )
+            <= 0.1
+            for existing_column, candidate_column in anchor_pairs
+        )
+
+    matches: list[tuple[int, int]] = []
+    for group_index, group in enumerate(groups):
+        total = parse_amount(
+            group.printed_total.amount_text,
+            currency_hint=group.printed_total.currency,
+        )
+        if total.amount is None or total.currency != group.printed_total.currency:
+            continue
+        existing_amount_groups = tuple(
+            _region_billed_amounts(region, group.printed_total.currency)
+            for region in group.table_regions
+        )
+        if any(amounts is None for amounts in existing_amount_groups):
+            continue
+        calculated = sum(
+            (
+                amount
+                for amounts in existing_amount_groups
+                if amounts is not None
+                for amount in amounts
+            ),
+            Decimal("0"),
+        )
+        missing = total.amount - calculated
+        for candidate_index, candidate in enumerate(candidates):
+            if not any(compatible(region, candidate) for region in group.table_regions):
+                continue
+            candidate_amounts = _region_billed_amounts(
+                candidate,
+                group.printed_total.currency,
+            )
+            if (
+                candidate_amounts is not None
+                and len(candidate_amounts) == 1
+                and candidate_amounts[0] == missing
+            ):
+                matches.append((group_index, candidate_index))
+    unique_matches = tuple(
+        match
+        for match in matches
+        if sum(other[0] == match[0] for other in matches) == 1
+        and sum(other[1] == match[1] for other in matches) == 1
+    )
+    attached: list[TableRegion] = []
+    updated = list(groups)
+    for group_index, candidate_index in unique_matches:
+        group = updated[group_index]
+        candidate = candidates[candidate_index]
+        attached.append(candidate)
+        updated[group_index] = group.model_copy(
+            update={
+                "table_regions": (*group.table_regions, candidate),
+                "confidence": statistics.mean((group.confidence, candidate.confidence)),
+                "diagnostics": _deduplicated(
+                    (*group.diagnostics, "exact_singleton_reconciliation")
+                ),
+            }
+        )
+    return tuple(updated), tuple(attached)
+
+
+def _is_duplicate_group_summary_label(
+    row: Row,
+    groups: Sequence[StatementGroupDiscovery],
+    page_rows: Sequence[Row],
+    page_height: float,
+) -> bool:
+    same_page_regions = tuple(
+        region
+        for group in groups
+        for region in group.table_regions
+        if region.page_number == row.page_number
+    )
+    if not same_page_regions or any(
+        region.bbox[1] <= row.bbox[3] for region in same_page_regions
+    ):
+        return False
+    group_totals = {
+        parsed.amount
+        for group in groups
+        if (
+            parsed := parse_amount(
+                group.printed_total.amount_text,
+                currency_hint=group.printed_total.currency,
+            )
+        ).amount
+        is not None
+    }
+    if not group_totals:
+        return False
+    candidates: set[Decimal] = set()
+    for following in page_rows:
+        if following.page_number != row.page_number or following.bbox[1] <= row.bbox[3]:
+            continue
+        if following.bbox[1] - row.bbox[3] > page_height * 0.2:
+            break
+        if _literal_header_role_count(following) >= 2:
+            break
+        for cell in following.cells:
+            for value in (cell.text, *(word.text for word in cell.words)):
+                if not (
+                    currencies_in_text(value)
+                    or re.search(r"\d[.,]\d{2}(?!\d)", value)
+                ):
+                    continue
+                parsed_values = {
+                    parsed.amount
+                    for group in groups
+                    if (
+                        parsed := parse_amount(
+                            value,
+                            currency_hint=group.printed_total.currency,
+                        )
+                    ).amount
+                    is not None
+                    and parsed.currency == group.printed_total.currency
+                    and parsed.amount in group_totals
+                }
+                candidates.update(parsed_values)
+    return len(candidates) == 1 and next(iter(candidates)) in group_totals
+
+
+def _is_noncontributing_zero_summary(
+    row: Row,
+    total: DiscoveredPrintedTotal,
+    groups: Sequence[StatementGroupDiscovery],
+) -> bool:
+    parsed = parse_amount(total.amount_text, currency_hint=total.currency)
+    if parsed.amount != 0 or parsed.currency != total.currency:
+        return False
+    row_key = _reading_key_bbox(row.page_number, row.bbox)
+    matching_regions = tuple(
+        region
+        for group in groups
+        if group.printed_total.currency == total.currency
+        for region in group.table_regions
+    )
+    return any(
+        _reading_key_bbox(region.page_number, region.bbox) < row_key
+        for region in matching_regions
+    ) and any(
+        _reading_key_bbox(region.page_number, region.bbox) > row_key
+        for region in matching_regions
+    )
+
+
 def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     """Discover statement groups and classify only from positive semantic evidence."""
 
@@ -1679,6 +1942,15 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         region for region in regions if _is_future_billing_region(region, page_rows)
     )
     regions = tuple(region for region in regions if region not in future_regions)
+    singleton_candidates = tuple(
+        candidate
+        for page in ordered_pages
+        for candidate in _singleton_transaction_candidates(
+            page,
+            tuple(region for region in regions if region.page_number == page.page_number),
+        )
+        if not _is_future_billing_region(candidate, page_rows)
+    )
     total_marker_rows = tuple(
         row
         for row in observed_total_marker_rows
@@ -1700,6 +1972,9 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     groups: list[StatementGroupDiscovery] = []
     diagnostics: list[str] = []
     rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
+    unassociated_total_rows: list[
+        tuple[Row, DiscoveredPrintedTotal, tuple[str, ...]]
+    ] = []
     standalone_total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     total_candidates: list[tuple[Row, DiscoveredPrintedTotal]] = []
     for total_row in total_marker_rows:
@@ -1743,8 +2018,8 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
             page_rows=logical_rows_by_page,
         )
         previous_total_row = total_row
-        diagnostics.extend(association_diagnostics)
         if not associated:
+            unassociated_total_rows.append((total_row, total, association_diagnostics))
             continue
         group_id = f"group-{len(groups) + 1:04d}"
         confidence = statistics.mean(
@@ -1784,16 +2059,75 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
                 )
             )
 
+    groups_tuple, attached_singletons = _attach_exact_singleton_regions(
+        groups,
+        singleton_candidates,
+    )
+    groups = list(groups_tuple)
+    if attached_singletons:
+        regions = tuple(
+            sorted(
+                (*regions, *attached_singletons),
+                key=lambda region: _reading_key_bbox(region.page_number, region.bbox),
+            )
+        )
+
+    for total_row, total, association_diagnostics in unassociated_total_rows:
+        if association_diagnostics == ("total_without_table",) and (
+            _is_noncontributing_zero_summary(total_row, total, groups)
+        ):
+            rejected_total_rows.append(
+                (
+                    total_row,
+                    RejectedTotalCandidate(
+                        evidence=tuple(_evidence(cell) for cell in total_row.cells),
+                        confidence=statistics.mean(cell.confidence for cell in total_row.cells),
+                        diagnostics=("noncontributing_zero_summary",),
+                    ),
+                )
+            )
+            continue
+        diagnostics.extend(association_diagnostics)
+    rejected_total_rows.sort(
+        key=lambda item: _reading_key_bbox(item[0].page_number, item[0].bbox)
+    )
+
+    resolved_rejected_total_rows: list[tuple[Row, RejectedTotalCandidate]] = []
+    for rejected_row, candidate in rejected_total_rows:
+        if candidate.diagnostics == ("noncontributing_zero_summary",):
+            pass
+        elif (
+            "ambiguous_total_value" in candidate.diagnostics
+            and _is_duplicate_group_summary_label(
+                rejected_row,
+                groups,
+                logical_rows_by_page[rejected_row.page_number],
+                page_heights[rejected_row.page_number],
+            )
+        ):
+            candidate = candidate.model_copy(
+                update={"diagnostics": ("duplicate_group_summary_label",)}
+            )
+        else:
+            diagnostics.extend(candidate.diagnostics)
+        resolved_rejected_total_rows.append((rejected_row, candidate))
+    rejected_total_rows = resolved_rejected_total_rows
+
     claimed_regions = tuple(region for group in groups for region in group.table_regions)
     if any(not any(region is claimed for claimed in claimed_regions) for region in regions):
         diagnostics.append("unclaimed_table_region")
 
     metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
     date_year_context = _date_year_context(page_rows, regions, evidence.metadata)
-    diagnostics.extend(
-        diagnostic for _, candidate in rejected_total_rows for diagnostic in candidate.diagnostics
-    )
-    if groups:
+    if _positive_transaction_history_export_evidence(page_rows):
+        classification = DocumentClassification.NOT_STATEMENT
+        confidence = 0.98
+        reason_codes = ("positive_non_statement_transaction_history_evidence",)
+        groups = []
+        regions = ()
+        rejected_total_rows = []
+        diagnostics = []
+    elif groups:
         classification = DocumentClassification.STATEMENT
         confidence = statistics.mean(group.confidence for group in groups)
         reason_codes = (

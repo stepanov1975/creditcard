@@ -132,6 +132,29 @@ def test_audit_directory_accepts_positive_cancellation_correspondence_reason(
     assert report.decisions[0].reason_codes == ("positive_non_statement_cancellation_evidence",)
 
 
+def test_audit_directory_accepts_positive_transaction_history_reason(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    _write(input_dir / "history.pdf", b"history")
+    history = _discovery(
+        DocumentClassification.NOT_STATEMENT,
+        0.98,
+        "positive_non_statement_transaction_history_evidence",
+    )
+    extractor, classifier = _dependencies({b"history": history})
+
+    report = audit_directory(
+        input_dir,
+        tmp_path / "quarantine",
+        extractor=extractor,
+        classifier=classifier,
+    )
+
+    assert report.decisions[0].action is AuditAction.QUARANTINE
+    assert report.decisions[0].reason_codes == (
+        "positive_non_statement_transaction_history_evidence",
+    )
+
+
 def test_audit_directory_reviews_low_confidence_nonstatement_and_corrupt_pdf(
     tmp_path: Path,
 ) -> None:

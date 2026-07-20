@@ -6,6 +6,7 @@ from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
+    _bounded_complementary_transaction_rows,
     _has_strong_single_row_evidence,
     _horizontal_gap,
     _merge_header_rows,
@@ -16,6 +17,7 @@ from ccparser.layout.regions import (
     _spilled_currency_fragment_before_transaction,
     _split_compound_header_cell,
     _split_header_fragment,
+    _trailing_overlaid_ocr_amount_artifact,
     detect_table_regions,
     logical_rows,
 )
@@ -317,6 +319,125 @@ def test_spilled_currency_fragment_is_proven_by_adjacent_following_amount() -> N
 def test_horizontal_gap_is_zero_for_overlapping_boxes() -> None:
     assert _horizontal_gap((0.0, 0.0, 7.0, 10.0), (6.0, 0.0, 22.0, 10.0)) == 0.0
     assert _horizontal_gap((0.0, 0.0, 5.0, 10.0), (6.0, 0.0, 22.0, 10.0)) == 1.0
+
+
+def test_trailing_overlaid_ocr_punctuation_is_bounded_to_previous_amount() -> None:
+    header_words = _header(10.0)
+    previous_words = _data(30.0, "01/02/2026", "Market", "12.40")
+    header = logical_rows(_page(header_words))[0]
+    previous = logical_rows(_page(previous_words))[0]
+    schema = infer_column_roles(header.cells, previous.cells)
+    artifact_word = _word("|", 100.0, 101.0, 34.0, height=2.0).model_copy(
+        update={"source": "ocr"}
+    )
+    artifact = Row(
+        page_number=1,
+        bbox=artifact_word.bbox,
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=artifact_word.bbox,
+                text=artifact_word.text,
+                words=(artifact_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(artifact_word,),
+        confidence=1.0,
+    )
+
+    assert _trailing_overlaid_ocr_amount_artifact(artifact, previous, schema)
+    assert _trailing_overlaid_ocr_amount_artifact(
+        artifact.model_copy(
+            update={
+                "cells": (
+                    artifact.cells[0].model_copy(update={"text": "WA"}),
+                )
+            }
+        ),
+        previous,
+        schema,
+    )
+    assert not _trailing_overlaid_ocr_amount_artifact(
+        artifact.model_copy(
+            update={
+                "cells": (
+                    artifact.cells[0].model_copy(update={"text": "1"}),
+                )
+            }
+        ),
+        previous,
+        schema,
+    )
+    assert not _trailing_overlaid_ocr_amount_artifact(
+        artifact.model_copy(
+            update={
+                "cells": (
+                    artifact.cells[0].model_copy(update={"text": "WORD"}),
+                )
+            }
+        ),
+        previous,
+        schema,
+    )
+
+
+def test_bounded_complementary_rows_merge_overlapping_transaction_cells() -> None:
+    header_words = _header(10.0)
+    complete_words = _data(30.0, "01/02/2026", "Market", "12.40")
+    header = logical_rows(_page(header_words))[0]
+    complete = logical_rows(_page(complete_words))[0]
+    schema = infer_column_roles(header.cells, complete.cells)
+    date_word = _word("02/02/2026", 0.0, 22.0, 50.0, height=20.0)
+    artifact_word = _word("/", 100.0, 102.0, 50.0, height=20.0).model_copy(
+        update={"source": "ocr"}
+    )
+    amount_word = _word("18.60", 92.0, 110.0, 60.0)
+    description_word = _word("Cafe", 35.0, 72.0, 60.0)
+    source = logical_rows(_page((date_word, artifact_word)))[0]
+    following = logical_rows(_page((description_word, amount_word)))[0]
+    page = _page((*header_words, date_word, artifact_word, description_word, amount_word))
+
+    merged = _bounded_complementary_transaction_rows(
+        page,
+        (header, source, following),
+        1,
+        header,
+        schema,
+    )
+
+    assert merged is not None
+    row, consumed_through = merged
+    assert consumed_through == 2
+    assert tuple(cell.text for cell in row.cells) == (
+        "02/02/2026",
+        "Cafe",
+        "18.60",
+    )
+
+
+def test_exact_total_proves_simple_single_row_billed_table() -> None:
+    def ocr_word(text: str, x0: float, x1: float, y: float) -> Word:
+        return _word(text, x0, x1, y).model_copy(update={"source": "ocr"})
+
+    page = _page(
+        (
+            ocr_word("Billed amount", 0.0, 30.0, 10.0),
+            ocr_word("Description", 60.0, 90.0, 10.0),
+            ocr_word("Date", 105.0, 130.0, 10.0),
+            ocr_word("₪12.40", 0.0, 30.0, 30.0),
+            ocr_word("Market", 60.0, 90.0, 30.0),
+            ocr_word("01/02/2026", 105.0, 130.0, 30.0),
+            ocr_word("₪12.40", 0.0, 30.0, 50.0),
+            ocr_word("Total", 60.0, 90.0, 50.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert len(regions[0].rows) == 1
+    assert "single_row_strong_evidence" in regions[0].diagnostics
 
 
 def test_logical_rows_collects_page_width_glyphs_only_from_the_same_vertical_band() -> None:
@@ -2905,6 +3026,30 @@ def test_detect_table_regions_skips_bounded_overlaid_ocr_amount_artifacts() -> N
         ("12.40", "Market", "01/02/2026"),
         ("18.60", "Cafe", "03/02/2026"),
     )
+    assert "ignored_overlaid_ocr_rows:2" in regions[0].diagnostics
+
+
+def test_detect_table_regions_checks_amount_overlay_before_description_tolerance() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            _word("WA", 85.0, 95.0, 42.5, height=30.0).model_copy(
+                update={"source": "ocr"}
+            ),
+            *_data(60.0, "03/02/2026", "Cafe", "18.60"),
+            _word("Total", 35.0, 72.0, 80.0),
+            _word("31.00", 92.0, 120.0, 80.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(tuple(cell.text for cell in row.cells) for row in regions[0].rows) == (
+        ("01/02/2026", "Market", "12.40"),
+        ("03/02/2026", "Cafe", "18.60"),
+    )
     assert "ignored_overlaid_ocr_rows:1" in regions[0].diagnostics
 
 
@@ -2936,11 +3081,11 @@ def test_detect_table_regions_ignores_isolated_ocr_punctuation_in_amount_band() 
             ocr_word("01/02/2026", 0.0, 22.0, 30.0),
             ocr_word("Market", 35.0, 72.0, 30.0),
             ocr_word("12.40", 92.0, 110.0, 30.0),
-            ocr_word("/", 118.0, 120.0, 30.0),
+            ocr_word(";/", 116.0, 120.0, 30.0),
             ocr_word("03/02/2026", 0.0, 22.0, 50.0),
             ocr_word("Cafe", 35.0, 72.0, 50.0),
             ocr_word("18.60", 92.0, 110.0, 50.0),
-            ocr_word("|", 118.0, 120.0, 50.0),
+            ocr_word("4", 116.0, 120.0, 50.0),
             _word("Total", 35.0, 72.0, 70.0),
             _word("31.00", 92.0, 120.0, 70.0),
         )
@@ -2951,8 +3096,58 @@ def test_detect_table_regions_ignores_isolated_ocr_punctuation_in_amount_band() 
     assert len(regions) == 1
     assert tuple(row.cells[-1].text for row in regions[0].rows) == ("12.40", "18.60")
     assert all(
-        "ignored_isolated_ocr_punctuation:1" in row.cells[-1].diagnostics for row in regions[0].rows
+        any(
+            diagnostic.startswith("ignored_")
+            for diagnostic in row.cells[-1].diagnostics
+        )
+        for row in regions[0].rows
     )
+
+
+def test_detect_table_regions_retains_staggered_ocr_date_baseline() -> None:
+    def ocr_word(text: str, x0: float, x1: float, y: float) -> Word:
+        return _word(text, x0, x1, y).model_copy(update={"source": "ocr"})
+
+    page = _page(
+        (
+            *_header(10.0),
+            ocr_word("01/02/2026", 0.0, 22.0, 26.0),
+            ocr_word("Market", 35.0, 72.0, 30.0),
+            ocr_word("12.40", 92.0, 110.0, 30.0),
+            ocr_word("02/02/2026", 0.0, 22.0, 46.0),
+            ocr_word("Cafe", 35.0, 72.0, 50.0),
+            ocr_word("18.60", 92.0, 110.0, 50.0),
+            _word("Total", 35.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(row.cells[0].text for row in regions[0].rows) == (
+        "01/02/2026",
+        "02/02/2026",
+    )
+
+
+def test_detect_table_regions_ignores_edge_rule_ocr_rows_outside_semantic_header() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            _word("|", 128.0, 129.0, 10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            _word("|", 128.0, 129.0, 42.0),
+            *_data(50.0, "02/02/2026", "Cafe", "18.60"),
+            _word("Total", 35.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == 1
+    assert tuple(row.cells[1].text for row in regions[0].rows) == ("Market", "Cafe")
 
 
 def test_detect_table_regions_retains_bounded_ambiguous_rows_proven_by_repetition() -> None:

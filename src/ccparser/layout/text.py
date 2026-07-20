@@ -208,6 +208,16 @@ def _intersection_over_union(first: BBox, second: BBox) -> float:
     return intersection / union if union else 0.0
 
 
+def _intersection_over_smaller(first: BBox, second: BBox) -> float:
+    x0 = max(first[0], second[0])
+    y0 = max(first[1], second[1])
+    x1 = min(first[2], second[2])
+    y1 = min(first[3], second[3])
+    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    smaller = min(_width(first) * _height(first), _width(second) * _height(second))
+    return intersection / smaller if smaller else 0.0
+
+
 def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
     selected: list[Word] = []
     ordered = sorted(
@@ -222,7 +232,10 @@ def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
     for word in ordered:
         if any(
             _normalized(existing.text) == _normalized(word.text)
-            and _intersection_over_union(existing.bbox, word.bbox) >= 0.7
+            and (
+                _intersection_over_union(existing.bbox, word.bbox) >= 0.7
+                or _intersection_over_smaller(existing.bbox, word.bbox) >= 0.9
+            )
             for existing in selected
         ):
             continue

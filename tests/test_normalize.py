@@ -1488,6 +1488,41 @@ def test_normalize_statement_accepts_exact_card_identifier_in_unknown_column() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_ignores_isolated_short_ocr_artifact_in_punctuation_edge_column(
+) -> None:
+    artifact_word = _word("2", 0.0, 40.0, 30.0, source="ocr")
+    artifact_cell = _cell("2", 0, 30.0).model_copy(update={"words": (artifact_word,)})
+    region = _region(
+        (
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.DATE,
+        ),
+        (
+            _row(
+                artifact_cell,
+                _cell("10.00", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("01/02/2026", 3, 30.0),
+            ),
+            _row(
+                _cell("20.00", 1, 50.0),
+                _cell("Cafe", 2, 50.0),
+                _cell("02/02/2026", 3, 50.0),
+            ),
+        ),
+        headers=("|", "Amount", "Description", "Date"),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert len(result.transactions) == 2
+    assert result.row_results[0].diagnostics == ()
+    assert result.diagnostics == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_rejects_visually_reversed_card_identifier_marker() -> None:
     region = _region(
         (

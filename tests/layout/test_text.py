@@ -216,6 +216,12 @@ def test_logical_text_falls_back_to_deduplicated_positioned_words_and_normalizes
             confidence=1.0,
         ),
         Word(
+            text="12.50",
+            bbox=(15.0, 10.0, 50.0, 20.0),
+            source="ocr",
+            confidence=0.88,
+        ),
+        Word(
             text="שָׁלוֹם",
             bbox=(60.0, 10.0, 90.0, 20.0),
             source="ocr",
