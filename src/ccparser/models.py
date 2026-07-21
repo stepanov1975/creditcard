@@ -89,6 +89,93 @@ class EvidenceReference(BaseModel):
     raw_text: str
 
 
+class ExtractedDecimal(BaseModel):
+    """One finite decimal value with the exact evidence that proves it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    value: FiniteDecimal
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+
+    @field_serializer("value")
+    def serialize_value(self, value: Decimal) -> str:
+        return _decimal_string(value)
+
+
+class ExtractedMoney(BaseModel):
+    """One printed or exactly derived monetary value with provenance."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    amount: FiniteDecimal
+    currency: str
+    evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
+    derivation: Literal["printed", "gross_fee_minus_discount"] = "printed"
+
+    @field_serializer("amount")
+    def serialize_amount(self, value: Decimal) -> str:
+        return _decimal_string(value)
+
+
+class ForeignExchangeDetails(BaseModel):
+    """Structured rate and fee details for a foreign-currency transaction."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    exchange_rate: ExtractedDecimal | None = None
+    fee_percentage: ExtractedDecimal | None = None
+    gross_fee: ExtractedMoney | None = None
+    fee_discount: ExtractedMoney | None = None
+    net_fee: ExtractedMoney | None = None
+
+    @model_validator(mode="after")
+    def validate_details(self) -> Self:
+        if all(
+            value is None
+            for value in (
+                self.exchange_rate,
+                self.fee_percentage,
+                self.gross_fee,
+                self.fee_discount,
+                self.net_fee,
+            )
+        ):
+            raise ValueError("at least one FX value is required")
+        if self.exchange_rate is not None and self.exchange_rate.value <= 0:
+            raise ValueError("exchange rate must be positive")
+        if self.fee_percentage is not None and self.fee_percentage.value < 0:
+            raise ValueError("fee percentage cannot be negative")
+        if self.gross_fee is not None and self.gross_fee.derivation != "printed":
+            raise ValueError("gross fee must be printed")
+        if self.fee_discount is not None and self.fee_discount.derivation != "printed":
+            raise ValueError("fee discount must be printed")
+        if self.net_fee is not None and self.net_fee.derivation == "gross_fee_minus_discount":
+            if self.gross_fee is None or self.fee_discount is None:
+                raise ValueError("derived net fee requires gross fee and discount")
+            if (
+                len(
+                    {
+                        self.gross_fee.currency,
+                        self.fee_discount.currency,
+                        self.net_fee.currency,
+                    }
+                )
+                != 1
+            ):
+                raise ValueError("derived fee currencies must match")
+            expected = self.gross_fee.amount - self.fee_discount.amount
+            expected_evidence = tuple(
+                dict.fromkeys((*self.gross_fee.evidence, *self.fee_discount.evidence))
+            )
+            if (
+                expected < 0
+                or self.net_fee.amount != expected
+                or self.net_fee.evidence != expected_evidence
+            ):
+                raise ValueError("net fee must equal exact gross fee minus discount")
+        return self
+
+
 class Transaction(BaseModel):
     """A transaction contributing to one or more candidate statement groups."""
 
@@ -109,6 +196,7 @@ class Transaction(BaseModel):
     original_currency: str | None = None
     installment_current: int | None = Field(default=None, gt=0)
     installment_total: int | None = Field(default=None, gt=0)
+    foreign_exchange: ForeignExchangeDetails | None = None
     evidence: tuple[EvidenceReference, ...] = ()
 
     @field_serializer("billed_amount", "original_amount")

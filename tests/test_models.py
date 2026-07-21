@@ -5,6 +5,16 @@ from decimal import Decimal, localcontext
 import pytest
 from pydantic import ValidationError
 
+from ccparser.models import EvidenceReference
+
+
+def _fx_evidence(raw_text: str, y: float) -> EvidenceReference:
+    return EvidenceReference(
+        page_number=1,
+        bbox=(10.0, y, 50.0, y + 10.0),
+        raw_text=raw_text,
+    )
+
 
 def test_transaction_enforces_charge_and_credit_sign_conventions() -> None:
     try:
@@ -181,6 +191,80 @@ def test_existing_transaction_constructor_remains_valid_after_extension() -> Non
     assert transaction.category is TransactionCategory.UNKNOWN
     assert transaction.description is None
     assert transaction.evidence == ()
+    assert transaction.foreign_exchange is None
+
+
+def test_transaction_preserves_evidence_backed_foreign_exchange_details() -> None:
+    from ccparser.models import (
+        ExtractedDecimal,
+        ExtractedMoney,
+        ForeignExchangeDetails,
+        Transaction,
+        TransactionKind,
+    )
+
+    rate_evidence = _fx_evidence("exchange rate 2.9430", 10.0)
+    fee_evidence = _fx_evidence("fee ILS 0.88", 20.0)
+    discount_evidence = _fx_evidence("discount ILS 0.59", 30.0)
+    transaction = Transaction(
+        transaction_id="fx-1",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("29.72"),
+        billing_currency="ILS",
+        original_amount=Decimal("10.00"),
+        original_currency="USD",
+        reconciliation_group_ids=("group-1",),
+        foreign_exchange=ForeignExchangeDetails(
+            exchange_rate=ExtractedDecimal(value=Decimal("2.9430"), evidence=(rate_evidence,)),
+            fee_percentage=ExtractedDecimal(value=Decimal("3.00"), evidence=(fee_evidence,)),
+            gross_fee=ExtractedMoney(
+                amount=Decimal("0.88"), currency="ILS", evidence=(fee_evidence,)
+            ),
+            fee_discount=ExtractedMoney(
+                amount=Decimal("0.59"), currency="ILS", evidence=(discount_evidence,)
+            ),
+            net_fee=ExtractedMoney(
+                amount=Decimal("0.29"),
+                currency="ILS",
+                evidence=(fee_evidence, discount_evidence),
+                derivation="gross_fee_minus_discount",
+            ),
+        ),
+    )
+
+    payload = transaction.model_dump(mode="json")["foreign_exchange"]
+    assert payload is not None
+    assert payload["exchange_rate"]["value"] == "2.943"
+    assert payload["fee_percentage"]["value"] == "3"
+    assert payload["gross_fee"]["amount"] == "0.88"
+    assert payload["net_fee"]["amount"] == "0.29"
+    assert payload["net_fee"]["derivation"] == "gross_fee_minus_discount"
+
+
+def test_foreign_exchange_requires_evidence_and_exact_derivation() -> None:
+    from ccparser.models import ExtractedDecimal, ExtractedMoney, ForeignExchangeDetails
+
+    fee_evidence = _fx_evidence("fee ILS 0.88", 20.0)
+    discount_evidence = _fx_evidence("discount ILS 0.59", 30.0)
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        ExtractedDecimal(value=Decimal("2.9430"), evidence=())
+    with pytest.raises(ValueError, match="at least one FX value"):
+        ForeignExchangeDetails()
+    with pytest.raises(ValueError, match="exact gross fee minus discount"):
+        ForeignExchangeDetails(
+            gross_fee=ExtractedMoney(
+                amount=Decimal("0.88"), currency="ILS", evidence=(fee_evidence,)
+            ),
+            fee_discount=ExtractedMoney(
+                amount=Decimal("0.59"), currency="ILS", evidence=(discount_evidence,)
+            ),
+            net_fee=ExtractedMoney(
+                amount=Decimal("0.30"),
+                currency="ILS",
+                evidence=(fee_evidence, discount_evidence),
+                derivation="gross_fee_minus_discount",
+            ),
+        )
 
 
 @pytest.mark.parametrize("nonfinite", ("NaN", "Infinity", "-Infinity"))
@@ -232,6 +316,21 @@ def test_every_financial_model_rejects_nonfinite_decimals(nonfinite: str) -> Non
         arguments[field_name] = value
         with pytest.raises(ValidationError, match="finite"):
             ReconciliationGroup(**arguments)
+
+
+@pytest.mark.parametrize("nonfinite", ("NaN", "Infinity", "-Infinity"))
+def test_foreign_exchange_models_reject_nonfinite_decimals(nonfinite: str) -> None:
+    from ccparser.models import ExtractedDecimal, ExtractedMoney
+
+    evidence = _fx_evidence("synthetic FX value", 10.0)
+    with pytest.raises(ValidationError, match="finite"):
+        ExtractedDecimal(value=Decimal(nonfinite), evidence=(evidence,))
+    with pytest.raises(ValidationError, match="finite"):
+        ExtractedMoney(
+            amount=Decimal(nonfinite),
+            currency="ILS",
+            evidence=(evidence,),
+        )
 
 
 @pytest.mark.parametrize("coordinate", (float("nan"), float("inf"), float("-inf")))
