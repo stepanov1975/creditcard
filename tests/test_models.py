@@ -63,6 +63,78 @@ def test_date_year_context_models_reject_same_invalid_mapping(
         )
 
 
+@pytest.mark.parametrize(
+    ("context_type", "mapping", "expected_message"),
+    (
+        (
+            DiscoveredDateYearContext,
+            ((26, 2026), (26, 1926)),
+            "date suffix-year mappings must have unique suffixes",
+        ),
+        (
+            DiscoveryDateYearContextSummary,
+            ((26, 2026), (26, 1926)),
+            "date suffix-year mappings must be sorted",
+        ),
+        (
+            DiscoveredDateYearContext,
+            ((26, 2026), (-1, 1999)),
+            "date suffix must be between 0 and 99",
+        ),
+        (
+            DiscoveryDateYearContextSummary,
+            ((26, 2026), (-1, 1999)),
+            "date suffix-year mappings must be sorted",
+        ),
+        (
+            DiscoveredDateYearContext,
+            ((26, 2026), (25, 1825)),
+            "mapped year must be between 1900 and 2100",
+        ),
+        (
+            DiscoveryDateYearContextSummary,
+            ((26, 2026), (25, 1825)),
+            "date suffix-year mappings must be sorted",
+        ),
+        (
+            DiscoveredDateYearContext,
+            ((26, 2026), (25, 2024)),
+            "mapped year must match its two-digit suffix",
+        ),
+        (
+            DiscoveryDateYearContextSummary,
+            ((26, 2026), (25, 2024)),
+            "date suffix-year mappings must be sorted",
+        ),
+    ),
+    ids=(
+        "discovery_duplicate_before_unsorted",
+        "summary_unsorted_before_duplicate",
+        "discovery_suffix_bounds_before_unsorted",
+        "summary_unsorted_before_suffix_bounds",
+        "discovery_year_bounds_before_unsorted",
+        "summary_unsorted_before_year_bounds",
+        "discovery_suffix_match_before_unsorted",
+        "summary_unsorted_before_suffix_match",
+    ),
+)
+def test_date_year_context_models_preserve_legacy_composite_invalidity_priority(
+    context_type: type[DiscoveredDateYearContext] | type[DiscoveryDateYearContextSummary],
+    mapping: tuple[tuple[int, int], ...],
+    expected_message: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        context_type(
+            year_by_suffix=mapping,
+            style=DateTokenStyle.DAY_FIRST_SLASH,
+            evidence=(_fx_evidence("Cycle closes 03/01/2026", 10.0),),
+            confidence=1.0,
+        )
+
+    error = exc_info.value.errors(include_url=False)[0]
+    assert str(error["ctx"]["error"]) == expected_message
+
+
 def test_transaction_enforces_charge_and_credit_sign_conventions() -> None:
     try:
         from ccparser.models import Transaction, TransactionKind

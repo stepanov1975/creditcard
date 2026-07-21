@@ -20,7 +20,13 @@ from pydantic import (
 )
 from pydantic.functional_validators import AfterValidator
 
-from ccparser.date_tokens import MAX_CONTEXT_YEAR, MIN_CONTEXT_YEAR, validate_suffix_year_mapping
+from ccparser.date_tokens import (
+    MAX_CONTEXT_YEAR,
+    MIN_CONTEXT_YEAR,
+    _SuffixYearMappingValidationError,
+    _SuffixYearMappingViolation,
+    validate_suffix_year_mapping,
+)
 from ccparser.decimal_math import exact_difference, finite_decimal, plain_decimal_string
 
 
@@ -259,6 +265,24 @@ class DiscoveryMetadataSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
+_SUMMARY_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY = (
+    _SuffixYearMappingViolation.EMPTY,
+    _SuffixYearMappingViolation.UNSORTED,
+    _SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+    _SuffixYearMappingViolation.INVALID_SUFFIX,
+    _SuffixYearMappingViolation.INVALID_YEAR,
+    _SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
+    _SuffixYearMappingViolation.SINGLE_YEAR_DISAGREEMENT,
+)
+_SUMMARY_GENERIC_SUFFIX_YEAR_MAPPING_VIOLATIONS = frozenset(
+    {
+        _SuffixYearMappingViolation.INVALID_SUFFIX,
+        _SuffixYearMappingViolation.INVALID_YEAR,
+        _SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
+    }
+)
+
+
 class DiscoveryDateYearContextSummary(BaseModel):
     """Proven short-date suffix mappings and every supporting evidence cell."""
 
@@ -276,14 +300,11 @@ class DiscoveryDateYearContextSummary(BaseModel):
     def validate_year_mapping(self) -> Self:
         try:
             validate_suffix_year_mapping(self.year, self.year_by_suffix)
-        except ValueError as error:
-            if str(error) in {
-                "date suffix must be between 0 and 99",
-                f"mapped year must be between {MIN_CONTEXT_YEAR} and {MAX_CONTEXT_YEAR}",
-                "mapped year must match its two-digit suffix",
-            }:
-                raise ValueError("invalid date suffix-year mapping") from error
-            raise
+        except _SuffixYearMappingValidationError as error:
+            violation, message = error.resolve(_SUMMARY_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY)
+            if violation in _SUMMARY_GENERIC_SUFFIX_YEAR_MAPPING_VIOLATIONS:
+                message = "invalid date suffix-year mapping"
+            raise ValueError(message) from error
         return self
 
 
