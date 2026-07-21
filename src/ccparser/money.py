@@ -10,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ccparser.text_tokens import contains_token_sequence, normalize_text, phrase_tokens
+
 
 class AmountParseResult(BaseModel):
     """A monetary parse or explicit ambiguity without a guessed value."""
@@ -70,21 +72,15 @@ class _LexicalAmount:
 
 
 def _normalized_text(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFC", text).split())
+    return normalize_text(text)
 
 
 def _normalized_phrase(text: str) -> str:
-    normalized = _normalized_text(text).casefold()
-    return " ".join("".join(char if char.isalnum() else " " for char in normalized).split())
+    return " ".join(phrase_tokens(text))
 
 
 def _contains_marker(text: str, markers: Iterable[str]) -> bool:
-    tokens = _normalized_phrase(text).split()
-    return any(
-        marker.split() == tokens[index : index + len(marker.split())]
-        for marker in markers
-        for index in range(len(tokens))
-    )
+    return contains_token_sequence(text, markers)
 
 
 def _remove_markers(text: str, markers: Iterable[str]) -> str:

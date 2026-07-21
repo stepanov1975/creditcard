@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal, localcontext
 
 from ccparser.evidence import Glyph
-from ccparser.fx import extract_foreign_exchange
+from ccparser.fx import _contains_cue, extract_foreign_exchange
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.semantic_evidence import EvidenceLedger, SemanticOwner
 
@@ -258,6 +258,60 @@ def test_auxiliary_amount_requires_explicit_fee_header() -> None:
     assert extraction.details.exchange_rate is not None
     assert extraction.details.net_fee is None
     assert extraction.diagnostics == ()
+
+
+def test_coffee_header_does_not_make_auxiliary_amount_an_fx_fee() -> None:
+    row = _foreign_row()
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=_region(row, fee_header="Coffee amount"),
+        ledger=EvidenceLedger.from_rows((row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 22),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.net_fee is None
+    assert "unparsed_foreign_currency_fee_candidate" not in extraction.diagnostics
+    assert all(claim.owner is not SemanticOwner.NET_FX_FEE for claim in extraction.claims)
+
+
+def test_corporate_date_header_does_not_make_conversion_date_an_exchange_rate() -> None:
+    assert not _contains_cue("corporate date", ("rate",))
+
+    row = _foreign_row()
+    region = _region(row)
+    columns = tuple(
+        column.model_copy(
+            update={
+                "source_cells": (
+                    column.source_cells[0].model_copy(update={"text": "Corporate date"}),
+                )
+            }
+        )
+        if column.role is ColumnRole.CONVERSION_DATE
+        else column
+        for column in region.table_schema.columns
+    )
+    region = region.model_copy(
+        update={"table_schema": region.table_schema.model_copy(update={"columns": columns})}
+    )
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=region,
+        ledger=EvidenceLedger.from_rows((row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 22),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is None
+    assert "unparsed_exchange_rate_candidate" not in extraction.diagnostics
+    assert all(claim.owner is not SemanticOwner.EXCHANGE_RATE for claim in extraction.claims)
 
 
 def test_multiple_exchange_rate_candidates_remain_ambiguous() -> None:

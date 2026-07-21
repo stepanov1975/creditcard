@@ -35,6 +35,7 @@ from ccparser.money import (
     is_money_shaped,
     parse_amount,
 )
+from ccparser.text_tokens import phrase_tokens
 
 _TOTAL_MARKERS = frozenset(
     {
@@ -77,7 +78,6 @@ _TRANSACTION_CONTEXT_MARKERS = frozenset(
     {"transaction", "transactions", "עסקה", "העסקה", "עסקאות", "העסקאות"}
 )
 _POINT_COUNT_PATTERN = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:[,\s]\d{3})+)$")
-_ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 _ISOLATED_OCR_PUNCTUATION = frozenset({"|", "/", "\\", ":", ";", "~", "_"})
 MAX_HEADER_PREAMBLE_ROWS = 4
 MAX_AMBIGUOUS_LEADING_ROWS = 2
@@ -130,18 +130,7 @@ def _union_bbox(boxes: Sequence[BBox]) -> BBox:
 
 
 def _normalized_marker(text: str) -> str:
-    normalized = unicodedata.normalize("NFC", text).casefold()
-    canonical: list[str] = []
-    for index, char in enumerate(normalized):
-        between_letters = (
-            0 < index < len(normalized) - 1
-            and normalized[index - 1].isalpha()
-            and normalized[index + 1].isalpha()
-        )
-        if char in _ACRONYM_QUOTES and between_letters:
-            continue
-        canonical.append(char if char.isalnum() else " ")
-    return " ".join("".join(canonical).split())
+    return " ".join(phrase_tokens(text, ignore_acronym_quotes=True))
 
 
 def _is_total_row(row: Row) -> bool:

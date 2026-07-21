@@ -14,6 +14,7 @@ from itertools import pairwise
 from ccparser.evidence.models import BBox, VectorRule
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.money import is_money_shaped
+from ccparser.text_tokens import phrase_tokens
 
 _THREE_COMPONENT_DATE_PATTERN = re.compile(
     r"(?<!\d)(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)"
@@ -355,16 +356,15 @@ def infer_column_bands(
 
 
 def _normalized_header(text: str) -> str:
-    normalized = unicodedata.normalize("NFC", text).casefold()
-    return " ".join("".join(char if char.isalnum() else " " for char in normalized).split())
+    return " ".join(phrase_tokens(text))
 
 
 def _contains_token_phrase(text: str, phrase: str) -> bool:
-    text_tokens = text.split()
-    phrase_tokens = phrase.split()
-    phrase_length = len(phrase_tokens)
+    text_tokens = phrase_tokens(text)
+    candidate_tokens = phrase_tokens(phrase)
+    phrase_length = len(candidate_tokens)
     return any(
-        text_tokens[index : index + phrase_length] == phrase_tokens
+        text_tokens[index : index + phrase_length] == candidate_tokens
         for index in range(len(text_tokens) - phrase_length + 1)
     )
 

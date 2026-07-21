@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -18,6 +17,7 @@ from ccparser.models import (
 )
 from ccparser.money import canonical_currency, currencies_in_text
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
+from ccparser.text_tokens import contains_token_sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,17 +79,12 @@ def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
     return tuple(cell for cell in row.cells if column.bbox[0] <= _center_x(cell) <= column.bbox[2])
 
 
-def _normalized_phrase(text: str) -> str:
-    normalized = unicodedata.normalize("NFC", text).casefold()
-    return " ".join("".join(char if char.isalnum() else " " for char in normalized).split())
-
-
 def _header_phrase(column: ColumnSpec) -> str:
-    return _normalized_phrase(" ".join(cell.text for cell in column.source_cells))
+    return " ".join(cell.text for cell in column.source_cells)
 
 
 def _contains_cue(phrase: str, cues: Iterable[str]) -> bool:
-    return any(_normalized_phrase(cue) in phrase for cue in cues)
+    return contains_token_sequence(phrase, cues)
 
 
 def _is_fee_column(column: ColumnSpec) -> bool:
@@ -282,7 +277,7 @@ def _continuation_fx_values(
     bounded_rows = tuple(row for row in rows if _BOUNDED_DETAIL_DIAGNOSTIC in row.diagnostics)
     for row in sorted(bounded_rows, key=lambda item: (item.page_number, item.bbox[1])):
         raw_text = _row_text(row)
-        phrase = _normalized_phrase(raw_text)
+        phrase = raw_text
         atom_ids = _row_atom_ids(row, ledger)
         evidence = _row_evidence(row)
         is_rate = _contains_cue(phrase, _RATE_HEADER_CUES)

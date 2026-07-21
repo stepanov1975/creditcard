@@ -32,6 +32,7 @@ from ccparser.layout.regions import (
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
 from ccparser.money import canonical_currency, currencies_in_text, is_money_shaped, parse_amount
+from ccparser.text_tokens import contains_token_sequence, phrase_tokens
 
 
 class _ImmutableDiscoveryModel(BaseModel):
@@ -311,7 +312,6 @@ _FIELD_LABELS: dict[str, frozenset[str]] = {
     "card_number": frozenset({"card no", "card number", "credit card number", "מספר כרטיס"}),
     "statement_date": frozenset({"billing date", "statement date", "תאריך דוח", "תאריך חיוב"}),
 }
-_ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 _DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)")
 _MIN_CONTEXT_YEAR = 1900
 _MAX_CONTEXT_YEAR = 2100
@@ -361,29 +361,18 @@ _COMPOUND_TOTAL_AMOUNT_PATTERN = re.compile(
 
 
 def _normalized_phrase(text: str) -> str:
-    normalized = unicodedata.normalize("NFC", text).casefold()
-    canonical: list[str] = []
-    for index, char in enumerate(normalized):
-        between_letters = (
-            0 < index < len(normalized) - 1
-            and normalized[index - 1].isalpha()
-            and normalized[index + 1].isalpha()
-        )
-        if char in _ACRONYM_QUOTES and between_letters:
-            continue
-        canonical.append(char if char.isalnum() else " ")
-    return " ".join("".join(canonical).split())
+    return " ".join(phrase_tokens(text, ignore_acronym_quotes=True))
 
 
 def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
-    tokens = _normalized_phrase(text).split()
-    for phrase in phrases:
-        phrase_tokens = _normalized_phrase(phrase).split()
-        length = len(phrase_tokens)
-        if any(tokens[index : index + length] == phrase_tokens for index in range(len(tokens))):
-            return True
-        compact_phrase = "".join(phrase_tokens)
-        if len(phrase_tokens) > 1 and compact_phrase in tokens:
+    candidates = tuple(phrases)
+    if contains_token_sequence(text, candidates, ignore_acronym_quotes=True):
+        return True
+    tokens = phrase_tokens(text, ignore_acronym_quotes=True)
+    for phrase in candidates:
+        candidate_tokens = phrase_tokens(phrase, ignore_acronym_quotes=True)
+        compact_phrase = "".join(candidate_tokens)
+        if len(candidate_tokens) > 1 and compact_phrase in tokens:
             return True
         if any("\u0590" <= char <= "\u05ff" for char in phrase) and any(
             token.startswith(compact_phrase) for token in tokens
