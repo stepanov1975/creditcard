@@ -21,6 +21,7 @@ from ccparser.discovery import (
     StatementGroupDiscovery,
 )
 from ccparser.evidence.models import BBox, Glyph, Word
+from ccparser.fx import extract_foreign_exchange
 from ccparser.layout.columns import isolated_date_token, proven_billed_amount_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.text import logical_text_for_evidence
@@ -3166,6 +3167,17 @@ def _normalize_row(
     if any(cell not in conversion_source_cells for cell in unresolved_conversion_cells):
         diagnostics.append("invalid_conversion_date")
 
+    foreign_exchange_extraction = extract_foreign_exchange(
+        rows=rows,
+        region=region,
+        ledger=ledger,
+        original_currency=original_currency,
+        billing_currency=billed.currency,
+        conversion_date=conversion_date,
+    )
+    semantic_claims.extend(foreign_exchange_extraction.claims)
+    diagnostics.extend(foreign_exchange_extraction.diagnostics)
+
     installment_current: int | None = None
     installment_total: int | None = None
     installment_columns = _role_columns(region, ColumnRole.INSTALLMENT)
@@ -3227,6 +3239,7 @@ def _normalize_row(
         category=category,
         original_amount=original_amount,
         original_currency=original_currency,
+        foreign_exchange=foreign_exchange_extraction.details,
         installment_current=installment_current,
         installment_total=installment_total,
         evidence=evidence,

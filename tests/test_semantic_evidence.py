@@ -229,6 +229,20 @@ def test_positioned_decimal_candidates_join_only_small_numeric_gaps() -> None:
     assert tuple(candidate.text for candidate in candidates) == ("2.9430",)
 
 
+def test_positioned_decimal_candidates_ignore_adjacent_sentence_punctuation() -> None:
+    physical_text = ".2.9430"
+    cell = _cell(
+        "exchange rate 2.9430",
+        (10.0, 20.0, 30.0, 30.0),
+        glyphs=tuple(_glyph(char, 10.0 + index) for index, char in enumerate(physical_text)),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    candidates = ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell))
+
+    assert tuple(candidate.text for candidate in candidates) == ("2.9430",)
+
+
 def test_positioned_decimal_candidates_exclude_claimed_date_atoms() -> None:
     physical_text = "22/06/26 2.9660"
     cell = _cell(

@@ -120,6 +120,81 @@ def _foreign_row(rate_text: str = "22/06/26 2.9660") -> Row:
     )
 
 
+def _base_row_without_fx_values() -> Row:
+    return _row(
+        _cell("₪29.72", 0, 30.0),
+        _cell("$10.00", 3, 30.0),
+        _cell("Merchant", 4, 30.0),
+        _cell("07/06/26", 5, 30.0),
+    )
+
+
+def _positioned_cell(text: str, physical_text: str, x0: float, y: float) -> Cell:
+    glyphs = _glyphs(physical_text, x0, y)
+    return Cell(
+        page_number=1,
+        bbox=(x0, y, glyphs[-1].bbox[2], y + 10.0),
+        text=text,
+        glyphs=glyphs,
+        confidence=1.0,
+    )
+
+
+def _bounded_continuation(*cells: Cell) -> Row:
+    return _row(*cells).model_copy(
+        update={
+            "diagnostics": (
+                "subordinate_detail_continuation",
+                "foreign_conversion_detail_block",
+            )
+        }
+    )
+
+
+def _continuation_rows(
+    *,
+    rate_text: str = "2.9430",
+    gross_fee: str = "0.88",
+    discount: str = "0.59",
+    bounded: bool = True,
+) -> tuple[Row, ...]:
+    rate_prefix = "exchange rate "
+    first_rate = f"{rate_prefix}{rate_text[:4]}"
+    remaining_rate = rate_text[4:]
+    first_rate_cell = _positioned_cell(first_rate, first_rate, 50.0, 40.0)
+    rate_tail_x = first_rate_cell.bbox[2] + 0.2
+    rate_row = _row(
+        first_rate_cell,
+        _positioned_cell(remaining_rate, remaining_rate, rate_tail_x, 40.0),
+    )
+    percentage_row = _row(
+        _positioned_cell(
+            "foreign-currency fee 3.00%",
+            "foreign-currency fee 3.00%",
+            50.0,
+            50.0,
+        )
+    )
+    gross_row = _row(
+        _positioned_cell(
+            f"fee amount ILS {gross_fee}; discount follows",
+            f"fee amount ILS {gross_fee}; discount follows",
+            50.0,
+            60.0,
+        )
+    )
+    discount_row = _row(
+        _positioned_cell(
+            f"discount ILS {discount}",
+            f"discount ILS {discount}",
+            50.0,
+            70.0,
+        )
+    )
+    rows = (rate_row, percentage_row, gross_row, discount_row)
+    return tuple(_bounded_continuation(*row.cells) for row in rows) if bounded else rows
+
+
 def test_extract_foreign_exchange_from_semantic_table_columns() -> None:
     row = _foreign_row()
     region = _region(row)
@@ -200,3 +275,182 @@ def test_multiple_exchange_rate_candidates_remain_ambiguous() -> None:
     assert extraction.details is None
     assert extraction.claims == ()
     assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
+
+
+def test_conflicting_table_and_continuation_rates_remain_ambiguous() -> None:
+    row = _foreign_row()
+    continuation = _bounded_continuation(
+        _positioned_cell("exchange rate 2.9430", "2.9430", 50.0, 40.0)
+    )
+    rows = (row, continuation)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(row),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 22),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is None
+    assert extraction.details.net_fee is not None
+    assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
+    assert all(claim.owner is not SemanticOwner.EXCHANGE_RATE for claim in extraction.claims)
+
+
+def test_extract_foreign_exchange_from_bounded_continuation_details() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = _continuation_rows()
+    rows = (base_row, *continuation_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is not None
+    details = extraction.details
+    assert details.exchange_rate is not None
+    assert details.exchange_rate.value == Decimal("2.9430")
+    assert details.fee_percentage is not None
+    assert details.fee_percentage.value == Decimal("3.00")
+    assert details.gross_fee is not None
+    assert details.gross_fee.amount == Decimal("0.88")
+    assert details.fee_discount is not None
+    assert details.fee_discount.amount == Decimal("0.59")
+    assert details.net_fee is not None
+    assert details.net_fee.amount == Decimal("0.29")
+    assert details.net_fee.currency == "ILS"
+    assert details.net_fee.derivation == "gross_fee_minus_discount"
+    assert details.net_fee.evidence == tuple(
+        dict.fromkeys((*details.gross_fee.evidence, *details.fee_discount.evidence))
+    )
+    assert extraction.diagnostics == ()
+
+
+def test_percentage_then_discount_announcement_proves_gross_and_discount_sequence() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = (
+        _bounded_continuation(_positioned_cell("exchange rate 2.9430", ".2.9430", 50.0, 40.0)),
+        _bounded_continuation(_positioned_cell("foreign-currency fee 3.00%", "3.00%", 50.0, 50.0)),
+        _bounded_continuation(
+            _positioned_cell(
+                "ILS 0.88; from this fee a discount is subtracted",
+                "ILS 0.88; from this fee a discount is subtracted",
+                50.0,
+                60.0,
+            )
+        ),
+        _bounded_continuation(
+            _positioned_cell("ILS 0.59 under arrangement", "ILS 0.59", 50.0, 70.0)
+        ),
+    )
+    rows = (base_row, *continuation_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is not None
+    details = extraction.details
+    assert details.exchange_rate is not None
+    assert details.exchange_rate.value == Decimal("2.9430")
+    assert details.gross_fee is not None
+    assert details.gross_fee.amount == Decimal("0.88")
+    assert details.fee_discount is not None
+    assert details.fee_discount.amount == Decimal("0.59")
+    assert details.net_fee is not None
+    assert details.net_fee.amount == Decimal("0.29")
+    assert extraction.diagnostics == ()
+
+
+def test_zero_fee_percentage_is_preserved() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage = _bounded_continuation(
+        _positioned_cell("foreign-currency fee 0.00%", "0.00%", 50.0, 40.0)
+    )
+    rows = (base_row, percentage)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("0.00")
+    assert extraction.diagnostics == ()
+
+
+def test_ambiguous_explicit_continuation_rate_emits_diagnostic() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = _continuation_rows(rate_text="2.9430 3.0010")
+    rows = (base_row, *continuation_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is None
+    assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
+
+
+def test_unbounded_numeric_notes_do_not_become_fx_values() -> None:
+    base_row = _base_row_without_fx_values()
+    note_rows = _continuation_rows(bounded=False)
+    rows = (base_row, *note_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is None
+    assert extraction.claims == ()
+    assert extraction.diagnostics == ()
+
+
+def test_discount_larger_than_gross_fee_prevents_net_derivation() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = _continuation_rows(gross_fee="0.50", discount="0.59")
+    rows = (base_row, *continuation_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.gross_fee is not None
+    assert extraction.details.fee_discount is not None
+    assert extraction.details.net_fee is None
+    assert extraction.diagnostics == ("inconsistent_foreign_currency_fee_derivation",)

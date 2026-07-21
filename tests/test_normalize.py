@@ -21,12 +21,20 @@ from ccparser.normalize import _cross_cell_date_tokens, normalize_statement, par
 from ccparser.semantic_evidence import EvidenceLedger
 
 
-def _cell(text: str, column: int, y: float, *, page: int = 1) -> Cell:
+def _cell(
+    text: str,
+    column: int,
+    y: float,
+    *,
+    page: int = 1,
+    glyphs: tuple[Glyph, ...] = (),
+) -> Cell:
     x0 = float(column * 50)
     return Cell(
         page_number=page,
         bbox=(x0, y, x0 + 40.0, y + 10.0),
         text=text,
+        glyphs=glyphs,
         confidence=1.0,
     )
 
@@ -4741,6 +4749,50 @@ def test_distinct_original_and_billing_currency_columns_normalize_foreign_purcha
     assert transaction.original_currency == "USD"
     assert transaction.billed_amount == Decimal("11.00")
     assert transaction.billing_currency == "ILS"
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_preserves_structured_table_fx_values() -> None:
+    row = _row(
+        _cell("01/02/2026", 0, 30.0),
+        _cell("Purchase abroad", 1, 30.0),
+        _cell("3.00", 2, 30.0),
+        _cell("USD", 3, 30.0),
+        _cell("11.00", 4, 30.0),
+        _cell("ILS 1.69", 5, 30.0, glyphs=_glyphs("ILS 1.69", 250.0, 30.0)),
+        _cell("2.9660", 6, 30.0, glyphs=_glyphs("2.9660", 300.0, 30.0)),
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+            ColumnRole.AUXILIARY_AMOUNT,
+            ColumnRole.EXCHANGE_RATE,
+        ),
+        (row,),
+        headers=(
+            "Date",
+            "Description",
+            "Original amount",
+            "Original currency",
+            "Billed amount",
+            "Foreign-currency fee",
+            "Exchange rate",
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "11.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.foreign_exchange is not None
+    assert transaction.foreign_exchange.exchange_rate is not None
+    assert transaction.foreign_exchange.exchange_rate.value == Decimal("2.9660")
+    assert transaction.foreign_exchange.net_fee is not None
+    assert transaction.foreign_exchange.net_fee.amount == Decimal("1.69")
+    assert "unconsumed_transaction_semantic_text" not in transaction.ambiguities
     assert result.reconciliation.status is Status.RECONCILED
 
 

@@ -549,12 +549,19 @@ class EvidenceLedger:
         def flush(segment: list[EvidenceAtom]) -> None:
             if not segment:
                 return
-            text = "".join(atom.text for atom in segment)
+            start = 0
+            end = len(segment)
+            while start < end and segment[start].text in ".,":
+                start += 1
+            while end > start and segment[end - 1].text in ".,":
+                end -= 1
+            matched_atoms = segment[start:end]
+            text = "".join(atom.text for atom in matched_atoms)
             if pattern.fullmatch(text) is not None:
                 candidates.append(
                     PositionedDecimalCandidate(
                         text=text,
-                        atom_ids=frozenset(atom.atom_id for atom in segment),
+                        atom_ids=frozenset(atom.atom_id for atom in matched_atoms),
                     )
                 )
             segment.clear()
