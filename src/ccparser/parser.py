@@ -41,6 +41,7 @@ from ccparser.money import parse_amount
 from ccparser.normalize import StatementNormalization, normalize_statement
 from ccparser.ocr_repair import repair_table_numeric_ocr
 from ccparser.output import write_batch_outputs
+from ccparser.paths import is_relative_to, iter_regular_pdf_files, paths_overlap
 
 MAX_WORKERS = 32
 
@@ -431,62 +432,10 @@ def parse_statement(
         raise ParserRuntimeError("statement processing failed") from None
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
-def _iter_pdf_files(
-    input_dir: Path,
-    excluded_trees: tuple[Path, ...],
-) -> tuple[Path, ...]:
-    files: list[Path] = []
-
-    def raise_walk_error(error: OSError) -> None:
-        raise error
-
-    for root_value, directory_names, file_names in os.walk(
-        input_dir,
-        followlinks=False,
-        onerror=raise_walk_error,
-    ):
-        root = Path(root_value)
-        retained_directories: list[str] = []
-        for directory_name in sorted(directory_names):
-            directory = root / directory_name
-            resolved = directory.resolve(strict=False)
-            if directory.is_symlink() or any(
-                excluded != input_dir and _is_relative_to(resolved, excluded)
-                for excluded in excluded_trees
-            ):
-                continue
-            retained_directories.append(directory_name)
-        directory_names[:] = retained_directories
-        for file_name in sorted(file_names):
-            source = root / file_name
-            if source.suffix.casefold() != ".pdf" or source.is_symlink() or not source.is_file():
-                continue
-            resolved = source.resolve(strict=False)
-            if any(
-                excluded != input_dir and _is_relative_to(resolved, excluded)
-                for excluded in excluded_trees
-            ):
-                continue
-            files.append(source)
-    return tuple(sorted(files, key=lambda source: source.relative_to(input_dir).as_posix()))
-
-
-def _paths_overlap(first: Path, second: Path) -> bool:
-    return _is_relative_to(first, second) or _is_relative_to(second, first)
-
-
 def _validate_path_topology(input_dir: Path, output_dir: Path, cache_dir: Path) -> None:
-    output_contains_input = _is_relative_to(input_dir, output_dir)
-    cache_contains_input = _is_relative_to(input_dir, cache_dir)
-    if output_contains_input or cache_contains_input or _paths_overlap(output_dir, cache_dir):
+    output_contains_input = is_relative_to(input_dir, output_dir)
+    cache_contains_input = is_relative_to(input_dir, cache_dir)
+    if output_contains_input or cache_contains_input or paths_overlap(output_dir, cache_dir):
         raise ParserInputError("input, output, and cache path topology is unsafe")
 
 
@@ -539,7 +488,15 @@ def parse_directory(
         raise ParserInputError("cache directory cannot be inspected") from None
     try:
         _validate_path_topology(resolved_input, resolved_output, resolved_cache)
-        sources = _iter_pdf_files(resolved_input, (resolved_output, resolved_cache))
+
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        sources = iter_regular_pdf_files(
+            resolved_input,
+            excluded_roots=(resolved_output, resolved_cache),
+            on_error=raise_walk_error,
+        )
     except ParserInputError:
         raise
     except Exception:

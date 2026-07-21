@@ -20,6 +20,7 @@ from ccparser.discovery import (
     discover_statement,
 )
 from ccparser.evidence import DocumentEvidence, extract_pdf
+from ccparser.paths import is_relative_to, iter_regular_pdf_files, safe_relative_posix_path
 
 HIGH_CONFIDENCE_NON_STATEMENT = 0.9
 MANIFEST_NAME = "manifest.json"
@@ -27,7 +28,7 @@ MANIFEST_VERSION = 1
 
 
 class AuditApplyError(RuntimeError):
-    """An apply failure after which all moves from this call were rolled back."""
+    """A public audit filesystem failure, with applied moves rolled back when needed."""
 
 
 class EvidenceExtractor(Protocol):
@@ -131,19 +132,11 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
 def _validated_relative_path(value: str) -> PurePosixPath:
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise AuditApplyError("manifest contains an unsafe relative path")
-    return relative
+    try:
+        return safe_relative_posix_path(value)
+    except ValueError:
+        raise AuditApplyError("manifest contains an unsafe relative path") from None
 
 
 def _safe_join(root: Path, relative_value: str) -> Path:
@@ -151,34 +144,9 @@ def _safe_join(root: Path, relative_value: str) -> Path:
     candidate = root.joinpath(*relative.parts)
     resolved_root = root.resolve(strict=False)
     resolved_candidate = candidate.resolve(strict=False)
-    if not _is_relative_to(resolved_candidate, resolved_root):
+    if not is_relative_to(resolved_candidate, resolved_root):
         raise AuditApplyError("audit destination escapes quarantine directory")
     return candidate
-
-
-def _iter_pdf_files(input_dir: Path, quarantine_dir: Path) -> tuple[Path, ...]:
-    resolved_input = input_dir.resolve(strict=True)
-    resolved_quarantine = quarantine_dir.resolve(strict=False)
-    files: list[Path] = []
-    for root_value, directory_names, file_names in os.walk(resolved_input, followlinks=False):
-        root = Path(root_value)
-        retained_directories: list[str] = []
-        for directory_name in sorted(directory_names):
-            directory = root / directory_name
-            if directory.is_symlink() or directory_name == ".cache":
-                continue
-            if _is_relative_to(directory.resolve(strict=False), resolved_quarantine):
-                continue
-            retained_directories.append(directory_name)
-        directory_names[:] = retained_directories
-        for file_name in sorted(file_names):
-            path = root / file_name
-            if path.suffix.casefold() != ".pdf" or path.is_symlink() or not path.is_file():
-                continue
-            if _is_relative_to(path.resolve(strict=False), resolved_quarantine):
-                continue
-            files.append(path)
-    return tuple(sorted(files, key=lambda path: path.relative_to(resolved_input).as_posix()))
 
 
 def _destination_relative(
@@ -448,14 +416,27 @@ def audit_directory(
     quarantine_path = Path(quarantine_dir).resolve(strict=False)
     if not input_path.is_dir():
         raise ValueError("input directory must be a directory")
-    if _is_relative_to(input_path, quarantine_path):
+    if is_relative_to(input_path, quarantine_path):
         raise ValueError("quarantine directory must not contain input")
     extract = extractor or extract_pdf
     classify = classifier or discover_statement
     historical_entries = _load_manifest(quarantine_path)
     historical_paths = {entry.original_relative_path for entry in historical_entries}
     decisions: list[AuditDecision] = []
-    for source in _iter_pdf_files(input_path, quarantine_path):
+    try:
+
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        sources = iter_regular_pdf_files(
+            input_path,
+            excluded_roots=(quarantine_path,),
+            excluded_directory_names={".cache"},
+            on_error=raise_walk_error,
+        )
+    except Exception:
+        raise AuditApplyError("audit input directory cannot be inspected") from None
+    for source in sources:
         relative_path = source.relative_to(input_path).as_posix()
         source_sha256 = _sha256_file(source)
         if relative_path in historical_paths:

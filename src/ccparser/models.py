@@ -7,7 +7,6 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from math import isfinite
-from pathlib import PurePosixPath
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -28,6 +27,7 @@ from ccparser.date_tokens import (
     validate_suffix_year_mapping,
 )
 from ccparser.decimal_math import exact_difference, finite_decimal, plain_decimal_string
+from ccparser.paths import safe_relative_posix_path
 
 
 def _finite_coordinate(value: float) -> float:
@@ -496,9 +496,10 @@ class StatementResult(BaseModel):
     def validate_source_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        source = PurePosixPath(value)
-        if source.is_absolute() or not source.parts or ".." in source.parts:
-            raise ValueError("source name must be a safe relative POSIX path")
+        try:
+            source = safe_relative_posix_path(value)
+        except ValueError:
+            raise ValueError("source name must be a safe relative POSIX path") from None
         return source.as_posix()
 
 

@@ -244,6 +244,36 @@ def test_batch_result_is_immutable_and_uses_public_statuses() -> None:
         batch.status = Status.RECONCILED
 
 
+@pytest.mark.parametrize(
+    "source_name",
+    ("", ".", "/statement.pdf", "..", "../statement.pdf", "nested/../statement.pdf"),
+)
+def test_statement_result_rejects_unsafe_relative_source_names(source_name: str) -> None:
+    from ccparser.models import StatementResult, Status
+
+    with pytest.raises(ValidationError, match="source name must be a safe relative POSIX path"):
+        StatementResult(
+            status=Status.UNSUPPORTED,
+            transactions=(),
+            groups=(),
+            source_name=source_name,
+        )
+
+
+def test_statement_result_preserves_posix_backslash_treatment_in_source_name() -> None:
+    from ccparser.models import StatementResult, Status
+
+    source_name = r"..\statement.pdf"
+    result = StatementResult(
+        status=Status.UNSUPPORTED,
+        transactions=(),
+        groups=(),
+        source_name=source_name,
+    )
+
+    assert result.source_name == source_name
+
+
 def test_monetary_serialization_never_uses_decimal_context_rounding() -> None:
     from ccparser.models import PrintedTotal
 

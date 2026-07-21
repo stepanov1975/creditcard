@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -546,3 +547,33 @@ def test_audit_rejects_unsafe_containment_and_skips_quarantine_tree(tmp_path: Pa
     assert tuple(decision.original_relative_path for decision in report.decisions) == (
         "source.pdf",
     )
+
+
+def test_audit_directory_walk_error_is_public_failure_without_partial_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    quarantine_dir = tmp_path / "quarantine"
+
+    def failing_walk(
+        top: Path,
+        *,
+        followlinks: bool,
+        onerror: Callable[[OSError], object] | None = None,
+    ) -> tuple[object, ...]:
+        del top, followlinks
+        assert onerror is not None
+        onerror(PermissionError("private unreadable directory detail"))
+        return ()
+
+    monkeypatch.setattr(audit_module.os, "walk", failing_walk)
+
+    with pytest.raises(AuditApplyError, match="input directory cannot be inspected") as caught:
+        audit_directory(input_dir, quarantine_dir)
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert caught.value.__cause__ is None
+    assert "private unreadable directory detail" not in rendered
+    assert not quarantine_dir.exists()
