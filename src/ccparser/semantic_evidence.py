@@ -23,6 +23,11 @@ class SemanticOwner(StrEnum):
     CONVERSION_DATE = "conversion_date"
     BILLED_VALUE = "billed_value"
     ORIGINAL_VALUE = "original_value"
+    EXCHANGE_RATE = "exchange_rate"
+    FX_FEE_PERCENTAGE = "fx_fee_percentage"
+    GROSS_FX_FEE = "gross_fx_fee"
+    FX_FEE_DISCOUNT = "fx_fee_discount"
+    NET_FX_FEE = "net_fx_fee"
     INSTALLMENT = "installment"
     CATEGORY = "category"
     LOCATION = "location"
@@ -73,6 +78,14 @@ class EvidenceCluster:
 @dataclass(frozen=True, slots=True)
 class FragmentedDateCandidate:
     """A date-shaped token reconstructed from contiguous positioned glyphs."""
+
+    text: str
+    atom_ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class PositionedDecimalCandidate:
+    """A decimal reconstructed from one contiguous positioned numeric run."""
 
     text: str
     atom_ids: frozenset[int]
@@ -493,6 +506,86 @@ class EvidenceLedger:
         unique = {(candidate.text, candidate.atom_ids): candidate for candidate in candidates}
         return tuple(unique.values())
 
+    def positioned_decimal_candidates(
+        self,
+        atom_ids: Iterable[int],
+        *,
+        max_fraction_digits: int = 6,
+    ) -> tuple[PositionedDecimalCandidate, ...]:
+        """Recover decimals from bounded, contiguous, physically positioned glyphs."""
+
+        if max_fraction_digits < 1:
+            raise ValueError("maximum fraction digits must be positive")
+        selected_ids = frozenset(atom_ids)
+        selected = tuple(
+            atom for atom in self.atoms if atom.atom_id in selected_ids and atom.glyph is not None
+        )
+        if not selected:
+            return ()
+
+        lines: list[list[EvidenceAtom]] = []
+        for atom in sorted(
+            selected,
+            key=lambda item: (item.page_number, _center_y(item.bbox), item.bbox[0]),
+        ):
+            matching_line = next(
+                (
+                    line
+                    for line in lines
+                    if line[0].page_number == atom.page_number
+                    and abs(_center_y(line[0].bbox) - _center_y(atom.bbox))
+                    <= min(_height(line[0].bbox), _height(atom.bbox)) * 0.5
+                ),
+                None,
+            )
+            if matching_line is None:
+                lines.append([atom])
+            else:
+                matching_line.append(atom)
+
+        pattern = re.compile(rf"\d+[.,]\d{{1,{max_fraction_digits}}}")
+        candidates: list[PositionedDecimalCandidate] = []
+
+        def flush(segment: list[EvidenceAtom]) -> None:
+            if not segment:
+                return
+            text = "".join(atom.text for atom in segment)
+            if pattern.fullmatch(text) is not None:
+                candidates.append(
+                    PositionedDecimalCandidate(
+                        text=text,
+                        atom_ids=frozenset(atom.atom_id for atom in segment),
+                    )
+                )
+            segment.clear()
+
+        for line in sorted(lines, key=lambda item: (item[0].page_number, _center_y(item[0].bbox))):
+            segment: list[EvidenceAtom] = []
+
+            previous: EvidenceAtom | None = None
+            for atom in sorted(line, key=lambda item: (item.bbox[0], item.bbox[2])):
+                gap = 0.0 if previous is None else atom.bbox[0] - previous.bbox[2]
+                contiguous = (
+                    previous is None or gap <= min(_height(previous.bbox), _height(atom.bbox)) * 0.6
+                )
+                if not contiguous:
+                    flush(segment)
+                if atom.text.isdigit() or atom.text in ".,":
+                    segment.append(atom)
+                else:
+                    flush(segment)
+                previous = atom
+            flush(segment)
+
+        unique: list[PositionedDecimalCandidate] = []
+        seen: set[tuple[str, frozenset[int]]] = set()
+        for candidate in candidates:
+            key = (candidate.text, candidate.atom_ids)
+            if key not in seen:
+                seen.add(key)
+                unique.append(candidate)
+        return tuple(unique)
+
     def render(self, atom_ids: Iterable[int]) -> str:
         """Render selected atoms using exact positioned glyph and word evidence."""
 
@@ -558,5 +651,6 @@ __all__ = [
     "EvidenceCluster",
     "EvidenceLedger",
     "FragmentedDateCandidate",
+    "PositionedDecimalCandidate",
     "SemanticOwner",
 ]

@@ -194,3 +194,90 @@ def test_fragmented_date_candidates_tolerate_same_line_vertical_jitter() -> None
     assert tuple(candidate.text for candidate in ledger.fragmented_date_candidates(cell)) == (
         "25/06/26",
     )
+
+
+def _fragmented_decimal_cell(
+    logical_text: str,
+    first_fragment: str,
+    second_fragment: str,
+    *,
+    fragment_gap: float,
+) -> Cell:
+    first_glyphs = tuple(_glyph(char, 10.0 + index) for index, char in enumerate(first_fragment))
+    second_x = first_glyphs[-1].bbox[2] + fragment_gap
+    second_glyphs = tuple(
+        _glyph(char, second_x + index) for index, char in enumerate(second_fragment)
+    )
+    return _cell(
+        logical_text,
+        (10.0, 20.0, second_glyphs[-1].bbox[2], 30.0),
+        glyphs=(*first_glyphs, *second_glyphs),
+    )
+
+
+def test_positioned_decimal_candidates_join_only_small_numeric_gaps() -> None:
+    cell = _fragmented_decimal_cell(
+        "rate 2.94 30",
+        "2.94",
+        "30",
+        fragment_gap=0.2,
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    candidates = ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell))
+
+    assert tuple(candidate.text for candidate in candidates) == ("2.9430",)
+
+
+def test_positioned_decimal_candidates_exclude_claimed_date_atoms() -> None:
+    physical_text = "22/06/26 2.9660"
+    cell = _cell(
+        physical_text,
+        (10.0, 20.0, 50.0, 30.0),
+        glyphs=tuple(_glyph(char, 10.0 + index) for index, char in enumerate(physical_text)),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+    date_ids = frozenset(
+        atom_id
+        for candidate in ledger.fragmented_date_candidates(cell)
+        for atom_id in candidate.atom_ids
+    )
+
+    candidates = ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell) - date_ids)
+
+    assert tuple(candidate.text for candidate in candidates) == ("2.9660",)
+
+
+def test_positioned_decimal_candidates_do_not_join_material_gaps() -> None:
+    cell = _fragmented_decimal_cell(
+        "2.94 30",
+        "2.94",
+        "30",
+        fragment_gap=8.0,
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    candidates = ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell))
+
+    assert tuple(candidate.text for candidate in candidates) == ("2.94",)
+
+
+def test_positioned_decimal_candidates_preserve_distinct_physical_runs() -> None:
+    cell = _fragmented_decimal_cell(
+        "2.94 3.10",
+        "2.94",
+        "3.10",
+        fragment_gap=8.0,
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    candidates = ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell))
+
+    assert tuple(candidate.text for candidate in candidates) == ("2.94", "3.10")
+
+
+def test_positioned_decimal_candidates_require_positioned_evidence() -> None:
+    cell = _cell("2.9430", (10.0, 20.0, 50.0, 30.0))
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    assert ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell)) == ()
