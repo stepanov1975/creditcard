@@ -43,6 +43,8 @@ def iter_regular_pdf_files(
 
     resolved_root = root.resolve(strict=True)
     resolved_exclusions = tuple(path.resolve(strict=False) for path in excluded_roots)
+    if any(is_relative_to(resolved_root, excluded) for excluded in resolved_exclusions):
+        return ()
     files: list[Path] = []
     for root_value, directory_names, file_names in os.walk(
         resolved_root,

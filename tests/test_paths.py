@@ -115,6 +115,29 @@ def test_iter_regular_pdf_files_prunes_only_caller_exclusions(tmp_path: Path) ->
     assert files == ((root / "kept.pdf").resolve(), (root / "nested/kept.pdf").resolve())
 
 
+@pytest.mark.parametrize("exclusion_kind", ("equal", "ancestor"))
+def test_iter_regular_pdf_files_does_not_walk_an_excluded_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exclusion_kind: str,
+) -> None:
+    root = tmp_path / "input"
+    root.mkdir()
+    excluded_root = root if exclusion_kind == "equal" else tmp_path
+    walk_calls = 0
+
+    def recording_walk(*args: object, **kwargs: object) -> tuple[object, ...]:
+        nonlocal walk_calls
+        del args, kwargs
+        walk_calls += 1
+        return ()
+
+    monkeypatch.setattr(paths_module.os, "walk", recording_walk)
+
+    assert iter_regular_pdf_files(root, excluded_roots=(excluded_root,)) == ()
+    assert walk_calls == 0
+
+
 def test_iter_regular_pdf_files_passes_walk_errors_to_callback_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
