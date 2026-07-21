@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from ccparser.decimal_math import exact_difference
@@ -464,11 +463,9 @@ def extract_foreign_exchange(
     ledger: EvidenceLedger,
     original_currency: str | None,
     billing_currency: str,
-    conversion_date: date | None,
 ) -> ForeignExchangeExtraction:
     """Extract unambiguous FX values from one proven foreign transaction row."""
 
-    del conversion_date
     if original_currency is None or original_currency == billing_currency or not rows:
         return ForeignExchangeExtraction()
     table_values = _table_fx_values(rows[0], region, ledger, billing_currency)

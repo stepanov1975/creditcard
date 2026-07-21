@@ -292,7 +292,6 @@ def _repair_page(
             if _is_total_row(source_row):
                 current_page = page.model_copy(update={"words": words})
                 projected_total = _project_row_to_header_bands(
-                    current_page,
                     source_row,
                     header,
                 )
@@ -333,7 +332,7 @@ def _repair_page(
             if not _row_intersects_horizontal_band(source_row, header.bbox):
                 continue
             current_page = page.model_copy(update={"words": words})
-            projected = _project_row_to_header_bands(current_page, source_row, header)
+            projected = _project_row_to_header_bands(source_row, header)
             context_cells = _transaction_context_cells(projected, schema, billed_column)
             if context_cells is None:
                 continue

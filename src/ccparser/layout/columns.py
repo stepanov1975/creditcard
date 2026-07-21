@@ -12,15 +12,9 @@ from collections.abc import Iterable, Sequence
 from itertools import pairwise
 
 from ccparser.evidence.models import VectorRule
-from ccparser.geometry import (
-    BBox,
-    vertical_overlap,
-)
+from ccparser.geometry import BBox
 from ccparser.geometry import (
     bbox_center_x as _center_x,
-)
-from ccparser.geometry import (
-    bbox_center_y as _center_y,
 )
 from ccparser.geometry import (
     bbox_height as _height,
@@ -664,35 +658,6 @@ def _is_corrupted_ocr_description_header(
         return False
     tokens = _normalized_header(header.text).split()
     return 2 <= len(tokens) <= 4 and bool(set(tokens).intersection(_OCR_DESCRIPTION_HEADER_ANCHORS))
-
-
-def _cells_to_rows(cells: Sequence[Cell]) -> tuple[Row, ...]:
-    groups: list[list[Cell]] = []
-    for cell in sorted(cells, key=lambda value: (_center_y(value.bbox), value.bbox[0])):
-        target: list[Cell] | None = None
-        for group in groups:
-            group_bbox = _union_bbox(tuple(item.bbox for item in group))
-            tolerance = 0.45 * max(_height(cell.bbox), _height(group_bbox))
-            if (
-                vertical_overlap(cell.bbox, group_bbox) >= 0.3
-                or abs(_center_y(cell.bbox) - _center_y(group_bbox)) <= tolerance
-            ):
-                target = group
-                break
-        if target is None:
-            groups.append([cell])
-        else:
-            target.append(cell)
-    return tuple(
-        Row(
-            page_number=group[0].page_number,
-            bbox=_union_bbox(tuple(cell.bbox for cell in group)),
-            cells=tuple(sorted(group, key=lambda cell: cell.bbox[0])),
-            words=tuple(word for cell in group for word in cell.words),
-            confidence=statistics.mean(cell.confidence for cell in group),
-        )
-        for group in groups
-    )
 
 
 def explicit_billed_amount_column(

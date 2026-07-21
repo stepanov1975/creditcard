@@ -43,6 +43,7 @@ from ccparser.parser import (
     parse_directory,
     parse_statement,
 )
+from ccparser.summary import discovery_summary, row_summaries
 
 
 def _evidence(content: bytes) -> DocumentEvidence:
@@ -473,6 +474,66 @@ def test_parse_statement_serializes_rollover_year_context_mapping(tmp_path: Path
         "Cycle start 31/12/2025",
         "Cycle end 01/01/2026",
     )
+
+
+@pytest.mark.parametrize(
+    ("classification", "expected_status"),
+    (
+        (DocumentClassification.STATEMENT, Status.RECONCILED),
+        (DocumentClassification.AMBIGUOUS, Status.UNSUPPORTED),
+        (DocumentClassification.NOT_STATEMENT, Status.NOT_STATEMENT),
+    ),
+)
+def test_parse_statement_preserves_complete_result_and_canonical_json(
+    tmp_path: Path,
+    classification: DocumentClassification,
+    expected_status: Status,
+) -> None:
+    source = tmp_path / "complete-summary.pdf"
+    source.write_bytes(b"complete synthetic summary")
+    evidence = _evidence(source.read_bytes())
+    discovery = _structured_discovery(classification)
+    normalization = _normalizer(Status.RECONCILED)(discovery)
+    discovery_diagnostics = tuple(dict.fromkeys((*discovery.reason_codes, *discovery.diagnostics)))
+    expected = StatementResult(
+        status=expected_status,
+        transactions=(
+            normalization.transactions if classification is DocumentClassification.STATEMENT else ()
+        ),
+        groups=(
+            normalization.reconciliation.groups
+            if classification is DocumentClassification.STATEMENT
+            else ()
+        ),
+        diagnostics=discovery_diagnostics,
+        source_name=source.name,
+        source_sha256=evidence.source_sha256,
+        statement_id=evidence.source_sha256,
+        discovery=discovery_summary(discovery),
+        row_results=(
+            row_summaries(normalization)
+            if classification is DocumentClassification.STATEMENT
+            else ()
+        ),
+        normalization_confidence=(
+            normalization.confidence if classification is DocumentClassification.STATEMENT else None
+        ),
+        normalization_diagnostics=(
+            normalization.diagnostics if classification is DocumentClassification.STATEMENT else ()
+        ),
+    )
+
+    result = parse_statement(
+        source,
+        extractor=lambda path, provider: evidence,
+        discoverer=lambda value: discovery,
+        normalizer=lambda value: normalization,
+        ocr_provider=object(),
+    )
+
+    assert result == expected
+    assert result.model_dump_json().encode("utf-8") == expected.model_dump_json().encode("utf-8")
+    assert canonical_json_bytes(result) == canonical_json_bytes(expected)
 
 
 def test_parse_statement_retries_bounded_numeric_ocr_and_uses_exact_rediscovery(

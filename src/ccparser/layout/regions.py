@@ -46,7 +46,6 @@ from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSche
 from ccparser.layout.rows import cluster_rows
 from ccparser.layout.text import (
     canonical_words_for_layout,
-    logical_text_for_bbox,
     logical_text_for_evidence,
     positioned_evidence_for_bbox,
 )
@@ -838,8 +837,8 @@ def _bounded_leading_detail_before_transaction(
         or _literal_header_role_count(following_source) >= 2
     ):
         return None
-    projected = _project_row_to_header_bands(page_evidence, source, header)
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    projected = _project_row_to_header_bands(source, header)
+    following = _project_row_to_header_bands(following_source, header)
     billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
     if billed_column is None:
         amount_columns = tuple(
@@ -1033,11 +1032,9 @@ def _without_separated_ocr_money_artifacts(cell: Cell) -> Cell:
 
 
 def _project_row_to_header_bands(
-    page_evidence: PageEvidence,
     row: Row,
     header: Row,
 ) -> Row:
-    del page_evidence
     cells: list[Cell] = []
     header_bands = _header_band_bounds(header)
     if not header_bands:
@@ -1190,7 +1187,7 @@ def _preview_rows(
             break
         if _literal_header_role_count(row) >= 2:
             break
-        projected = _project_row_to_header_bands(page_evidence, row, rows[header_index])
+        projected = _project_row_to_header_bands(row, rows[header_index])
         if projected.cells:
             if not preview and _transaction_shape_count(projected) == 0:
                 if preamble_count >= MAX_HEADER_PREAMBLE_ROWS:
@@ -1554,7 +1551,7 @@ def _foreign_conversion_detail_block(
             or not _detail_rows_are_adjacent(preceding, source)
         ):
             return None
-        projected = _project_row_to_header_bands(page_evidence, source, header)
+        projected = _project_row_to_header_bands(source, header)
         if not projected.cells:
             return None
         alignment = _row_alignment(projected, schema)
@@ -1604,7 +1601,6 @@ def _foreign_conversion_detail_block(
         ):
             identifier_source = rows[index + 1]
             identifier = _project_row_to_header_bands(
-                page_evidence,
                 identifier_source,
                 header,
             )
@@ -1716,7 +1712,7 @@ def _bounded_auxiliary_fragment(
         or not _detail_rows_are_adjacent(source, following_source)
     ):
         return None
-    projected = _project_row_to_header_bands(page_evidence, source, header)
+    projected = _project_row_to_header_bands(source, header)
     outside_table_band_count = _projection_preserves_table_band_evidence(
         source,
         projected,
@@ -1748,7 +1744,7 @@ def _bounded_auxiliary_fragment(
         or not any(columns[0].role is ColumnRole.UNKNOWN for columns in matching_columns)
     ):
         return None
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    following = _project_row_to_header_bands(following_source, header)
     if (
         not following.cells
         or not _has_valid_billed_amount(following, schema)
@@ -1837,9 +1833,7 @@ def _bounded_card_identifier_detail_block(
         or not _detail_rows_are_adjacent(sources[1], following_source)
     ):
         return None
-    details = tuple(
-        _project_row_to_header_bands(page_evidence, source, header) for source in sources
-    )
+    details = tuple(_project_row_to_header_bands(source, header) for source in sources)
     excluded_counts = tuple(
         _projection_preserves_table_band_evidence(source, detail, header, schema)
         for source, detail in zip(sources, details, strict=True)
@@ -1855,7 +1849,7 @@ def _bounded_card_identifier_detail_block(
         or not _has_canonical_card_identifier_detail(details[1])
     ):
         return None
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    following = _project_row_to_header_bands(following_source, header)
     if (
         not following.cells
         or not _has_valid_billed_amount(following, schema)
@@ -1915,7 +1909,7 @@ def _bounded_card_identifier_tail(
         or not _detail_rows_are_adjacent(source, following_source)
     ):
         return None
-    projected = _project_row_to_header_bands(page_evidence, source, header)
+    projected = _project_row_to_header_bands(source, header)
     excluded_count = _projection_preserves_table_band_evidence(
         source,
         projected,
@@ -1951,7 +1945,7 @@ def _bounded_card_identifier_tail(
         )
     ):
         return None
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    following = _project_row_to_header_bands(following_source, header)
     if (
         not following.cells
         or not _has_valid_billed_amount(following, schema)
@@ -2029,7 +2023,7 @@ def _bounded_hebrew_note_detail(
         or not _detail_rows_are_adjacent(source, following_source)
     ):
         return None
-    projected = _project_row_to_header_bands(page_evidence, source, header)
+    projected = _project_row_to_header_bands(source, header)
     if (
         not projected.cells
         or not _has_proper_hebrew_note_marker(projected)
@@ -2040,7 +2034,7 @@ def _bounded_hebrew_note_detail(
         or bool(cells_in_column(projected.cells, billed_column))
     ):
         return None
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    following = _project_row_to_header_bands(following_source, header)
     if (
         not following.cells
         or not _has_valid_billed_amount(following, schema)
@@ -2076,7 +2070,7 @@ def _bounded_overlaid_ocr_amount_artifact(
     """Return the last noise-row index for a tall OCR artifact over a proven next row."""
 
     source = rows[start_index]
-    projected_source = _project_row_to_header_bands(page_evidence, source, header)
+    projected_source = _project_row_to_header_bands(source, header)
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     source_amount_cells = (
         cells_in_column(projected_source.cells, amount_columns[0])
@@ -2105,7 +2099,7 @@ def _bounded_overlaid_ocr_amount_artifact(
         following_source = rows[following_index]
         if _is_total_row(following_source) or _literal_header_role_count(following_source) >= 2:
             return None
-        following = _project_row_to_header_bands(page_evidence, following_source, header)
+        following = _project_row_to_header_bands(following_source, header)
         if (
             following.cells
             and _has_valid_billed_amount(following, schema)
@@ -2165,8 +2159,8 @@ def _bounded_complementary_transaction_rows(
         or _vertical_overlap_ratio(source.bbox, following.bbox) < 0.5
     ):
         return None
-    projected_source = _project_row_to_header_bands(page_evidence, source, header)
-    projected_following = _project_row_to_header_bands(page_evidence, following, header)
+    projected_source = _project_row_to_header_bands(source, header)
+    projected_following = _project_row_to_header_bands(following, header)
     minimum_alignment = _minimum_row_alignment(schema)
     if any(
         _has_valid_billed_amount(candidate, schema)
@@ -2188,7 +2182,7 @@ def _bounded_complementary_transaction_rows(
             )
         ),
     )
-    projected = _project_row_to_header_bands(page_evidence, combined, header)
+    projected = _project_row_to_header_bands(combined, header)
     if (
         not _has_valid_billed_amount(projected, schema)
         or not _has_transaction_date_evidence(projected)
@@ -2226,7 +2220,7 @@ def _spilled_currency_fragment_before_transaction(
         billed_column = amount_columns[0] if len(amount_columns) == 1 else None
     if billed_column is None:
         return False
-    following = _project_row_to_header_bands(page_evidence, following_source, header)
+    following = _project_row_to_header_bands(following_source, header)
     billed_cells = cells_in_column(following.cells, billed_column)
     if (
         len(billed_cells) != 1
@@ -2263,7 +2257,7 @@ def _spilled_currency_fragment_before_transaction(
         or horizontal_gap > min(_height(currency_word.bbox), _height(billed_cell.bbox)) * 0.5
     ):
         return False
-    projected = _project_row_to_header_bands(page_evidence, source, header)
+    projected = _project_row_to_header_bands(source, header)
     currency_cells = tuple(cell for cell in projected.cells if currency_word in cell.words)
     if currency_cells and (
         len(currency_cells) != 1 or not is_currency_shaped(currency_cells[0].text)
@@ -2314,7 +2308,7 @@ def _leading_ambiguity_is_proven_by_repetition(
     header: Row,
     schema: TableSchema,
 ) -> bool:
-    projected = _project_row_to_header_bands(page_evidence, rows[start_index], header)
+    projected = _project_row_to_header_bands(rows[start_index], header)
     if not _ambiguous_billed_amount_row(projected, schema):
         return False
     ambiguous_count = 1
@@ -2328,7 +2322,7 @@ def _leading_ambiguity_is_proven_by_repetition(
             or _literal_header_role_count(source) >= 2
         ):
             return False
-        candidate = _project_row_to_header_bands(page_evidence, source, header)
+        candidate = _project_row_to_header_bands(source, header)
         if (
             _has_valid_billed_amount(candidate, schema)
             and _transaction_shape_count(candidate) >= 2
@@ -2389,7 +2383,7 @@ def _inherited_region_after_total(
             stop_reason = "stopped_at_total"
             stop_index = index
             break
-        projected = _project_row_to_header_bands(page_evidence, row, header)
+        projected = _project_row_to_header_bands(row, header)
         if not projected.cells:
             ignored_outside_band_count += 1
             continue
@@ -2582,7 +2576,7 @@ def _detect_from_header(
             stop_reason = "stopped_at_new_header"
             stop_index = index
             break
-        projected = _project_row_to_header_bands(page_evidence, row, header)
+        projected = _project_row_to_header_bands(row, header)
         if not projected.cells:
             ignored_outside_band_count += 1
             continue
@@ -2935,7 +2929,7 @@ def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:
             logical_cells.append(
                 cell.model_copy(
                     update={
-                        "text": logical_text_for_bbox(logical_page, cell.bbox) or cell.text,
+                        "text": logical_text_for_evidence(glyphs, words) or cell.text,
                         "glyphs": glyphs,
                         "words": words,
                     }
@@ -3028,7 +3022,7 @@ def _singleton_transaction_candidates(
                 header.bbox,
             ):
                 continue
-            projected = _project_row_to_header_bands(page_evidence, source, header)
+            projected = _project_row_to_header_bands(source, header)
             if (
                 not _has_valid_billed_amount(projected, schema)
                 or not _has_transaction_date_evidence(projected)

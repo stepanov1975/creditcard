@@ -3117,7 +3117,6 @@ def _normalize_row(
         ledger=ledger,
         original_currency=original_currency,
         billing_currency=billed.currency,
-        conversion_date=conversion_date,
     )
     semantic_claims.extend(foreign_exchange_extraction.claims)
     diagnostics.extend(foreign_exchange_extraction.diagnostics)

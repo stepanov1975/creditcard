@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal, localcontext
 
 from ccparser.evidence import Glyph
@@ -205,7 +204,6 @@ def test_extract_foreign_exchange_from_semantic_table_columns() -> None:
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is not None
@@ -225,6 +223,24 @@ def test_extract_foreign_exchange_from_semantic_table_columns() -> None:
     assert extraction.details.net_fee.evidence
 
 
+def test_extract_foreign_exchange_does_not_require_conversion_date() -> None:
+    row = _foreign_row()
+    region = _region(row)
+    ledger = EvidenceLedger.from_rows((row,))
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=region,
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is not None
+    assert extraction.details.exchange_rate.value == Decimal("2.9660")
+
+
 def test_extract_foreign_exchange_ignores_same_currency_row() -> None:
     row = _foreign_row()
 
@@ -234,7 +250,6 @@ def test_extract_foreign_exchange_ignores_same_currency_row() -> None:
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="ILS",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is None
@@ -251,7 +266,6 @@ def test_auxiliary_amount_requires_explicit_fee_header() -> None:
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is not None
@@ -269,7 +283,6 @@ def test_coffee_header_does_not_make_auxiliary_amount_an_fx_fee() -> None:
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is not None
@@ -305,7 +318,6 @@ def test_corporate_date_header_does_not_make_conversion_date_an_exchange_rate() 
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is not None
@@ -323,7 +335,6 @@ def test_multiple_exchange_rate_candidates_remain_ambiguous() -> None:
         ledger=EvidenceLedger.from_rows((row,)),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is None
@@ -344,7 +355,6 @@ def test_conflicting_table_and_continuation_rates_remain_ambiguous() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is not None
@@ -367,7 +377,6 @@ def test_ambiguous_table_rate_is_not_repopulated_from_continuation() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 22),
     )
 
     assert extraction.details is None
@@ -389,7 +398,6 @@ def test_later_rate_row_cannot_repopulate_repeated_continuation_rate() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is None
@@ -408,7 +416,6 @@ def test_extract_foreign_exchange_from_bounded_continuation_details() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is not None
@@ -447,7 +454,6 @@ def test_fee_derivation_is_exact_under_low_decimal_precision() -> None:
             ledger=EvidenceLedger.from_rows(rows),
             original_currency="USD",
             billing_currency="ILS",
-            conversion_date=date(2026, 6, 8),
         )
 
     assert extraction.details is not None
@@ -481,7 +487,6 @@ def test_percentage_then_discount_announcement_proves_gross_and_discount_sequenc
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is not None
@@ -510,7 +515,6 @@ def test_zero_fee_percentage_is_preserved() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is not None
@@ -530,7 +534,6 @@ def test_ambiguous_explicit_continuation_rate_emits_diagnostic() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is not None
@@ -549,7 +552,6 @@ def test_unbounded_numeric_notes_do_not_become_fx_values() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is None
@@ -568,7 +570,6 @@ def test_discount_larger_than_gross_fee_prevents_net_derivation() -> None:
         ledger=EvidenceLedger.from_rows(rows),
         original_currency="USD",
         billing_currency="ILS",
-        conversion_date=date(2026, 6, 8),
     )
 
     assert extraction.details is not None

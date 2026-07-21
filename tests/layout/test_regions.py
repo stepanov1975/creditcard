@@ -21,6 +21,7 @@ from ccparser.layout.regions import (
     detect_table_regions,
     logical_rows,
 )
+from ccparser.layout.text import logical_text_for_evidence
 
 
 def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) -> Word:
@@ -551,6 +552,38 @@ def test_logical_rows_prefers_the_row_owning_the_containing_word() -> None:
     assert tuple(word.text for word in rows[1].words) == ("Second",)
     assert rows[0].glyphs == (sidebar_glyph,)
     assert sidebar_glyph not in rows[1].glyphs
+
+
+def test_logical_rows_text_matches_its_selected_evidence_and_ordering() -> None:
+    first_glyphs = _rtl_glyphs("ריבית", 80.0, 20.0)
+    ordered_first_glyphs = tuple(sorted(first_glyphs, key=lambda glyph: glyph.bbox[0]))
+    second_glyphs = tuple(_glyph(char, 10.0 + index * 2.0, 60.0) for index, char in enumerate("12"))
+    rows = logical_rows(
+        _page(
+            (
+                _word("תיביר", 60.0, 82.0, 20.0),
+                _word("12", 10.0, 20.0, 60.0),
+            ),
+            (*first_glyphs, *reversed(second_glyphs)),
+        )
+    )
+
+    assert tuple(tuple(cell.text for cell in row.cells) for row in rows) == (
+        ("ריבית",),
+        ("12",),
+    )
+    assert tuple(tuple(cell.glyphs for cell in row.cells) for row in rows) == (
+        (ordered_first_glyphs,),
+        (second_glyphs,),
+    )
+    assert tuple(tuple(cell.words for cell in row.cells) for row in rows) == (
+        ((rows[0].words[0],),),
+        ((rows[1].words[0],),),
+    )
+    assert tuple(
+        tuple(logical_text_for_evidence(cell.glyphs, cell.words) for cell in row.cells)
+        for row in rows
+    ) == tuple(tuple(cell.text for cell in row.cells) for row in rows)
 
 
 def test_table_band_evidence_uses_schema_extent_beyond_narrow_header_text() -> None:
@@ -2324,10 +2357,6 @@ def test_projection_uses_table_cells_for_vertical_band() -> None:
     first_sidebar = _word("sidebar first", 150.0, 175.0, 67.0)
     second_sidebar = _word("sidebar second", 185.0, 215.0, 67.0)
     next_detail = _word("next detail", 65.0, 85.0, 68.5)
-    page = _page(
-        (*header_words, continued, first_sidebar, second_sidebar, next_detail),
-        width=220.0,
-    )
     header = Row(
         page_number=1,
         bbox=(0.0, 10.0, 125.0, 20.0),
@@ -2361,10 +2390,49 @@ def test_projection_uses_table_cells_for_vertical_band() -> None:
         confidence=1.0,
     )
 
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     assert [cell.text for cell in projected.cells] == ["continued"]
     assert next_detail not in tuple(word for cell in projected.cells for word in cell.words)
+
+
+def test_projection_uses_only_selected_row_evidence() -> None:
+    header_word = _word("Amount", 0.0, 40.0, 10.0)
+    value_word = _word("10.00", 0.0, 40.0, 30.0)
+    header = Row(
+        page_number=1,
+        bbox=header_word.bbox,
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=header_word.bbox,
+                text=header_word.text,
+                words=(header_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(header_word,),
+        confidence=1.0,
+    )
+    source = Row(
+        page_number=1,
+        bbox=value_word.bbox,
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=value_word.bbox,
+                text=value_word.text,
+                words=(value_word,),
+                confidence=1.0,
+            ),
+        ),
+        words=(value_word,),
+        confidence=1.0,
+    )
+
+    projected = _project_row_to_header_bands(source, header)
+
+    assert tuple(cell.text for cell in projected.cells) == ("10.00",)
 
 
 def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
@@ -2372,7 +2440,6 @@ def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
     continued = _word("continued", 65.0, 85.0, 61.0)
     sidebar = _word("sidebar text", 150.0, 175.0, 67.0)
     next_detail = _word("next detail", 65.0, 85.0, 68.5)
-    page = _page((*header_words, continued, sidebar, next_detail), width=200.0)
     header = Row(
         page_number=1,
         bbox=(0.0, 10.0, 175.0, 20.0),
@@ -2406,7 +2473,7 @@ def test_projection_never_claims_words_owned_by_the_next_logical_row() -> None:
         confidence=1.0,
     )
 
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     projected_words = tuple(word for cell in projected.cells for word in cell.words)
     assert continued in projected_words
@@ -2417,7 +2484,6 @@ def test_projection_does_not_reimport_foreign_words_from_overlapping_cell_bbox()
     header_words = _auxiliary_table_header(10.0)
     continued = _word("continued", 65.0, 85.0, 61.0)
     next_detail = _word("next detail", 65.0, 85.0, 68.5)
-    page = _page((*header_words, continued, next_detail))
     header = Row(
         page_number=1,
         bbox=(0.0, 10.0, 125.0, 20.0),
@@ -2450,7 +2516,7 @@ def test_projection_does_not_reimport_foreign_words_from_overlapping_cell_bbox()
         confidence=1.0,
     )
 
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     assert tuple(word for cell in projected.cells for word in cell.words) == (continued,)
 
@@ -2471,7 +2537,6 @@ def test_projection_removes_repeated_aligned_vertical_separator_words() -> None:
         _word("I", 114.0, 116.0, 29.0, height=13.0),
         _word("18.00", 120.0, 150.0, 30.0),
     )
-    page = _page((*header_words, *data_words), width=160.0)
     header = Row(
         page_number=1,
         bbox=(0.0, 10.0, 150.0, 20.0),
@@ -2505,7 +2570,7 @@ def test_projection_removes_repeated_aligned_vertical_separator_words() -> None:
         confidence=1.0,
     )
 
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     assert tuple(word.text for cell in projected.cells for word in cell.words) == (
         "01/02/2026",
@@ -2564,9 +2629,7 @@ def test_projection_keeps_word_glyphs_in_the_word_owned_header_band() -> None:
         confidence=1.0,
         diagnostics=("dominant_direction:ltr",),
     )
-    page = _page((*header_words, billed, original), source_cell.glyphs)
-
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     assert [cell.text for cell in projected.cells] == ["10.00", "20.00"]
     assert tuple(glyph for cell in projected.cells for glyph in cell.glyphs) == source_cell.glyphs
@@ -2671,7 +2734,6 @@ def test_projection_vertical_band_ignores_unknown_header_sidebar_cells() -> None
         _word("advertising", 165.0, 175.0, 67.0),
         _word("copy", 180.0, 190.0, 67.0),
     )
-    page = _page((*header_words, continued, *sidebar_words), width=200.0)
     header = Row(
         page_number=1,
         bbox=(0.0, 10.0, 190.0, 20.0),
@@ -2706,7 +2768,7 @@ def test_projection_vertical_band_ignores_unknown_header_sidebar_cells() -> None
         confidence=1.0,
     )
 
-    projected = _project_row_to_header_bands(page, source, header)
+    projected = _project_row_to_header_bands(source, header)
 
     assert continued in tuple(word for cell in projected.cells for word in cell.words)
 

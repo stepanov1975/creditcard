@@ -11,37 +11,21 @@ from typing import Protocol
 from ccparser.discovery import (
     DocumentClassification,
     StatementDiscovery,
-    StatementGroupDiscovery,
     discover_statement,
 )
-from ccparser.evidence import DocumentEvidence, Glyph, TesseractOcr, Word, extract_pdf
+from ccparser.evidence import DocumentEvidence, TesseractOcr, extract_pdf
 from ccparser.evidence.provider import OcrProvider
-from ccparser.layout.models import Cell, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import (
     BatchResult,
-    DiscoveryCellSummary,
-    DiscoveryColumnSummary,
-    DiscoveryDateYearContextSummary,
-    DiscoveryGlyphSummary,
-    DiscoveryMetadataSummary,
-    DiscoveryRowSummary,
-    DiscoveryTableSchemaSummary,
-    DiscoveryWordSummary,
-    EvidenceReference,
-    PrintedTotalSummary,
-    RejectedTotalCandidateSummary,
-    RowNormalizationSummary,
-    StatementDiscoverySummary,
-    StatementGroupDiscoverySummary,
     StatementResult,
     Status,
-    TableRegionSummary,
 )
 from ccparser.money import parse_amount
 from ccparser.normalize import StatementNormalization, normalize_statement
 from ccparser.ocr_repair import repair_table_numeric_ocr
 from ccparser.output import write_batch_outputs
 from ccparser.paths import is_relative_to, iter_regular_pdf_files, paths_overlap
+from ccparser.summary import discovery_summary, row_summaries
 
 MAX_WORKERS = 32
 
@@ -92,196 +76,6 @@ def default_cache_directory() -> Path:
 
 def _diagnostics(discovery: StatementDiscovery) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*discovery.reason_codes, *discovery.diagnostics)))
-
-
-def _cell_evidence(cell: Cell) -> EvidenceReference:
-    return EvidenceReference(page_number=cell.page_number, bbox=cell.bbox, raw_text=cell.text)
-
-
-def _glyph_summary(glyph: Glyph) -> DiscoveryGlyphSummary:
-    return DiscoveryGlyphSummary(
-        char=glyph.char,
-        bbox=glyph.bbox,
-        origin=glyph.origin,
-        font=glyph.font,
-        size=glyph.size,
-        source=glyph.source,
-        confidence=glyph.confidence,
-    )
-
-
-def _word_summary(word: Word) -> DiscoveryWordSummary:
-    return DiscoveryWordSummary(
-        text=word.text,
-        bbox=word.bbox,
-        source=word.source,
-        confidence=word.confidence,
-    )
-
-
-def _cell_summary(cell: Cell) -> DiscoveryCellSummary:
-    return DiscoveryCellSummary(
-        page_number=cell.page_number,
-        bbox=cell.bbox,
-        text=cell.text,
-        glyphs=tuple(_glyph_summary(glyph) for glyph in cell.glyphs),
-        words=tuple(_word_summary(word) for word in cell.words),
-        confidence=cell.confidence,
-        diagnostics=cell.diagnostics,
-    )
-
-
-def _row_summary(row: Row) -> DiscoveryRowSummary:
-    return DiscoveryRowSummary(
-        page_number=row.page_number,
-        bbox=row.bbox,
-        cells=tuple(_cell_summary(cell) for cell in row.cells),
-        words=tuple(_word_summary(word) for word in row.words),
-        confidence=row.confidence,
-        diagnostics=row.diagnostics,
-    )
-
-
-def _column_summary(column: ColumnSpec) -> DiscoveryColumnSummary:
-    return DiscoveryColumnSummary(
-        index=column.index,
-        page_number=column.page_number,
-        bbox=column.bbox,
-        relative_x0=column.relative_x0,
-        relative_x1=column.relative_x1,
-        role=column.role.value,
-        source_cells=tuple(_cell_summary(cell) for cell in column.source_cells),
-        confidence=column.confidence,
-        diagnostics=column.diagnostics,
-    )
-
-
-def _table_schema_summary(schema: TableSchema) -> DiscoveryTableSchemaSummary:
-    return DiscoveryTableSchemaSummary(
-        page_number=schema.page_number,
-        bbox=schema.bbox,
-        columns=tuple(_column_summary(column) for column in schema.columns),
-        header_cells=tuple(_cell_summary(cell) for cell in schema.header_cells),
-        sample_cells=tuple(_cell_summary(cell) for cell in schema.sample_cells),
-        confidence=schema.confidence,
-        diagnostics=schema.diagnostics,
-    )
-
-
-def _table_region_summary(region: TableRegion) -> TableRegionSummary:
-    columns = region.table_schema.columns
-    return TableRegionSummary(
-        page_number=region.page_number,
-        bbox=region.bbox,
-        header_evidence=tuple(_cell_evidence(cell) for cell in region.header.cells),
-        column_roles=tuple(column.role.value for column in columns),
-        row_count=len(region.rows),
-        header=_row_summary(region.header),
-        rows=tuple(_row_summary(row) for row in region.rows),
-        table_schema=_table_schema_summary(region.table_schema),
-        confidence=region.confidence,
-        diagnostics=region.diagnostics,
-    )
-
-
-def _printed_total_summary(group: StatementGroupDiscovery) -> PrintedTotalSummary:
-    total = group.printed_total
-    return PrintedTotalSummary(
-        group_id=group.group_id,
-        amount_text=total.amount_text,
-        currency=total.currency,
-        label_evidence=total.label_evidence,
-        value_evidence=total.value_evidence,
-        confidence=total.confidence,
-        diagnostics=total.diagnostics,
-    )
-
-
-def _group_summary(group: StatementGroupDiscovery) -> StatementGroupDiscoverySummary:
-    return StatementGroupDiscoverySummary(
-        group_id=group.group_id,
-        table_regions=tuple(_table_region_summary(region) for region in group.table_regions),
-        printed_total=_printed_total_summary(group),
-        confidence=group.confidence,
-        diagnostics=group.diagnostics,
-    )
-
-
-def _discovery_summary(discovery: StatementDiscovery) -> StatementDiscoverySummary:
-    metadata_values = (
-        discovery.issuer,
-        discovery.account_number,
-        discovery.card_number,
-        discovery.statement_date,
-    )
-    metadata = tuple(
-        DiscoveryMetadataSummary(
-            field_name=value.field_name,
-            value=value.value,
-            evidence=value.evidence,
-            confidence=value.confidence,
-            diagnostics=value.diagnostics,
-        )
-        for value in metadata_values
-        if value is not None
-    )
-    groups = tuple(_group_summary(group) for group in discovery.groups)
-    date_year_context = discovery.date_year_context
-    return StatementDiscoverySummary(
-        classification=discovery.classification.value,
-        metadata=metadata,
-        date_year_context=(
-            DiscoveryDateYearContextSummary(
-                year=date_year_context.year,
-                year_by_suffix=(
-                    date_year_context.year_by_suffix
-                    or (
-                        ((date_year_context.year % 100, date_year_context.year),)
-                        if date_year_context.year is not None
-                        else ()
-                    )
-                ),
-                style=date_year_context.style.value,
-                evidence=date_year_context.evidence,
-                metadata_evidence=date_year_context.metadata_evidence,
-                confidence=date_year_context.confidence,
-                diagnostics=date_year_context.diagnostics,
-            )
-            if date_year_context is not None
-            else None
-        ),
-        rejected_total_candidates=tuple(
-            RejectedTotalCandidateSummary(
-                evidence=candidate.evidence,
-                confidence=candidate.confidence,
-                diagnostics=candidate.diagnostics,
-            )
-            for candidate in discovery.rejected_total_candidates
-        ),
-        groups=groups,
-        table_regions=tuple(_table_region_summary(region) for region in discovery.table_regions),
-        printed_totals=tuple(group.printed_total for group in groups),
-        confidence=discovery.confidence,
-        reason_codes=discovery.reason_codes,
-        diagnostics=discovery.diagnostics,
-    )
-
-
-def _row_summaries(
-    normalization: StatementNormalization,
-) -> tuple[RowNormalizationSummary, ...]:
-    return tuple(
-        RowNormalizationSummary(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=row.raw_text,
-            evidence=row.evidence,
-            transaction=row.transaction,
-            confidence=row.confidence,
-            diagnostics=row.diagnostics,
-        )
-        for row in normalization.row_results
-    )
 
 
 def _is_exact_unambiguous(
@@ -361,7 +155,7 @@ def parse_statement(
                 source_name=source.name,
                 source_sha256=evidence.source_sha256,
                 statement_id=evidence.source_sha256,
-                discovery=_discovery_summary(discovery),
+                discovery=discovery_summary(discovery),
             )
         if discovery.classification is DocumentClassification.AMBIGUOUS:
             return StatementResult(
@@ -372,7 +166,7 @@ def parse_statement(
                 source_name=source.name,
                 source_sha256=evidence.source_sha256,
                 statement_id=evidence.source_sha256,
-                discovery=_discovery_summary(discovery),
+                discovery=discovery_summary(discovery),
             )
         normalization = normalize(discovery)
         normalized_result = normalization.reconciliation
@@ -421,8 +215,8 @@ def parse_statement(
             source_name=source.name,
             source_sha256=evidence.source_sha256,
             statement_id=evidence.source_sha256,
-            discovery=_discovery_summary(discovery),
-            row_results=_row_summaries(normalization),
+            discovery=discovery_summary(discovery),
+            row_results=row_summaries(normalization),
             normalization_confidence=normalization.confidence,
             normalization_diagnostics=normalization.diagnostics,
         )
