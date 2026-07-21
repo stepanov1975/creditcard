@@ -241,6 +241,39 @@ def test_transaction_preserves_evidence_backed_foreign_exchange_details() -> Non
     assert payload["net_fee"]["derivation"] == "gross_fee_minus_discount"
 
 
+def test_foreign_exchange_derivation_is_exact_under_low_decimal_precision() -> None:
+    from decimal import localcontext
+
+    from ccparser.models import ExtractedMoney, ForeignExchangeDetails
+
+    fee_evidence = _fx_evidence("fee", 20.0)
+    discount_evidence = _fx_evidence("discount", 30.0)
+    gross = ExtractedMoney(
+        amount=Decimal("123456789012345678901234567890.12"),
+        currency="ILS",
+        evidence=(fee_evidence,),
+    )
+    discount = ExtractedMoney(
+        amount=Decimal("0.01"),
+        currency="ILS",
+        evidence=(discount_evidence,),
+    )
+    exact_net = ExtractedMoney(
+        amount=Decimal("123456789012345678901234567890.11"),
+        currency="ILS",
+        evidence=(fee_evidence, discount_evidence),
+        derivation="gross_fee_minus_discount",
+    )
+    with localcontext() as context:
+        context.prec = 5
+        details = ForeignExchangeDetails(
+            gross_fee=gross,
+            fee_discount=discount,
+            net_fee=exact_net,
+        )
+    assert details.net_fee == exact_net
+
+
 def test_foreign_exchange_requires_evidence_and_exact_derivation() -> None:
     from ccparser.models import ExtractedDecimal, ExtractedMoney, ForeignExchangeDetails
 

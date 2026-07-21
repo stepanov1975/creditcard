@@ -5,7 +5,7 @@ import io
 import json
 import unicodedata
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 
 import pytest
@@ -186,6 +186,34 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["source_page"] == "1"
     assert row["source_bbox"] == "1:10.25,20.5,30.75,40"
     assert row["diagnostic_codes"] == "batch_diagnostic|statement_diagnostic"
+
+
+def test_transactions_csv_formats_large_and_signed_zero_values_without_rounding() -> None:
+    batch = _batch()
+    statement = batch.statements[0]
+    transaction = statement.transactions[0].model_copy(
+        update={
+            "billed_amount": Decimal("123456789012345678901234567890.1200"),
+            "original_amount": Decimal("-0.00"),
+        }
+    )
+    batch = batch.model_copy(
+        update={"statements": (statement.model_copy(update={"transactions": (transaction,)}),)}
+    )
+
+    with localcontext() as context:
+        context.prec = 5
+        rows = tuple(
+            csv.DictReader(
+                io.StringIO(
+                    transactions_csv_bytes(batch).decode("utf-8-sig"),
+                    newline="",
+                )
+            )
+        )
+
+    assert rows[0]["billed_amount"] == "123456789012345678901234567890.12"
+    assert rows[0]["original_amount"] == "0"
 
 
 @pytest.mark.parametrize(

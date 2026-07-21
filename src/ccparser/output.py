@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from ccparser.decimal_math import plain_decimal_string
 from ccparser.models import (
     BatchResult,
     EvidenceReference,
@@ -112,15 +113,8 @@ def canonical_json_bytes(result: BaseModel) -> bytes:
     )
 
 
-def _decimal_string(value: Decimal | None) -> str:
-    if value is None:
-        return ""
-    if not value.is_finite():
-        raise ValueError("financial values must be finite")
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return "0" if text in {"", "-0"} else text
+def _optional_decimal_string(value: Decimal | None) -> str:
+    return "" if value is None else plain_decimal_string(value)
 
 
 def _date_string(value: date | None) -> str:
@@ -157,7 +151,7 @@ def _fx_fields(transaction: Transaction) -> dict[str, str]:
         if extracted is None:
             return
         pages, boxes = _provenance(extracted.evidence)
-        fields[prefix] = _decimal_string(extracted.value)
+        fields[prefix] = _optional_decimal_string(extracted.value)
         fields[f"{prefix}_source_page"] = pages
         fields[f"{prefix}_source_bbox"] = boxes
 
@@ -165,7 +159,7 @@ def _fx_fields(transaction: Transaction) -> dict[str, str]:
         if extracted is None:
             return
         pages, boxes = _provenance(extracted.evidence)
-        fields[prefix] = _decimal_string(extracted.amount)
+        fields[prefix] = _optional_decimal_string(extracted.amount)
         fields[f"{prefix}_currency"] = extracted.currency
         fields[f"{prefix}_source_page"] = pages
         fields[f"{prefix}_source_bbox"] = boxes
@@ -224,9 +218,9 @@ def _transaction_row(
         "description": unicodedata.normalize("NFC", transaction.description or ""),
         "category": transaction.category.value,
         "kind": transaction.kind.value,
-        "billed_amount": _decimal_string(transaction.billed_amount),
+        "billed_amount": _optional_decimal_string(transaction.billed_amount),
         "billing_currency": transaction.billing_currency,
-        "original_amount": _decimal_string(transaction.original_amount),
+        "original_amount": _optional_decimal_string(transaction.original_amount),
         "original_currency": transaction.original_currency or "",
         "installment_current": (
             str(transaction.installment_current)

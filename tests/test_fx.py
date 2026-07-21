@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from ccparser.evidence import Glyph
 from ccparser.fx import extract_foreign_exchange
@@ -374,6 +374,31 @@ def test_extract_foreign_exchange_from_bounded_continuation_details() -> None:
     assert details.net_fee.evidence == tuple(
         dict.fromkeys((*details.gross_fee.evidence, *details.fee_discount.evidence))
     )
+    assert extraction.diagnostics == ()
+
+
+def test_fee_derivation_is_exact_under_low_decimal_precision() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = _continuation_rows(
+        gross_fee="123456789012345678901234567890.12",
+        discount="0.01",
+    )
+    rows = (base_row, *continuation_rows)
+
+    with localcontext() as context:
+        context.prec = 5
+        extraction = extract_foreign_exchange(
+            rows=rows,
+            region=_region(base_row, fee_header="Auxiliary amount"),
+            ledger=EvidenceLedger.from_rows(rows),
+            original_currency="USD",
+            billing_currency="ILS",
+            conversion_date=date(2026, 6, 8),
+        )
+
+    assert extraction.details is not None
+    assert extraction.details.net_fee is not None
+    assert extraction.details.net_fee.amount == Decimal("123456789012345678901234567890.11")
     assert extraction.diagnostics == ()
 
 

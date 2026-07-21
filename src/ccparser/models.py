@@ -20,11 +20,7 @@ from pydantic import (
 )
 from pydantic.functional_validators import AfterValidator
 
-
-def _finite_decimal(value: Decimal) -> Decimal:
-    if not value.is_finite():
-        raise ValueError("financial values must be finite")
-    return value
+from ccparser.decimal_math import exact_difference, finite_decimal, plain_decimal_string
 
 
 def _finite_coordinate(value: float) -> float:
@@ -33,22 +29,10 @@ def _finite_coordinate(value: float) -> float:
     return value
 
 
-type FiniteDecimal = Annotated[Decimal, AfterValidator(_finite_decimal)]
+type FiniteDecimal = Annotated[Decimal, AfterValidator(finite_decimal)]
 type FiniteCoordinate = Annotated[float, AfterValidator(_finite_coordinate)]
 type FiniteBBox = tuple[FiniteCoordinate, FiniteCoordinate, FiniteCoordinate, FiniteCoordinate]
 type FinitePoint = tuple[FiniteCoordinate, FiniteCoordinate]
-
-
-def _decimal_string(value: Decimal) -> str:
-    """Return a canonical plain-decimal representation for financial output."""
-
-    _finite_decimal(value)
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    if text in {"-0", ""}:
-        return "0"
-    return text
 
 
 class TransactionKind(StrEnum):
@@ -99,7 +83,7 @@ class ExtractedDecimal(BaseModel):
 
     @field_serializer("value")
     def serialize_value(self, value: Decimal) -> str:
-        return _decimal_string(value)
+        return plain_decimal_string(value)
 
 
 class ExtractedMoney(BaseModel):
@@ -114,7 +98,7 @@ class ExtractedMoney(BaseModel):
 
     @field_serializer("amount")
     def serialize_amount(self, value: Decimal) -> str:
-        return _decimal_string(value)
+        return plain_decimal_string(value)
 
 
 class ForeignExchangeDetails(BaseModel):
@@ -163,7 +147,7 @@ class ForeignExchangeDetails(BaseModel):
                 != 1
             ):
                 raise ValueError("derived fee currencies must match")
-            expected = self.gross_fee.amount - self.fee_discount.amount
+            expected = exact_difference(self.gross_fee.amount, self.fee_discount.amount)
             expected_evidence = tuple(
                 dict.fromkeys((*self.gross_fee.evidence, *self.fee_discount.evidence))
             )
@@ -201,7 +185,7 @@ class Transaction(BaseModel):
 
     @field_serializer("billed_amount", "original_amount")
     def serialize_amount(self, value: Decimal | None) -> str | None:
-        return _decimal_string(value) if value is not None else None
+        return plain_decimal_string(value) if value is not None else None
 
     @field_validator("description")
     @classmethod
@@ -240,7 +224,7 @@ class PrintedTotal(BaseModel):
 
     @field_serializer("amount", "minor_unit")
     def serialize_money(self, value: Decimal) -> str:
-        return _decimal_string(value)
+        return plain_decimal_string(value)
 
 
 class ReconciliationGroup(BaseModel):
@@ -259,7 +243,7 @@ class ReconciliationGroup(BaseModel):
 
     @field_serializer("printed_total", "calculated_total", "difference")
     def serialize_money(self, value: Decimal) -> str:
-        return _decimal_string(value)
+        return plain_decimal_string(value)
 
 
 class DiscoveryMetadataSummary(BaseModel):

@@ -13,6 +13,7 @@ from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ccparser.decimal_math import exact_difference, exact_sum
 from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
 from ccparser.layout import TableRegion, logical_rows
 from ccparser.layout.columns import (
@@ -1909,16 +1910,13 @@ def _attach_exact_singleton_regions(
         )
         if any(amounts is None for amounts in existing_amount_groups):
             continue
-        calculated = sum(
-            (
-                amount
-                for amounts in existing_amount_groups
-                if amounts is not None
-                for amount in amounts
-            ),
-            Decimal("0"),
+        calculated = exact_sum(
+            amount
+            for amounts in existing_amount_groups
+            if amounts is not None
+            for amount in amounts
         )
-        missing = total.amount - calculated
+        missing = exact_difference(total.amount, calculated)
         for candidate_index, candidate in enumerate(candidates):
             if not any(compatible(region, candidate) for region in group.table_regions):
                 continue

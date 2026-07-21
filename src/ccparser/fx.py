@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from ccparser.decimal_math import exact_difference
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
     EvidenceReference,
@@ -356,7 +357,7 @@ def _continuation_fx_values(
 
     net_fee: ExtractedMoney | None = None
     if gross_fee is not None and fee_discount is not None:
-        amount = gross_fee.amount - fee_discount.amount
+        amount = exact_difference(gross_fee.amount, fee_discount.amount)
         if gross_fee.currency != fee_discount.currency or amount < 0:
             diagnostics.append("inconsistent_foreign_currency_fee_derivation")
         else:

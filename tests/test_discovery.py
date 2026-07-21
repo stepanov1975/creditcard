@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import localcontext
+
 import pytest
 
 from ccparser.discovery import (
@@ -194,6 +196,46 @@ def test_discover_statement_attaches_unique_singleton_that_exactly_closes_total(
     assert "exact_singleton_reconciliation" in result.groups[0].diagnostics
     assert len(normalized.transactions) == 3
     assert normalized.reconciliation.status is Status.RECONCILED
+
+
+def test_exact_singleton_reconciliation_ignores_active_decimal_context() -> None:
+    first_page = _page(
+        1,
+        (
+            *_table(
+                20.0,
+                "₪",
+                "123456789012345678901234567890.12",
+                "0.01",
+            ),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word(
+                "₪123456789012345678901234567890.14",
+                118.0,
+                155.0,
+                80.0,
+            ),
+        ),
+    )
+    second_page = _page(
+        2,
+        (
+            _word("Date", 0.0, 28.0, 20.0),
+            _word("Description", 50.0, 95.0, 20.0),
+            _word("Amount", 118.0, 155.0, 20.0),
+            _word("03/02/2026", 0.0, 28.0, 40.0),
+            _word("Hotel", 50.0, 95.0, 40.0),
+            _word("₪0.01", 118.0, 155.0, 40.0),
+        ),
+    )
+
+    with localcontext() as context:
+        context.prec = 5
+        result = discover_statement(_document(first_page, second_page))
+
+    assert len(result.groups) == 1
+    assert len(result.groups[0].table_regions) == 2
+    assert "exact_singleton_reconciliation" in result.groups[0].diagnostics
 
 
 def test_discover_statement_resolves_nearby_duplicate_summary_label() -> None:
