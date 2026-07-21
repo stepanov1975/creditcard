@@ -9,10 +9,32 @@ from collections.abc import Sequence
 from decimal import Decimal
 from itertools import pairwise
 
-from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
+from ccparser.evidence.models import Glyph, PageEvidence, Word
+from ccparser.geometry import (
+    BBox,
+)
+from ccparser.geometry import (
+    bbox_center_x as _center_x,
+)
+from ccparser.geometry import (
+    bbox_center_y as _center_y,
+)
+from ccparser.geometry import (
+    bbox_height as _height,
+)
+from ccparser.geometry import (
+    bbox_width as _width,
+)
+from ccparser.geometry import (
+    union_bbox as _union_bbox,
+)
+from ccparser.geometry import (
+    vertical_overlap as _vertical_overlap_ratio,
+)
 from ccparser.layout.columns import (
     _header_evidence_texts,
     _header_scores,
+    cells_in_column,
     contains_date_token,
     explicit_billed_amount_column,
     infer_column_roles,
@@ -94,39 +116,8 @@ MAX_ISSUER_CONVERSION_DETAIL_ROWS = 5
 type _PageRowKey = Row
 
 
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
-
-
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
-
-
-def _center_y(bbox: BBox) -> float:
-    return (bbox[1] + bbox[3]) / 2
-
-
-def _width(bbox: BBox) -> float:
-    return max(0.0, bbox[2] - bbox[0])
-
-
 def _horizontal_gap(first: BBox, second: BBox) -> float:
     return max(0.0, second[0] - first[2], first[0] - second[2])
-
-
-def _vertical_overlap_ratio(first: BBox, second: BBox) -> float:
-    overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
-    smaller_height = min(_height(first), _height(second))
-    return overlap / smaller_height if smaller_height else 0.0
-
-
-def _union_bbox(boxes: Sequence[BBox]) -> BBox:
-    return (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
-    )
 
 
 def _normalized_marker(text: str) -> str:
@@ -775,15 +766,7 @@ def _has_strong_single_row_evidence(
             for value in (*[cell.text for cell in row.cells], *[word.text for word in row.words])
         )
     )
-    billed_cells = (
-        tuple(
-            cell
-            for cell in row.cells
-            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-        )
-        if billed_column is not None
-        else ()
-    )
+    billed_cells = cells_in_column(row.cells, billed_column) if billed_column is not None else ()
     total_amount_cells = (
         tuple(cell for cell in total_row.cells if is_money_shaped(cell.text))
         if total_row is not None and _is_total_row(total_row)
@@ -865,11 +848,7 @@ def _bounded_leading_detail_before_transaction(
         billed_column = amount_columns[0] if len(amount_columns) == 1 else None
     if billed_column is None:
         return None
-    billed_cells = tuple(
-        cell
-        for cell in projected.cells
-        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-    )
+    billed_cells = cells_in_column(projected.cells, billed_column)
     occupied_roles = {
         column.role
         for cell in projected.cells
@@ -1302,9 +1281,7 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
     amount_column = proven_billed_amount_column(schema, (previous,))
     if amount_column is None:
         return False
-    if any(
-        amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2] for cell in row.cells
-    ):
+    if cells_in_column(row.cells, amount_column):
         return False
     minimum_alignment = (
         min(2 / len(schema.columns), 1.0)
@@ -1329,19 +1306,12 @@ def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     )
     if amount_column is None:
         return False
-    amount_cells = tuple(
-        cell
-        for cell in row.cells
-        if amount_column.bbox[0] <= _center_x(cell.bbox) <= amount_column.bbox[2]
-    )
+    amount_cells = cells_in_column(row.cells, amount_column)
     secondary_amount_columns = tuple(
         column for column in amount_columns if column is not amount_column
     )
     secondary_cells = tuple(
-        cell
-        for column in secondary_amount_columns
-        for cell in row.cells
-        if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
+        cell for column in secondary_amount_columns for cell in cells_in_column(row.cells, column)
     )
     return len(amount_cells) == 1 and is_money_shaped(amount_cells[0].text) and not secondary_cells
 
@@ -1517,16 +1487,8 @@ def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) 
     billed_column = proven_billed_amount_column(schema, (row,))
     if len(original_columns) != 1 or billed_column is None:
         return False
-    original_cells = tuple(
-        cell
-        for cell in row.cells
-        if original_columns[0].bbox[0] <= _center_x(cell.bbox) <= original_columns[0].bbox[2]
-    )
-    billed_cells = tuple(
-        cell
-        for cell in row.cells
-        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-    )
+    original_cells = cells_in_column(row.cells, original_columns[0])
+    billed_cells = cells_in_column(row.cells, billed_column)
     if (
         len(original_cells) != 1
         or len(billed_cells) != 1
@@ -1614,11 +1576,7 @@ def _foreign_conversion_detail_block(
         )
         if outside_table_band_count is None:
             return None
-        billed_cells = tuple(
-            cell
-            for cell in projected.cells
-            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-        )
+        billed_cells = cells_in_column(projected.cells, billed_column)
         allowed_fifth_identifier = (
             has_distinct_currencies
             and len(details) == MAX_FOREIGN_CONVERSION_DETAIL_ROWS
@@ -2079,10 +2037,7 @@ def _bounded_hebrew_note_detail(
         or _transaction_shape_count(projected) > 1
         or _row_alignment(projected, schema) <= 0
         or _projection_preserves_table_band_evidence(source, projected, header, schema) is None
-        or any(
-            billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-            for cell in projected.cells
-        )
+        or bool(cells_in_column(projected.cells, billed_column))
     ):
         return None
     following = _project_row_to_header_bands(page_evidence, following_source, header)
@@ -2124,11 +2079,7 @@ def _bounded_overlaid_ocr_amount_artifact(
     projected_source = _project_row_to_header_bands(page_evidence, source, header)
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     source_amount_cells = (
-        tuple(
-            cell
-            for cell in projected_source.cells
-            if amount_columns[0].bbox[0] <= _center_x(cell.bbox) <= amount_columns[0].bbox[2]
-        )
+        cells_in_column(projected_source.cells, amount_columns[0])
         if len(amount_columns) == 1
         else ()
     )
@@ -2276,11 +2227,7 @@ def _spilled_currency_fragment_before_transaction(
     if billed_column is None:
         return False
     following = _project_row_to_header_bands(page_evidence, following_source, header)
-    billed_cells = tuple(
-        cell
-        for cell in following.cells
-        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-    )
+    billed_cells = cells_in_column(following.cells, billed_column)
     if (
         len(billed_cells) != 1
         or not is_money_shaped(billed_cells[0].text)
@@ -2345,11 +2292,7 @@ def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
         billed_column = amount_columns[0] if len(amount_columns) == 1 else None
     if billed_column is None:
         return False
-    billed_cells = tuple(
-        cell
-        for cell in row.cells
-        if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-    )
+    billed_cells = cells_in_column(row.cells, billed_column)
     transaction_shape_count = _transaction_shape_count(row)
     has_embedded_date_proof = transaction_shape_count >= 1 and any(
         contains_date_token(value)

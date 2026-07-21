@@ -6,7 +6,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ccparser.evidence.models import BBox, Glyph, Word
+from ccparser.evidence.models import Glyph, Word
+from ccparser.geometry import BBox
 
 
 class _ImmutableLayoutModel(BaseModel):

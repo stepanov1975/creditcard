@@ -17,7 +17,12 @@ from ccparser.discovery import (
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
-from ccparser.normalize import _cross_cell_date_tokens, normalize_statement, parse_amount
+from ccparser.normalize import (
+    _column_header_text,
+    _cross_cell_date_tokens,
+    normalize_statement,
+    parse_amount,
+)
 from ccparser.semantic_evidence import EvidenceLedger
 
 
@@ -123,6 +128,23 @@ def _region(
         table_schema=schema,
         confidence=1.0,
     )
+
+
+def test_column_header_text_unions_source_and_centered_header_evidence() -> None:
+    centered = _cell("centered", 0, 10.0)
+    source = _cell("source", 1, 10.0)
+    row = _row(_cell("value", 0, 30.0))
+    region = _region((ColumnRole.UNKNOWN,), (row,))
+    column = region.table_schema.columns[0].model_copy(update={"source_cells": (source,)})
+    region = region.model_copy(
+        update={
+            "table_schema": region.table_schema.model_copy(
+                update={"columns": (column,), "header_cells": (source, centered)}
+            )
+        }
+    )
+
+    assert _column_header_text(region, column) == "source centered"
 
 
 def _discovery(

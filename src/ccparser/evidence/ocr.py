@@ -15,7 +15,8 @@ from typing import cast
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 
 from ccparser.evidence.currency import CURRENCY_OCR_SYMBOLS
-from ccparser.evidence.models import BBox, Point, Word
+from ccparser.evidence.models import Word
+from ccparser.geometry import BBox, Point, intersection_over_smaller
 
 OCR_LANGUAGES = "heb+eng"
 OCR_PREPROCESSING_VERSION = "raw-pixmap-v1"
@@ -107,16 +108,6 @@ _DATE_TOKEN_PATTERN = re.compile(
 )
 
 
-def _overlap_over_smaller(first: BBox, second: BBox) -> float:
-    width = max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
-    height = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
-    intersection = width * height
-    first_area = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
-    second_area = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
-    smaller = min(first_area, second_area)
-    return intersection / smaller if smaller else 0.0
-
-
 def _numeric_digit_count(text: str) -> int:
     normalized = "".join(
         char
@@ -190,7 +181,7 @@ def fuse_ocr_words(
         candidates = tuple(
             candidate
             for candidate in numeric_supplements
-            if _overlap_over_smaller(word.bbox, candidate.bbox) >= 0.7
+            if intersection_over_smaller(word.bbox, candidate.bbox) >= 0.7
             and (
                 (primary_digits and _numeric_digit_count(candidate.text) > primary_digits)
                 or _minimal_letter_numeric_repair(word.text, candidate.text)

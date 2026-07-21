@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from ccparser.decimal_math import exact_difference
+from ccparser.layout.columns import cells_in_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.models import (
     EvidenceReference,
@@ -69,14 +70,6 @@ _DISCOUNT_CUES = (
     "מופחתת",
 )
 _BOUNDED_DETAIL_DIAGNOSTIC = "foreign_conversion_detail_block"
-
-
-def _center_x(cell: Cell) -> float:
-    return (cell.bbox[0] + cell.bbox[2]) / 2
-
-
-def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
-    return tuple(cell for cell in row.cells if column.bbox[0] <= _center_x(cell) <= column.bbox[2])
 
 
 def _header_phrase(column: ColumnSpec) -> str:
@@ -201,7 +194,9 @@ def _table_fx_values(
     rate_columns = tuple(
         column for column in region.table_schema.columns if _is_rate_column(column)
     )
-    rate_cells = tuple(cell for column in rate_columns for cell in _cells_for_column(row, column))
+    rate_cells = tuple(
+        cell for column in rate_columns for cell in cells_in_column(row.cells, column)
+    )
     if rate_cells:
         rate_candidates = tuple(
             (value, atom_ids, cell)
@@ -225,7 +220,7 @@ def _table_fx_values(
             diagnostics.append("unparsed_exchange_rate_candidate")
 
     fee_columns = tuple(column for column in region.table_schema.columns if _is_fee_column(column))
-    fee_cells = tuple(cell for column in fee_columns for cell in _cells_for_column(row, column))
+    fee_cells = tuple(cell for column in fee_columns for cell in cells_in_column(row.cells, column))
     if fee_cells:
         fee_candidates = tuple(
             (amount, currency, atom_ids, cell)

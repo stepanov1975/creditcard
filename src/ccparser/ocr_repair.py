@@ -9,9 +9,24 @@ import statistics
 from collections.abc import Sequence
 from decimal import Decimal
 
-from ccparser.evidence.models import BBox, DocumentEvidence, PageEvidence, Word
+from ccparser.evidence.models import DocumentEvidence, PageEvidence, Word
 from ccparser.evidence.provider import OcrProvider
-from ccparser.layout.columns import explicit_billed_amount_column, is_date_shaped
+from ccparser.geometry import (
+    BBox,
+    center_inside,
+)
+from ccparser.geometry import (
+    bbox_center_y as _center_y,
+)
+from ccparser.geometry import (
+    bbox_height as _height,
+)
+from ccparser.layout.columns import (
+    cells_in_column,
+    columns_for_role,
+    explicit_billed_amount_column,
+    is_date_shaped,
+)
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
     _candidate_schema,
@@ -29,18 +44,6 @@ from ccparser.money import canonical_currency, is_currency_shaped, parse_amount
 _DECIMAL_AMOUNT_PATTERN = re.compile(r"[.,]\d{1,2}(?!\d)")
 
 
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
-
-
-def _center_y(bbox: BBox) -> float:
-    return (bbox[1] + bbox[3]) / 2
-
-
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
-
-
 def _clip_key(clip: BBox) -> BBox:
     return (
         round(clip[0], 6),
@@ -50,24 +53,16 @@ def _clip_key(clip: BBox) -> BBox:
     )
 
 
-def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
-    return tuple(
-        cell for cell in row.cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
-    )
-
-
 def _sole_billed_column(schema: TableSchema) -> ColumnSpec | None:
     explicit = explicit_billed_amount_column(schema.columns, schema.header_cells)
     if explicit is not None:
         return explicit
-    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
+    amount_columns = columns_for_role(schema, ColumnRole.AMOUNT)
     return amount_columns[0] if len(amount_columns) == 1 else None
 
 
 def _header_cell_for_column(header: Row, column: ColumnSpec) -> Cell | None:
-    cells = tuple(
-        cell for cell in header.cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
-    )
+    cells = cells_in_column(header.cells, column)
     return cells[0] if len(cells) == 1 else None
 
 
@@ -76,22 +71,20 @@ def _transaction_context_cells(
     schema: TableSchema,
     billed_column: ColumnSpec,
 ) -> tuple[Cell, ...] | None:
-    date_columns = tuple(column for column in schema.columns if column.role is ColumnRole.DATE)
-    description_columns = tuple(
-        column for column in schema.columns if column.role is ColumnRole.DESCRIPTION
-    )
+    date_columns = columns_for_role(schema, ColumnRole.DATE)
+    description_columns = columns_for_role(schema, ColumnRole.DESCRIPTION)
     if len(date_columns) != 1 or len(description_columns) > 1:
         return None
-    date_cells = _cells_for_column(row, date_columns[0])
+    date_cells = cells_in_column(row.cells, date_columns[0])
     description_cells = (
-        _cells_for_column(row, description_columns[0])
+        cells_in_column(row.cells, description_columns[0])
         if description_columns
         else tuple(
             cell
             for cell in row.cells
             if any(char.isalpha() for char in cell.text)
             and cell not in date_cells
-            and cell not in _cells_for_column(row, billed_column)
+            and cell not in cells_in_column(row.cells, billed_column)
         )
     )
     if (
@@ -267,13 +260,7 @@ def _replace_words_in_clip(
     replacements: Sequence[Word],
 ) -> tuple[Word, ...]:
     retained = tuple(
-        word
-        for word in words
-        if not (
-            word.source == "ocr"
-            and clip[0] <= _center_x(word.bbox) <= clip[2]
-            and clip[1] <= _center_y(word.bbox) <= clip[3]
-        )
+        word for word in words if not (word.source == "ocr" and center_inside(word.bbox, clip))
     )
     return (*retained, *replacements)
 
@@ -309,7 +296,7 @@ def _repair_page(
                     source_row,
                     header,
                 )
-                total_amount_cells = _cells_for_column(projected_total, billed_column)
+                total_amount_cells = cells_in_column(projected_total.cells, billed_column)
                 if len(total_amount_cells) == 1:
                     old_text = total_amount_cells[0].text
                     old = parse_amount(old_text, currency_hint=currency_hint)
@@ -350,7 +337,7 @@ def _repair_page(
             context_cells = _transaction_context_cells(projected, schema, billed_column)
             if context_cells is None:
                 continue
-            amount_cells = _cells_for_column(projected, billed_column)
+            amount_cells = cells_in_column(projected.cells, billed_column)
             old_text = amount_cells[0].text if len(amount_cells) == 1 else ""
             old = parse_amount(old_text, currency_hint=currency_hint)
             if (

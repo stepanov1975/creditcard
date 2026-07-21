@@ -6,8 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-type BBox = tuple[float, float, float, float]
-type Point = tuple[float, float]
+from ccparser.geometry import BBox as BBox
+from ccparser.geometry import Point as Point
+
 type EvidenceSource = Literal["digital", "ocr"]
 
 

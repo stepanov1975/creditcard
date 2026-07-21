@@ -6,31 +6,9 @@ import statistics
 from collections.abc import Sequence
 
 from ccparser.evidence.models import Glyph, Word
+from ccparser.geometry import bbox_center_y, bbox_height, bbox_width, center_inside
 
 CURRENCY_OCR_SYMBOLS = frozenset("₪$€£")
-
-
-def _center_x(item: Glyph | Word) -> float:
-    return (item.bbox[0] + item.bbox[2]) / 2
-
-
-def _center_y(item: Glyph | Word) -> float:
-    return (item.bbox[1] + item.bbox[3]) / 2
-
-
-def _height(item: Glyph | Word) -> float:
-    return max(0.0, item.bbox[3] - item.bbox[1])
-
-
-def _width(item: Glyph | Word) -> float:
-    return max(0.0, item.bbox[2] - item.bbox[0])
-
-
-def _inside(glyph: Glyph, word: Word) -> bool:
-    return (
-        word.bbox[0] <= _center_x(glyph) <= word.bbox[2]
-        and word.bbox[1] <= _center_y(glyph) <= word.bbox[3]
-    )
 
 
 def custom_currency_glyph_candidates(
@@ -52,8 +30,8 @@ def custom_currency_glyph_candidates(
             for candidate in digital_words
             if candidate is not word
             and candidate.bbox[0] >= word.bbox[2]
-            and abs(_center_y(word) - _center_y(candidate))
-            <= max(_height(word), _height(candidate)) * 0.2
+            and abs(bbox_center_y(word.bbox) - bbox_center_y(candidate.bbox))
+            <= max(bbox_height(word.bbox), bbox_height(candidate.bbox)) * 0.2
         )
         if not following_words:
             continue
@@ -65,13 +43,16 @@ def custom_currency_glyph_candidates(
             len(word.text) != 1
             or not word.text.isdigit()
             or not following.text.isdigit()
-            or abs(_center_y(word) - _center_y(following))
-            > max(_height(word), _height(following)) * 0.2
-            or following.bbox[0] - word.bbox[2] > max(_height(word), _height(following)) * 0.1
+            or abs(bbox_center_y(word.bbox) - bbox_center_y(following.bbox))
+            > max(bbox_height(word.bbox), bbox_height(following.bbox)) * 0.2
+            or following.bbox[0] - word.bbox[2]
+            > max(bbox_height(word.bbox), bbox_height(following.bbox)) * 0.1
         ):
             continue
-        word_glyphs = tuple(glyph for glyph in glyphs if _inside(glyph, word))
-        following_glyphs = tuple(glyph for glyph in glyphs if _inside(glyph, following))
+        word_glyphs = tuple(glyph for glyph in glyphs if center_inside(glyph.bbox, word.bbox))
+        following_glyphs = tuple(
+            glyph for glyph in glyphs if center_inside(glyph.bbox, following.bbox)
+        )
         if (
             len(word_glyphs) != 1
             or not following_glyphs
@@ -79,11 +60,11 @@ def custom_currency_glyph_candidates(
         ):
             continue
         candidate = word_glyphs[0]
-        following_width = statistics.median(_width(glyph) for glyph in following_glyphs)
+        following_width = statistics.median(bbox_width(glyph.bbox) for glyph in following_glyphs)
         if (
             following_width > 0
             and candidate.font not in {glyph.font for glyph in following_glyphs}
-            and _width(candidate) >= following_width * 1.2
+            and bbox_width(candidate.bbox) >= following_width * 1.2
         ):
             candidates.append(candidate)
     return tuple(candidates)

@@ -3,8 +3,15 @@ from __future__ import annotations
 import pytest
 
 from ccparser.evidence import VectorRule, Word
-from ccparser.layout.columns import infer_column_bands, infer_column_roles, is_date_shaped
-from ccparser.layout.models import Cell, ColumnRole, Row
+from ccparser.layout.columns import (
+    cells_in_column,
+    columns_for_role,
+    infer_column_bands,
+    infer_column_roles,
+    is_date_shaped,
+    source_or_center_cells,
+)
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 
 
 def _cell(
@@ -21,6 +28,87 @@ def _cell(
         words=(word,),
         confidence=1.0,
     )
+
+
+def _column(
+    *,
+    x0: float,
+    x1: float,
+    role: ColumnRole = ColumnRole.UNKNOWN,
+    source_cells: tuple[Cell, ...] = (),
+    index: int = 0,
+) -> ColumnSpec:
+    return ColumnSpec(
+        index=index,
+        page_number=1,
+        bbox=(x0, 0.0, x1, 100.0),
+        relative_x0=0.0,
+        relative_x1=1.0,
+        role=role,
+        source_cells=source_cells,
+        confidence=1.0,
+    )
+
+
+def test_cells_in_column_uses_inclusive_cell_centers() -> None:
+    column = _column(x0=10.0, x1=20.0)
+    left_edge = _cell("left", (8.0, 0.0, 12.0, 4.0))
+    right_edge = _cell("right", (18.0, 0.0, 22.0, 4.0))
+    outside = _cell("outside", (20.1, 0.0, 22.1, 4.0))
+
+    assert cells_in_column((left_edge, right_edge, outside), column) == (
+        left_edge,
+        right_edge,
+    )
+
+
+def test_cells_in_column_preserves_candidate_order() -> None:
+    first = _cell("first", (12.0, 0.0, 14.0, 4.0))
+    second = _cell("second", (16.0, 0.0, 18.0, 4.0))
+    column = _column(x0=10.0, x1=20.0)
+
+    assert cells_in_column((second, first), column) == (second, first)
+
+
+def test_source_or_center_cells_prefers_nonempty_source_cells() -> None:
+    source = _cell("source", (30.0, 0.0, 34.0, 4.0))
+    centered = _cell("centered", (12.0, 0.0, 14.0, 4.0))
+    column = _column(x0=10.0, x1=20.0, source_cells=(source,))
+
+    assert source_or_center_cells((source, centered), column) == (source,)
+
+
+def test_source_or_center_cells_preserves_candidate_order() -> None:
+    first = _cell("first", (30.0, 0.0, 34.0, 4.0))
+    second = _cell("second", (36.0, 0.0, 40.0, 4.0))
+    column = _column(x0=10.0, x1=20.0, source_cells=(first, second))
+
+    assert source_or_center_cells((second, first), column) == (second, first)
+
+
+def test_source_or_center_cells_falls_back_to_inclusive_centers() -> None:
+    source = _cell("source", (30.0, 0.0, 34.0, 4.0))
+    centered = _cell("centered", (12.0, 0.0, 14.0, 4.0))
+    column = _column(x0=10.0, x1=20.0, source_cells=(source,))
+
+    assert source_or_center_cells((centered,), column) == (centered,)
+
+
+def test_columns_for_role_preserves_schema_order() -> None:
+    header = _cell("header", (10.0, 0.0, 20.0, 4.0))
+    first = _column(x0=10.0, x1=20.0, role=ColumnRole.DATE, index=0)
+    ignored = _column(x0=20.0, x1=30.0, role=ColumnRole.DESCRIPTION, index=1)
+    second = _column(x0=30.0, x1=40.0, role=ColumnRole.DATE, index=2)
+    schema = TableSchema(
+        page_number=1,
+        bbox=(10.0, 0.0, 40.0, 100.0),
+        columns=(second, ignored, first),
+        header_cells=(header,),
+        sample_cells=(),
+        confidence=1.0,
+    )
+
+    assert columns_for_role(schema, ColumnRole.DATE) == (second, first)
 
 
 def _ocr_cell(text: str, bbox: tuple[float, float, float, float]) -> Cell:

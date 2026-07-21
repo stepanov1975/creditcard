@@ -25,9 +25,29 @@ from ccparser.discovery import (
     StatementDiscovery,
     StatementGroupDiscovery,
 )
-from ccparser.evidence.models import BBox, Glyph, Word
+from ccparser.evidence.models import Glyph
 from ccparser.fx import extract_foreign_exchange
-from ccparser.layout.columns import isolated_date_token, proven_billed_amount_column
+from ccparser.geometry import (
+    BBox,
+    bbox_center_y,
+    union_bbox,
+    vertical_overlap,
+)
+from ccparser.geometry import (
+    bbox_center_x as _center_x,
+)
+from ccparser.geometry import (
+    bbox_height as _height,
+)
+from ccparser.geometry import (
+    center_inside as _bbox_center_inside,
+)
+from ccparser.layout.columns import (
+    cells_in_column,
+    columns_for_role,
+    isolated_date_token,
+    proven_billed_amount_column,
+)
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import (
@@ -174,28 +194,12 @@ def _contains_marker(text: str, markers: Iterable[str]) -> bool:
     return contains_token_sequence(text, markers)
 
 
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
-
-
-def _bbox_center_inside(candidate: BBox, container: BBox) -> bool:
-    center_x = (candidate[0] + candidate[2]) / 2
-    center_y = (candidate[1] + candidate[3]) / 2
-    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
-
-
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
-
-
 def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
-    return tuple(
-        cell for cell in row.cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2]
-    )
+    return cells_in_column(row.cells, column)
 
 
 def _role_columns(region: TableRegion, role: ColumnRole) -> tuple[ColumnSpec, ...]:
-    return tuple(column for column in region.table_schema.columns if column.role is role)
+    return columns_for_role(region.table_schema, role)
 
 
 def _role_cells(row: Row, region: TableRegion, role: ColumnRole) -> tuple[Cell, ...]:
@@ -222,12 +226,7 @@ def _amount_from_exact_words_between_boundary_glyphs(
         or not cell.glyphs
     ):
         return None
-    word_bbox = (
-        min(word.bbox[0] for word in cell.words),
-        min(word.bbox[1] for word in cell.words),
-        max(word.bbox[2] for word in cell.words),
-        max(word.bbox[3] for word in cell.words),
-    )
+    word_bbox = union_bbox(word.bbox for word in cell.words)
     if not (column.bbox[0] <= word_bbox[0] and word_bbox[2] <= column.bbox[2]):
         return None
     word_text = " ".join(word.text for word in cell.words)
@@ -456,14 +455,7 @@ def _original_currency_spilled_into_location(
         and description_on_outer_edge
     ):
         return None
-    residual_edge_center = _center_x(
-        (
-            min(word.bbox[0] for word in residual_words),
-            min(word.bbox[1] for word in residual_words),
-            max(word.bbox[2] for word in residual_words),
-            max(word.bbox[3] for word in residual_words),
-        )
-    )
+    residual_edge_center = _center_x(union_bbox(word.bbox for word in residual_words))
     currency_on_original_edge = (
         _center_x(currency_word.bbox) < residual_edge_center
         if original_on_left
@@ -902,12 +894,7 @@ def _adjacent_boundary_date_completion(
         glyph = clipped[0]
         if not glyph.char.isdigit() or glyph.source not in sources:
             continue
-        vertical_overlap = max(
-            0.0,
-            min(assigned_cell.bbox[3], glyph.bbox[3]) - max(assigned_cell.bbox[1], glyph.bbox[1]),
-        )
-        smaller_height = min(_height(assigned_cell.bbox), _height(glyph.bbox))
-        if smaller_height <= 0 or vertical_overlap / smaller_height < 0.8:
+        if vertical_overlap(assigned_cell.bbox, glyph.bbox) < 0.8:
             continue
         adjacency_tolerance = typical_width * 0.35
         if glyph.bbox[0] >= base_right - adjacency_tolerance:
@@ -1409,12 +1396,12 @@ def _text_direction(text: str) -> str:
 def _cluster_lines(clusters: Sequence[EvidenceCluster]) -> tuple[tuple[EvidenceCluster, ...], ...]:
     lines: list[list[EvidenceCluster]] = []
     for cluster in sorted(clusters, key=lambda item: (item.bbox[1], item.bbox[0])):
-        center_y = (cluster.bbox[1] + cluster.bbox[3]) / 2
+        center_y = bbox_center_y(cluster.bbox)
         matching = next(
             (
                 line
                 for line in lines
-                if abs(center_y - (line[0].bbox[1] + line[0].bbox[3]) / 2)
+                if abs(center_y - bbox_center_y(line[0].bbox))
                 <= min(_height(cluster.bbox), _height(line[0].bbox)) * 0.5
             ),
             None,
@@ -1722,10 +1709,6 @@ def _description(
     )
 
 
-def _word_height(word: Word) -> float:
-    return max(0.0, word.bbox[3] - word.bbox[1])
-
-
 def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decimal, str]]:
     corroborated: set[tuple[Decimal, str]] = set()
     for row in rows:
@@ -1870,11 +1853,6 @@ def _original_amount_with_description_spill(
         min(original_cell.bbox[2], description_cell.bbox[2])
         - max(original_cell.bbox[0], description_cell.bbox[0]),
     )
-    vertical_overlap = max(
-        0.0,
-        min(original_cell.bbox[3], description_cell.bbox[3])
-        - max(original_cell.bbox[1], description_cell.bbox[1]),
-    )
     if (
         word_amount.amount is not None
         and word_amount.currency is not None
@@ -1885,7 +1863,7 @@ def _original_amount_with_description_spill(
         and _DATE_PATTERN.fullmatch(residual_text) is None
         and _INSTALLMENT_PATTERN.fullmatch(residual_text) is None
         and horizontal_overlap > 0
-        and vertical_overlap > 0
+        and vertical_overlap(original_cell.bbox, description_cell.bbox) > 0
     ):
         candidates.append((word_amount, residual_text, description_on_right, False))
     for split in range(1, len(words)):
@@ -1916,7 +1894,7 @@ def _original_amount_with_description_spill(
             description_edge = max(word.bbox[2] for word in description_words)
             gap = residual_edge - description_edge
         typical_height = statistics.median(
-            _word_height(word) for word in (*residual_words, *description_words)
+            _height(word.bbox) for word in (*residual_words, *description_words)
         )
         residual_left = min(word.bbox[0] for word in residual_words)
         residual_right = max(word.bbox[2] for word in residual_words)
@@ -1931,10 +1909,7 @@ def _original_amount_with_description_spill(
         )
         is_geometrically_adjacent = typical_height > 0 and 0 <= gap <= typical_height * 0.6
         has_same_line_description_adjacency = typical_height > 0 and any(
-            abs(
-                (residual_word.bbox[1] + residual_word.bbox[3]) / 2
-                - (description_word.bbox[1] + description_word.bbox[3]) / 2
-            )
+            abs(bbox_center_y(residual_word.bbox) - bbox_center_y(description_word.bbox))
             <= typical_height * 0.2
             and (
                 (
@@ -1957,7 +1932,7 @@ def _original_amount_with_description_spill(
         has_shared_wrapped_description_origin = (
             typical_height > 0
             and horizontal_overlap > 0
-            and vertical_overlap > 0
+            and vertical_overlap(original_cell.bbox, description_cell.bbox) > 0
             and (
                 (
                     description_on_right
@@ -2269,7 +2244,7 @@ def _has_fragmented_date_cue(cell: Cell) -> bool:
         for glyph in sorted(
             cell.glyphs,
             key=lambda glyph: (
-                (glyph.bbox[1] + glyph.bbox[3]) / 2,
+                bbox_center_y(glyph.bbox),
                 glyph.bbox[0],
                 glyph.bbox[2],
             ),
@@ -2281,12 +2256,7 @@ def _has_fragmented_date_cue(cell: Cell) -> bool:
 
 def _atom_ids_bbox(ledger: EvidenceLedger, atom_ids: Iterable[int]) -> BBox:
     atoms = tuple(ledger.atoms[atom_id] for atom_id in atom_ids)
-    return (
-        min(atom.bbox[0] for atom in atoms),
-        min(atom.bbox[1] for atom in atoms),
-        max(atom.bbox[2] for atom in atoms),
-        max(atom.bbox[3] for atom in atoms),
-    )
+    return union_bbox(atom.bbox for atom in atoms)
 
 
 def _physical_atom_lines(
@@ -2302,20 +2272,18 @@ def _physical_atom_lines(
     for atom_id in sorted(
         positioned,
         key=lambda value: (
-            (ledger.atoms[value].bbox[1] + ledger.atoms[value].bbox[3]) / 2,
+            bbox_center_y(ledger.atoms[value].bbox),
             ledger.atoms[value].bbox[0],
             ledger.atoms[value].bbox[2],
         ),
     ):
         atom = ledger.atoms[atom_id]
-        center_y = (atom.bbox[1] + atom.bbox[3]) / 2
+        center_y = bbox_center_y(atom.bbox)
         matching = next(
             (
                 line
                 for line in lines
-                if abs(
-                    center_y - (ledger.atoms[line[0]].bbox[1] + ledger.atoms[line[0]].bbox[3]) / 2
-                )
+                if abs(center_y - bbox_center_y(ledger.atoms[line[0]].bbox))
                 <= min(_height(atom.bbox), _height(ledger.atoms[line[0]].bbox)) * 0.5
             ),
             None,
@@ -2348,9 +2316,7 @@ def _line_characters(
 
 
 def _vertically_aligned(first: BBox, second: BBox) -> bool:
-    overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
-    smaller_height = min(_height(first), _height(second))
-    return smaller_height > 0 and overlap / smaller_height >= 0.8
+    return vertical_overlap(first, second) >= 0.8
 
 
 def _cross_cell_date_tokens(

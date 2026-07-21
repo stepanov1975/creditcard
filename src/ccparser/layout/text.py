@@ -11,31 +11,19 @@ from ccparser.evidence.currency import (
     CURRENCY_OCR_SYMBOLS,
     custom_currency_glyph_candidates,
 )
-from ccparser.evidence.models import BBox, Glyph, PageEvidence, Word
+from ccparser.evidence.models import Glyph, PageEvidence, Word
+from ccparser.geometry import (
+    BBox,
+    bbox_center_x,
+    bbox_center_y,
+    bbox_height,
+    center_inside,
+    intersection_over_smaller,
+    intersection_over_union,
+    union_bbox,
+)
 
 _VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$")
-
-
-def _width(bbox: BBox) -> float:
-    return max(0.0, bbox[2] - bbox[0])
-
-
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
-
-
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
-
-
-def _center_y(bbox: BBox) -> float:
-    return (bbox[1] + bbox[3]) / 2
-
-
-def _inside_bbox(candidate: BBox, container: BBox) -> bool:
-    center_x = _center_x(candidate)
-    center_y = _center_y(candidate)
-    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
 
 
 def _normalized(text: str) -> str:
@@ -61,21 +49,15 @@ def _dominant_direction(texts: Sequence[str]) -> str:
     return "rtl" if rtl > ltr else "ltr"
 
 
-def _vertical_overlap(first: BBox, second: BBox) -> float:
-    overlap = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
-    smaller_height = min(_height(first), _height(second))
-    return overlap / smaller_height if smaller_height else 0.0
-
-
 def _cluster_lines[T: (Glyph, Word)](items: Sequence[T]) -> list[list[T]]:
     lines: list[list[T]] = []
-    for item in sorted(items, key=lambda value: (_center_y(value.bbox), value.bbox[0])):
+    for item in sorted(items, key=lambda value: (bbox_center_y(value.bbox), value.bbox[0])):
         best_line: list[T] | None = None
         best_distance = float("inf")
         for line in lines:
-            line_bbox = _union_bbox(tuple(value.bbox for value in line))
-            distance = abs(_center_y(item.bbox) - _center_y(line_bbox))
-            tolerance = 0.6 * max(_height(item.bbox), _height(line_bbox))
+            line_bbox = union_bbox(value.bbox for value in line)
+            distance = abs(bbox_center_y(item.bbox) - bbox_center_y(line_bbox))
+            tolerance = 0.6 * max(bbox_height(item.bbox), bbox_height(line_bbox))
             if distance <= tolerance and distance < best_distance:
                 best_line = line
                 best_distance = distance
@@ -83,23 +65,14 @@ def _cluster_lines[T: (Glyph, Word)](items: Sequence[T]) -> list[list[T]]:
             lines.append([item])
         else:
             best_line.append(item)
-    return sorted(lines, key=lambda line: _union_bbox(tuple(item.bbox for item in line))[1])
-
-
-def _union_bbox(boxes: tuple[BBox, ...]) -> BBox:
-    return (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
-    )
+    return sorted(lines, key=lambda line: union_bbox(item.bbox for item in line)[1])
 
 
 def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
     visible = sorted((glyph for glyph in line if not glyph.char.isspace()), key=lambda g: g.bbox[0])
     if not visible:
         return []
-    typical_height = statistics.median(_height(glyph.bbox) for glyph in visible)
+    typical_height = statistics.median(bbox_height(glyph.bbox) for glyph in visible)
     groups: list[list[Glyph]] = [[visible[0]]]
     last_direction = _strong_direction(visible[0].char)
     for glyph in visible[1:]:
@@ -136,7 +109,7 @@ def _ordered_glyph_text(group: Sequence[Glyph], direction: str) -> str:
             glyph.char
             for glyph in sorted(
                 combining,
-                key=lambda glyph: _center_x(glyph.bbox),
+                key=lambda glyph: bbox_center_x(glyph.bbox),
                 reverse=direction == "rtl",
             )
         )
@@ -145,12 +118,12 @@ def _ordered_glyph_text(group: Sequence[Glyph], direction: str) -> str:
     for mark in combining:
         nearest_index = min(
             range(len(bases)),
-            key=lambda index: abs(_center_x(mark.bbox) - _center_x(bases[index].bbox)),
+            key=lambda index: abs(bbox_center_x(mark.bbox) - bbox_center_x(bases[index].bbox)),
         )
         attached[nearest_index].append(mark)
     units = tuple(
         (
-            _center_x(base.bbox),
+            bbox_center_x(base.bbox),
             base.char
             + "".join(
                 mark.char
@@ -158,7 +131,7 @@ def _ordered_glyph_text(group: Sequence[Glyph], direction: str) -> str:
                     attached[index],
                     key=lambda glyph: (
                         unicodedata.combining(glyph.char[0]),
-                        _center_x(glyph.bbox),
+                        bbox_center_x(glyph.bbox),
                     ),
                 )
             ),
@@ -180,7 +153,7 @@ def _text_from_glyphs(glyphs: Sequence[Glyph]) -> str:
             text = _normalized(_ordered_glyph_text(group, direction))
             if text:
                 rendered_groups.append(
-                    (statistics.mean(_center_x(glyph.bbox) for glyph in group), text)
+                    (statistics.mean(bbox_center_x(glyph.bbox) for glyph in group), text)
                 )
         dominant = _dominant_direction(tuple(text for _, text in rendered_groups))
         rendered_groups.sort(key=lambda item: item[0], reverse=dominant == "rtl")
@@ -188,26 +161,6 @@ def _text_from_glyphs(glyphs: Sequence[Glyph]) -> str:
         if line_text:
             rendered_lines.append(line_text)
     return _normalized(" ".join(rendered_lines))
-
-
-def _intersection_over_union(first: BBox, second: BBox) -> float:
-    x0 = max(first[0], second[0])
-    y0 = max(first[1], second[1])
-    x1 = min(first[2], second[2])
-    y1 = min(first[3], second[3])
-    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
-    union = _width(first) * _height(first) + _width(second) * _height(second) - intersection
-    return intersection / union if union else 0.0
-
-
-def _intersection_over_smaller(first: BBox, second: BBox) -> float:
-    x0 = max(first[0], second[0])
-    y0 = max(first[1], second[1])
-    x1 = min(first[2], second[2])
-    y1 = min(first[3], second[3])
-    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
-    smaller = min(_width(first) * _height(first), _width(second) * _height(second))
-    return intersection / smaller if smaller else 0.0
 
 
 def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
@@ -225,8 +178,8 @@ def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
         if any(
             _normalized(existing.text) == _normalized(word.text)
             and (
-                _intersection_over_union(existing.bbox, word.bbox) >= 0.7
-                or _intersection_over_smaller(existing.bbox, word.bbox) >= 0.9
+                intersection_over_union(existing.bbox, word.bbox) >= 0.7
+                or intersection_over_smaller(existing.bbox, word.bbox) >= 0.9
             )
             for existing in selected
         ):
@@ -237,13 +190,13 @@ def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
 
 def _positioned_glyph_groups(glyphs: Sequence[Glyph], bbox: BBox) -> tuple[Glyph, ...]:
     vertically_relevant = tuple(
-        glyph for glyph in glyphs if bbox[1] <= _center_y(glyph.bbox) <= bbox[3]
+        glyph for glyph in glyphs if bbox[1] <= bbox_center_y(glyph.bbox) <= bbox[3]
     )
     selected = tuple(
         glyph
         for line in _cluster_lines(vertically_relevant)
         for group in _glyph_groups(line)
-        if _inside_bbox(_union_bbox(tuple(item.bbox for item in group)), bbox)
+        if center_inside(union_bbox(item.bbox for item in group), bbox)
         for glyph in group
     )
     return tuple(
@@ -265,7 +218,7 @@ def _text_from_words(words: Sequence[Word]) -> str:
     rendered_lines: list[str] = []
     for line in _cluster_lines(_deduplicated_words(words)):
         dominant = _dominant_direction(tuple(word.text for word in line))
-        ordered = sorted(line, key=lambda word: _center_x(word.bbox), reverse=dominant == "rtl")
+        ordered = sorted(line, key=lambda word: bbox_center_x(word.bbox), reverse=dominant == "rtl")
         line_text = _normalized(" ".join(word.text for word in ordered))
         if line_text:
             rendered_lines.append(line_text)
@@ -277,7 +230,7 @@ def _text_from_lossless_words(words: Sequence[Word]) -> str:
 
     rendered_lines: list[str] = []
     for line in _cluster_lines(_deduplicated_words(words)):
-        physical = sorted(line, key=lambda word: _center_x(word.bbox))
+        physical = sorted(line, key=lambda word: bbox_center_x(word.bbox))
         base_direction = _dominant_direction(tuple(word.text for word in physical))
         runs: list[tuple[str, list[Word]]] = []
         for word in physical:
@@ -324,8 +277,8 @@ def _ocr_corroborated_currency_glyphs(
         return tuple(glyphs)
     replacements: dict[Glyph, str] = {}
     for candidate in candidates:
-        center_x = _center_x(candidate.bbox)
-        center_y = _center_y(candidate.bbox)
+        center_x = bbox_center_x(candidate.bbox)
+        center_y = bbox_center_y(candidate.bbox)
         symbols = tuple(
             word.text
             for word in words
@@ -356,7 +309,7 @@ def _lossless_word_text(glyphs: Sequence[Glyph], words: Sequence[Word]) -> str |
     assigned: list[list[Glyph]] = [[] for _ in words]
     for glyph in visible_glyphs:
         owners = tuple(
-            index for index, word in enumerate(words) if _inside_bbox(glyph.bbox, word.bbox)
+            index for index, word in enumerate(words) if center_inside(glyph.bbox, word.bbox)
         )
         if len(owners) != 1:
             return None
@@ -404,7 +357,7 @@ def positioned_evidence_for_bbox(
     words = tuple(
         sorted(
             _deduplicated_words(
-                tuple(word for word in page_evidence.words if _inside_bbox(word.bbox, bbox))
+                tuple(word for word in page_evidence.words if center_inside(word.bbox, bbox))
             ),
             key=lambda word: (word.bbox[1], word.bbox[0], word.text, word.source),
         )

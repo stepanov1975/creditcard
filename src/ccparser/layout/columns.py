@@ -11,7 +11,26 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from itertools import pairwise
 
-from ccparser.evidence.models import BBox, VectorRule
+from ccparser.evidence.models import VectorRule
+from ccparser.geometry import (
+    BBox,
+    vertical_overlap,
+)
+from ccparser.geometry import (
+    bbox_center_x as _center_x,
+)
+from ccparser.geometry import (
+    bbox_center_y as _center_y,
+)
+from ccparser.geometry import (
+    bbox_height as _height,
+)
+from ccparser.geometry import (
+    bbox_width as _width,
+)
+from ccparser.geometry import (
+    union_bbox as _union_bbox,
+)
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.money import is_money_shaped
 from ccparser.text_tokens import phrase_tokens
@@ -179,29 +198,24 @@ _CONVERSION_DATE_HEADER_TERMS = tuple(
 )
 
 
-def _width(bbox: BBox) -> float:
-    return max(0.0, bbox[2] - bbox[0])
+def cells_in_column(cells: Iterable[Cell], column: ColumnSpec) -> tuple[Cell, ...]:
+    """Return cells whose centers lie within the column's inclusive x band."""
+
+    return tuple(cell for cell in cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2])
 
 
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
+def source_or_center_cells(cells: Iterable[Cell], column: ColumnSpec) -> tuple[Cell, ...]:
+    """Prefer matching source cells, falling back to inclusive center membership."""
+
+    candidates = tuple(cells)
+    associated = tuple(cell for cell in candidates if cell in column.source_cells)
+    return associated if associated else cells_in_column(candidates, column)
 
 
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
+def columns_for_role(schema: TableSchema, role: ColumnRole) -> tuple[ColumnSpec, ...]:
+    """Return schema columns with the requested semantic role in schema order."""
 
-
-def _center_y(bbox: BBox) -> float:
-    return (bbox[1] + bbox[3]) / 2
-
-
-def _union_bbox(boxes: Sequence[BBox]) -> BBox:
-    return (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
-    )
+    return tuple(column for column in schema.columns if column.role is role)
 
 
 def _horizontal_overlap(first: BBox, second: BBox) -> float:
@@ -658,12 +672,9 @@ def _cells_to_rows(cells: Sequence[Cell]) -> tuple[Row, ...]:
         target: list[Cell] | None = None
         for group in groups:
             group_bbox = _union_bbox(tuple(item.bbox for item in group))
-            overlap = max(0.0, min(cell.bbox[3], group_bbox[3]) - max(cell.bbox[1], group_bbox[1]))
-            smaller_height = min(_height(cell.bbox), _height(group_bbox))
-            overlap_ratio = overlap / smaller_height if smaller_height else 0.0
             tolerance = 0.45 * max(_height(cell.bbox), _height(group_bbox))
             if (
-                overlap_ratio >= 0.3
+                vertical_overlap(cell.bbox, group_bbox) >= 0.3
                 or abs(_center_y(cell.bbox) - _center_y(group_bbox)) <= tolerance
             ):
                 target = group
@@ -684,13 +695,6 @@ def _cells_to_rows(cells: Sequence[Cell]) -> tuple[Row, ...]:
     )
 
 
-def _cells_for_column(cells: Sequence[Cell], column: ColumnSpec) -> tuple[Cell, ...]:
-    associated = tuple(cell for cell in cells if cell in column.source_cells)
-    if associated:
-        return associated
-    return tuple(cell for cell in cells if column.bbox[0] <= _center_x(cell.bbox) <= column.bbox[2])
-
-
 def explicit_billed_amount_column(
     columns: Sequence[ColumnSpec],
     header_cells: Sequence[Cell],
@@ -701,7 +705,7 @@ def explicit_billed_amount_column(
     for column in columns:
         if column.role is not ColumnRole.AMOUNT:
             continue
-        texts = _header_evidence_texts(_cells_for_column(header_cells, column))
+        texts = _header_evidence_texts(source_or_center_cells(header_cells, column))
         if any(
             _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
             and _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
@@ -733,7 +737,7 @@ def proven_billed_amount_column(
         is_money_shaped(cell.text)
         for row in rows
         for column in secondary_columns
-        for cell in _cells_for_column(row.cells, column)
+        for cell in source_or_center_cells(row.cells, column)
     ):
         return None
     return explicit_column
@@ -791,7 +795,7 @@ def _disambiguate_qualified_original_amount(
         if column.role is ColumnRole.AMOUNT
         and any(
             _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
-            for text in _header_evidence_texts(_cells_for_column(header_cells, column))
+            for text in _header_evidence_texts(source_or_center_cells(header_cells, column))
         )
     )
     if len(original_columns) != 2 or len(billed_columns) != 1:
@@ -801,13 +805,13 @@ def _disambiguate_qualified_original_amount(
         for column in original_columns
         if any(
             _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
-            for text in _header_evidence_texts(_cells_for_column(header_cells, column))
+            for text in _header_evidence_texts(source_or_center_cells(header_cells, column))
         )
     )
     if len(qualified) != 1:
         return tuple(columns)
     intermediate = next(column for column in original_columns if column is not qualified[0])
-    intermediate_texts = _header_evidence_texts(_cells_for_column(header_cells, intermediate))
+    intermediate_texts = _header_evidence_texts(source_or_center_cells(header_cells, intermediate))
     if not any(
         _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
         and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
@@ -843,7 +847,7 @@ def _disambiguate_generic_original_peer(
     ):
         return tuple(columns)
     peer = next(column for column in amount_columns if column is not billed)
-    peer_texts = _header_evidence_texts(_cells_for_column(header_cells, peer))
+    peer_texts = _header_evidence_texts(source_or_center_cells(header_cells, peer))
     if not any(
         _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
         and not _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
@@ -880,8 +884,8 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
     semantic_columns: list[ColumnSpec] = []
     ambiguous_indexes: list[int] = []
     for column in bands:
-        headers = _cells_for_column(header_cells, column)
-        samples = _cells_for_column(sample_cells, column)
+        headers = source_or_center_cells(header_cells, column)
+        samples = source_or_center_cells(sample_cells, column)
         header_scores = _header_scores(_header_evidence_texts(headers))
         profile_scores = _profile_scores(samples)
         recovered_ocr_description = _is_corrupted_ocr_description_header(
