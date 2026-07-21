@@ -20,6 +20,7 @@ from pydantic import (
 )
 from pydantic.functional_validators import AfterValidator
 
+from ccparser.date_tokens import MAX_CONTEXT_YEAR, MIN_CONTEXT_YEAR, validate_suffix_year_mapping
 from ccparser.decimal_math import exact_difference, finite_decimal, plain_decimal_string
 
 
@@ -263,7 +264,7 @@ class DiscoveryDateYearContextSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    year: int | None = Field(default=None, ge=1900, le=2100)
+    year: int | None = Field(default=None, ge=MIN_CONTEXT_YEAR, le=MAX_CONTEXT_YEAR)
     year_by_suffix: tuple[tuple[int, int], ...] = ()
     style: str
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
@@ -273,22 +274,16 @@ class DiscoveryDateYearContextSummary(BaseModel):
 
     @model_validator(mode="after")
     def validate_year_mapping(self) -> Self:
-        mapping = self.year_by_suffix
-        if not mapping and self.year is not None:
-            mapping = ((self.year % 100, self.year),)
-        if not mapping:
-            raise ValueError("at least one proven suffix-year mapping is required")
-        if tuple(sorted(mapping)) != mapping:
-            raise ValueError("date suffix-year mappings must be sorted")
-        if len({suffix for suffix, _ in mapping}) != len(mapping):
-            raise ValueError("date suffix-year mappings must have unique suffixes")
-        if any(
-            not 0 <= suffix <= 99 or not 1900 <= mapped_year <= 2100 or mapped_year % 100 != suffix
-            for suffix, mapped_year in mapping
-        ):
-            raise ValueError("invalid date suffix-year mapping")
-        if self.year is not None and mapping != ((self.year % 100, self.year),):
-            raise ValueError("single year must agree with its suffix mapping")
+        try:
+            validate_suffix_year_mapping(self.year, self.year_by_suffix)
+        except ValueError as error:
+            if str(error) in {
+                "date suffix must be between 0 and 99",
+                f"mapped year must be between {MIN_CONTEXT_YEAR} and {MAX_CONTEXT_YEAR}",
+                "mapped year must match its two-digit suffix",
+            }:
+                raise ValueError("invalid date suffix-year mapping") from error
+            raise
         return self
 
 

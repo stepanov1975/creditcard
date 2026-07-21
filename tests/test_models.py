@@ -5,7 +5,9 @@ from decimal import Decimal, localcontext
 import pytest
 from pydantic import ValidationError
 
-from ccparser.models import EvidenceReference
+from ccparser.date_tokens import DateTokenStyle
+from ccparser.discovery import DiscoveredDateYearContext
+from ccparser.models import DiscoveryDateYearContextSummary, EvidenceReference
 
 
 def _fx_evidence(raw_text: str, y: float) -> EvidenceReference:
@@ -14,6 +16,51 @@ def _fx_evidence(raw_text: str, y: float) -> EvidenceReference:
         bbox=(10.0, y, 50.0, y + 10.0),
         raw_text=raw_text,
     )
+
+
+@pytest.mark.parametrize(
+    "context_type",
+    (DiscoveredDateYearContext, DiscoveryDateYearContextSummary),
+)
+def test_date_year_context_models_accept_same_rollover_mapping(
+    context_type: type[DiscoveredDateYearContext] | type[DiscoveryDateYearContextSummary],
+) -> None:
+    context = context_type(
+        year_by_suffix=((25, 2025), (26, 2026)),
+        style=DateTokenStyle.DAY_FIRST_SLASH,
+        evidence=(_fx_evidence("Cycle closes 03/01/2026", 10.0),),
+        confidence=1.0,
+    )
+
+    assert context.year is None
+    assert context.year_by_suffix == ((25, 2025), (26, 2026))
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    (
+        ((26, 2026), (26, 2026)),
+        ((26, 2026), (25, 2025)),
+        ((99, 1899),),
+        ((25, 2026),),
+    ),
+    ids=("duplicate", "unsorted", "out_of_range", "suffix_mismatch"),
+)
+@pytest.mark.parametrize(
+    "context_type",
+    (DiscoveredDateYearContext, DiscoveryDateYearContextSummary),
+)
+def test_date_year_context_models_reject_same_invalid_mapping(
+    context_type: type[DiscoveredDateYearContext] | type[DiscoveryDateYearContextSummary],
+    mapping: tuple[tuple[int, int], ...],
+) -> None:
+    with pytest.raises(ValueError):
+        context_type(
+            year_by_suffix=mapping,
+            style=DateTokenStyle.DAY_FIRST_SLASH,
+            evidence=(_fx_evidence("Cycle closes 03/01/2026", 10.0),),
+            confidence=1.0,
+        )
 
 
 def test_transaction_enforces_charge_and_credit_sign_conventions() -> None:

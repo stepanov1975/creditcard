@@ -13,6 +13,14 @@ from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ccparser.date_tokens import (
+    FULL_DATE_TOKEN_PATTERNS,
+    MAX_CONTEXT_YEAR,
+    MIN_CONTEXT_YEAR,
+    SHORT_DATE_TOKEN_PATTERNS,
+    DateTokenStyle,
+    validate_suffix_year_mapping,
+)
 from ccparser.decimal_math import exact_difference, exact_sum
 from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
 from ccparser.layout import TableRegion, logical_rows
@@ -47,17 +55,6 @@ class DocumentClassification(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
-class DateTokenStyle(StrEnum):
-    """Supported relative ordering and separator for abbreviated date tokens."""
-
-    DAY_FIRST_SLASH = "day_first_slash"
-    DAY_FIRST_DOT = "day_first_dot"
-    DAY_FIRST_DASH = "day_first_dash"
-    YEAR_FIRST_SLASH = "year_first_slash"
-    YEAR_FIRST_DOT = "year_first_dot"
-    YEAR_FIRST_DASH = "year_first_dash"
-
-
 class DiscoveredField(_ImmutableDiscoveryModel):
     """A labeled metadata value retained only in an explicit evidence field."""
 
@@ -82,7 +79,7 @@ class DiscoveredPrintedTotal(_ImmutableDiscoveryModel):
 class DiscoveredDateYearContext(_ImmutableDiscoveryModel):
     """Proven short-date suffix mappings supported by complete document dates."""
 
-    year: int | None = Field(default=None, ge=1900, le=2100)
+    year: int | None = Field(default=None, ge=MIN_CONTEXT_YEAR, le=MAX_CONTEXT_YEAR)
     year_by_suffix: tuple[tuple[int, int], ...] = ()
     style: DateTokenStyle
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
@@ -92,25 +89,7 @@ class DiscoveredDateYearContext(_ImmutableDiscoveryModel):
 
     @model_validator(mode="after")
     def validate_year_mapping(self) -> DiscoveredDateYearContext:
-        mapping = self.year_by_suffix
-        if not mapping and self.year is not None:
-            mapping = ((self.year % 100, self.year),)
-        if not mapping:
-            raise ValueError("at least one proven suffix-year mapping is required")
-        suffixes = tuple(suffix for suffix, _ in mapping)
-        years = tuple(year for _, year in mapping)
-        if len(set(suffixes)) != len(suffixes):
-            raise ValueError("date suffix-year mappings must have unique suffixes")
-        if any(not 0 <= suffix <= 99 for suffix in suffixes):
-            raise ValueError("date suffix must be between 0 and 99")
-        if any(not 1900 <= year <= 2100 for year in years):
-            raise ValueError("mapped year must be between 1900 and 2100")
-        if any(year % 100 != suffix for suffix, year in mapping):
-            raise ValueError("mapped year must match its two-digit suffix")
-        if tuple(sorted(mapping)) != mapping:
-            raise ValueError("date suffix-year mappings must be sorted")
-        if self.year is not None and mapping != ((self.year % 100, self.year),):
-            raise ValueError("single year must agree with its suffix mapping")
+        validate_suffix_year_mapping(self.year, self.year_by_suffix)
         return self
 
 
@@ -313,43 +292,6 @@ _FIELD_LABELS: dict[str, frozenset[str]] = {
     "statement_date": frozenset({"billing date", "statement date", "תאריך דוח", "תאריך חיוב"}),
 }
 _DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)")
-_MIN_CONTEXT_YEAR = 1900
-_MAX_CONTEXT_YEAR = 2100
-_DATE_STYLE_CONFIGURATION: dict[DateTokenStyle, tuple[str, bool]] = {
-    DateTokenStyle.DAY_FIRST_SLASH: ("/", False),
-    DateTokenStyle.DAY_FIRST_DOT: (".", False),
-    DateTokenStyle.DAY_FIRST_DASH: ("-", False),
-    DateTokenStyle.YEAR_FIRST_SLASH: ("/", True),
-    DateTokenStyle.YEAR_FIRST_DOT: (".", True),
-    DateTokenStyle.YEAR_FIRST_DASH: ("-", True),
-}
-
-
-def _styled_date_pattern(
-    separator: str,
-    *,
-    year_first: bool,
-    year_digits: int,
-) -> re.Pattern[str]:
-    escaped = re.escape(separator)
-    day = r"(?P<day>\d{1,2})"
-    month = r"(?P<month>\d{1,2})"
-    year = rf"(?P<year>\d{{{year_digits}}})"
-    components = (year, month, day) if year_first else (day, month, year)
-    return re.compile(
-        rf"(?<!\d){components[0]}\s*{escaped}\s*{components[1]}"
-        rf"\s*{escaped}\s*{components[2]}(?!\d)"
-    )
-
-
-_FULL_DATE_TOKEN_PATTERNS = {
-    style: _styled_date_pattern(separator, year_first=year_first, year_digits=4)
-    for style, (separator, year_first) in _DATE_STYLE_CONFIGURATION.items()
-}
-_SHORT_DATE_TOKEN_PATTERNS = {
-    style: _styled_date_pattern(separator, year_first=year_first, year_digits=2)
-    for style, (separator, year_first) in _DATE_STYLE_CONFIGURATION.items()
-}
 _YEAR_MONTH_TOKEN_PATTERN = re.compile(
     r"(?<!\d)(?P<year>(?:19|20)\d{2})\s*[/\-]\s*"
     r"(?P<month>0?[1-9]|1[0-2])(?!\s*[/\-]\s*\d)(?!\d)"
@@ -524,7 +466,7 @@ def _is_future_billing_total(
 
     def parsed_dates(cells: Sequence[Cell]) -> frozenset[date]:
         dates: set[date] = set()
-        full_patterns = tuple(_FULL_DATE_TOKEN_PATTERNS.values())
+        full_patterns = tuple(FULL_DATE_TOKEN_PATTERNS.values())
         year_mapping = (
             dict(date_year_context.year_by_suffix) if date_year_context is not None else {}
         )
@@ -543,9 +485,7 @@ def _is_future_billing_total(
                     except ValueError:
                         continue
             if date_year_context is not None:
-                for match in _SHORT_DATE_TOKEN_PATTERNS[date_year_context.style].finditer(
-                    cell.text
-                ):
+                for match in SHORT_DATE_TOKEN_PATTERNS[date_year_context.style].finditer(cell.text):
                     resolved_year = year_mapping.get(int(match.group("year")))
                     if resolved_year is None:
                         continue
@@ -1339,7 +1279,7 @@ def _complete_date_year(match: re.Match[str]) -> int | None:
         day, month, year = int(first), int(second), int(third)
     else:
         return None
-    if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+    if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
         return None
     try:
         date(year, month, day)
@@ -1370,10 +1310,10 @@ def _cross_style_year_anchors(cells: Sequence[Cell]) -> dict[int, tuple[Cell, ..
     supporting: dict[int, list[Cell]] = {}
     for cell in cells:
         years: set[int] = set()
-        for full_pattern in _FULL_DATE_TOKEN_PATTERNS.values():
+        for full_pattern in FULL_DATE_TOKEN_PATTERNS.values():
             for match in full_pattern.finditer(cell.text):
                 year = int(match.group("year"))
-                if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+                if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
                     continue
                 try:
                     date(year, int(match.group("month")), int(match.group("day")))
@@ -1406,7 +1346,7 @@ def _pdf_date_metadata_anchor(
             parsed_date = date(year, int(match.group("month")), int(match.group("day")))
         except ValueError:
             return None
-        if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+        if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
             return None
         parsed_dates[key.casefold()] = parsed_date
     creation_date = parsed_dates["creationdate"]
@@ -1425,7 +1365,7 @@ def _date_year_context(
     table_date_cells = _table_date_cells(regions)
     table_short_years_by_style: dict[DateTokenStyle, set[int]] = {}
     table_short_months_by_style: dict[DateTokenStyle, dict[int, set[int]]] = {}
-    for style, short_pattern in _SHORT_DATE_TOKEN_PATTERNS.items():
+    for style, short_pattern in SHORT_DATE_TOKEN_PATTERNS.items():
         years: set[int] = set()
         months_by_year: dict[int, set[int]] = {}
         for cell in table_date_cells:
@@ -1451,8 +1391,8 @@ def _date_year_context(
             tuple[tuple[str, str], ...],
         ]
     ] = []
-    for style, full_pattern in _FULL_DATE_TOKEN_PATTERNS.items():
-        short_pattern = _SHORT_DATE_TOKEN_PATTERNS[style]
+    for style, full_pattern in FULL_DATE_TOKEN_PATTERNS.items():
+        short_pattern = SHORT_DATE_TOKEN_PATTERNS[style]
         full_years: set[int] = set(cross_style_anchors) if has_table_short_dates else set()
         if has_table_short_dates and metadata_year is not None:
             full_years.add(metadata_year)
@@ -1466,7 +1406,7 @@ def _date_year_context(
             if not has_table_short_dates:
                 for match in full_pattern.finditer(cell.text):
                     year = int(match.group("year"))
-                    if not _MIN_CONTEXT_YEAR <= year <= _MAX_CONTEXT_YEAR:
+                    if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
                         continue
                     try:
                         date(year, int(match.group("month")), int(match.group("day")))
@@ -1492,7 +1432,7 @@ def _date_year_context(
                     sorted(year for year in full_years if year % 100 == short_year)
                 )
                 candidate_evidence_years = {year: {year} for year in matching_years}
-                for bracketed_year in range(_MIN_CONTEXT_YEAR, _MAX_CONTEXT_YEAR + 1):
+                for bracketed_year in range(MIN_CONTEXT_YEAR, MAX_CONTEXT_YEAR + 1):
                     if (
                         bracketed_year % 100 == short_year
                         and bracketed_year - 1 in full_years
@@ -1513,7 +1453,7 @@ def _date_year_context(
                         elif short_year == (anchor_suffix + 1) % 100:
                             inferred_year = anchor_year + 1
                         if inferred_year is None or not (
-                            _MIN_CONTEXT_YEAR <= inferred_year <= _MAX_CONTEXT_YEAR
+                            MIN_CONTEXT_YEAR <= inferred_year <= MAX_CONTEXT_YEAR
                         ):
                             continue
                         earlier_suffix, later_suffix = (

@@ -14,8 +14,13 @@ from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ccparser.discovery import (
+from ccparser.date_tokens import (
+    MAX_CONTEXT_YEAR,
+    MIN_CONTEXT_YEAR,
+    SHORT_DATE_TOKEN_PATTERNS,
     DateTokenStyle,
+)
+from ccparser.discovery import (
     DiscoveredDateYearContext,
     StatementDiscovery,
     StatementGroupDiscovery,
@@ -128,28 +133,6 @@ _EMBEDDED_DATE_CUES = (
     "המרה",
 )
 _EMBEDDED_INSTALLMENT_CUES = ("installment", "payment number", "תשלום", "תשלומים")
-_MIN_SUPPORTED_FULL_DATE_YEAR = 1900
-_MAX_SUPPORTED_FULL_DATE_YEAR = 2100
-_SHORT_DATE_TOKEN_PATTERNS: dict[DateTokenStyle, re.Pattern[str]] = {
-    DateTokenStyle.DAY_FIRST_SLASH: re.compile(
-        r"(?<!\d)(?P<day>\d{1,2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<year>\d{2})(?!\d)"
-    ),
-    DateTokenStyle.DAY_FIRST_DOT: re.compile(
-        r"(?<!\d)(?P<day>\d{1,2})\s*\.\s*(?P<month>\d{1,2})\s*\.\s*(?P<year>\d{2})(?!\d)"
-    ),
-    DateTokenStyle.DAY_FIRST_DASH: re.compile(
-        r"(?<!\d)(?P<day>\d{1,2})\s*-\s*(?P<month>\d{1,2})\s*-\s*(?P<year>\d{2})(?!\d)"
-    ),
-    DateTokenStyle.YEAR_FIRST_SLASH: re.compile(
-        r"(?<!\d)(?P<year>\d{2})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<day>\d{1,2})(?!\d)"
-    ),
-    DateTokenStyle.YEAR_FIRST_DOT: re.compile(
-        r"(?<!\d)(?P<year>\d{2})\s*\.\s*(?P<month>\d{1,2})\s*\.\s*(?P<day>\d{1,2})(?!\d)"
-    ),
-    DateTokenStyle.YEAR_FIRST_DASH: re.compile(
-        r"(?<!\d)(?P<year>\d{2})\s*-\s*(?P<month>\d{1,2})\s*-\s*(?P<day>\d{1,2})(?!\d)"
-    ),
-}
 _INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
 _LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 _CARD_IDENTIFIER_PATTERN = re.compile(r"^\d{4,10}$")
@@ -641,7 +624,7 @@ def _parse_date(
         ):
             normalized = boundary_match.group(0)
     if year_context is not None:
-        short_matches = tuple(_SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
+        short_matches = tuple(SHORT_DATE_TOKEN_PATTERNS[year_context.style].finditer(normalized))
         if len(short_matches) == 1:
             short_match = short_matches[0]
             suffix = int(short_match.group("year"))
@@ -727,7 +710,7 @@ def _parse_cell_date(
     parsed_year_out_of_range = (
         parsed[0] is not None
         and _cell_has_ocr_evidence(cell)
-        and not _MIN_SUPPORTED_FULL_DATE_YEAR <= parsed[0].year <= _MAX_SUPPORTED_FULL_DATE_YEAR
+        and not MIN_CONTEXT_YEAR <= parsed[0].year <= MAX_CONTEXT_YEAR
     )
     if parsed_year_out_of_range or parsed[1] == "invalid_date":
         repaired = _parse_ocr_contaminated_cell_date(cell, year_context)
@@ -758,7 +741,7 @@ def _valid_short_date_token_for_style(
     token: str,
     style: DateTokenStyle,
 ) -> re.Match[str] | None:
-    match = _SHORT_DATE_TOKEN_PATTERNS[style].fullmatch(_normalized_text(token))
+    match = SHORT_DATE_TOKEN_PATTERNS[style].fullmatch(_normalized_text(token))
     if match is None:
         return None
     try:
@@ -2890,7 +2873,7 @@ def _semantic_claims_and_diagnostics(
                             (
                                 atom_id
                                 for atom_id in cell_ids
-                                if _SHORT_DATE_TOKEN_PATTERNS[unanchored_style].fullmatch(
+                                if SHORT_DATE_TOKEN_PATTERNS[unanchored_style].fullmatch(
                                     _normalized_text(ledger.atoms[atom_id].text)
                                 )
                                 is not None
