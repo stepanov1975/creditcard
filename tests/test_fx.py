@@ -300,6 +300,49 @@ def test_conflicting_table_and_continuation_rates_remain_ambiguous() -> None:
     assert all(claim.owner is not SemanticOwner.EXCHANGE_RATE for claim in extraction.claims)
 
 
+def test_ambiguous_table_rate_is_not_repopulated_from_continuation() -> None:
+    row = _foreign_row("22/06/26 2.9660 3.0010")
+    continuation = _bounded_continuation(
+        _positioned_cell("exchange rate 2.9430", "2.9430", 50.0, 40.0)
+    )
+    rows = (row, continuation)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 22),
+    )
+
+    assert extraction.details is None
+    assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
+    assert extraction.claims == ()
+
+
+def test_later_rate_row_cannot_repopulate_repeated_continuation_rate() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = tuple(
+        _bounded_continuation(_positioned_cell(f"exchange rate {value}", value, 50.0, y))
+        for value, y in (("2.9430", 40.0), ("2.9660", 50.0), ("3.0010", 60.0))
+    )
+    rows = (base_row, *continuation_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+        conversion_date=date(2026, 6, 8),
+    )
+
+    assert extraction.details is None
+    assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
+    assert extraction.claims == ()
+
+
 def test_extract_foreign_exchange_from_bounded_continuation_details() -> None:
     base_row = _base_row_without_fx_values()
     continuation_rows = _continuation_rows()

@@ -267,6 +267,14 @@ def _continuation_fx_values(
     fee_percentage: ExtractedDecimal | None = None
     gross_fee: ExtractedMoney | None = None
     fee_discount: ExtractedMoney | None = None
+    rate_seen = False
+    rate_ambiguous = False
+    percentage_seen = False
+    percentage_ambiguous = False
+    gross_seen = False
+    gross_ambiguous = False
+    discount_seen = False
+    discount_ambiguous = False
     pending_gross = False
     pending_discount = False
 
@@ -287,17 +295,20 @@ def _continuation_fx_values(
 
         if is_rate:
             parsed_rate = _one_positive_decimal(atom_ids, ledger)
-            if parsed_rate is None or exchange_rate is not None:
+            if rate_seen or parsed_rate is None:
+                rate_ambiguous = True
                 exchange_rate = None
                 diagnostics.append("unparsed_exchange_rate_candidate")
             else:
                 value, value_atom_ids = parsed_rate
                 exchange_rate = ExtractedDecimal(value=value, evidence=evidence)
                 claims.append(EvidenceClaim(SemanticOwner.EXCHANGE_RATE, value_atom_ids))
+            rate_seen = True
 
         if is_percentage:
             parsed_percentage = _one_decimal(atom_ids, ledger, allow_zero=True)
-            if parsed_percentage is None or fee_percentage is not None:
+            if percentage_seen or parsed_percentage is None:
+                percentage_ambiguous = True
                 fee_percentage = None
                 diagnostics.append("unparsed_foreign_currency_fee_percentage_candidate")
             else:
@@ -305,10 +316,12 @@ def _continuation_fx_values(
                 fee_percentage = ExtractedDecimal(value=value, evidence=evidence)
                 claims.append(EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, value_atom_ids))
                 pending_gross = True
+            percentage_seen = True
 
         if is_gross:
             parsed_gross = _one_row_money(row, ledger, billing_currency)
-            if parsed_gross is None or gross_fee is not None:
+            if gross_seen or parsed_gross is None:
+                gross_ambiguous = True
                 gross_fee = None
                 diagnostics.append("unparsed_foreign_currency_fee_candidate")
             else:
@@ -319,13 +332,15 @@ def _continuation_fx_values(
                     evidence=evidence,
                 )
                 claims.append(EvidenceClaim(SemanticOwner.GROSS_FX_FEE, value_atom_ids))
+            gross_seen = True
             pending_gross = False
             pending_discount = _contains_cue(phrase, _DISCOUNT_CUES)
             continue
 
         if is_discount or pending_discount:
             parsed_discount = _one_row_money(row, ledger, billing_currency)
-            if parsed_discount is None or fee_discount is not None:
+            if discount_seen or parsed_discount is None:
+                discount_ambiguous = True
                 fee_discount = None
                 diagnostics.append("unparsed_foreign_currency_fee_discount_candidate")
             else:
@@ -336,6 +351,7 @@ def _continuation_fx_values(
                     evidence=evidence,
                 )
                 claims.append(EvidenceClaim(SemanticOwner.FX_FEE_DISCOUNT, value_atom_ids))
+            discount_seen = True
             pending_discount = False
 
     net_fee: ExtractedMoney | None = None
@@ -351,18 +367,32 @@ def _continuation_fx_values(
                 derivation="gross_fee_minus_discount",
             )
 
+    ambiguous_owners = {
+        owner
+        for ambiguous, owner in (
+            (rate_ambiguous, SemanticOwner.EXCHANGE_RATE),
+            (percentage_ambiguous, SemanticOwner.FX_FEE_PERCENTAGE),
+            (gross_ambiguous, SemanticOwner.GROSS_FX_FEE),
+            (discount_ambiguous, SemanticOwner.FX_FEE_DISCOUNT),
+        )
+        if ambiguous
+    }
     return _FxValues(
         exchange_rate=exchange_rate,
         fee_percentage=fee_percentage,
         gross_fee=gross_fee,
         fee_discount=fee_discount,
         net_fee=net_fee,
-        claims=tuple(claims),
+        claims=tuple(claim for claim in claims if claim.owner not in ambiguous_owners),
         diagnostics=tuple(dict.fromkeys(diagnostics)),
     )
 
 
 def _merge_values(table: _FxValues, continuation: _FxValues) -> _FxValues:
+    rate_ambiguous = "unparsed_exchange_rate_candidate" in {
+        *table.diagnostics,
+        *continuation.diagnostics,
+    }
     rate_conflict = (
         table.exchange_rate is not None
         and continuation.exchange_rate is not None
@@ -376,10 +406,10 @@ def _merge_values(table: _FxValues, continuation: _FxValues) -> _FxValues:
             or table.net_fee.currency != continuation.net_fee.currency
         )
     )
-    conflicting_owners = {
+    blocked_owners = {
         owner
         for conflict, owner in (
-            (rate_conflict, SemanticOwner.EXCHANGE_RATE),
+            (rate_ambiguous or rate_conflict, SemanticOwner.EXCHANGE_RATE),
             (net_fee_conflict, SemanticOwner.NET_FX_FEE),
         )
         if conflict
@@ -391,7 +421,9 @@ def _merge_values(table: _FxValues, continuation: _FxValues) -> _FxValues:
         diagnostics.append("inconsistent_foreign_currency_fee_derivation")
     return _FxValues(
         exchange_rate=(
-            None if rate_conflict else table.exchange_rate or continuation.exchange_rate
+            None
+            if rate_ambiguous or rate_conflict
+            else table.exchange_rate or continuation.exchange_rate
         ),
         fee_percentage=continuation.fee_percentage,
         gross_fee=continuation.gross_fee,
@@ -400,7 +432,7 @@ def _merge_values(table: _FxValues, continuation: _FxValues) -> _FxValues:
         claims=tuple(
             claim
             for claim in (*table.claims, *continuation.claims)
-            if claim.owner not in conflicting_owners
+            if claim.owner not in blocked_owners
         ),
         diagnostics=tuple(dict.fromkeys(diagnostics)),
     )
