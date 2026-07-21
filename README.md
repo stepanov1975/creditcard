@@ -54,6 +54,18 @@ Each run atomically writes two files:
 - `transactions.csv`: a flat UTF-8 CSV for downstream analysis. Amounts use
   plain decimal strings and dates use ISO `YYYY-MM-DD` form.
 
+Foreign-currency transactions may include a nullable `foreign_exchange` JSON
+object. Its exchange rate, fee percentage, gross fee, fee discount, and net fee
+values each retain field-level page, bounding-box, and raw-text evidence. A net
+fee derived exactly as gross fee minus discount has the
+`gross_fee_minus_discount` derivation; directly printed fees use `printed`.
+
+The CSV appends equivalent FX value, currency, derivation, source-page, and
+source-bounding-box columns after the original columns. Existing JSON keys and
+CSV columns retain their meanings and order. Consumers should ignore unknown
+JSON keys and trailing CSV columns so additive schema extensions remain
+compatible.
+
 Document statuses are:
 
 - `reconciled`: all groups match their printed totals exactly and contain no
@@ -71,7 +83,9 @@ is `reconciled`. Invalid input or runtime failures exit with code 1.
 Normalization also accounts for meaningful transaction-row evidence. Unassigned
 merchant-boundary text, unexplained semantic text, and unresolved conversion-date
 candidates remain attached to the billed transaction as ambiguities, so an exact
-arithmetic total alone cannot produce a strict success.
+arithmetic total alone cannot produce a strict success. Explicit but unparseable
+or contradictory exchange-rate and foreign-currency-fee evidence is likewise a
+transaction ambiguity and prevents strict success.
 
 ## Audit a document directory
 
