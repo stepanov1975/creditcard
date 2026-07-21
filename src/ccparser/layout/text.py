@@ -18,10 +18,9 @@ from ccparser.geometry import (
     bbox_center_y,
     bbox_height,
     center_inside,
-    intersection_over_smaller,
-    intersection_over_union,
     union_bbox,
 )
+from ccparser.layout.word_dedup import deduplicate_words
 
 _VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$")
 
@@ -163,31 +162,6 @@ def _text_from_glyphs(glyphs: Sequence[Glyph]) -> str:
     return _normalized(" ".join(rendered_lines))
 
 
-def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
-    selected: list[Word] = []
-    ordered = sorted(
-        words,
-        key=lambda word: (
-            -word.confidence,
-            word.source != "digital",
-            word.bbox,
-            _normalized(word.text),
-        ),
-    )
-    for word in ordered:
-        if any(
-            _normalized(existing.text) == _normalized(word.text)
-            and (
-                intersection_over_union(existing.bbox, word.bbox) >= 0.7
-                or intersection_over_smaller(existing.bbox, word.bbox) >= 0.9
-            )
-            for existing in selected
-        ):
-            continue
-        selected.append(word)
-    return tuple(selected)
-
-
 def _positioned_glyph_groups(glyphs: Sequence[Glyph], bbox: BBox) -> tuple[Glyph, ...]:
     vertically_relevant = tuple(
         glyph for glyph in glyphs if bbox[1] <= bbox_center_y(glyph.bbox) <= bbox[3]
@@ -216,7 +190,7 @@ def _positioned_glyph_groups(glyphs: Sequence[Glyph], bbox: BBox) -> tuple[Glyph
 
 def _text_from_words(words: Sequence[Word]) -> str:
     rendered_lines: list[str] = []
-    for line in _cluster_lines(_deduplicated_words(words)):
+    for line in _cluster_lines(deduplicate_words(words, text_key=_normalized)):
         dominant = _dominant_direction(tuple(word.text for word in line))
         ordered = sorted(line, key=lambda word: bbox_center_x(word.bbox), reverse=dominant == "rtl")
         line_text = _normalized(" ".join(word.text for word in ordered))
@@ -229,7 +203,7 @@ def _text_from_lossless_words(words: Sequence[Word]) -> str:
     """Order exact word-owned glyph text by directional runs."""
 
     rendered_lines: list[str] = []
-    for line in _cluster_lines(_deduplicated_words(words)):
+    for line in _cluster_lines(deduplicate_words(words, text_key=_normalized)):
         physical = sorted(line, key=lambda word: bbox_center_x(word.bbox))
         base_direction = _dominant_direction(tuple(word.text for word in physical))
         runs: list[tuple[str, list[Word]]] = []
@@ -356,8 +330,9 @@ def positioned_evidence_for_bbox(
     glyphs = _positioned_glyph_groups(page_evidence.glyphs, bbox)
     words = tuple(
         sorted(
-            _deduplicated_words(
-                tuple(word for word in page_evidence.words if center_inside(word.bbox, bbox))
+            deduplicate_words(
+                (word for word in page_evidence.words if center_inside(word.bbox, bbox)),
+                text_key=_normalized,
             ),
             key=lambda word: (word.bbox[1], word.bbox[0], word.text, word.source),
         )

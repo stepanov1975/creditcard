@@ -251,6 +251,25 @@ def test_logical_text_falls_back_to_deduplicated_positioned_words_and_normalizes
     assert logical_text_for_bbox(page, (0.0, 0.0, 100.0, 30.0)) == "שָׁלוֹם 12.50"
 
 
+def test_logical_text_uses_nfc_text_for_word_deduplication() -> None:
+    words = (
+        Word(
+            text="Caf\u00e9",
+            bbox=(10.0, 10.0, 40.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+        Word(
+            text="Cafe\u0301",
+            bbox=(10.0, 10.0, 40.0, 20.0),
+            source="digital",
+            confidence=1.0,
+        ),
+    )
+
+    assert logical_text_for_evidence((), words) == "Café"
+
+
 def test_logical_text_orders_lines_top_to_bottom_and_returns_empty_without_evidence() -> None:
     glyphs = (*(_glyph(char, 10.0 + index * 5.0, 10.0) for index, char in enumerate("Top")),)
     words = (

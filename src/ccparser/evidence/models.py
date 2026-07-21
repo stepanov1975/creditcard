@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ccparser.geometry import BBox as BBox
 from ccparser.geometry import Point as Point
+from ccparser.geometry import validate_bbox, validate_point
 
 type EvidenceSource = Literal["digital", "ocr"]
 
 
 class _ImmutableEvidenceModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @field_validator("bbox", check_fields=False)
+    @classmethod
+    def _validate_bbox(cls, value: BBox) -> BBox:
+        return validate_bbox(value)
 
 
 class Glyph(_ImmutableEvidenceModel):
@@ -26,6 +32,11 @@ class Glyph(_ImmutableEvidenceModel):
     size: float = Field(ge=0)
     source: EvidenceSource
     confidence: float = Field(ge=0, le=1)
+
+    @field_validator("origin")
+    @classmethod
+    def _validate_origin(cls, value: Point) -> Point:
+        return validate_point(value)
 
 
 class Word(_ImmutableEvidenceModel):

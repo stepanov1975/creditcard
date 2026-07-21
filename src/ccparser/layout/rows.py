@@ -12,12 +12,11 @@ from ccparser.geometry import (
     BBox,
     bbox_center_y,
     bbox_height,
-    intersection_over_smaller,
-    intersection_over_union,
     union_bbox,
     vertical_overlap,
 )
 from ccparser.layout.models import Cell, Row
+from ccparser.layout.word_dedup import deduplicate_words
 
 MAX_LINE_HEIGHT_RATIO = 2.5
 
@@ -39,30 +38,6 @@ def _line_reference_bbox(line: Sequence[Word]) -> BBox:
         max(item.bbox[2] for item in line),
         center + typical_height / 2,
     )
-
-
-def _deduplicated_words(words: Sequence[Word]) -> tuple[Word, ...]:
-    selected: list[Word] = []
-    for word in sorted(
-        words,
-        key=lambda value: (
-            -value.confidence,
-            value.source != "digital",
-            value.bbox,
-            value.text,
-        ),
-    ):
-        if any(
-            existing.text == word.text
-            and (
-                intersection_over_union(existing.bbox, word.bbox) >= 0.7
-                or intersection_over_smaller(existing.bbox, word.bbox) >= 0.9
-            )
-            for existing in selected
-        ):
-            continue
-        selected.append(word)
-    return tuple(selected)
 
 
 def _dominant_direction(texts: Sequence[str]) -> str:
@@ -146,7 +121,7 @@ def cluster_rows(words: Sequence[Word], page_number: int) -> tuple[Row, ...]:
     if page_number <= 0:
         raise ValueError("page_number must be positive")
     rows: list[Row] = []
-    for line in _cluster_word_lines(_deduplicated_words(words)):
+    for line in _cluster_word_lines(deduplicate_words(words, text_key=lambda text: text)):
         geometric_words = tuple(
             sorted(line, key=lambda word: (word.bbox[0], word.bbox[1], word.text))
         )

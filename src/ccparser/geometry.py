@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 
 type BBox = tuple[float, float, float, float]
 type Point = tuple[float, float]
+
+
+def validate_bbox(value: BBox) -> BBox:
+    """Return a finite bbox whose minimum coordinates precede its maxima."""
+
+    if not all(math.isfinite(coordinate) for coordinate in value):
+        raise ValueError("bounding box coordinates must be finite")
+    if value[0] > value[2] or value[1] > value[3]:
+        raise ValueError("bounding box coordinates must be ordered")
+    return value
+
+
+def validate_point(value: Point) -> Point:
+    """Return a point with finite coordinates."""
+
+    if not all(math.isfinite(coordinate) for coordinate in value):
+        raise ValueError("point coordinates must be finite")
+    return value
 
 
 def bbox_width(bbox: BBox) -> float:

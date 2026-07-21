@@ -110,6 +110,18 @@ def test_cluster_rows_deduplicates_same_ocr_text_when_one_box_contains_the_other
     assert rows[0].words == (words[0],)
 
 
+def test_cluster_rows_uses_identity_text_for_word_deduplication() -> None:
+    words = (
+        _word("Caf\u00e9", (10.0, 10.0, 40.0, 20.0)),
+        _word("Cafe\u0301", (10.0, 10.0, 40.0, 20.0)),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    assert len(rows[0].words) == 2
+    assert {word.text for word in rows[0].words} == {"Caf\u00e9", "Cafe\u0301"}
+
+
 def test_cluster_rows_confidence_measures_vertical_coherence_within_cluster() -> None:
     aligned = cluster_rows(
         (

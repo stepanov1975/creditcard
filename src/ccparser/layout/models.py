@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ccparser.evidence.models import Glyph, Word
-from ccparser.geometry import BBox
+from ccparser.geometry import BBox, validate_bbox
 
 
 class _ImmutableLayoutModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @field_validator("bbox", check_fields=False)
+    @classmethod
+    def _validate_bbox(cls, value: BBox) -> BBox:
+        return validate_bbox(value)
 
 
 class ColumnRole(StrEnum):
@@ -68,6 +74,12 @@ class ColumnSpec(_ImmutableLayoutModel):
     source_cells: tuple[Cell, ...] = ()
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_relative_band(self) -> Self:
+        if self.relative_x0 > self.relative_x1:
+            raise ValueError("relative column coordinates must be ordered")
+        return self
 
 
 class TableSchema(_ImmutableLayoutModel):
