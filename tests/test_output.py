@@ -14,6 +14,9 @@ import ccparser.output as output_module
 from ccparser.models import (
     BatchResult,
     EvidenceReference,
+    ExtractedDecimal,
+    ExtractedMoney,
+    ForeignExchangeDetails,
     ReconciliationGroup,
     StatementResult,
     Status,
@@ -32,6 +35,21 @@ from ccparser.output import (
 
 
 def _batch() -> BatchResult:
+    rate_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(40.0, 50.0, 70.0, 60.0),
+        raw_text="exchange rate 2.9430",
+    )
+    fee_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(40.0, 60.0, 70.0, 70.0),
+        raw_text="fee ILS 0.88 at 3.00 percent",
+    )
+    discount_evidence = EvidenceReference(
+        page_number=1,
+        bbox=(40.0, 70.0, 70.0, 80.0),
+        raw_text="discount ILS 0.59",
+    )
     transaction = Transaction(
         transaction_id="group-0001-p001-r0001",
         kind=TransactionKind.CHARGE,
@@ -46,6 +64,32 @@ def _batch() -> BatchResult:
         original_currency="USD",
         installment_current=2,
         installment_total=3,
+        foreign_exchange=ForeignExchangeDetails(
+            exchange_rate=ExtractedDecimal(
+                value=Decimal("2.9430"),
+                evidence=(rate_evidence,),
+            ),
+            fee_percentage=ExtractedDecimal(
+                value=Decimal("3.00"),
+                evidence=(fee_evidence,),
+            ),
+            gross_fee=ExtractedMoney(
+                amount=Decimal("0.88"),
+                currency="ILS",
+                evidence=(fee_evidence,),
+            ),
+            fee_discount=ExtractedMoney(
+                amount=Decimal("0.59"),
+                currency="ILS",
+                evidence=(discount_evidence,),
+            ),
+            net_fee=ExtractedMoney(
+                amount=Decimal("0.29"),
+                currency="ILS",
+                evidence=(fee_evidence, discount_evidence),
+                derivation="gross_fee_minus_discount",
+            ),
+        ),
         evidence=(
             EvidenceReference(
                 page_number=1,
@@ -104,6 +148,13 @@ def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None
     assert transaction["original_amount"] == "10.2"
     assert transaction["transaction_date"] == "2026-01-02"
     assert transaction["conversion_date"] == "2026-01-03"
+    foreign_exchange = transaction["foreign_exchange"]
+    assert foreign_exchange["exchange_rate"]["value"] == "2.943"
+    assert foreign_exchange["fee_percentage"]["value"] == "3"
+    assert foreign_exchange["gross_fee"]["amount"] == "0.88"
+    assert foreign_exchange["fee_discount"]["amount"] == "0.59"
+    assert foreign_exchange["net_fee"]["amount"] == "0.29"
+    assert foreign_exchange["net_fee"]["derivation"] == "gross_fee_minus_discount"
     assert all(unicodedata.is_normalized("NFC", text) for text in _all_strings(payload))
 
 
@@ -123,6 +174,15 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["original_amount"] == "10.2"
     assert row["conversion_date"] == "2026-01-03"
     assert row["description"] == 'Cafe, "שָׁלוֹם"\nsecond line'
+    assert row["exchange_rate"] == "2.943"
+    assert row["foreign_currency_fee_percentage"] == "3"
+    assert row["gross_foreign_currency_fee"] == "0.88"
+    assert row["gross_foreign_currency_fee_currency"] == "ILS"
+    assert row["foreign_currency_fee_discount"] == "0.59"
+    assert row["net_foreign_currency_fee"] == "0.29"
+    assert row["net_foreign_currency_fee_derivation"] == "gross_fee_minus_discount"
+    assert row["exchange_rate_source_page"] == "1"
+    assert row["exchange_rate_source_bbox"] == "1:40,50,70,60"
     assert row["source_page"] == "1"
     assert row["source_bbox"] == "1:10.25,20.5,30.75,40"
     assert row["diagnostic_codes"] == "batch_diagnostic|statement_diagnostic"
@@ -157,6 +217,8 @@ def test_transactions_csv_keeps_diagnostics_for_empty_results(batch: BatchResult
     assert len(rows) == 1
     assert rows[0]["status"] == "unsupported"
     assert rows[0]["diagnostic_codes"]
+    assert rows[0]["exchange_rate"] == ""
+    assert rows[0]["net_foreign_currency_fee"] == ""
 
 
 def test_atomic_writers_repeat_identically_and_do_not_replace_on_failure(

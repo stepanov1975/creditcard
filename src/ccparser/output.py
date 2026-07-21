@@ -16,12 +16,20 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from ccparser.models import BatchResult, ReconciliationGroup, StatementResult, Transaction
+from ccparser.models import (
+    BatchResult,
+    EvidenceReference,
+    ExtractedDecimal,
+    ExtractedMoney,
+    ReconciliationGroup,
+    StatementResult,
+    Transaction,
+)
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
 
-CSV_COLUMNS = (
+_BASE_CSV_COLUMNS = (
     "source",
     "source_sha256",
     "statement_id",
@@ -45,6 +53,28 @@ CSV_COLUMNS = (
     "source_page",
     "source_bbox",
 )
+_FX_CSV_COLUMNS = (
+    "exchange_rate",
+    "exchange_rate_source_page",
+    "exchange_rate_source_bbox",
+    "foreign_currency_fee_percentage",
+    "foreign_currency_fee_percentage_source_page",
+    "foreign_currency_fee_percentage_source_bbox",
+    "gross_foreign_currency_fee",
+    "gross_foreign_currency_fee_currency",
+    "gross_foreign_currency_fee_source_page",
+    "gross_foreign_currency_fee_source_bbox",
+    "foreign_currency_fee_discount",
+    "foreign_currency_fee_discount_currency",
+    "foreign_currency_fee_discount_source_page",
+    "foreign_currency_fee_discount_source_bbox",
+    "net_foreign_currency_fee",
+    "net_foreign_currency_fee_currency",
+    "net_foreign_currency_fee_derivation",
+    "net_foreign_currency_fee_source_page",
+    "net_foreign_currency_fee_source_bbox",
+)
+CSV_COLUMNS = (*_BASE_CSV_COLUMNS, *_FX_CSV_COLUMNS)
 
 
 def _normalized_json(value: object) -> JsonValue:
@@ -107,13 +137,47 @@ def _coordinate(value: float) -> str:
     return format(value, ".15g")
 
 
-def _provenance(transaction: Transaction) -> tuple[str, str]:
-    pages = tuple(dict.fromkeys(reference.page_number for reference in transaction.evidence))
+def _provenance(references: Iterable[EvidenceReference]) -> tuple[str, str]:
+    evidence = tuple(references)
+    pages = tuple(dict.fromkeys(reference.page_number for reference in evidence))
     boxes = tuple(
         f"{reference.page_number}:" + ",".join(_coordinate(value) for value in reference.bbox)
-        for reference in transaction.evidence
+        for reference in evidence
     )
     return ";".join(str(page) for page in pages), ";".join(boxes)
+
+
+def _fx_fields(transaction: Transaction) -> dict[str, str]:
+    fields: dict[str, str] = dict.fromkeys(_FX_CSV_COLUMNS, "")
+    details = transaction.foreign_exchange
+    if details is None:
+        return fields
+
+    def add_decimal(prefix: str, extracted: ExtractedDecimal | None) -> None:
+        if extracted is None:
+            return
+        pages, boxes = _provenance(extracted.evidence)
+        fields[prefix] = _decimal_string(extracted.value)
+        fields[f"{prefix}_source_page"] = pages
+        fields[f"{prefix}_source_bbox"] = boxes
+
+    def add_money(prefix: str, extracted: ExtractedMoney | None) -> None:
+        if extracted is None:
+            return
+        pages, boxes = _provenance(extracted.evidence)
+        fields[prefix] = _decimal_string(extracted.amount)
+        fields[f"{prefix}_currency"] = extracted.currency
+        fields[f"{prefix}_source_page"] = pages
+        fields[f"{prefix}_source_bbox"] = boxes
+
+    add_decimal("exchange_rate", details.exchange_rate)
+    add_decimal("foreign_currency_fee_percentage", details.fee_percentage)
+    add_money("gross_foreign_currency_fee", details.gross_fee)
+    add_money("foreign_currency_fee_discount", details.fee_discount)
+    add_money("net_foreign_currency_fee", details.net_fee)
+    if details.net_fee is not None:
+        fields["net_foreign_currency_fee_derivation"] = details.net_fee.derivation
+    return fields
 
 
 def _empty_row(
@@ -147,7 +211,7 @@ def _transaction_row(
         else ""
     )
     group = groups.get(group_id)
-    pages, boxes = _provenance(transaction)
+    pages, boxes = _provenance(transaction.evidence)
     return {
         "source": statement.source_name or "",
         "source_sha256": statement.source_sha256 or "",
@@ -181,6 +245,7 @@ def _transaction_row(
         ),
         "source_page": pages,
         "source_bbox": boxes,
+        **_fx_fields(transaction),
     }
 
 
