@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from functools import partial
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from typer._click.core import Context as ClickContext
+from typer._click.exceptions import UsageError
+from typer.core import TyperCommand
 
 from ccparser.audit import AuditReport, audit_directory
+from ccparser.corpus_gate import (
+    CorpusGateAcceptanceError,
+    CorpusGateAttestation,
+    CorpusGateConfig,
+    CorpusGateInputError,
+    CorpusGateMode,
+    CorpusGateReason,
+    CorpusGateRuntimeError,
+    run_corpus_gate,
+)
 from ccparser.evidence import TesseractOcr, extract_pdf
 from ccparser.models import BatchResult, StatementResult, Status
 from ccparser.output import write_batch_outputs
@@ -54,6 +68,90 @@ def _validated_jobs(value: str | None) -> int | None:
     if jobs <= 0:
         raise ParserInputError("jobs must be a positive integer")
     return jobs
+
+
+def _invalid_gate_configuration() -> CorpusGateInputError:
+    return CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
+
+
+def _required_gate_value(value: str | None) -> str:
+    if value is None or not value:
+        raise _invalid_gate_configuration()
+    return value
+
+
+def _validated_gate_mode(value: str | None) -> CorpusGateMode:
+    try:
+        return CorpusGateMode(_required_gate_value(value))
+    except ValueError:
+        raise _invalid_gate_configuration() from None
+
+
+def _validated_gate_jobs(value: str | None) -> int:
+    try:
+        jobs = int(_required_gate_value(value))
+    except ValueError:
+        raise _invalid_gate_configuration() from None
+    if jobs <= 0:
+        raise _invalid_gate_configuration()
+    return jobs
+
+
+def _validated_runtime_tolerance(
+    value: str | None,
+    mode: CorpusGateMode,
+) -> Decimal | None:
+    if mode is CorpusGateMode.VERIFY:
+        if value is not None:
+            raise _invalid_gate_configuration()
+        return None
+    if value is None or not value:
+        raise _invalid_gate_configuration()
+    try:
+        tolerance = Decimal(value)
+    except (InvalidOperation, ValueError):
+        raise _invalid_gate_configuration() from None
+    if not tolerance.is_finite() or tolerance < 0:
+        raise _invalid_gate_configuration()
+    return tolerance
+
+
+def _gate_reason_values(reasons: tuple[CorpusGateReason, ...]) -> str:
+    return ",".join(reason.value for reason in reasons)
+
+
+def _print_gate_failure(
+    status: str,
+    reasons: tuple[CorpusGateReason, ...],
+) -> None:
+    typer.echo(f"status={status} reason_codes={_gate_reason_values(reasons)}", err=True)
+
+
+def _print_gate_attestation(attestation: CorpusGateAttestation) -> None:
+    typer.echo(
+        " ".join(
+            (
+                "status=passed",
+                f"mode={attestation.mode.value}",
+                f"retained={attestation.retained_counts.documents}",
+                f"reconciled={attestation.retained_counts.reconciled}",
+                f"quarantined={attestation.quarantine_counts.documents}",
+                f"elapsed_seconds={attestation.elapsed_seconds}",
+                f"performance_checked={str(attestation.performance_checked).lower()}",
+            )
+        )
+    )
+
+
+class _CorpusGateCommand(TyperCommand):
+    """Map this command's parser-level contract failures to the gate's safe exit."""
+
+    def parse_args(self, ctx: ClickContext, args: list[str]) -> list[str]:
+        try:
+            return super().parse_args(ctx, args)
+        except UsageError:
+            _print_gate_failure("error", (CorpusGateReason.INVALID_CONFIGURATION,))
+            raise typer.Exit(1) from None
 
 
 def _print_batch(batch: BatchResult, fallback_name: str) -> None:
@@ -112,6 +210,70 @@ def parse_command(
     _print_batch(batch, input_path.name)
     if strict and batch.status is not Status.RECONCILED:
         raise typer.Exit(2)
+
+
+@app.command("verify-corpus", cls=_CorpusGateCommand)
+def verify_corpus_command(
+    retained_dir: Annotated[str | None, typer.Argument(metavar="RETAINED")] = None,
+    quarantine_dir: Annotated[
+        str | None,
+        typer.Option("--quarantine-dir", metavar="DIR"),
+    ] = None,
+    membership_inventory: Annotated[
+        str | None,
+        typer.Option("--membership-inventory", metavar="FILE"),
+    ] = None,
+    baseline: Annotated[
+        str | None,
+        typer.Option("--baseline", metavar="FILE"),
+    ] = None,
+    work_dir: Annotated[
+        str | None,
+        typer.Option("--work-dir", metavar="DIR"),
+    ] = None,
+    mode: Annotated[
+        str | None,
+        typer.Option("--mode", metavar="MODE"),
+    ] = None,
+    jobs: Annotated[
+        str | None,
+        typer.Option("--jobs", metavar="N"),
+    ] = None,
+    runtime_tolerance: Annotated[
+        str | None,
+        typer.Option("--runtime-tolerance", metavar="RATIO"),
+    ] = None,
+) -> None:
+    """Run the private corpus acceptance gate and print one aggregate attestation."""
+
+    try:
+        validated_mode = _validated_gate_mode(mode)
+        config = CorpusGateConfig(
+            retained_dir=Path(_required_gate_value(retained_dir)),
+            quarantine_dir=Path(_required_gate_value(quarantine_dir)),
+            membership_inventory_path=Path(_required_gate_value(membership_inventory)),
+            baseline_path=Path(_required_gate_value(baseline)),
+            work_dir=Path(_required_gate_value(work_dir)),
+            jobs=_validated_gate_jobs(jobs),
+            runtime_tolerance_ratio=_validated_runtime_tolerance(
+                runtime_tolerance,
+                validated_mode,
+            ),
+        )
+        attestation = run_corpus_gate(config, validated_mode)
+        if not attestation.passed:
+            raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,))
+    except CorpusGateAcceptanceError as error:
+        _print_gate_failure("failed", error.reasons)
+        raise typer.Exit(2) from None
+    except (CorpusGateInputError, CorpusGateRuntimeError) as error:
+        _print_gate_failure("error", error.reasons)
+        raise typer.Exit(1) from None
+    except Exception:
+        _print_gate_failure("error", (CorpusGateReason.PARSER_RUNTIME_FAILED,))
+        raise typer.Exit(1) from None
+
+    _print_gate_attestation(attestation)
 
 
 def _print_audit(report: AuditReport) -> None:

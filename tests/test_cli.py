@@ -11,6 +11,16 @@ import ccparser
 import ccparser.cli as cli_module
 from ccparser.audit import AuditAction, AuditDecision, AuditReport
 from ccparser.cli import app
+from ccparser.corpus_gate import (
+    CorpusCounts,
+    CorpusGateAcceptanceError,
+    CorpusGateAttestation,
+    CorpusGateConfig,
+    CorpusGateInputError,
+    CorpusGateMode,
+    CorpusGateReason,
+    CorpusGateRuntimeError,
+)
 from ccparser.discovery import DocumentClassification
 from ccparser.evidence import DocumentEvidence
 from ccparser.models import (
@@ -24,6 +34,12 @@ from ccparser.models import (
 from ccparser.parser import ParserInputError
 
 runner = CliRunner()
+
+_PRIVATE_GATE_BAIT = (
+    "/private/corpus/secret-name.pdf "
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef "
+    "SECRET MERCHANT 2026-07-22 amount=1234.56 total=7890.12"
+)
 
 
 def _statement(status: Status, source: str = "synthetic.pdf") -> StatementResult:
@@ -54,6 +70,68 @@ def _statement(status: Status, source: str = "synthetic.pdf") -> StatementResult
         source_sha256="c" * 64,
         statement_id="c" * 64,
     )
+
+
+def _corpus_counts(*, documents: int, reconciled: int, not_statement: int) -> CorpusCounts:
+    return CorpusCounts(
+        documents=documents,
+        reconciled=reconciled,
+        unreconciled=0,
+        unsupported=0,
+        not_statement=not_statement,
+        groups=4,
+        row_results=5,
+        transactions=6,
+        ambiguous_transactions=0,
+        ambiguity_occurrences=0,
+        evidence_references=7,
+        present_fields=(),
+    )
+
+
+def _corpus_attestation(
+    *,
+    mode: CorpusGateMode = CorpusGateMode.VERIFY,
+    performance_checked: bool = True,
+) -> CorpusGateAttestation:
+    return CorpusGateAttestation(
+        passed=True,
+        mode=mode,
+        commit_abbreviation="a" * 12,
+        toolchain_abbreviation="b" * 12,
+        retained_counts=_corpus_counts(documents=3, reconciled=3, not_statement=0),
+        quarantine_counts=_corpus_counts(documents=2, reconciled=0, not_statement=2),
+        elapsed_seconds=Decimal("1.25"),
+        performance_checked=performance_checked,
+        reason_codes=(),
+    )
+
+
+def _verify_corpus_arguments(
+    *,
+    mode: str = "verify",
+    jobs: str = "4",
+    runtime_tolerance: str | None = None,
+) -> list[str]:
+    arguments = [
+        "verify-corpus",
+        "retained",
+        "--quarantine-dir",
+        "quarantine",
+        "--membership-inventory",
+        "artifacts/membership.json",
+        "--baseline",
+        "artifacts/baseline.json",
+        "--work-dir",
+        "artifacts/run",
+        "--mode",
+        mode,
+        "--jobs",
+        jobs,
+    ]
+    if runtime_tolerance is not None:
+        arguments.extend(("--runtime-tolerance", runtime_tolerance))
+    return arguments
 
 
 @pytest.mark.parametrize(
@@ -361,3 +439,396 @@ def test_single_file_cli_publishes_with_one_pair_writer(
     assert len(published) == 1
     assert published[0][0] == output_dir
     assert published[0][1].status is Status.RECONCILED
+
+
+def test_verify_corpus_cli_prints_only_exact_aggregate_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "run_corpus_gate",
+        lambda *_args, **_kwargs: _corpus_attestation(),
+        raising=False,
+    )
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 0
+    assert result.output == (
+        "status=passed mode=verify retained=3 reconciled=3 "
+        "quarantined=2 elapsed_seconds=1.25 performance_checked=true\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "runtime_tolerance", "expected_tolerance"),
+    (
+        (CorpusGateMode.VERIFY, None, None),
+        (CorpusGateMode.RECORD, "0.1250", Decimal("0.1250")),
+    ),
+)
+def test_verify_corpus_cli_forwards_complete_immutable_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: CorpusGateMode,
+    runtime_tolerance: str | None,
+    expected_tolerance: Decimal | None,
+) -> None:
+    captured: list[tuple[CorpusGateConfig, CorpusGateMode]] = []
+
+    def fake_gate(config: CorpusGateConfig, actual_mode: CorpusGateMode) -> CorpusGateAttestation:
+        captured.append((config, actual_mode))
+        return _corpus_attestation(mode=actual_mode)
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(
+        app,
+        _verify_corpus_arguments(
+            mode=mode.value,
+            jobs="7",
+            runtime_tolerance=runtime_tolerance,
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    config, actual_mode = captured[0]
+    assert actual_mode is mode
+    assert config == CorpusGateConfig(
+        retained_dir=Path("retained"),
+        quarantine_dir=Path("quarantine"),
+        membership_inventory_path=Path("artifacts/membership.json"),
+        baseline_path=Path("artifacts/baseline.json"),
+        work_dir=Path("artifacts/run"),
+        jobs=7,
+        runtime_tolerance_ratio=expected_tolerance,
+    )
+    assert config.model_config["frozen"] is True
+    if expected_tolerance is not None:
+        assert config.runtime_tolerance_ratio is not None
+        assert config.runtime_tolerance_ratio.as_tuple() == expected_tolerance.as_tuple()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        _verify_corpus_arguments(mode="record"),
+        _verify_corpus_arguments(runtime_tolerance="0.2"),
+    ),
+    ids=("record-missing-tolerance", "verify-supplied-tolerance"),
+)
+def test_verify_corpus_cli_rejects_mode_specific_tolerance_contract_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "missing_value",
+    ("retained", "quarantine", "inventory", "baseline", "work", "mode", "jobs"),
+)
+def test_verify_corpus_cli_maps_omitted_contract_values_to_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_value: str,
+) -> None:
+    arguments = _verify_corpus_arguments()
+    option_by_value = {
+        "quarantine": "--quarantine-dir",
+        "inventory": "--membership-inventory",
+        "baseline": "--baseline",
+        "work": "--work-dir",
+        "mode": "--mode",
+        "jobs": "--jobs",
+    }
+    if missing_value == "retained":
+        arguments.pop(1)
+    else:
+        option_index = arguments.index(option_by_value[missing_value])
+        del arguments[option_index : option_index + 2]
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        [*_verify_corpus_arguments(), f"--private-option={_PRIVATE_GATE_BAIT}"],
+        [*_verify_corpus_arguments(), _PRIVATE_GATE_BAIT],
+        [*_verify_corpus_arguments()[:-1]],
+    ),
+    ids=("unknown-option", "extra-positional", "option-missing-value"),
+)
+def test_verify_corpus_cli_maps_usage_failures_to_redacted_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize("mode", ("", "VERIFY", "other"))
+def test_verify_corpus_cli_maps_invalid_mode_to_exit_one_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments(mode=mode))
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize("jobs", ("0", "-1", "1.5", "workers"))
+def test_verify_corpus_cli_maps_invalid_jobs_to_exit_one_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+    jobs: str,
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments(jobs=jobs))
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    "runtime_tolerance",
+    ("not-a-decimal", "NaN", "Infinity", "-Infinity", "-0.01"),
+)
+def test_verify_corpus_cli_rejects_invalid_record_tolerance_without_float_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_tolerance: str,
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(
+        app,
+        _verify_corpus_arguments(mode="record", runtime_tolerance=runtime_tolerance),
+    )
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    ("error_type", "reason", "expected_output"),
+    (
+        (
+            CorpusGateInputError,
+            CorpusGateReason.PATH_OUTSIDE_REPOSITORY,
+            "status=error reason_codes=path_outside_repository\n",
+        ),
+        (
+            CorpusGateRuntimeError,
+            CorpusGateReason.TOOLCHAIN_UNAVAILABLE,
+            "status=error reason_codes=toolchain_unavailable\n",
+        ),
+    ),
+)
+def test_verify_corpus_cli_redacts_typed_input_and_runtime_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[CorpusGateInputError | CorpusGateRuntimeError],
+    reason: CorpusGateReason,
+    expected_output: str,
+) -> None:
+    error = error_type((reason,))
+    error.args = (_PRIVATE_GATE_BAIT,)
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        raise error
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 1
+    assert result.output == expected_output
+    assert all(fragment not in result.output for fragment in _PRIVATE_GATE_BAIT.split())
+
+
+def test_verify_corpus_cli_redacts_unexpected_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        raise RuntimeError(_PRIVATE_GATE_BAIT)
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=parser_runtime_failed\n"
+    assert all(fragment not in result.output for fragment in _PRIVATE_GATE_BAIT.split())
+
+
+def test_verify_corpus_cli_prints_only_ordered_closed_acceptance_reason_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = CorpusGateAcceptanceError(
+        (
+            CorpusGateReason.RUNTIME_REGRESSION,
+            CorpusGateReason.JSON_DRIFT,
+            CorpusGateReason.MEMBERSHIP_DRIFT,
+        )
+    )
+    error.args = (_PRIVATE_GATE_BAIT,)
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        raise error
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 2
+    assert result.output == (
+        "status=failed reason_codes=membership_drift,json_drift,runtime_regression\n"
+    )
+    assert all(fragment not in result.output for fragment in _PRIVATE_GATE_BAIT.split())
+
+
+def test_verify_corpus_cli_explicitly_reports_unchecked_performance_without_extra_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "run_corpus_gate",
+        lambda *_args, **_kwargs: _corpus_attestation(performance_checked=False),
+        raising=False,
+    )
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 0
+    assert result.output == (
+        "status=passed mode=verify retained=3 reconciled=3 "
+        "quarantined=2 elapsed_seconds=1.25 performance_checked=false\n"
+    )
+
+
+def test_verify_corpus_cli_never_exits_zero_for_an_unpassed_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unpassed = _corpus_attestation().model_copy(update={"passed": False})
+    monkeypatch.setattr(
+        cli_module,
+        "run_corpus_gate",
+        lambda *_args, **_kwargs: unpassed,
+        raising=False,
+    )
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=parser_runtime_failed\n"
+
+
+@pytest.mark.parametrize(
+    ("mode", "runtime_tolerance"),
+    (("verify", None), ("record", "0.2")),
+)
+def test_verify_corpus_cli_never_mutates_approved_membership_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    runtime_tolerance: str | None,
+) -> None:
+    inventory = tmp_path / "membership.json"
+    approved_bytes = b"approved immutable inventory"
+    inventory.write_bytes(approved_bytes)
+    captured: list[CorpusGateConfig] = []
+
+    def fake_gate(config: CorpusGateConfig, actual_mode: CorpusGateMode) -> CorpusGateAttestation:
+        captured.append(config)
+        return _corpus_attestation(mode=actual_mode)
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+    arguments = [
+        "verify-corpus",
+        str(tmp_path / "retained"),
+        "--quarantine-dir",
+        str(tmp_path / "quarantine"),
+        "--membership-inventory",
+        str(inventory),
+        "--baseline",
+        str(tmp_path / "baseline.json"),
+        "--work-dir",
+        str(tmp_path / "run"),
+        "--mode",
+        mode,
+        "--jobs",
+        "3",
+    ]
+    if runtime_tolerance is not None:
+        arguments.extend(("--runtime-tolerance", runtime_tolerance))
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    assert captured[0].membership_inventory_path == inventory
+    assert captured[0].model_config["frozen"] is True
+    assert inventory.read_bytes() == approved_bytes
