@@ -6,8 +6,10 @@ import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from itertools import pairwise
+from typing import Literal, Self
 
 from ccparser.evidence.models import Glyph, PageEvidence, Word
 from ccparser.geometry import (
@@ -2403,38 +2405,177 @@ def _leading_ambiguity_is_proven_by_repetition(
     return False
 
 
-def _apply_continuation_match(
-    match: ContinuationMatch,
-    accepted: list[Row],
-    *,
-    consumed_through: int,
-    continuation_count: int,
-    detail_continuation_count: int,
-    auxiliary_continuation_count: int,
-    detail_continuation_allowed: bool,
-    ignored_outside_band_count: int,
-) -> tuple[Row, int, int, int, int, bool, int]:
-    """Apply only the scanner effects explicitly carried by a match."""
+@dataclass(frozen=True, slots=True)
+class _RegionScanCounters:
+    """Immutable diagnostic counters accumulated while scanning a region."""
 
-    accepted.extend(match.rows)
-    matched_row_count = len(match.rows)
-    if match.kind is ContinuationKind.DESCRIPTION:
-        continuation_count += matched_row_count
-    elif match.kind is ContinuationKind.AUXILIARY_FRAGMENT:
-        auxiliary_continuation_count += matched_row_count
-    else:
-        detail_continuation_count += matched_row_count
-    if match.detail_policy is DetailContinuationPolicy.DISALLOW:
-        detail_continuation_allowed = False
-    return (
-        match.rows[-1],
-        match.consumed_through,
-        continuation_count,
-        detail_continuation_count,
-        auxiliary_continuation_count,
-        detail_continuation_allowed,
-        ignored_outside_band_count + match.skipped_outside_rows,
-    )
+    continuation_count: int = 0
+    detail_continuation_count: int = 0
+    auxiliary_continuation_count: int = 0
+    ignored_overlaid_ocr_count: int = 0
+    ignored_spilled_currency_count: int = 0
+    ambiguous_leading_count: int = 0
+    ignored_outside_band_count: int = 0
+    ignored_preamble_count: int = 0
+
+    def increment_continuation(self, count: int = 1) -> Self:
+        return replace(self, continuation_count=self.continuation_count + count)
+
+    def increment_detail_continuation(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            detail_continuation_count=self.detail_continuation_count + count,
+        )
+
+    def increment_auxiliary_continuation(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            auxiliary_continuation_count=self.auxiliary_continuation_count + count,
+        )
+
+    def increment_ignored_overlaid_ocr(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            ignored_overlaid_ocr_count=self.ignored_overlaid_ocr_count + count,
+        )
+
+    def increment_ignored_spilled_currency(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            ignored_spilled_currency_count=self.ignored_spilled_currency_count + count,
+        )
+
+    def increment_ambiguous_leading(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            ambiguous_leading_count=self.ambiguous_leading_count + count,
+        )
+
+    def increment_ignored_outside_band(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            ignored_outside_band_count=self.ignored_outside_band_count + count,
+        )
+
+    def increment_ignored_preamble(self, count: int = 1) -> Self:
+        return replace(
+            self,
+            ignored_preamble_count=self.ignored_preamble_count + count,
+        )
+
+    def diagnostics(self) -> tuple[str, ...]:
+        diagnostics: list[str] = []
+        if self.continuation_count:
+            diagnostics.append(f"continuation_rows:{self.continuation_count}")
+        if self.detail_continuation_count:
+            diagnostics.append(f"detail_continuation_rows:{self.detail_continuation_count}")
+        if self.auxiliary_continuation_count:
+            diagnostics.append(f"auxiliary_continuation_rows:{self.auxiliary_continuation_count}")
+        if self.ignored_outside_band_count:
+            diagnostics.append(f"ignored_outside_band_rows:{self.ignored_outside_band_count}")
+        if self.ignored_preamble_count:
+            diagnostics.append(f"ignored_preamble_rows:{self.ignored_preamble_count}")
+        if self.ignored_overlaid_ocr_count:
+            diagnostics.append(f"ignored_overlaid_ocr_rows:{self.ignored_overlaid_ocr_count}")
+        if self.ignored_spilled_currency_count:
+            diagnostics.append(
+                f"ignored_spilled_currency_fragment_rows:{self.ignored_spilled_currency_count}"
+            )
+        if self.ambiguous_leading_count:
+            diagnostics.append(f"ambiguous_leading_rows:{self.ambiguous_leading_count}")
+        return tuple(diagnostics)
+
+
+type _IgnoredScanCounter = Literal[
+    "outside_band",
+    "preamble",
+    "overlaid_ocr",
+    "spilled_currency",
+]
+
+
+@dataclass(slots=True)
+class _RegionScanState:
+    """Mutable scan progress with assignment-only transition methods."""
+
+    previous: Row
+    consumed_through: int
+    stop_index: int
+    accepted: list[Row] = field(default_factory=list)
+    regular_rows: list[Row] = field(default_factory=list)
+    counters: _RegionScanCounters = field(default_factory=_RegionScanCounters)
+    detail_continuation_allowed: bool = False
+    stop_reason: str | None = None
+
+    def ignore(
+        self,
+        counter: _IgnoredScanCounter,
+        *,
+        count: int = 1,
+        previous: Row | None = None,
+        consumed_through: int | None = None,
+    ) -> None:
+        if counter == "outside_band":
+            self.counters = self.counters.increment_ignored_outside_band(count)
+        elif counter == "preamble":
+            self.counters = self.counters.increment_ignored_preamble(count)
+        elif counter == "overlaid_ocr":
+            self.counters = self.counters.increment_ignored_overlaid_ocr(count)
+        else:
+            self.counters = self.counters.increment_ignored_spilled_currency(count)
+        if previous is not None:
+            self.previous = previous
+        if consumed_through is not None:
+            self.consumed_through = consumed_through
+
+    def accept_regular(
+        self,
+        row: Row,
+        *,
+        consumed_through: int | None = None,
+    ) -> None:
+        self.accepted.append(row)
+        self.regular_rows.append(row)
+        self.previous = row
+        self.detail_continuation_allowed = True
+        if consumed_through is not None:
+            self.consumed_through = consumed_through
+
+    def accept_ambiguous(self, row: Row) -> None:
+        self.accepted.append(row)
+        self.previous = row
+        self.counters = self.counters.increment_ambiguous_leading()
+
+    def accept_description(self, match: ContinuationMatch) -> None:
+        self.accepted.extend(match.rows)
+        self.previous = match.rows[-1]
+        self.consumed_through = match.consumed_through
+        self.counters = self.counters.increment_continuation(len(match.rows))
+        if match.detail_policy is DetailContinuationPolicy.DISALLOW:
+            self.detail_continuation_allowed = False
+        if match.skipped_outside_rows:
+            self.counters = self.counters.increment_ignored_outside_band(match.skipped_outside_rows)
+
+    def accept_continuation(self, match: ContinuationMatch) -> None:
+        self.accepted.extend(match.rows)
+        self.previous = match.rows[-1]
+        self.consumed_through = match.consumed_through
+        if match.kind is ContinuationKind.AUXILIARY_FRAGMENT:
+            self.counters = self.counters.increment_auxiliary_continuation(len(match.rows))
+        else:
+            self.counters = self.counters.increment_detail_continuation(len(match.rows))
+        if match.detail_policy is DetailContinuationPolicy.DISALLOW:
+            self.detail_continuation_allowed = False
+        if match.skipped_outside_rows:
+            self.counters = self.counters.increment_ignored_outside_band(match.skipped_outside_rows)
+
+    def stop(self, reason: str, index: int) -> None:
+        if self.stop_reason is None:
+            self.stop_reason = reason
+            self.stop_index = index
+
+    def counter_diagnostics(self) -> tuple[str, ...]:
+        return self.counters.diagnostics()
 
 
 def _inherited_region_after_total(
@@ -2448,51 +2589,44 @@ def _inherited_region_after_total(
 
     header = source_region.header
     schema = source_region.table_schema
-    accepted: list[Row] = []
-    regular_rows: list[Row] = []
-    continuation_count = 0
-    detail_continuation_count = 0
-    auxiliary_continuation_count = 0
-    ignored_outside_band_count = 0
-    ignored_overlaid_ocr_count = 0
-    ignored_spilled_currency_count = 0
-    stop_reason: str | None = None
-    stop_index = len(rows)
-    consumed_through = total_index
-    previous = rows[total_index]
-    detail_continuation_allowed = False
+    state = _RegionScanState(
+        previous=rows[total_index],
+        consumed_through=total_index,
+        stop_index=len(rows),
+    )
     for index, row in enumerate(rows[total_index + 1 :], start=total_index + 1):
-        if index <= consumed_through:
+        if index <= state.consumed_through:
             continue
         if not _row_intersects_horizontal_band(row, header.bbox):
-            ignored_outside_band_count += 1
+            state.ignore("outside_band")
             continue
-        if _structural_gap(previous, row, (header, *accepted)):
-            stop_reason = "stopped_at_structural_gap"
-            stop_index = index
+        if _structural_gap(state.previous, row, (header, *state.accepted)):
+            state.stop("stopped_at_structural_gap", index)
             break
         if _literal_header_role_count(row) >= 2:
-            stop_reason = "stopped_at_new_header"
-            stop_index = index
+            state.stop("stopped_at_new_header", index)
             break
         if _is_total_row(row):
             if _page_row_key(row) in proven_total_overlay_keys:
                 continue
-            stop_reason = "stopped_at_total"
-            stop_index = index
+            state.stop("stopped_at_total", index)
             break
         projected = _project_row_to_header_bands(row, header)
         if not projected.cells:
-            ignored_outside_band_count += 1
+            state.ignore("outside_band")
             continue
-        if regular_rows and _trailing_overlaid_ocr_amount_artifact(
+        if state.regular_rows and _trailing_overlaid_ocr_amount_artifact(
             projected,
-            regular_rows[-1],
+            state.regular_rows[-1],
             schema,
         ):
-            ignored_overlaid_ocr_count += 1
+            state.ignore("overlaid_ocr")
             continue
-        if regular_rows and _is_description_continuation(projected, previous, schema):
+        if state.regular_rows and _is_description_continuation(
+            projected,
+            state.previous,
+            schema,
+        ):
             description_match = single_row_match(
                 projected,
                 start_index=index,
@@ -2500,27 +2634,12 @@ def _inherited_region_after_total(
                 row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
                 detail_policy=DetailContinuationPolicy.PRESERVE,
             )
-            (
-                previous,
-                consumed_through,
-                continuation_count,
-                detail_continuation_count,
-                auxiliary_continuation_count,
-                detail_continuation_allowed,
-                ignored_outside_band_count,
-            ) = _apply_continuation_match(
-                description_match,
-                accepted,
-                consumed_through=consumed_through,
-                continuation_count=continuation_count,
-                detail_continuation_count=detail_continuation_count,
-                auxiliary_continuation_count=auxiliary_continuation_count,
-                detail_continuation_allowed=detail_continuation_allowed,
-                ignored_outside_band_count=ignored_outside_band_count,
-            )
+            state.accept_description(description_match)
             continue
-        if detail_continuation_allowed and _is_marked_detail_continuation(
-            projected, previous, schema
+        if state.detail_continuation_allowed and _is_marked_detail_continuation(
+            projected,
+            state.previous,
+            schema,
         ):
             projected = projected.model_copy(
                 update={
@@ -2536,24 +2655,7 @@ def _inherited_region_after_total(
                 row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
                 detail_policy=DetailContinuationPolicy.DISALLOW,
             )
-            (
-                previous,
-                consumed_through,
-                continuation_count,
-                detail_continuation_count,
-                auxiliary_continuation_count,
-                detail_continuation_allowed,
-                ignored_outside_band_count,
-            ) = _apply_continuation_match(
-                marked_match,
-                accepted,
-                consumed_through=consumed_through,
-                continuation_count=continuation_count,
-                detail_continuation_count=detail_continuation_count,
-                auxiliary_continuation_count=auxiliary_continuation_count,
-                detail_continuation_allowed=detail_continuation_allowed,
-                ignored_outside_band_count=ignored_outside_band_count,
-            )
+            state.accept_continuation(marked_match)
             continue
         if not _has_valid_billed_amount(
             projected, schema
@@ -2564,7 +2666,7 @@ def _inherited_region_after_total(
             header,
             schema,
         ):
-            ignored_spilled_currency_count += 1
+            state.ignore("spilled_currency")
             continue
         if (
             not _has_valid_billed_amount(projected, schema)
@@ -2581,10 +2683,10 @@ def _inherited_region_after_total(
             )
             if complementary is not None:
                 projected, consumed_through = complementary
-                accepted.append(projected)
-                regular_rows.append(projected)
-                detail_continuation_allowed = True
-                previous = projected
+                state.accept_regular(
+                    projected,
+                    consumed_through=consumed_through,
+                )
                 continue
         if (
             _is_points_count_ledger_row(projected)
@@ -2592,37 +2694,35 @@ def _inherited_region_after_total(
             or not _has_valid_billed_amount(projected, schema)
             or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
         ):
-            stop_reason = "stopped_at_structure_change"
-            stop_index = index
+            state.stop("stopped_at_structure_change", index)
             break
-        accepted.append(projected)
-        regular_rows.append(projected)
-        detail_continuation_allowed = True
-        previous = projected
+        state.accept_regular(projected)
 
     strong_single_row = _has_strong_single_row_evidence(
-        regular_rows,
+        state.regular_rows,
         schema,
-        stop_reason,
-        rows[stop_index] if stop_reason == "stopped_at_total" else None,
+        state.stop_reason,
+        rows[state.stop_index] if state.stop_reason == "stopped_at_total" else None,
     )
-    repeated_rows_with_total = len(regular_rows) >= 2 and stop_reason == "stopped_at_total"
+    repeated_rows_with_total = (
+        len(state.regular_rows) >= 2 and state.stop_reason == "stopped_at_total"
+    )
     continued_to_page_end = (
-        len(regular_rows) >= 2
-        and stop_reason is None
-        and accepted[-1].bbox[3] >= page_evidence.height * 0.75
+        len(state.regular_rows) >= 2
+        and state.stop_reason is None
+        and state.accepted[-1].bbox[3] >= page_evidence.height * 0.75
     )
     if not (strong_single_row or repeated_rows_with_total or continued_to_page_end):
         return (
             None,
-            stop_index if stop_reason == "stopped_at_total" else total_index,
+            state.stop_index if state.stop_reason == "stopped_at_total" else total_index,
         )
 
-    alignments = tuple(_row_alignment(row, schema) for row in regular_rows)
-    billed_amount_column = proven_billed_amount_column(schema, accepted)
+    alignments = tuple(_row_alignment(row, schema) for row in state.regular_rows)
+    billed_amount_column = proven_billed_amount_column(schema, state.accepted)
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     diagnostics = [
-        f"repeated_rows:{len(regular_rows)}",
+        f"repeated_rows:{len(state.regular_rows)}",
         "inherited_schema_after_total",
         "row_only_region_bbox",
     ]
@@ -2630,36 +2730,25 @@ def _inherited_region_after_total(
         diagnostics.append("secondary_amount_bands_empty")
     if strong_single_row:
         diagnostics.append("single_row_strong_evidence")
-    if continuation_count:
-        diagnostics.append(f"continuation_rows:{continuation_count}")
-    if detail_continuation_count:
-        diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
-    if ignored_outside_band_count:
-        diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
-    if ignored_overlaid_ocr_count:
-        diagnostics.append(f"ignored_overlaid_ocr_rows:{ignored_overlaid_ocr_count}")
-    if ignored_spilled_currency_count:
-        diagnostics.append(
-            f"ignored_spilled_currency_fragment_rows:{ignored_spilled_currency_count}"
-        )
+    diagnostics.extend(state.counter_diagnostics())
     diagnostics.append("continued_to_page_end" if continued_to_page_end else "stopped_at_total")
     return (
         TableRegion(
             page_number=header.page_number,
-            bbox=_union_bbox(tuple(row.bbox for row in accepted)),
+            bbox=_union_bbox(tuple(row.bbox for row in state.accepted)),
             header=header,
-            rows=tuple(accepted),
+            rows=tuple(state.accepted),
             table_schema=schema,
             confidence=statistics.mean(
                 (
                     schema.confidence,
-                    statistics.mean(row.confidence for row in accepted),
+                    statistics.mean(row.confidence for row in state.accepted),
                     statistics.mean(alignments),
                 )
             ),
             diagnostics=tuple(diagnostics),
         ),
-        stop_index,
+        state.stop_index,
     )
 
 
@@ -2684,49 +2773,36 @@ def _detect_from_header(
     if not _plausible_header(schema):
         return None, header_index + 1
 
-    accepted: list[Row] = []
-    regular_rows: list[Row] = []
-    continuation_count = 0
-    detail_continuation_count = 0
-    auxiliary_continuation_count = 0
-    ignored_overlaid_ocr_count = 0
-    ignored_spilled_currency_count = 0
-    ambiguous_leading_count = 0
-    ignored_outside_band_count = 0
-    ignored_preamble_count = 0
-    stop_reason: str | None = None
-    stop_index = len(rows)
-    consumed_through = header_index
-    previous = header
-    detail_continuation_allowed = False
+    state = _RegionScanState(
+        previous=header,
+        consumed_through=header_index,
+        stop_index=len(rows),
+    )
     for index, row in enumerate(rows[header_index + 1 :], start=header_index + 1):
-        if index <= consumed_through:
+        if index <= state.consumed_through:
             continue
         if not _row_intersects_horizontal_band(row, header.bbox):
-            ignored_outside_band_count += 1
+            state.ignore("outside_band")
             continue
         if _is_total_row(row):
-            stop_reason = "stopped_at_total"
-            stop_index = index
+            state.stop("stopped_at_total", index)
             break
-        if _structural_gap(previous, row, (header, *accepted)):
-            stop_reason = "stopped_at_structural_gap"
-            stop_index = index
+        if _structural_gap(state.previous, row, (header, *state.accepted)):
+            state.stop("stopped_at_structural_gap", index)
             break
         if _literal_header_role_count(row) >= 2:
-            stop_reason = "stopped_at_new_header"
-            stop_index = index
+            state.stop("stopped_at_new_header", index)
             break
         projected = _project_row_to_header_bands(row, header)
         if not projected.cells:
-            ignored_outside_band_count += 1
+            state.ignore("outside_band")
             continue
-        if regular_rows and _trailing_overlaid_ocr_amount_artifact(
+        if state.regular_rows and _trailing_overlaid_ocr_amount_artifact(
             projected,
-            regular_rows[-1],
+            state.regular_rows[-1],
             schema,
         ):
-            ignored_overlaid_ocr_count += 1
+            state.ignore("overlaid_ocr")
             continue
         if not _has_valid_billed_amount(projected, schema):
             overlaid_through = _bounded_overlaid_ocr_amount_artifact(
@@ -2737,21 +2813,21 @@ def _detect_from_header(
                 schema,
             )
             if overlaid_through is not None:
-                consumed_through = overlaid_through
-                ignored_overlaid_ocr_count += 1
+                state.ignore(
+                    "overlaid_ocr",
+                    consumed_through=overlaid_through,
+                )
                 continue
-        if not regular_rows and (
+        if not state.regular_rows and (
             _transaction_shape_count(projected) == 0
             or _is_digit_free_currency_header_spill(projected)
         ):
-            if ignored_preamble_count >= MAX_HEADER_PREAMBLE_ROWS:
-                stop_reason = "stopped_at_structure_change"
-                stop_index = index
+            if state.counters.ignored_preamble_count >= MAX_HEADER_PREAMBLE_ROWS:
+                state.stop("stopped_at_structure_change", index)
                 break
-            ignored_preamble_count += 1
-            previous = projected
+            state.ignore("preamble", previous=projected)
             continue
-        if not regular_rows:
+        if not state.regular_rows:
             leading_detail = _bounded_leading_detail_before_transaction(
                 page_evidence,
                 rows,
@@ -2760,180 +2836,77 @@ def _detect_from_header(
                 schema,
             )
             if leading_detail is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    leading_detail,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(leading_detail)
                 continue
-        if detail_continuation_allowed:
+        if state.detail_continuation_allowed:
             card_identifier_block = _bounded_card_identifier_detail_block(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
-                previous,
+                state.previous,
             )
             if card_identifier_block is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    card_identifier_block,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(card_identifier_block)
                 continue
-        if detail_continuation_allowed:
+        if state.detail_continuation_allowed:
             card_identifier_tail = _bounded_card_identifier_tail(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
-                previous,
+                state.previous,
             )
             if card_identifier_tail is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    card_identifier_tail,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(card_identifier_tail)
                 continue
-        if detail_continuation_allowed:
+        if state.detail_continuation_allowed:
             detail_block = _foreign_conversion_detail_block(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
-                previous,
-                (header, *accepted),
+                state.previous,
+                (header, *state.accepted),
             )
             if detail_block is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    detail_block,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(detail_block)
                 continue
-        if detail_continuation_allowed:
+        if state.detail_continuation_allowed:
             note_detail = _bounded_hebrew_note_detail(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
-                previous,
+                state.previous,
             )
             if note_detail is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    note_detail,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(note_detail)
                 continue
         if (
-            detail_continuation_allowed
+            state.detail_continuation_allowed
             and len(projected.cells) == 1
             and _has_subordinate_detail_marker(projected)
         ):
-            stop_reason = "stopped_at_structure_change"
-            stop_index = index
+            state.stop("stopped_at_structure_change", index)
             break
-        if detail_continuation_allowed:
+        if state.detail_continuation_allowed:
             auxiliary_fragment = _bounded_auxiliary_fragment(
                 page_evidence,
                 rows,
                 index,
                 header,
                 schema,
-                previous,
+                state.previous,
             )
             if auxiliary_fragment is not None:
-                (
-                    previous,
-                    consumed_through,
-                    continuation_count,
-                    detail_continuation_count,
-                    auxiliary_continuation_count,
-                    detail_continuation_allowed,
-                    ignored_outside_band_count,
-                ) = _apply_continuation_match(
-                    auxiliary_fragment,
-                    accepted,
-                    consumed_through=consumed_through,
-                    continuation_count=continuation_count,
-                    detail_continuation_count=detail_continuation_count,
-                    auxiliary_continuation_count=auxiliary_continuation_count,
-                    detail_continuation_allowed=detail_continuation_allowed,
-                    ignored_outside_band_count=ignored_outside_band_count,
-                )
+                state.accept_continuation(auxiliary_fragment)
                 continue
-        if _is_description_continuation(projected, previous, schema):
+        if _is_description_continuation(projected, state.previous, schema):
             description_match = single_row_match(
                 projected,
                 start_index=index,
@@ -2941,27 +2914,10 @@ def _detect_from_header(
                 row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
                 detail_policy=DetailContinuationPolicy.PRESERVE,
             )
-            (
-                previous,
-                consumed_through,
-                continuation_count,
-                detail_continuation_count,
-                auxiliary_continuation_count,
-                detail_continuation_allowed,
-                ignored_outside_band_count,
-            ) = _apply_continuation_match(
-                description_match,
-                accepted,
-                consumed_through=consumed_through,
-                continuation_count=continuation_count,
-                detail_continuation_count=detail_continuation_count,
-                auxiliary_continuation_count=auxiliary_continuation_count,
-                detail_continuation_allowed=detail_continuation_allowed,
-                ignored_outside_band_count=ignored_outside_band_count,
-            )
+            state.accept_description(description_match)
             continue
-        if detail_continuation_allowed and _is_marked_detail_continuation(
-            projected, previous, schema
+        if state.detail_continuation_allowed and _is_marked_detail_continuation(
+            projected, state.previous, schema
         ):
             projected = projected.model_copy(
                 update={
@@ -2977,24 +2933,7 @@ def _detect_from_header(
                 row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
                 detail_policy=DetailContinuationPolicy.DISALLOW,
             )
-            (
-                previous,
-                consumed_through,
-                continuation_count,
-                detail_continuation_count,
-                auxiliary_continuation_count,
-                detail_continuation_allowed,
-                ignored_outside_band_count,
-            ) = _apply_continuation_match(
-                marked_match,
-                accepted,
-                consumed_through=consumed_through,
-                continuation_count=continuation_count,
-                detail_continuation_count=detail_continuation_count,
-                auxiliary_continuation_count=auxiliary_continuation_count,
-                detail_continuation_allowed=detail_continuation_allowed,
-                ignored_outside_band_count=ignored_outside_band_count,
-            )
+            state.accept_continuation(marked_match)
             continue
         if not _has_valid_billed_amount(
             projected, schema
@@ -3005,7 +2944,7 @@ def _detect_from_header(
             header,
             schema,
         ):
-            ignored_spilled_currency_count += 1
+            state.ignore("spilled_currency")
             continue
         if (
             not _has_valid_billed_amount(projected, schema)
@@ -3022,12 +2961,12 @@ def _detect_from_header(
             )
             if complementary is not None:
                 projected, consumed_through = complementary
-                accepted.append(projected)
-                regular_rows.append(projected)
-                detail_continuation_allowed = True
-                previous = projected
+                state.accept_regular(
+                    projected,
+                    consumed_through=consumed_through,
+                )
                 continue
-        if not regular_rows and _leading_ambiguity_is_proven_by_repetition(
+        if not state.regular_rows and _leading_ambiguity_is_proven_by_repetition(
             page_evidence,
             rows,
             index,
@@ -3041,72 +2980,48 @@ def _detect_from_header(
                     )
                 }
             )
-            accepted.append(projected)
-            ambiguous_leading_count += 1
-            previous = projected
+            state.accept_ambiguous(projected)
             continue
         if not _has_valid_billed_amount(projected, schema):
-            stop_reason = "stopped_at_structure_change"
-            stop_index = index
+            state.stop("stopped_at_structure_change", index)
             break
         alignment = _row_alignment(projected, schema)
         minimum_alignment = _minimum_row_alignment(schema)
         if alignment < minimum_alignment:
-            stop_reason = "stopped_at_structure_change"
-            stop_index = index
+            state.stop("stopped_at_structure_change", index)
             break
-        accepted.append(projected)
-        regular_rows.append(projected)
-        detail_continuation_allowed = True
-        previous = projected
+        state.accept_regular(projected)
 
     strong_single_row = _has_strong_single_row_evidence(
-        regular_rows,
+        state.regular_rows,
         schema,
-        stop_reason,
-        rows[stop_index] if stop_reason == "stopped_at_total" else None,
+        state.stop_reason,
+        rows[state.stop_index] if state.stop_reason == "stopped_at_total" else None,
     )
-    if len(regular_rows) < 2 and not strong_single_row:
+    if len(state.regular_rows) < 2 and not strong_single_row:
         return None, header_index + 1
 
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    billed_amount_column = proven_billed_amount_column(schema, accepted)
+    billed_amount_column = proven_billed_amount_column(schema, state.accepted)
 
-    sample_cells = tuple(cell for row in regular_rows for cell in row.cells)
+    sample_cells = tuple(cell for row in state.regular_rows for cell in row.cells)
     final_schema = infer_column_roles(header.cells, sample_cells)
-    bbox = _union_bbox((header.bbox, *(row.bbox for row in accepted)))
-    alignments = tuple(_row_alignment(row, final_schema) for row in regular_rows)
-    diagnostics = [f"repeated_rows:{len(regular_rows)}"]
+    bbox = _union_bbox((header.bbox, *(row.bbox for row in state.accepted)))
+    alignments = tuple(_row_alignment(row, final_schema) for row in state.regular_rows)
+    diagnostics = [f"repeated_rows:{len(state.regular_rows)}"]
     if len(amount_columns) > 1 and billed_amount_column is not None:
         diagnostics.append("secondary_amount_bands_empty")
     if strong_single_row:
         diagnostics.append("single_row_strong_evidence")
     diagnostics.extend(value for value in header.diagnostics if value.startswith("header_rows:"))
-    if continuation_count:
-        diagnostics.append(f"continuation_rows:{continuation_count}")
-    if detail_continuation_count:
-        diagnostics.append(f"detail_continuation_rows:{detail_continuation_count}")
-    if auxiliary_continuation_count:
-        diagnostics.append(f"auxiliary_continuation_rows:{auxiliary_continuation_count}")
-    if ignored_outside_band_count:
-        diagnostics.append(f"ignored_outside_band_rows:{ignored_outside_band_count}")
-    if ignored_preamble_count:
-        diagnostics.append(f"ignored_preamble_rows:{ignored_preamble_count}")
-    if ignored_overlaid_ocr_count:
-        diagnostics.append(f"ignored_overlaid_ocr_rows:{ignored_overlaid_ocr_count}")
-    if ignored_spilled_currency_count:
-        diagnostics.append(
-            f"ignored_spilled_currency_fragment_rows:{ignored_spilled_currency_count}"
-        )
-    if ambiguous_leading_count:
-        diagnostics.append(f"ambiguous_leading_rows:{ambiguous_leading_count}")
-    if stop_reason is not None:
-        diagnostics.append(stop_reason)
+    diagnostics.extend(state.counter_diagnostics())
+    if state.stop_reason is not None:
+        diagnostics.append(state.stop_reason)
     diagnostics.extend(f"schema:{diagnostic}" for diagnostic in final_schema.diagnostics)
     confidence = statistics.mean(
         (
             final_schema.confidence,
-            statistics.mean(row.confidence for row in accepted),
+            statistics.mean(row.confidence for row in state.accepted),
             statistics.mean(alignments),
         )
     )
@@ -3114,12 +3029,12 @@ def _detect_from_header(
         page_number=header.page_number,
         bbox=bbox,
         header=header,
-        rows=tuple(accepted),
+        rows=tuple(state.accepted),
         table_schema=final_schema,
         confidence=confidence,
         diagnostics=tuple(diagnostics),
     )
-    return region, stop_index
+    return region, state.stop_index
 
 
 def logical_rows(page_evidence: PageEvidence) -> tuple[Row, ...]:

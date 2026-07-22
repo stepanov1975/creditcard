@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
@@ -9,9 +11,8 @@ from ccparser.layout.continuations import (
     ContinuationMatch,
     DetailContinuationPolicy,
 )
-from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.layout.regions import (
-    _apply_continuation_match,
     _bounded_auxiliary_fragment,
     _bounded_card_identifier_detail_block,
     _bounded_card_identifier_tail,
@@ -19,9 +20,11 @@ from ccparser.layout.regions import (
     _bounded_hebrew_note_detail,
     _bounded_leading_detail_before_transaction,
     _candidate_schema,
+    _detect_from_header,
     _foreign_conversion_detail_block,
     _has_strong_single_row_evidence,
     _horizontal_gap,
+    _inherited_region_after_total,
     _is_marked_detail_continuation,
     _merge_header_rows,
     _merged_header_bands,
@@ -896,124 +899,672 @@ def _with_diagnostics(row: Row, *diagnostics: str) -> Row:
     )
 
 
+type _RegionScanSnapshot = tuple[
+    tuple[float, float, float, float] | None,
+    tuple[str, ...],
+    str | None,
+    float | None,
+    tuple[str, ...],
+    int,
+]
+
+
+def _region_scan_snapshot(
+    region: TableRegion | None,
+    stop_index: int,
+) -> _RegionScanSnapshot:
+    """Serialize the complete scanner result into a deterministic tuple."""
+
+    if region is None:
+        return (None, (), None, None, (), stop_index)
+    return (
+        region.bbox,
+        tuple(row.model_dump_json() for row in region.rows),
+        region.table_schema.model_dump_json(),
+        region.confidence,
+        region.diagnostics,
+        stop_index,
+    )
+
+
+def _region_scan_fingerprint(snapshot: _RegionScanSnapshot) -> str:
+    return hashlib.sha256(
+        repr(snapshot).encode(),
+        usedforsecurity=False,
+    ).hexdigest()
+
+
+def test_region_scan_snapshot_preserves_ordinary_rows_and_total_stop() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "12.40"),
+            *_data(50.0, "03/02/2026", "Cafe", "18.60"),
+            _word("Total", 45.0, 72.0, 70.0),
+            _word("31.00", 92.0, 120.0, 70.0),
+        )
+    )
+    rows = logical_rows(page)
+
+    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+
+    assert snapshot[-1] == 3
+    assert (
+        _region_scan_fingerprint(snapshot)
+        == "496d577eb2e854fa8653ad6d13335d106fd2aac20b296650253dd8ddac7563ec"
+    )
+
+
 @pytest.mark.parametrize(
+    ("page", "expected_stop_index", "expected_fingerprint"),
     (
-        "kind",
-        "rows",
-        "row_tags",
-        "detail_policy",
-        "skipped_outside_rows",
-        "expected_counts",
-        "expected_detail_allowed",
-    ),
-    (
-        (
-            ContinuationKind.DESCRIPTION,
-            (
-                Row(
-                    page_number=1,
-                    bbox=(0.0, 20.0, 10.0, 30.0),
-                    cells=(),
-                    confidence=1.0,
-                ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Long merchant", "10.00"),
+                    _word("continued name", 35.0, 72.0, 41.0),
+                    *_data(60.0, "02/02/2026", "Cafe", "20.00"),
+                    _word("Total", 45.0, 72.0, 80.0),
+                    _word("30.00", 92.0, 120.0, 80.0),
+                )
             ),
-            frozenset({RowTag.DESCRIPTION_CONTINUATION}),
-            DetailContinuationPolicy.PRESERVE,
-            0,
-            (3, 3, 4),
-            True,
+            4,
+            "d306e6a210d720ccaad97921a192eeb170bd6e379292becedbdb5a7743bb268b",
+            id="description-continuation",
         ),
-        (
-            ContinuationKind.AUXILIARY_FRAGMENT,
-            (
-                Row(
-                    page_number=1,
-                    bbox=(0.0, 20.0, 10.0, 30.0),
-                    cells=(),
-                    confidence=1.0,
-                ),
+        pytest.param(
+            _page(
+                (
+                    *_wide_financial_header(10.0),
+                    _word("detail", 108.0, 120.0, 30.0),
+                    _word("merchant 1234", 90.0, 100.0, 30.0),
+                    _word("$3.00 note", 72.0, 82.0, 30.0),
+                    _word("3.70x", 54.0, 64.0, 30.0),
+                    _word("03.02x", 36.0, 46.0, 30.0),
+                    _word("$", 18.0, 28.0, 30.0),
+                    _word("12.40", 0.0, 10.0, 50.0),
+                    _word("3.70", 18.0, 28.0, 50.0),
+                    _word("03/02/2026", 36.0, 46.0, 50.0),
+                    _word("$4.00", 72.0, 82.0, 50.0),
+                    _word("Market", 90.0, 100.0, 50.0),
+                    _word("01/02/2026", 108.0, 120.0, 50.0),
+                    _word("Total", 90.0, 100.0, 70.0),
+                    _word("42.40", 0.0, 10.0, 70.0),
+                )
             ),
-            frozenset({RowTag.AUXILIARY_CONTINUATION}),
-            DetailContinuationPolicy.DISALLOW,
-            0,
-            (2, 3, 5),
-            False,
+            3,
+            "e530e46a6fb6ed7588d1a4d1523223295dfefc66587e1b7fc08065e2ad5bbe5c",
+            id="leading-detail",
         ),
-        (
-            ContinuationKind.FOREIGN_CONVERSION_BLOCK,
-            (
-                Row(
-                    page_number=1,
-                    bbox=(0.0, 20.0, 10.0, 30.0),
-                    cells=(),
-                    confidence=1.0,
-                ),
-                Row(
-                    page_number=1,
-                    bbox=(0.0, 31.0, 10.0, 41.0),
-                    cells=(),
-                    confidence=1.0,
-                ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Market", "10.00"),
+                    _word("Exchange rate", 0.0, 22.0, 41.0),
+                    _word("Fee 0.50", 35.0, 72.0, 41.0),
+                    *_data(60.0, "02/02/2026", "Cafe", "20.00"),
+                    _word("שער המרה", 0.0, 22.0, 71.0),
+                    _word("עמלה 0.25", 35.0, 72.0, 71.0),
+                    _word("Total", 45.0, 72.0, 90.0),
+                    _word("30.00", 92.0, 120.0, 90.0),
+                )
             ),
-            frozenset(
-                {
-                    RowTag.SUBORDINATE_DETAIL,
-                    RowTag.FOREIGN_CONVERSION_DETAIL,
-                }
+            5,
+            "0fdee2ff4f4865b3aab2a86f9e73ec46947622ba5b3a52140e1834b03efd1854",
+            id="marked-details",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_auxiliary_table_header(10.0),
+                    *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+                    *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+                    _word("donation notice", 30.0, 55.0, 61.0),
+                    _word("מזהה כרטיס", 30.0, 55.0, 72.0),
+                    _word("9313", 65.0, 75.0, 72.0),
+                    *_auxiliary_data(83.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+                    _word("Total", 30.0, 55.0, 103.0),
+                    _word("₪60.00", 100.0, 125.0, 103.0),
+                )
             ),
-            DetailContinuationPolicy.DISALLOW,
-            2,
-            (2, 5, 4),
-            False,
+            6,
+            "ffbfb6146ec33bbf56cfcbc1058a55eb94a0e45c562b9e37f03b3d6f4145c166",
+            id="card-identifier-block",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_auxiliary_table_header(10.0),
+                    *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+                    *_auxiliary_data(
+                        50.0,
+                        "02/02/2026",
+                        "Merchant prefix",
+                        "מזהה כרטיס אינטרנט",
+                        "₪20.00",
+                    ),
+                    _word("Merchant suffix", 30.0, 55.0, 61.0),
+                    _word("8312", 65.0, 85.0, 61.0),
+                    *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+                    _word("Total", 30.0, 55.0, 92.0),
+                    _word("₪60.00", 100.0, 125.0, 92.0),
+                )
+            ),
+            5,
+            "1476799124532787f947843ebd717542700457c02bd4373bc99302217f722979",
+            id="card-identifier-tail",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_foreign_table_header(10.0),
+                    *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+                    *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+                    _word("converted at issuer rate", 30.0, 55.0, 61.0),
+                    _word("conversion note", 65.0, 85.0, 61.0),
+                    _word("Fee", 30.0, 55.0, 72.0),
+                    _word("discount applied", 65.0, 85.0, 72.0),
+                    _word("special arrangement", 30.0, 55.0, 83.0),
+                    *_foreign_data(94.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+                    _word("Total", 30.0, 55.0, 114.0),
+                    _word("41.00", 100.0, 125.0, 114.0),
+                )
+            ),
+            7,
+            "83036db4e66f7d1c3ae46438aafe07adfc76ab0be8f4b523dd907bac76d9f926",
+            id="foreign-conversion-block",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_wide_financial_header(10.0),
+                    *_wide_sparse_data(30.0, include_conversion_date=True),
+                    _word("הערה USD", 90.0, 100.0, 41.0),
+                    *_wide_sparse_data(52.0, include_conversion_date=True),
+                    _word("Total", 90.0, 100.0, 72.0),
+                    _word("24.80", 0.0, 10.0, 72.0),
+                )
+            ),
+            4,
+            "71f8d7e76cd7b27378755d6d0917188c99aaa5111f76e52fd8b973317a7ac21c",
+            id="hebrew-note",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_auxiliary_table_header(10.0),
+                    *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+                    *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+                    _word("continued", 65.0, 85.0, 61.0),
+                    *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+                    _word("Total", 30.0, 55.0, 92.0),
+                    _word("₪60.00", 100.0, 125.0, 92.0),
+                )
+            ),
+            5,
+            "22a931c486a6f789fa160ce6e5559bdfeccda5507083ae2dc37db67c0e2b9ae9",
+            id="auxiliary-fragment",
         ),
     ),
 )
-def test_apply_continuation_match_updates_only_explicit_scanner_effects(
-    kind: ContinuationKind,
-    rows: tuple[Row, ...],
-    row_tags: frozenset[RowTag],
-    detail_policy: DetailContinuationPolicy,
-    skipped_outside_rows: int,
-    expected_counts: tuple[int, int, int],
-    expected_detail_allowed: bool,
+def test_region_scan_snapshot_preserves_continuation_handlers(
+    page: PageEvidence,
+    expected_stop_index: int,
+    expected_fingerprint: str,
 ) -> None:
-    accepted = [
-        Row(
-            page_number=1,
-            bbox=(0.0, 0.0, 10.0, 10.0),
-            cells=(),
-            confidence=1.0,
+    rows = logical_rows(page)
+
+    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+
+    assert snapshot[-1] == expected_stop_index
+    assert _region_scan_fingerprint(snapshot) == expected_fingerprint
+
+
+@pytest.mark.parametrize(
+    ("page", "expected_stop_index", "expected_fingerprint"),
+    (
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    _word("Account section", 35.0, 72.0, 35.0),
+                    _word("Cycle", 0.0, 22.0, 50.0),
+                    _word("Informational", 35.0, 72.0, 50.0),
+                    _word("Pending", 92.0, 120.0, 50.0),
+                    _word("Additional details", 35.0, 72.0, 65.0),
+                    *_data(80.0, "01/02/2026", "Market", "12.40"),
+                    *_data(100.0, "03/02/2026", "Cafe", "18.60"),
+                    _word("Total", 35.0, 72.0, 120.0),
+                    _word("31.00", 92.0, 120.0, 120.0),
+                )
+            ),
+            6,
+            "61c1ec79d68a4573623108abb9d916628131b299f1250590c0beaeff9a7e028d",
+            id="preamble",
+        ),
+        pytest.param(
+            _page(
+                (
+                    _word("Date", 30.0, 52.0, 10.0),
+                    _word("Description", 65.0, 92.0, 10.0),
+                    _word("Amount", 102.0, 128.0, 10.0),
+                    _word("side note", 0.0, 20.0, 21.0),
+                    _word("01/02/2026", 30.0, 52.0, 32.0),
+                    _word("Market", 65.0, 92.0, 32.0),
+                    _word("12.00", 102.0, 128.0, 32.0),
+                    _word("continued side note", 0.0, 20.0, 43.0),
+                    _word("02/02/2026", 30.0, 52.0, 54.0),
+                    _word("Cafe", 65.0, 92.0, 54.0),
+                    _word("18.00", 102.0, 128.0, 54.0),
+                    _word("Total", 65.0, 92.0, 74.0),
+                    _word("30.00", 102.0, 128.0, 74.0),
+                )
+            ),
+            5,
+            "ee699b2303de708a8739d092d3c0cbd23eb90caff55bf8e8d8a1ee31e62ec497",
+            id="outside-band-rows",
+        ),
+        pytest.param(
+            _page(
+                (
+                    _word("|", 34.0, 35.0, 10.0),
+                    _word("Amount", 192.0, 229.0, 10.0),
+                    _word("Description", 332.0, 380.0, 10.0),
+                    _word("Date", 494.0, 531.0, 10.0),
+                    _word("WA", 240.0, 260.0, 12.5, height=30.0),
+                    _word("12.40", 198.0, 230.0, 30.0),
+                    _word("Market", 332.0, 380.0, 30.0),
+                    _word("01/02/2026", 494.0, 531.0, 30.0),
+                    _word("/", 240.0, 260.0, 42.5, height=30.0),
+                    _word("18.60", 198.0, 230.0, 60.0),
+                    _word("Cafe", 332.0, 380.0, 60.0),
+                    _word("03/02/2026", 494.0, 531.0, 60.0),
+                    _word("Total", 332.0, 380.0, 80.0),
+                    _word("31.00", 198.0, 230.0, 80.0),
+                ),
+                width=560.0,
+            ),
+            5,
+            "e005e4a6c93aa6c66906cf8e1189463e0ea27df3bedde17161213bc7c612d1be",
+            id="ocr-overlays",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Market", "12.40"),
+                    _word("Split merchant", 35.0, 72.0, 50.0, height=30.0),
+                    _word("18.60", 92.0, 110.0, 50.0, height=30.0),
+                    _word("02/02/2026", 0.0, 22.0, 60.0),
+                    _word("Total", 35.0, 72.0, 90.0),
+                    _word("31.00", 92.0, 110.0, 90.0),
+                )
+            ),
+            4,
+            "7d4b9c503248861ca8a3eb803eb2b80a73c29b587d4b3f77ab26c9eb3f023a65",
+            id="complementary-rows",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_foreign_table_header(10.0),
+                    *_foreign_data(30.0, "01/02/2026", "Market", "$10.00", "₪10.00x"),
+                    *_foreign_data(50.0, "02/02/2026", "Cafe", "$20.00", "₪20.00x"),
+                    *_foreign_data(70.0, "03/02/2026", "Hotel", "$30.00", "₪30.00"),
+                    *_foreign_data(90.0, "04/02/2026", "Train", "$40.00", "₪40.00"),
+                    _word("Total", 30.0, 55.0, 110.0),
+                    _word("₪100.00", 100.0, 125.0, 110.0),
+                ),
+                width=130.0,
+            ),
+            5,
+            "1a2291622e733ec3fb58b13fee258cc7c868534467d9990d85e4d0e3fb1937ff",
+            id="ambiguous-leading-rows",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "20.00"),
+                    *_data(110.0, "03/02/2026", "Distant", "30.00"),
+                )
+            ),
+            3,
+            "7913716f11cdec90655aa4b9a000aa7f1653c9615dfb9e7b7b73fe71412c4cfa",
+            id="structural-gap",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "20.00"),
+                    *_header(70.0),
+                    *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+                    *_data(110.0, "04/02/2026", "Delta", "40.00"),
+                )
+            ),
+            3,
+            "22f36d564a6b7b1d5bb8587e14cacfc77402c9730723a32e3eee275a6fb64c07",
+            id="new-header",
+        ),
+    ),
+)
+def test_region_scan_snapshot_preserves_ignores_merges_and_boundaries(
+    page: PageEvidence,
+    expected_stop_index: int,
+    expected_fingerprint: str,
+) -> None:
+    rows = logical_rows(page)
+
+    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+
+    assert snapshot[-1] == expected_stop_index
+    assert _region_scan_fingerprint(snapshot) == expected_fingerprint
+
+
+def test_region_scan_snapshot_preserves_spilled_currency_ignore() -> None:
+    header_words = (
+        _word("Billed amount", 0.0, 24.0, 10.0),
+        _word("Note", 30.0, 54.0, 10.0),
+        _word("Description", 60.0, 94.0, 10.0),
+        _word("Date", 100.0, 130.0, 10.0),
+    )
+    first_words = (
+        _word("10.00", 0.0, 24.0, 30.0),
+        _word("First", 60.0, 94.0, 30.0),
+        _word("01/02/2026", 100.0, 130.0, 30.0),
+    )
+    fragment = _word("fragment", 60.0, 90.0, 41.0)
+    currency = _word("₪", 0.0, 5.0, 50.0)
+    billed = _word("-8.97", 6.0, 22.0, 50.0)
+    merchant = _word("Merchant", 65.0, 92.0, 50.0)
+    transaction_date = _word("02/02/2026", 102.0, 129.0, 50.0)
+    total_words = (
+        _word("Total", 60.0, 94.0, 70.0),
+        _word("1.03", 0.0, 24.0, 70.0),
+    )
+    header = Row(
+        page_number=1,
+        bbox=(0.0, 10.0, 130.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in header_words
+        ),
+        words=header_words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    first = Row(
+        page_number=1,
+        bbox=(0.0, 30.0, 130.0, 40.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in first_words
+        ),
+        words=first_words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    source = Row(
+        page_number=1,
+        bbox=(0.0, 41.0, 90.0, 60.0),
+        cells=(
+            Cell(
+                page_number=1,
+                bbox=fragment.bbox,
+                text=fragment.text,
+                words=(fragment,),
+                confidence=1.0,
+            ),
+            Cell(
+                page_number=1,
+                bbox=currency.bbox,
+                text=currency.text,
+                words=(currency,),
+                confidence=1.0,
+            ),
+        ),
+        words=(fragment, currency),
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    following = Row(
+        page_number=1,
+        bbox=(6.0, 50.0, 129.0, 60.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in (billed, merchant, transaction_date)
+        ),
+        words=(billed, merchant, transaction_date),
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    total = Row(
+        page_number=1,
+        bbox=(0.0, 70.0, 94.0, 80.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in total_words
+        ),
+        words=total_words,
+        confidence=1.0,
+        diagnostics=("dominant_direction:ltr",),
+    )
+    page = _page(
+        (
+            *header_words,
+            *first_words,
+            fragment,
+            currency,
+            billed,
+            merchant,
+            transaction_date,
+            *total_words,
         )
-    ]
-    match = ContinuationMatch(
-        rows=rows,
-        consumed_through=4,
-        kind=kind,
-        row_tags=row_tags,
-        detail_policy=detail_policy,
-        skipped_outside_rows=skipped_outside_rows,
-        start_index=3,
     )
 
-    result = _apply_continuation_match(
-        match,
-        accepted,
-        consumed_through=2,
-        continuation_count=2,
-        detail_continuation_count=3,
-        auxiliary_continuation_count=4,
-        detail_continuation_allowed=True,
-        ignored_outside_band_count=5,
+    rows = (header, first, source, following, total)
+    schema = _candidate_schema(page, rows, 0)
+
+    assert _spilled_currency_fragment_before_transaction(
+        page,
+        rows,
+        2,
+        header,
+        schema,
     )
 
-    assert accepted == [accepted[0], *rows]
-    assert result == (
-        rows[-1],
-        4,
-        *expected_counts,
-        expected_detail_allowed,
-        5 + skipped_outside_rows,
+    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+
+    assert snapshot[-1] == 4
+    assert (
+        _region_scan_fingerprint(snapshot)
+        == "ad8658f7095ba213f73f796bafcd657b3b19105f6e52351284fecbe9103eeec8"
     )
+
+
+def _inherited_scan_result(
+    page: PageEvidence,
+    *,
+    include_total_overlay: bool,
+) -> tuple[TableRegion | None, int]:
+    rows = logical_rows(page)
+    source_region, total_index = _detect_from_header(page, rows, 0)
+    assert source_region is not None
+    if not include_total_overlay:
+        return _inherited_region_after_total(
+            page,
+            rows,
+            total_index,
+            source_region,
+        )
+
+    total_overlay = rows[total_index].model_copy()
+    scan_rows = (
+        *rows[: total_index + 1],
+        total_overlay,
+        *rows[total_index + 1 :],
+    )
+    return _inherited_region_after_total(
+        page,
+        scan_rows,
+        total_index,
+        source_region,
+        frozenset({_page_row_key(total_overlay)}),
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "page",
+        "include_total_overlay",
+        "expected_stop_index",
+        "expected_fingerprint",
+    ),
+    (
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "20.00"),
+                    _word("Subtotal", 35.0, 72.0, 70.0),
+                    _word("30.00", 92.0, 120.0, 70.0),
+                    *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+                    *_data(110.0, "04/02/2026", "Delta", "40.00"),
+                    _word("Total", 35.0, 72.0, 130.0),
+                    _word("70.00", 92.0, 120.0, 130.0),
+                )
+            ),
+            False,
+            6,
+            "4d964b16080736ec8c72bd2e24fcc3c60aa62bef7d97d1a492425feb72f8f63e",
+            id="bounded-by-total",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "20.00"),
+                    _word("Subtotal", 35.0, 72.0, 70.0),
+                    _word("30.00", 92.0, 120.0, 70.0),
+                    *_data(90.0, "03/02/2026", "Gamma", "30.00"),
+                    *_data(110.0, "04/02/2026", "Delta", "40.00"),
+                    _word("Total", 35.0, 72.0, 130.0),
+                    _word("70.00", 92.0, 120.0, 130.0),
+                )
+            ),
+            True,
+            7,
+            "5855b337c9c0f527694a2030b6e59c6d716d6d1fe5aca2663de188cc4845cdc3",
+            id="proven-total-overlay",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "20.00"),
+                    _word("Subtotal", 35.0, 72.0, 70.0),
+                    _word("30.00", 92.0, 120.0, 70.0),
+                    *_data(100.0, "03/02/2026", "Gamma", "30.00"),
+                    *_data(120.0, "04/02/2026", "Delta", "40.00"),
+                    *_data(140.0, "05/02/2026", "Epsilon", "50.00"),
+                )
+            ),
+            False,
+            7,
+            "9b1cc4bd2b43547d71d4274672814ac001260fb217813882a336bc5b1c5d5168",
+            id="continued-to-page-end",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_wide_financial_header(10.0),
+                    *_wide_sparse_data(30.0, include_conversion_date=True),
+                    *_wide_sparse_data(50.0, include_conversion_date=True),
+                    _word("Subtotal", 90.0, 100.0, 70.0),
+                    _word("24.80", 0.0, 10.0, 70.0),
+                    _word("12.40", 0.0, 10.0, 90.0),
+                    _word("3.70", 18.0, 28.0, 90.0),
+                    _word("03/02/2026", 36.0, 46.0, 90.0),
+                    _word("4.00", 72.0, 82.0, 90.0),
+                    _word("Market", 90.0, 100.0, 90.0),
+                    _word("01/02/2026", 108.0, 120.0, 90.0),
+                    _word("Total", 90.0, 100.0, 110.0),
+                    _word("12.40", 0.0, 10.0, 110.0),
+                )
+            ),
+            False,
+            5,
+            "7a024663015b096e8c73e88ca8c9c18777969b99db58104fcd1368589d719da7",
+            id="strong-single-row",
+        ),
+        pytest.param(
+            _page(
+                (
+                    *_header(10.0),
+                    *_data(30.0, "01/02/2026", "Alpha", "₪10.00"),
+                    *_data(50.0, "02/02/2026", "Beta", "₪20.00"),
+                    _word("Subtotal", 35.0, 72.0, 70.0),
+                    _word("₪30.00", 92.0, 120.0, 70.0),
+                    *_data(90.0, "03/02/2026", "נקודה", "100"),
+                    *_data(110.0, "04/02/2026", "נקודה", "200"),
+                    _word("Total", 35.0, 72.0, 130.0),
+                    _word("₪300", 92.0, 120.0, 130.0),
+                )
+            ),
+            False,
+            3,
+            "35ec2d16da1369d86b0a0c580cf2661e7b1c9c4dbfb3c868e0be11fe66b428eb",
+            id="points-ledger-rejected",
+        ),
+    ),
+)
+def test_inherited_region_scan_snapshot_preserves_success_proof_and_boundaries(
+    page: PageEvidence,
+    include_total_overlay: bool,
+    expected_stop_index: int,
+    expected_fingerprint: str,
+) -> None:
+    snapshot = _region_scan_snapshot(
+        *_inherited_scan_result(
+            page,
+            include_total_overlay=include_total_overlay,
+        )
+    )
+
+    assert snapshot[-1] == expected_stop_index
+    assert _region_scan_fingerprint(snapshot) == expected_fingerprint
 
 
 def test_continuation_match_leading_detail_preserves_exact_boundary_result() -> None:
