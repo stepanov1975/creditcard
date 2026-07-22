@@ -26,6 +26,7 @@ from ccparser.layout.regions import (
     _horizontal_gap,
     _inherited_region_after_total,
     _is_marked_detail_continuation,
+    _marked_detail_match,
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
@@ -1832,7 +1833,7 @@ def test_continuation_match_auxiliary_fragment_preserves_exact_boundary_result()
     )
 
 
-def test_marked_detail_predicate_remains_distinct_from_match_construction() -> None:
+def test_continuation_match_marked_detail_preserves_exact_boundary_result() -> None:
     page = _page(
         (
             *_header(10.0),
@@ -1842,11 +1843,29 @@ def test_marked_detail_predicate_remains_distinct_from_match_construction() -> N
         )
     )
     rows, header, schema = _continuation_detector_context(page)
+    projected = _project_row_to_header_bands(rows[2], header)
+    previous = _project_row_to_header_bands(rows[1], header)
+    expected = _with_diagnostics(
+        projected,
+        "subordinate_detail_continuation",
+    )
 
     assert _is_marked_detail_continuation(
-        _project_row_to_header_bands(rows[2], header),
-        _project_row_to_header_bands(rows[1], header),
+        projected,
+        previous,
         schema,
+    )
+
+    match = _marked_detail_match(projected, start_index=2)
+
+    assert match == ContinuationMatch(
+        rows=(expected,),
+        consumed_through=2,
+        kind=ContinuationKind.MARKED_DETAIL,
+        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        skipped_outside_rows=0,
+        start_index=2,
     )
 
 

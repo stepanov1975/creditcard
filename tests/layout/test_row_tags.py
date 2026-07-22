@@ -21,6 +21,18 @@ def _row(*diagnostics: str) -> Row:
     )
 
 
+def test_row_tag_has_exact_closed_vocabulary() -> None:
+    assert {tag.value for tag in RowTag} == {
+        "description_continuation",
+        "subordinate_detail_continuation",
+        "subordinate_auxiliary_continuation",
+        "leading_subordinate_detail_continuation",
+        "foreign_conversion_detail_block",
+        "bounded_card_identifier_detail_block",
+        "bounded_hebrew_note_detail",
+    }
+
+
 def test_row_tags_maps_only_exact_legacy_structural_diagnostics() -> None:
     row = _row(
         "subordinate_detail_continuation",

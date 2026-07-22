@@ -1310,6 +1310,23 @@ def _is_marked_detail_continuation(row: Row, previous: Row, schema: TableSchema)
     return gap <= typical_height * 1.5
 
 
+def _marked_detail_match(row: Row, *, start_index: int) -> ContinuationMatch:
+    marked = row.model_copy(
+        update={
+            "diagnostics": tuple(
+                dict.fromkeys((*row.diagnostics, "subordinate_detail_continuation"))
+            )
+        }
+    )
+    return single_row_match(
+        marked,
+        start_index=start_index,
+        kind=ContinuationKind.MARKED_DETAIL,
+        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+    )
+
+
 def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
     amount_column = (
@@ -2641,19 +2658,9 @@ def _inherited_region_after_total(
             state.previous,
             schema,
         ):
-            projected = projected.model_copy(
-                update={
-                    "diagnostics": tuple(
-                        dict.fromkeys((*projected.diagnostics, "subordinate_detail_continuation"))
-                    )
-                }
-            )
-            marked_match = single_row_match(
+            marked_match = _marked_detail_match(
                 projected,
                 start_index=index,
-                kind=ContinuationKind.MARKED_DETAIL,
-                row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
-                detail_policy=DetailContinuationPolicy.DISALLOW,
             )
             state.accept_continuation(marked_match)
             continue
@@ -2919,19 +2926,9 @@ def _detect_from_header(
         if state.detail_continuation_allowed and _is_marked_detail_continuation(
             projected, state.previous, schema
         ):
-            projected = projected.model_copy(
-                update={
-                    "diagnostics": tuple(
-                        dict.fromkeys((*projected.diagnostics, "subordinate_detail_continuation"))
-                    )
-                }
-            )
-            marked_match = single_row_match(
+            marked_match = _marked_detail_match(
                 projected,
                 start_index=index,
-                kind=ContinuationKind.MARKED_DETAIL,
-                row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
-                detail_policy=DetailContinuationPolicy.DISALLOW,
             )
             state.accept_continuation(marked_match)
             continue
