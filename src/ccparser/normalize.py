@@ -67,6 +67,13 @@ from ccparser.money import (
     is_money_shaped,
     parse_amount,
 )
+from ccparser.normalization_fields import (
+    BilledFields,
+    FieldDisposition,
+    extract_billed_fields,
+    extract_installment_fields,
+    is_installment_shaped,
+)
 from ccparser.reconcile import ReconciliationOutcome, reconciliation_outcome
 from ccparser.semantic_evidence import (
     DescriptionExtraction,
@@ -104,6 +111,76 @@ class StatementNormalization(_ImmutableNormalizationModel):
     reconciliation: ReconciliationOutcome
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _RowNormalizationAttempt:
+    """One internal row result paired with its explicit emission disposition."""
+
+    result: RowNormalizationResult
+    disposition: FieldDisposition
+
+
+@dataclass(slots=True)
+class _RowNormalizationContext:
+    """Stable row provenance and ordered diagnostics for result construction."""
+
+    rows: tuple[Row, ...]
+    evidence: tuple[EvidenceReference, ...]
+    raw_text: str
+    diagnostics: list[str]
+
+    @property
+    def row(self) -> Row:
+        return self.rows[0]
+
+    def rejected_attempt(
+        self,
+        *,
+        diagnostics: tuple[str, ...] | None = None,
+    ) -> _RowNormalizationAttempt:
+        result = RowNormalizationResult(
+            page_number=self.row.page_number,
+            bbox=self.row.bbox,
+            raw_text=self.raw_text,
+            evidence=self.evidence,
+            confidence=0.0,
+            diagnostics=tuple(self.diagnostics) if diagnostics is None else diagnostics,
+        )
+        return _RowNormalizationAttempt(result, FieldDisposition.REJECT_ROW)
+
+    def ignored_attempt(
+        self,
+        *,
+        confidence: float,
+        diagnostics: tuple[str, ...],
+    ) -> _RowNormalizationAttempt:
+        result = RowNormalizationResult(
+            page_number=self.row.page_number,
+            bbox=self.row.bbox,
+            raw_text=self.raw_text,
+            evidence=self.evidence,
+            confidence=confidence,
+            diagnostics=diagnostics,
+        )
+        return _RowNormalizationAttempt(result, FieldDisposition.IGNORE_ROW)
+
+    def completed_attempt(
+        self,
+        *,
+        transaction: Transaction,
+        confidence: float,
+    ) -> _RowNormalizationAttempt:
+        result = RowNormalizationResult(
+            page_number=self.row.page_number,
+            bbox=self.row.bbox,
+            raw_text=self.raw_text,
+            evidence=self.evidence,
+            transaction=transaction,
+            confidence=confidence,
+            diagnostics=transaction.ambiguities,
+        )
+        return _RowNormalizationAttempt(result, FieldDisposition.ACCEPT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +230,6 @@ _EMBEDDED_DATE_CUES = (
     "המרה",
 )
 _EMBEDDED_INSTALLMENT_CUES = ("installment", "payment number", "תשלום", "תשלומים")
-_INSTALLMENT_PATTERN = re.compile(r"^(\d{1,3})\s*/\s*(\d{1,3})$")
 _LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 _CARD_IDENTIFIER_PATTERN = re.compile(r"^\d{4,10}$")
 _CARD_IDENTIFIER_MARKERS = ("card id", "card identifier", "מזהה כרטיס")
@@ -312,7 +388,7 @@ def _is_relevant_cell(cell: Cell) -> bool:
         is_money_shaped(text)
         or is_currency_shaped(text)
         or _DATE_PATTERN.fullmatch(text) is not None
-        or _INSTALLMENT_PATTERN.fullmatch(text) is not None
+        or is_installment_shaped(text)
         or (bool(currencies_in_text(text)) and any(char.isdigit() for char in text))
         or (
             _contains_marker(text, _EMBEDDED_AMOUNT_CUES)
@@ -638,7 +714,7 @@ def _parse_date(
             return None, "ambiguous_date_tokens"
     match = _DATE_PATTERN.fullmatch(normalized)
     if match is None:
-        if _INSTALLMENT_PATTERN.fullmatch(normalized) is not None:
+        if is_installment_shaped(normalized):
             return None, "ambiguous_date_or_installment"
         if year_context is None:
             return None, "invalid_date"
@@ -992,16 +1068,6 @@ def _parse_date_without_duplicated_boundary_glyphs(
     )
 
 
-def _parse_installment(text: str) -> tuple[tuple[int, int] | None, str | None]:
-    match = _INSTALLMENT_PATTERN.fullmatch(_normalized_text(text))
-    if match is None:
-        return None, "invalid_installment"
-    current, total = (int(value) for value in match.groups())
-    if current < 1 or total < 1 or current > total:
-        return None, "invalid_installment"
-    return (current, total), None
-
-
 def _header_kind(column: ColumnSpec) -> str | None:
     header = _normalized_phrase(" ".join(cell.text for cell in column.source_cells))
     if _contains_marker(header, ("posting date", "billing date", "תאריך חיוב")):
@@ -1198,7 +1264,7 @@ def _is_boundary_description_continuation(
         or is_money_shaped(text)
         or is_currency_shaped(text)
         or isolated_date_token(text) is not None
-        or _INSTALLMENT_PATTERN.fullmatch(text) is not None
+        or is_installment_shaped(text)
     ):
         return False
     billed_column = _proven_billed_amount_column(region)
@@ -1730,7 +1796,7 @@ def _ocr_original_amount_corroborated_by_billed(
     original_cell: Cell,
     parsed_original: AmountParseResult,
     original_currency_hint: str | None,
-    billed: AmountParseResult,
+    billed: AmountParseResult | BilledFields,
 ) -> AmountParseResult | None:
     if (
         not _cell_has_ocr_evidence(original_cell)
@@ -1856,7 +1922,7 @@ def _original_amount_with_description_spill(
         and not is_money_shaped(residual_text)
         and not is_currency_shaped(residual_text)
         and _DATE_PATTERN.fullmatch(residual_text) is None
-        and _INSTALLMENT_PATTERN.fullmatch(residual_text) is None
+        and not is_installment_shaped(residual_text)
         and horizontal_overlap > 0
         and vertical_overlap(original_cell.bbox, description_cell.bbox) > 0
     ):
@@ -1877,7 +1943,7 @@ def _original_amount_with_description_spill(
             or is_money_shaped(residual_text)
             or is_currency_shaped(residual_text)
             or _DATE_PATTERN.fullmatch(residual_text) is not None
-            or _INSTALLMENT_PATTERN.fullmatch(residual_text) is not None
+            or is_installment_shaped(residual_text)
         ):
             continue
         if description_on_right:
@@ -2859,105 +2925,41 @@ def _normalize_row(
     year_context: DiscoveredDateYearContext | None,
     date_column_kinds: Mapping[int, str],
     transaction_id: str,
-) -> RowNormalizationResult:
+) -> _RowNormalizationAttempt:
     rows = (row, *continuation_rows)
     ledger = EvidenceLedger.from_rows(rows)
-    evidence = _row_evidence(rows)
-    diagnostics = list(_assignment_diagnostics(row, region, ledger))
+    context = _RowNormalizationContext(
+        rows=rows,
+        evidence=_row_evidence(rows),
+        raw_text=_row_text(rows),
+        diagnostics=list(_assignment_diagnostics(row, region, ledger)),
+    )
+    diagnostics = context.diagnostics
     role_contract_diagnostics = _role_contract_diagnostics(region)
     diagnostics.extend(role_contract_diagnostics)
     if role_contract_diagnostics:
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
-    amount_column = _proven_billed_amount_column(region)
-    if amount_column is None:
-        amount_columns = _role_columns(region, ColumnRole.AMOUNT)
-        diagnostics.append(
-            "unknown_amount_column" if not amount_columns else "multiple_amount_columns"
-        )
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
-    amount_cells = _cells_for_column(row, amount_column)
-    if len(amount_cells) != 1:
-        diagnostics.append("missing_amount_cell" if not amount_cells else "multiple_amount_cells")
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
+        return context.rejected_attempt()
 
-    currency_hint = group.printed_total.currency
-    generic_currency_columns = _role_columns(region, ColumnRole.CURRENCY)
-    original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
-    billing_currency_columns = _role_columns(region, ColumnRole.BILLING_CURRENCY)
-    if generic_currency_columns and original_columns:
-        diagnostics.append("ambiguous_generic_currency_association")
-    if generic_currency_columns and billing_currency_columns:
-        diagnostics.append("ambiguous_generic_currency_association")
-    currency_role = ColumnRole.BILLING_CURRENCY if billing_currency_columns else ColumnRole.CURRENCY
-    currency_cells = _role_cells(row, region, currency_role)
-    if len(currency_cells) > 1:
-        diagnostics.append("multiple_currency_cells")
-    elif _role_columns(region, currency_role) and not currency_cells:
-        diagnostics.append("missing_currency_cell")
-    elif len(currency_cells) == 1:
-        row_currency = canonical_currency(currency_cells[0].text)
-        if row_currency is None:
-            diagnostics.append("unknown_billing_currency")
-        elif row_currency != currency_hint:
-            diagnostics.append("billing_currency_conflict")
-        else:
-            currency_hint = row_currency
-    critical_currency_diagnostics = {
-        "ambiguous_generic_currency_association",
-        "billing_currency_conflict",
-        "missing_currency_cell",
-        "multiple_currency_cells",
-        "unknown_billing_currency",
-    }
-    if critical_currency_diagnostics.intersection(diagnostics):
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
-            diagnostics=tuple(diagnostics),
-        )
-    billed = parse_amount(amount_cells[0].text, currency_hint=currency_hint)
-    if billed.amount is None or billed.currency is None:
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=0.0,
+    billed = extract_billed_fields(
+        row=row,
+        region=region,
+        printed_currency=group.printed_total.currency,
+    )
+    if billed.disposition is FieldDisposition.REJECT_ROW:
+        if billed.amount_cell is not None:
+            return context.rejected_attempt(diagnostics=billed.diagnostics)
+        diagnostics.extend(billed.diagnostics)
+        return context.rejected_attempt()
+    if billed.disposition is FieldDisposition.IGNORE_ROW:
+        return context.ignored_attempt(
+            confidence=billed.confidence,
             diagnostics=billed.diagnostics,
         )
-    if billed.amount == 0:
-        return RowNormalizationResult(
-            page_number=row.page_number,
-            bbox=row.bbox,
-            raw_text=_row_text(rows),
-            evidence=evidence,
-            confidence=amount_cells[0].confidence,
-            diagnostics=("noncontributing_zero_billed_row",),
-        )
+    if billed.amount is None or billed.currency is None or billed.amount_cell is None:
+        raise RuntimeError("accepted billed fields must contain complete source values")
+
+    currency_hint = billed.currency
+    original_columns = _role_columns(region, ColumnRole.ORIGINAL_AMOUNT)
     description_extraction = _description(rows, region, year_context, ledger)
     description = description_extraction.value
     semantic_claims = list(description_extraction.claims)
@@ -3111,32 +3113,17 @@ def _normalize_row(
     semantic_claims.extend(foreign_exchange_extraction.claims)
     diagnostics.extend(foreign_exchange_extraction.diagnostics)
 
-    installment_current: int | None = None
-    installment_total: int | None = None
-    installment_columns = _role_columns(region, ColumnRole.INSTALLMENT)
-    if len(installment_columns) > 1:
-        diagnostics.append("multiple_installment_columns")
-    elif len(installment_columns) == 1:
-        installment_cells = _cells_for_column(row, installment_columns[0])
-        if len(installment_cells) != 1:
-            diagnostics.append(
-                "missing_installment_cell"
-                if not installment_cells
-                else "multiple_installment_cells"
-            )
-        else:
-            installment, installment_diagnostic = _parse_installment(installment_cells[0].text)
-            if installment_diagnostic is not None:
-                diagnostics.append(installment_diagnostic)
-            elif installment is not None:
-                installment_current, installment_total = installment
+    installment = extract_installment_fields(row=row, region=region)
+    diagnostics.extend(installment.diagnostics)
+    installment_current = installment.current
+    installment_total = installment.total
 
     _, semantic_diagnostics = _semantic_claims_and_diagnostics(
         rows=rows,
         region=region,
         ledger=ledger,
         initial_claims=semantic_claims,
-        amount_cell=amount_cells[0],
+        amount_cell=billed.amount_cell,
         billing_currency=billed.currency,
         original_currency=original_currency,
         description=description,
@@ -3175,18 +3162,13 @@ def _normalize_row(
         foreign_exchange=foreign_exchange_extraction.details,
         installment_current=installment_current,
         installment_total=installment_total,
-        evidence=evidence,
+        evidence=context.evidence,
     )
     confidence_values = [row.confidence, billed.confidence]
     confidence_values.extend(continuation.confidence for continuation in continuation_rows)
-    return RowNormalizationResult(
-        page_number=row.page_number,
-        bbox=row.bbox,
-        raw_text=_row_text(rows),
-        evidence=evidence,
+    return context.completed_attempt(
         transaction=transaction,
         confidence=statistics.mean(confidence_values),
-        diagnostics=transaction.ambiguities,
     )
 
 
@@ -3398,7 +3380,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     continuation_index += 1
                 continuations.extend(cross_page_handoffs.get(id(row), ()))
                 transaction_id = f"{group.group_id}-p{row.page_number:03d}-r{row_ordinal:04d}"
-                row_result = _normalize_row(
+                attempt = _normalize_row(
                     row=row,
                     continuation_rows=continuations,
                     region=region,
@@ -3407,9 +3389,10 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     date_column_kinds=date_column_kinds,
                     transaction_id=transaction_id,
                 )
+                row_result = attempt.result
                 row_results.append(row_result)
                 if row_result.transaction is None:
-                    if row_result.diagnostics != ("noncontributing_zero_billed_row",):
+                    if attempt.disposition is FieldDisposition.REJECT_ROW:
                         rows_not_emitted += 1
                 else:
                     transactions.append(row_result.transaction)

@@ -16,10 +16,20 @@ from ccparser.discovery import (
 )
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
-from ccparser.models import EvidenceReference, Status, TransactionCategory, TransactionKind
+from ccparser.models import (
+    EvidenceReference,
+    Status,
+    Transaction,
+    TransactionCategory,
+    TransactionKind,
+)
+from ccparser.normalization_fields import FieldDisposition
 from ccparser.normalize import (
+    RowNormalizationResult,
     _column_header_text,
     _cross_cell_date_tokens,
+    _normalize_row,
+    _RowNormalizationAttempt,
     _stable_unknown_columns,
     normalize_statement,
     parse_amount,
@@ -215,6 +225,481 @@ def _discovery(
         confidence=1.0,
         reason_codes=("transaction_table_with_compatible_total",),
     )
+
+
+def _expected_evidence(row: Row) -> tuple[EvidenceReference, ...]:
+    return tuple(
+        EvidenceReference(
+            page_number=cell.page_number,
+            bbox=cell.bbox,
+            raw_text=cell.text,
+        )
+        for cell in row.cells
+    )
+
+
+def _expected_unemitted_row(
+    row: Row,
+    diagnostics: tuple[str, ...],
+    *,
+    confidence: float = 0.0,
+) -> RowNormalizationResult:
+    return RowNormalizationResult(
+        page_number=row.page_number,
+        bbox=row.bbox,
+        raw_text=" ".join(cell.text for cell in row.cells),
+        evidence=_expected_evidence(row),
+        confidence=confidence,
+        diagnostics=diagnostics,
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "row", "diagnostics", "confidence"),
+    (
+        pytest.param(
+            (ColumnRole.DATE, ColumnRole.DESCRIPTION),
+            _row(_cell("01/02/2026", 0, 30.0), _cell("Merchant", 1, 30.0)),
+            ("unknown_amount_column",),
+            0.0,
+            id="missing-amount-column",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.AMOUNT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("ILS 11.00", 3, 30.0),
+            ),
+            ("unsupported_role_cardinality:amount",),
+            0.0,
+            id="duplicate-amount-columns",
+        ),
+        pytest.param(
+            (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+            _row(_cell("01/02/2026", 0, 30.0), _cell("Merchant", 1, 30.0)),
+            ("missing_amount_cell",),
+            0.0,
+            id="missing-amount-cell",
+        ),
+        pytest.param(
+            (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("ILS 11.00", 2, 30.0),
+            ),
+            ("multiple_amount_cells",),
+            0.0,
+            id="duplicate-amount-cells",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.ORIGINAL_AMOUNT,
+                ColumnRole.CURRENCY,
+                ColumnRole.AMOUNT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("USD 3.00", 2, 30.0),
+                _cell("ILS", 3, 30.0),
+                _cell("ILS 10.00", 4, 30.0),
+            ),
+            ("ambiguous_generic_currency_association",),
+            0.0,
+            id="generic-currency-with-original-amount",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.CURRENCY,
+                ColumnRole.BILLING_CURRENCY,
+                ColumnRole.AMOUNT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS", 2, 30.0),
+                _cell("ILS", 3, 30.0),
+                _cell("ILS 10.00", 4, 30.0),
+            ),
+            ("ambiguous_generic_currency_association",),
+            0.0,
+            id="generic-currency-with-billing-currency",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.BILLING_CURRENCY,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+            ),
+            ("missing_currency_cell",),
+            0.0,
+            id="missing-billing-currency",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.BILLING_CURRENCY,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("ILS", 3, 30.0),
+                _cell("ILS", 3, 30.0),
+            ),
+            ("multiple_currency_cells",),
+            0.0,
+            id="duplicate-billing-currency",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.BILLING_CURRENCY,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("XYZ", 3, 30.0),
+            ),
+            ("unknown_billing_currency",),
+            0.0,
+            id="unknown-billing-currency",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.BILLING_CURRENCY,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+                _cell("USD", 3, 30.0),
+            ),
+            ("billing_currency_conflict",),
+            0.0,
+            id="billing-currency-conflicts-with-group",
+        ),
+        pytest.param(
+            (
+                ColumnRole.UNKNOWN,
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+            ),
+            _row(
+                _cell("99.00", 0, 30.0),
+                _cell("01/02/2026", 1, 30.0),
+                _cell("Merchant", 2, 30.0),
+                _cell("12 apples", 3, 30.0),
+            ),
+            ("invalid_amount_text",),
+            0.0,
+            id="unparseable-billed-amount",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.ORIGINAL_CURRENCY,
+                ColumnRole.AMOUNT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("USD", 2, 30.0),
+                _cell("ILS 10.00", 3, 30.0),
+            ),
+            ("original_currency_without_original_amount",),
+            0.0,
+            id="role-contract-rejection",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.ORIGINAL_AMOUNT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Card fee", 1, 30.0),
+                _cell("ILS 0.00", 2, 30.0).model_copy(update={"confidence": 0.73}),
+                _cell("ILS 22.29", 3, 30.0),
+            ),
+            ("noncontributing_zero_billed_row",),
+            0.73,
+            id="zero-billed-amount",
+        ),
+    ),
+)
+def test_row_normalization_early_returns_preserve_complete_public_result(
+    roles: tuple[ColumnRole, ...],
+    row: Row,
+    diagnostics: tuple[str, ...],
+    confidence: float,
+) -> None:
+    region = _region(roles, (row,))
+
+    normalized = normalize_statement(_discovery(region, "ILS 10.00", "ILS"))
+
+    assert normalized.row_results == (
+        _expected_unemitted_row(row, diagnostics, confidence=confidence),
+    )
+
+
+def _expected_installment_row(
+    row: Row,
+    diagnostics: tuple[str, ...],
+    installment: tuple[int, int] | None,
+) -> RowNormalizationResult:
+    evidence = _expected_evidence(row)
+    current, total = installment if installment is not None else (None, None)
+    transaction = Transaction(
+        transaction_id="group-0001-p001-r0001",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("10.00"),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+        ambiguities=diagnostics,
+        transaction_date=date(2026, 2, 1),
+        description="Merchant",
+        category=(
+            TransactionCategory.INSTALLMENT
+            if installment is not None
+            else TransactionCategory.UNKNOWN
+        ),
+        installment_current=current,
+        installment_total=total,
+        evidence=evidence,
+    )
+    return RowNormalizationResult(
+        page_number=row.page_number,
+        bbox=row.bbox,
+        raw_text=" ".join(cell.text for cell in row.cells),
+        evidence=evidence,
+        transaction=transaction,
+        confidence=1.0,
+        diagnostics=diagnostics,
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "row", "diagnostics", "installment", "rejected"),
+    (
+        pytest.param(
+            (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+            ),
+            (),
+            None,
+            False,
+            id="absent",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("1/6", 3, 30.0),
+                _cell("2/6", 4, 30.0),
+            ),
+            ("unsupported_role_cardinality:installment",),
+            None,
+            True,
+            id="duplicate-columns",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+            ),
+            ("missing_installment_cell",),
+            None,
+            False,
+            id="missing-cell",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("1/6", 3, 30.0),
+                _cell("2/6", 3, 30.0),
+            ),
+            ("multiple_installment_cells",),
+            None,
+            False,
+            id="multiple-cells",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("two of six", 3, 30.0),
+            ),
+            ("invalid_installment",),
+            None,
+            False,
+            id="malformed",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("2/6", 3, 30.0),
+            ),
+            (),
+            (2, 6),
+            False,
+            id="valid",
+        ),
+        pytest.param(
+            (
+                ColumnRole.DATE,
+                ColumnRole.DESCRIPTION,
+                ColumnRole.AMOUNT,
+                ColumnRole.INSTALLMENT,
+            ),
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("ILS 10.00", 2, 30.0),
+                _cell("7/6", 3, 30.0),
+            ),
+            ("invalid_installment",),
+            None,
+            False,
+            id="current-greater-than-total",
+        ),
+    ),
+)
+def test_installment_shapes_preserve_complete_public_row_result(
+    roles: tuple[ColumnRole, ...],
+    row: Row,
+    diagnostics: tuple[str, ...],
+    installment: tuple[int, int] | None,
+    rejected: bool,
+) -> None:
+    region = _region(roles, (row,))
+
+    normalized = normalize_statement(_discovery(region, "ILS 10.00", "ILS"))
+
+    expected = (
+        _expected_unemitted_row(row, diagnostics)
+        if rejected
+        else _expected_installment_row(row, diagnostics, installment)
+    )
+    assert normalized.row_results == (expected,)
+
+
+@pytest.mark.parametrize(
+    ("roles", "row", "expected_disposition"),
+    (
+        pytest.param(
+            (ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+            _row(_cell("Merchant", 0, 30.0), _cell("ILS 10.00", 1, 30.0)),
+            FieldDisposition.ACCEPT,
+            id="accepted",
+        ),
+        pytest.param(
+            (ColumnRole.DESCRIPTION,),
+            _row(_cell("Merchant", 0, 30.0)),
+            FieldDisposition.REJECT_ROW,
+            id="rejected",
+        ),
+        pytest.param(
+            (ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+            _row(_cell("Card fee", 0, 30.0), _cell("ILS 0.00", 1, 30.0)),
+            FieldDisposition.IGNORE_ROW,
+            id="ignored",
+        ),
+    ),
+)
+def test_private_row_attempt_types_public_result_disposition(
+    roles: tuple[ColumnRole, ...],
+    row: Row,
+    expected_disposition: FieldDisposition,
+) -> None:
+    region = _region(roles, (row,))
+    discovery = _discovery(region, "ILS 10.00", "ILS")
+
+    attempt = _normalize_row(
+        row=row,
+        continuation_rows=(),
+        region=region,
+        group=discovery.groups[0],
+        year_context=None,
+        date_column_kinds={},
+        transaction_id="group-0001-p001-r0001",
+    )
+
+    assert isinstance(attempt, _RowNormalizationAttempt)
+    assert attempt.disposition is expected_disposition
+    assert attempt.result == normalize_statement(discovery).row_results[0]
 
 
 @pytest.mark.parametrize(
