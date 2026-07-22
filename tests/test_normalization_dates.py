@@ -5,6 +5,7 @@ from datetime import date
 
 import pytest
 
+import ccparser.normalization_dates as normalization_dates
 from ccparser.date_tokens import DateTokenStyle
 from ccparser.discovery import DiscoveredDateYearContext
 from ccparser.evidence import Glyph, Word
@@ -12,14 +13,45 @@ from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, Tabl
 from ccparser.models import EvidenceReference
 from ccparser.normalization_dates import (
     ConversionDateExtraction,
+    DateColumnKind,
     DateExtraction,
-    _cross_cell_date_tokens,
-    _parse_date,
-    _structural_date_column_kinds,
+    cross_cell_date_tokens,
     extract_conversion_date,
     extract_dates,
+    parse_date,
+    structural_date_column_kinds,
 )
 from ccparser.semantic_evidence import EvidenceLedger
+
+
+def test_normalization_dates_exports_exact_public_contract() -> None:
+    assert normalization_dates.__all__ == [
+        "BoundaryDateCompletion",
+        "ConversionDateExtraction",
+        "CrossCellDateEvidence",
+        "DateColumnKind",
+        "DateExtraction",
+        "adjacent_boundary_date_completion",
+        "boundary_date_description_splits",
+        "contains_date_cue",
+        "cross_cell_date_source_cells",
+        "cross_cell_date_tokens",
+        "date_column_header_kind",
+        "extract_conversion_date",
+        "extract_dates",
+        "has_proven_unanchored_short_date",
+        "is_date_shaped",
+        "matching_date_atom_ids",
+        "parse_date",
+        "parsed_cross_cell_conversion_evidence",
+        "proven_unanchored_short_date_style",
+        "structural_date_column_kinds",
+    ]
+
+
+def test_date_extractors_are_real_public_definitions() -> None:
+    assert extract_dates.__name__ == "extract_dates"
+    assert extract_conversion_date.__name__ == "extract_conversion_date"
 
 
 def _cell(
@@ -207,6 +239,45 @@ def test_date_result_models_are_frozen_and_slotted() -> None:
         conversion_result.value = date(2026, 1, 1)
 
 
+def test_date_column_kinds_are_closed_and_preserve_structural_mapping_order() -> None:
+    assert hasattr(normalization_dates, "DateColumnKind")
+    date_column_kind = normalization_dates.DateColumnKind
+    assert tuple(date_column_kind) == (
+        date_column_kind.TRANSACTION,
+        date_column_kind.POSTING,
+    )
+    assert tuple(kind.value for kind in date_column_kind) == ("transaction", "posting")
+
+    first = _row(
+        _cell("03/02/26", 0, 30.0),
+        _cell("01/02/26", 1, 30.0),
+        _cell("First", 2, 30.0),
+        _cell("2.00", 3, 30.0),
+    )
+    second = _row(
+        _cell("04/02/26", 0, 50.0),
+        _cell("04/02/26", 1, 50.0),
+        _cell("Second", 2, 50.0),
+        _cell("2.00", 3, 50.0),
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (first, second),
+        headers=("Date", "Date", "Description", "Amount"),
+    )
+
+    kinds = normalization_dates.structural_date_column_kinds(
+        region,
+        _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+    )
+
+    assert tuple(kinds.items()) == (
+        (1, date_column_kind.TRANSACTION),
+        (0, date_column_kind.POSTING),
+    )
+    assert all(type(kind) is date_column_kind for kind in kinds.values())
+
+
 @pytest.mark.parametrize(
     ("style", "full_token", "short_token"),
     (
@@ -225,12 +296,12 @@ def test_parse_date_preserves_all_full_and_short_styles(
 ) -> None:
     expected = date(2026, 6, 24)
 
-    assert _parse_date(full_token) == (expected, None)
-    assert _parse_date(short_token, _year_context(style)) == (expected, None)
+    assert parse_date(full_token) == (expected, None)
+    assert parse_date(short_token, _year_context(style)) == (expected, None)
 
 
 def test_parse_date_preserves_installment_ambiguity_diagnostic() -> None:
-    assert _parse_date("2/6") == (None, "ambiguous_date_or_installment")
+    assert parse_date("2/6") == (None, "ambiguous_date_or_installment")
 
 
 def test_dates_returns_exact_five_legacy_values() -> None:
@@ -432,9 +503,12 @@ def test_dates_uses_structurally_inferred_transaction_and_posting_order() -> Non
     )
     context = _year_context(DateTokenStyle.DAY_FIRST_SLASH)
 
-    kinds = _structural_date_column_kinds(region, context)
+    kinds = structural_date_column_kinds(region, context)
 
-    assert kinds == {0: "posting", 1: "transaction"}
+    assert kinds == {
+        0: DateColumnKind.POSTING,
+        1: DateColumnKind.TRANSACTION,
+    }
     assert extract_dates(first, region, context, kinds) == DateExtraction(
         transaction_date=date(2026, 2, 1),
         posting_date=date(2026, 2, 3),
@@ -464,7 +538,7 @@ def test_dates_preserves_unresolved_roles_when_inferred_order_conflicts() -> Non
     )
     context = _year_context(DateTokenStyle.DAY_FIRST_SLASH)
 
-    kinds = _structural_date_column_kinds(region, context)
+    kinds = structural_date_column_kinds(region, context)
 
     assert kinds == {}
     assert extract_dates(first, region, context, kinds) == DateExtraction(
@@ -580,7 +654,7 @@ def test_semantic_conversion_date_preserves_cross_cell_sources() -> None:
     row = region.rows[0]
     ledger = EvidenceLedger.from_rows((row,))
 
-    evidence = _cross_cell_date_tokens(row, region, ledger)
+    evidence = cross_cell_date_tokens(row, region, ledger)
     result = extract_conversion_date(
         row,
         region,

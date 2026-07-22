@@ -28,14 +28,15 @@ from ccparser.money import (
     parse_amount,
 )
 from ccparser.normalization_dates import (
-    _cross_cell_date_source_cells,
-    _has_proven_unanchored_short_date,
-    _header_kind,
-    _matching_date_atom_ids,
-    _parsed_cross_cell_conversion_evidence,
-    _proven_unanchored_short_date_style,
+    DateColumnKind,
     contains_date_cue,
+    cross_cell_date_source_cells,
+    date_column_header_kind,
+    has_proven_unanchored_short_date,
     is_date_shaped,
+    matching_date_atom_ids,
+    parsed_cross_cell_conversion_evidence,
+    proven_unanchored_short_date_style,
 )
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
 from ccparser.text_tokens import contains_token_sequence, normalize_text, phrase_tokens
@@ -179,7 +180,7 @@ def _is_isolated_ocr_edge_artifact_cell(
     )
 
 
-def _column_header_text(region: TableRegion, column: ColumnSpec) -> str:
+def column_header_text(region: TableRegion, column: ColumnSpec) -> str:
     header_cells = tuple(
         cell
         for cell in region.table_schema.header_cells
@@ -194,28 +195,28 @@ def _explicit_ancillary_unknown_columns(region: TableRegion) -> frozenset[int]:
         column.index
         for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN)
         if _contains_marker(
-            _column_header_text(region, column),
+            column_header_text(region, column),
             _EXPLICIT_ANCILLARY_HEADER_MARKERS,
         )
     )
 
 
-def _explicit_category_unknown_columns(region: TableRegion) -> frozenset[int]:
+def explicit_category_unknown_columns(region: TableRegion) -> frozenset[int]:
     return frozenset(
         column.index
         for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN)
         if _contains_marker(
-            _column_header_text(region, column),
+            column_header_text(region, column),
             _EXPLICIT_CATEGORY_HEADER_MARKERS,
         )
     )
 
 
-def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
+def stable_unknown_columns(region: TableRegion) -> frozenset[int]:
     stable: set[int] = set()
     base_rows = tuple(row for row in region.rows if not is_structural_continuation(row))
     for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN):
-        header_text = _column_header_text(region, column)
+        header_text = column_header_text(region, column)
         values = tuple(
             cell
             for row in base_rows
@@ -253,8 +254,8 @@ def assignment_diagnostics(
 
     diagnostics: list[str] = []
     explicit_ancillary_unknowns = _explicit_ancillary_unknown_columns(region)
-    explicit_category_unknowns = _explicit_category_unknown_columns(region)
-    cross_cell_date_sources = _cross_cell_date_source_cells(row, region, ledger)
+    explicit_category_unknowns = explicit_category_unknown_columns(region)
+    cross_cell_date_sources = cross_cell_date_source_cells(row, region, ledger)
     for cell in row.cells:
         columns = tuple(
             column
@@ -411,7 +412,7 @@ def validate_transaction_semantics(
     posting_date: date | None,
     conversion_date: date | None,
     year_context: DiscoveredDateYearContext | None,
-    date_column_kinds: Mapping[int, str],
+    date_column_kinds: Mapping[int, DateColumnKind],
 ) -> SemanticValidation:
     """Complete transaction evidence ownership and return ordered diagnostics."""
 
@@ -422,9 +423,9 @@ def validate_transaction_semantics(
         ledger.atoms_for_cell(amount_cell),
     )
 
-    stable_unknowns = _stable_unknown_columns(region)
+    stable_unknowns = stable_unknown_columns(region)
     explicit_ancillary_unknowns = _explicit_ancillary_unknown_columns(region)
-    explicit_category_unknowns = _explicit_category_unknown_columns(region)
+    explicit_category_unknowns = explicit_category_unknown_columns(region)
     description_columns = columns_for_role(region.table_schema, ColumnRole.DESCRIPTION)
     description_index = description_columns[0].index if len(description_columns) == 1 else None
     boundary_atom_ids: set[int] = set()
@@ -443,7 +444,7 @@ def validate_transaction_semantics(
         )
         cross_cell_conversion_atom_ids = frozenset(
             atom_id
-            for candidate_date, evidence in _parsed_cross_cell_conversion_evidence(
+            for candidate_date, evidence in parsed_cross_cell_conversion_evidence(
                 row,
                 region,
                 ledger,
@@ -477,14 +478,14 @@ def validate_transaction_semantics(
                 _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
                 continue
             if column.role is ColumnRole.DATE:
-                kind = _header_kind(column) or date_column_kinds.get(column.index)
-                expected = posting_date if kind == "posting" else transaction_date
+                kind = date_column_header_kind(column) or date_column_kinds.get(column.index)
+                expected = posting_date if kind == DateColumnKind.POSTING else transaction_date
                 owner = (
                     SemanticOwner.POSTING_DATE
-                    if kind == "posting"
+                    if kind == DateColumnKind.POSTING
                     else SemanticOwner.TRANSACTION_DATE
                 )
-                matched_date_ids = _matching_date_atom_ids(
+                matched_date_ids = matching_date_atom_ids(
                     ledger,
                     cell,
                     expected,
@@ -503,8 +504,8 @@ def validate_transaction_semantics(
                     )
                 elif (
                     year_context is None
-                    and (style := _proven_unanchored_short_date_style(region, column)) is not None
-                    and _has_proven_unanchored_short_date(cell, style)
+                    and (style := proven_unanchored_short_date_style(region, column)) is not None
+                    and has_proven_unanchored_short_date(cell, style)
                 ):
                     _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
                 boundary_atom_ids.update(
@@ -516,7 +517,7 @@ def validate_transaction_semantics(
                 _add_remaining_claim(
                     claims,
                     SemanticOwner.CONVERSION_DATE,
-                    _matching_date_atom_ids(ledger, cell, conversion_date, year_context),
+                    matching_date_atom_ids(ledger, cell, conversion_date, year_context),
                 )
                 _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
             elif column.role in {
@@ -596,7 +597,7 @@ def validate_transaction_semantics(
                     _add_remaining_claim(
                         claims,
                         SemanticOwner.CONVERSION_DATE,
-                        _matching_date_atom_ids(
+                        matching_date_atom_ids(
                             ledger,
                             cell,
                             conversion_date,
@@ -632,7 +633,7 @@ def validate_transaction_semantics(
                     )
                 date_columns = columns_for_role(region.table_schema, ColumnRole.DATE)
                 if year_context is None and len(date_columns) == 1:
-                    unanchored_style = _proven_unanchored_short_date_style(
+                    unanchored_style = proven_unanchored_short_date_style(
                         region,
                         date_columns[0],
                     )
@@ -670,6 +671,9 @@ def validate_transaction_semantics(
 __all__ = [
     "SemanticValidation",
     "assignment_diagnostics",
+    "column_header_text",
+    "explicit_category_unknown_columns",
     "role_contract_diagnostics",
+    "stable_unknown_columns",
     "validate_transaction_semantics",
 ]

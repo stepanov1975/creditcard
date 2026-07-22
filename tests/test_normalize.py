@@ -23,9 +23,9 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
-from ccparser.normalization_dates import _cross_cell_date_tokens
+from ccparser.normalization_dates import cross_cell_date_tokens
 from ccparser.normalization_fields import FieldDisposition
-from ccparser.normalization_semantics import _column_header_text, _stable_unknown_columns
+from ccparser.normalization_semantics import column_header_text, stable_unknown_columns
 from ccparser.normalize import (
     RowNormalizationResult,
     _normalize_row,
@@ -154,7 +154,7 @@ def test_column_header_text_unions_source_and_centered_header_evidence() -> None
         }
     )
 
-    assert _column_header_text(region, column) == "source centered"
+    assert column_header_text(region, column) == "source centered"
 
 
 def test_unrelated_continuation_diagnostic_keeps_stable_unknown_row_evidence() -> None:
@@ -168,7 +168,7 @@ def test_unrelated_continuation_diagnostic_keeps_stable_unknown_row_evidence() -
         headers=("Category", "Amount"),
     )
 
-    assert _stable_unknown_columns(region) == frozenset({0})
+    assert stable_unknown_columns(region) == frozenset({0})
 
 
 def _discovery(
@@ -3502,7 +3502,7 @@ def test_cross_cell_conversion_date_evidence_excludes_unrelated_numeric_atoms() 
     row = region.rows[0]
     ledger = EvidenceLedger.from_rows((row,))
 
-    evidence = _cross_cell_date_tokens(row, region, ledger)
+    evidence = cross_cell_date_tokens(row, region, ledger)
 
     assert len(evidence) == 1
     unrelated_digit_ids = frozenset(

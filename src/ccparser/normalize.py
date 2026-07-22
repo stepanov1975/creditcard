@@ -41,9 +41,10 @@ from ccparser.money import (
     parse_amount,
 )
 from ccparser.normalization_dates import (
-    _structural_date_column_kinds,
+    DateColumnKind,
     extract_conversion_date,
     extract_dates,
+    structural_date_column_kinds,
 )
 from ccparser.normalization_description import (
     extract_description,
@@ -55,8 +56,8 @@ from ccparser.normalization_fields import (
     extract_installment_fields,
 )
 from ccparser.normalization_semantics import (
-    _explicit_category_unknown_columns,
     assignment_diagnostics,
+    explicit_category_unknown_columns,
     role_contract_diagnostics,
     validate_transaction_semantics,
 )
@@ -231,7 +232,7 @@ def _explicit_category(
     columns = tuple(
         column
         for column in _role_columns(region, ColumnRole.UNKNOWN)
-        if column.index in _explicit_category_unknown_columns(region)
+        if column.index in explicit_category_unknown_columns(region)
     )
     if len(columns) > 1:
         return TransactionCategory.UNKNOWN, ("multiple_category_columns",)
@@ -271,7 +272,7 @@ def _normalize_row(
     region: TableRegion,
     group: StatementGroupDiscovery,
     year_context: DiscoveredDateYearContext | None,
-    date_column_kinds: Mapping[int, str],
+    date_column_kinds: Mapping[int, DateColumnKind],
     transaction_id: str,
 ) -> _RowNormalizationAttempt:
     rows = (row, *continuation_rows)
@@ -577,7 +578,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
             group,
         )
         for region in ordered_regions:
-            date_column_kinds = _structural_date_column_kinds(
+            date_column_kinds = structural_date_column_kinds(
                 region,
                 discovery.date_year_context,
             )

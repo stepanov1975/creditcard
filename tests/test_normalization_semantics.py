@@ -6,17 +6,31 @@ from datetime import date
 
 import pytest
 
+import ccparser.normalization_semantics as normalization_semantics
 from ccparser.discovery import DiscoveredDateYearContext
 from ccparser.evidence import Glyph, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
+from ccparser.normalization_dates import DateColumnKind
 from ccparser.normalization_semantics import (
     SemanticValidation,
-    _stable_unknown_columns,
     assignment_diagnostics,
     role_contract_diagnostics,
+    stable_unknown_columns,
     validate_transaction_semantics,
 )
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
+
+
+def test_normalization_semantics_exports_exact_public_contract() -> None:
+    assert normalization_semantics.__all__ == [
+        "SemanticValidation",
+        "assignment_diagnostics",
+        "column_header_text",
+        "explicit_category_unknown_columns",
+        "role_contract_diagnostics",
+        "stable_unknown_columns",
+        "validate_transaction_semantics",
+    ]
 
 
 def _word(text: str, x0: float, x1: float, y: float = 30.0) -> Word:
@@ -131,7 +145,7 @@ def _validate(
     posting_date: date | None = None,
     conversion_date: date | None = None,
     year_context: DiscoveredDateYearContext | None = None,
-    date_column_kinds: Mapping[int, str] | None = None,
+    date_column_kinds: Mapping[int, DateColumnKind] | None = None,
 ) -> SemanticValidation:
     return validate_transaction_semantics(
         rows=rows,
@@ -377,7 +391,7 @@ def test_semantic_validation_distinguishes_stable_and_unstable_unknown_columns()
         amount_cell=first.cells[2],
     )
 
-    assert _stable_unknown_columns(region) == frozenset({0})
+    assert stable_unknown_columns(region) == frozenset({0})
     assert validation.claims == (
         EvidenceClaim(SemanticOwner.BILLED_VALUE, frozenset({2})),
         EvidenceClaim(SemanticOwner.ANCILLARY, frozenset({0})),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import ccparser.normalization_description as normalization_description
 from ccparser.date_tokens import DateTokenStyle
 from ccparser.discovery import DiscoveredDateYearContext
 from ccparser.evidence import Word
@@ -19,6 +20,17 @@ from ccparser.semantic_evidence import (
     EvidenceLedger,
     SemanticOwner,
 )
+
+
+def test_normalization_description_exports_exact_public_contract() -> None:
+    assert normalization_description.__all__ == [
+        "extract_description",
+        "is_description_continuation",
+    ]
+
+
+def test_description_extractor_is_real_public_definition() -> None:
+    assert extract_description.__name__ == "extract_description"
 
 
 def _word(text: str, x0: float, x1: float, y: float = 30.0) -> Word:

@@ -21,6 +21,7 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
+from ccparser.normalization_dates import DateColumnKind
 from ccparser.normalization_fields import BilledFields, FieldDisposition, extract_billed_fields
 from ccparser.normalization_semantics import SemanticValidation
 from ccparser.normalize import RowNormalizationResult, _normalize_row
@@ -1062,7 +1063,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
         posting_date: date | None,
         conversion_date: date | None,
         year_context: DiscoveredDateYearContext | None,
-        date_column_kinds: Mapping[int, str],
+        date_column_kinds: Mapping[int, DateColumnKind],
     ) -> SemanticValidation:
         captured_claims.append(tuple(initial_claims))
         return original_validation(

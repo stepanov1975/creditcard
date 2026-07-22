@@ -26,7 +26,7 @@ from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegio
 from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.money import is_currency_shaped, is_money_shaped
 from ccparser.normalization_dates import (
-    _adjacent_boundary_date_completion,
+    adjacent_boundary_date_completion,
     boundary_date_description_splits,
 )
 from ccparser.normalization_fields import is_installment_shaped
@@ -397,7 +397,7 @@ def _merchant_punctuation(text: str) -> str:
     return f"({marker.group(1)})" if marker is not None else normalized
 
 
-def _description(
+def extract_description(
     rows: Sequence[Row],
     region: TableRegion,
     year_context: DiscoveredDateYearContext | None,
@@ -451,7 +451,7 @@ def _description(
             if (
                 len(date_cells) == 1
                 and (
-                    completion := _adjacent_boundary_date_completion(
+                    completion := adjacent_boundary_date_completion(
                         row,
                         date_columns[0],
                         date_cells[0],
@@ -516,4 +516,4 @@ def _description(
     )
 
 
-extract_description = _description
+__all__ = ["extract_description", "is_description_continuation"]
