@@ -86,6 +86,11 @@ dirty Git worktree, a missing baseline in verification mode, and any pre-populat
 run cache. Raw parser output and per-document hashes are written only below the
 private work directory.
 
+For linked-worktree development, “repository” containment means the parent of Git's
+common directory, while commit and cleanliness checks apply to the active worktree.
+This admits the private corpus at the main project root and the isolated worktree below
+it without allowing writes outside `/root/creditcard`.
+
 Two modes are supported:
 
 1. `verify` compares a new run with the last explicitly accepted private baseline.
