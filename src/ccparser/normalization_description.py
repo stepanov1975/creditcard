@@ -9,7 +9,13 @@ from collections.abc import Sequence
 from itertools import pairwise
 
 from ccparser.discovery import DiscoveredDateYearContext
-from ccparser.geometry import BBox, bbox_center_x, bbox_center_y, bbox_height
+from ccparser.geometry import (
+    BBox,
+    bbox_center_x,
+    bbox_center_y,
+    bbox_height,
+    horizontal_overlap,
+)
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
@@ -21,7 +27,6 @@ from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.money import is_currency_shaped, is_money_shaped
 from ccparser.normalization_dates import (
     _adjacent_boundary_date_completion,
-    _horizontal_overlap,
     boundary_date_description_splits,
 )
 from ccparser.normalization_fields import is_installment_shaped
@@ -56,7 +61,7 @@ def _horizontal_coverage(candidate: BBox, container: BBox) -> float:
     width = candidate[2] - candidate[0]
     if width <= 0:
         return 0.0
-    overlap = max(0.0, min(candidate[2], container[2]) - max(candidate[0], container[0]))
+    overlap = horizontal_overlap(candidate, container)
     return overlap / width
 
 
@@ -410,7 +415,7 @@ def _description(
             row_cells = tuple(
                 cell
                 for cell in row_cells
-                if _horizontal_overlap(
+                if horizontal_overlap(
                     cell.bbox, _role_columns(region, ColumnRole.DESCRIPTION)[0].bbox
                 )
                 > 0

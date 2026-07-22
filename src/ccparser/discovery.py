@@ -19,8 +19,8 @@ from ccparser.date_tokens import (
     MIN_CONTEXT_YEAR,
     SHORT_DATE_TOKEN_PATTERNS,
     DateTokenStyle,
-    _SuffixYearMappingValidationError,
-    _SuffixYearMappingViolation,
+    SuffixYearMappingValidationError,
+    SuffixYearMappingViolation,
     validate_suffix_year_mapping,
 )
 from ccparser.decimal_math import exact_difference, exact_sum
@@ -61,13 +61,13 @@ class _ImmutableDiscoveryModel(BaseModel):
 
 
 _DISCOVERED_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY = (
-    _SuffixYearMappingViolation.EMPTY,
-    _SuffixYearMappingViolation.DUPLICATE_SUFFIX,
-    _SuffixYearMappingViolation.INVALID_SUFFIX,
-    _SuffixYearMappingViolation.INVALID_YEAR,
-    _SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
-    _SuffixYearMappingViolation.UNSORTED,
-    _SuffixYearMappingViolation.SINGLE_YEAR_DISAGREEMENT,
+    SuffixYearMappingViolation.EMPTY,
+    SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+    SuffixYearMappingViolation.INVALID_SUFFIX,
+    SuffixYearMappingViolation.INVALID_YEAR,
+    SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
+    SuffixYearMappingViolation.UNSORTED,
+    SuffixYearMappingViolation.SINGLE_YEAR_DISAGREEMENT,
 )
 
 
@@ -115,7 +115,7 @@ class DiscoveredDateYearContext(_ImmutableDiscoveryModel):
     def validate_year_mapping(self) -> DiscoveredDateYearContext:
         try:
             validate_suffix_year_mapping(self.year, self.year_by_suffix)
-        except _SuffixYearMappingValidationError as error:
+        except SuffixYearMappingValidationError as error:
             _, message = error.resolve(_DISCOVERED_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY)
             raise ValueError(message) from error
         return self

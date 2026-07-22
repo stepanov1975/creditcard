@@ -22,6 +22,7 @@ from ccparser.evidence.models import Glyph
 from ccparser.geometry import (
     BBox,
     bbox_center_y,
+    horizontal_overlap,
     union_bbox,
     vertical_overlap,
 )
@@ -97,10 +98,6 @@ def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
 
 def _role_columns(region: TableRegion, role: ColumnRole) -> tuple[ColumnSpec, ...]:
     return columns_for_role(region.table_schema, role)
-
-
-def _horizontal_overlap(first: BBox, second: BBox) -> float:
-    return max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
 
 
 def _parse_date(
@@ -272,7 +269,7 @@ def _proven_unanchored_short_date_style(
             dict.fromkeys(
                 token
                 for cell in row.cells
-                if _horizontal_overlap(cell.bbox, column.bbox) > 0
+                if horizontal_overlap(cell.bbox, column.bbox) > 0
                 for token in _short_date_tokens(cell)
             )
         )
@@ -314,7 +311,7 @@ def _parse_overlapping_boundary_date(
     for cell in row.cells:
         if cell is assigned_cell:
             continue
-        overlap = max(0.0, min(cell.bbox[2], column.bbox[2]) - max(cell.bbox[0], column.bbox[0]))
+        overlap = horizontal_overlap(cell.bbox, column.bbox)
         if overlap / column_width < 0.8:
             continue
         cell_center = _center_x(cell.bbox)
@@ -623,8 +620,8 @@ def _boundary_date_description_split(
     cell_width = max(0.0, cell.bbox[2] - cell.bbox[0])
     if (
         cell_width <= 0
-        or _horizontal_overlap(cell.bbox, date_column.bbox) <= 0
-        or _horizontal_overlap(cell.bbox, date_column.bbox) / cell_width
+        or horizontal_overlap(cell.bbox, date_column.bbox) <= 0
+        or horizontal_overlap(cell.bbox, date_column.bbox) / cell_width
         < _MIN_DATE_DESCRIPTION_CELL_OVERLAP
     ):
         return None
@@ -654,7 +651,7 @@ def _boundary_date_description_split(
         for word in cell.words
     )
     if (
-        _horizontal_overlap(cell.bbox, description_column.bbox) / cell_width
+        horizontal_overlap(cell.bbox, description_column.bbox) / cell_width
         < _MIN_DATE_DESCRIPTION_CELL_OVERLAP
         and not residual_word_touches_boundary
     ):

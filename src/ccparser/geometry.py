@@ -57,6 +57,12 @@ def bbox_center_y(bbox: BBox) -> float:
     return (bbox[1] + bbox[3]) / 2
 
 
+def horizontal_overlap(first: BBox, second: BBox) -> float:
+    """Return the raw non-negative horizontal intersection width."""
+
+    return max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+
+
 def union_bbox(boxes: Iterable[BBox]) -> BBox:
     """Return the smallest bounding box containing every input box."""
 
@@ -72,9 +78,8 @@ def union_bbox(boxes: Iterable[BBox]) -> BBox:
 
 
 def _intersection_area(first: BBox, second: BBox) -> float:
-    width = max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
     height = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
-    return width * height
+    return horizontal_overlap(first, second) * height
 
 
 def intersection_over_union(first: BBox, second: BBox) -> float:
@@ -107,3 +112,22 @@ def center_inside(inner: BBox, outer: BBox) -> bool:
     center_x = bbox_center_x(inner)
     center_y = bbox_center_y(inner)
     return outer[0] <= center_x <= outer[2] and outer[1] <= center_y <= outer[3]
+
+
+__all__ = [
+    "BBox",
+    "Point",
+    "bbox_area",
+    "bbox_center_x",
+    "bbox_center_y",
+    "bbox_height",
+    "bbox_width",
+    "center_inside",
+    "horizontal_overlap",
+    "intersection_over_smaller",
+    "intersection_over_union",
+    "union_bbox",
+    "validate_bbox",
+    "validate_point",
+    "vertical_overlap",
+]

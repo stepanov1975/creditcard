@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+import ccparser.date_tokens as date_tokens
 from ccparser.date_tokens import (
     FULL_DATE_TOKEN_PATTERNS,
     SHORT_DATE_TOKEN_PATTERNS,
     DateTokenStyle,
+    SuffixYearMappingValidationError,
+    SuffixYearMappingViolation,
     validate_suffix_year_mapping,
 )
 
@@ -59,3 +62,37 @@ def test_suffix_year_mapping_rejects_missing_or_disagreeing_evidence(
         validate_suffix_year_mapping(year, mapping)
 
     assert str(error.value) == expected_message
+
+
+def test_suffix_year_mapping_validation_error_exposes_all_violations_and_resolution() -> None:
+    with pytest.raises(SuffixYearMappingValidationError) as exc_info:
+        validate_suffix_year_mapping(None, ((26, 2026), (26, 1926)))
+
+    error = exc_info.value
+    assert error.violations == {
+        SuffixYearMappingViolation.UNSORTED,
+        SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+    }
+    assert str(error) == "date suffix-year mappings must be sorted"
+    assert error.resolve(
+        (
+            SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+            SuffixYearMappingViolation.UNSORTED,
+        )
+    ) == (
+        SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+        "date suffix-year mappings must have unique suffixes",
+    )
+
+
+def test_date_tokens_exports_exact_public_contract() -> None:
+    assert date_tokens.__all__ == [
+        "FULL_DATE_TOKEN_PATTERNS",
+        "MAX_CONTEXT_YEAR",
+        "MIN_CONTEXT_YEAR",
+        "SHORT_DATE_TOKEN_PATTERNS",
+        "DateTokenStyle",
+        "SuffixYearMappingValidationError",
+        "SuffixYearMappingViolation",
+        "validate_suffix_year_mapping",
+    ]

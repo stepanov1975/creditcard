@@ -22,8 +22,8 @@ from pydantic.functional_validators import AfterValidator
 from ccparser.date_tokens import (
     MAX_CONTEXT_YEAR,
     MIN_CONTEXT_YEAR,
-    _SuffixYearMappingValidationError,
-    _SuffixYearMappingViolation,
+    SuffixYearMappingValidationError,
+    SuffixYearMappingViolation,
     validate_suffix_year_mapping,
 )
 from ccparser.decimal_math import exact_difference, finite_decimal, plain_decimal_string
@@ -266,19 +266,19 @@ class DiscoveryMetadataSummary(BaseModel):
 
 
 _SUMMARY_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY = (
-    _SuffixYearMappingViolation.EMPTY,
-    _SuffixYearMappingViolation.UNSORTED,
-    _SuffixYearMappingViolation.DUPLICATE_SUFFIX,
-    _SuffixYearMappingViolation.INVALID_SUFFIX,
-    _SuffixYearMappingViolation.INVALID_YEAR,
-    _SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
-    _SuffixYearMappingViolation.SINGLE_YEAR_DISAGREEMENT,
+    SuffixYearMappingViolation.EMPTY,
+    SuffixYearMappingViolation.UNSORTED,
+    SuffixYearMappingViolation.DUPLICATE_SUFFIX,
+    SuffixYearMappingViolation.INVALID_SUFFIX,
+    SuffixYearMappingViolation.INVALID_YEAR,
+    SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
+    SuffixYearMappingViolation.SINGLE_YEAR_DISAGREEMENT,
 )
 _SUMMARY_GENERIC_SUFFIX_YEAR_MAPPING_VIOLATIONS = frozenset(
     {
-        _SuffixYearMappingViolation.INVALID_SUFFIX,
-        _SuffixYearMappingViolation.INVALID_YEAR,
-        _SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
+        SuffixYearMappingViolation.INVALID_SUFFIX,
+        SuffixYearMappingViolation.INVALID_YEAR,
+        SuffixYearMappingViolation.SUFFIX_YEAR_MISMATCH,
     }
 )
 
@@ -300,7 +300,7 @@ class DiscoveryDateYearContextSummary(BaseModel):
     def validate_year_mapping(self) -> Self:
         try:
             validate_suffix_year_mapping(self.year, self.year_by_suffix)
-        except _SuffixYearMappingValidationError as error:
+        except SuffixYearMappingValidationError as error:
             violation, message = error.resolve(_SUMMARY_SUFFIX_YEAR_MAPPING_VIOLATION_PRIORITY)
             if violation in _SUMMARY_GENERIC_SUFFIX_YEAR_MAPPING_VIOLATIONS:
                 message = "invalid date suffix-year mapping"

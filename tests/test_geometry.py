@@ -13,6 +13,7 @@ from ccparser.geometry import (
     bbox_height,
     bbox_width,
     center_inside,
+    horizontal_overlap,
     intersection_over_smaller,
     intersection_over_union,
     union_bbox,
@@ -80,6 +81,25 @@ def test_overlap_metrics_preserve_identical_disjoint_and_degenerate_behavior(
     assert intersection_over_union(first, second) == expected_iou
     assert intersection_over_smaller(first, second) == expected_smaller
     assert vertical_overlap(first, second) == expected_vertical
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    (
+        ((0.0, 0.0, 4.0, 4.0), (0.0, 0.0, 4.0, 4.0), 4.0),
+        ((0.0, 0.0, 4.0, 4.0), (2.0, -1.0, 6.0, 3.0), 2.0),
+        ((2.0, -1.0, 6.0, 3.0), (0.0, 0.0, 4.0, 4.0), 2.0),
+        ((0.0, 0.0, 4.0, 4.0), (5.0, 0.0, 9.0, 4.0), 0.0),
+        ((2.0, 0.0, 2.0, 4.0), (0.0, 0.0, 4.0, 4.0), 0.0),
+    ),
+    ids=("identical", "partial", "reversed_arguments", "disjoint", "degenerate"),
+)
+def test_horizontal_overlap_returns_raw_non_negative_intersection_width(
+    first: BBox,
+    second: BBox,
+    expected: float,
+) -> None:
+    assert horizontal_overlap(first, second) == expected
 
 
 @pytest.mark.parametrize(
