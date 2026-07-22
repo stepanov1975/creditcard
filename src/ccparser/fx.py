@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from ccparser.decimal_math import exact_difference
+from ccparser.geometry import bbox_center_y, bbox_height, union_bbox
 from ccparser.layout.columns import cells_in_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.row_tags import RowTag, has_row_tag
@@ -17,7 +18,13 @@ from ccparser.models import (
     ForeignExchangeDetails,
 )
 from ccparser.money import canonical_currency, currencies_in_text
-from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
+from ccparser.semantic_evidence import (
+    EvidenceAtom,
+    EvidenceClaim,
+    EvidenceLedger,
+    PositionedDecimalCandidate,
+    SemanticOwner,
+)
 from ccparser.text_tokens import contains_token_sequence
 
 
@@ -149,6 +156,91 @@ def _one_decimal(
     return parsed[0] if len(parsed) == 1 else None
 
 
+def _is_immediate_percent_neighbor(
+    candidate: PositionedDecimalCandidate,
+    percent_atom: EvidenceAtom,
+    selected_ids: frozenset[int],
+    ledger: EvidenceLedger,
+) -> bool:
+    candidate_atoms = tuple(ledger.atoms[atom_id] for atom_id in candidate.atom_ids)
+    candidate_bbox = union_bbox(atom.bbox for atom in candidate_atoms)
+    shared_line = (
+        candidate_atoms[0].page_number == percent_atom.page_number
+        and abs(bbox_center_y(candidate_bbox) - bbox_center_y(percent_atom.bbox))
+        <= min(bbox_height(candidate_bbox), bbox_height(percent_atom.bbox)) * 0.5
+    )
+    if not shared_line:
+        return False
+    if candidate_bbox[2] <= percent_atom.bbox[0]:
+        left_edge = candidate_bbox[2]
+        right_edge = percent_atom.bbox[0]
+    elif percent_atom.bbox[2] <= candidate_bbox[0]:
+        left_edge = percent_atom.bbox[2]
+        right_edge = candidate_bbox[0]
+    else:
+        left_edge = right_edge = candidate_bbox[0]
+    if (
+        right_edge - left_edge
+        > min(bbox_height(candidate_bbox), bbox_height(percent_atom.bbox)) * 0.6
+    ):
+        return False
+    return not any(
+        atom.atom_id not in candidate.atom_ids
+        and atom.atom_id != percent_atom.atom_id
+        and atom.atom_id in selected_ids
+        and atom.page_number == percent_atom.page_number
+        and abs(bbox_center_y(atom.bbox) - bbox_center_y(percent_atom.bbox))
+        <= min(bbox_height(atom.bbox), bbox_height(percent_atom.bbox)) * 0.5
+        and left_edge < (atom.bbox[0] + atom.bbox[2]) / 2 < right_edge
+        for atom in ledger.atoms
+    )
+
+
+def _percent_bound_decimal_candidates(
+    atom_ids: Iterable[int],
+    ledger: EvidenceLedger,
+) -> tuple[tuple[PositionedDecimalCandidate, int], ...]:
+    selected_ids = frozenset(atom_ids)
+    percent_atoms = tuple(
+        atom for atom in ledger.atoms if atom.atom_id in selected_ids and atom.text == "%"
+    )
+    bound: list[tuple[PositionedDecimalCandidate, int]] = []
+    for candidate in ledger.positioned_decimal_candidates(selected_ids):
+        neighbor_count = sum(
+            _is_immediate_percent_neighbor(candidate, percent_atom, selected_ids, ledger)
+            for percent_atom in percent_atoms
+        )
+        if neighbor_count:
+            bound.append((candidate, neighbor_count))
+    return tuple(bound)
+
+
+def _one_percent_bound_decimal(
+    atom_ids: Iterable[int],
+    ledger: EvidenceLedger,
+) -> tuple[Decimal, frozenset[int]] | None:
+    parsed = tuple(
+        (value, candidate.atom_ids)
+        for candidate, neighbor_count in _percent_bound_decimal_candidates(atom_ids, ledger)
+        if neighbor_count == 1
+        if (value := _decimal(candidate.text)) is not None and value >= 0
+    )
+    return parsed[0] if len(parsed) == 1 else None
+
+
+def _one_non_percentage_money_decimal(
+    atom_ids: Iterable[int],
+    ledger: EvidenceLedger,
+) -> tuple[Decimal, frozenset[int]] | None:
+    selected_ids = frozenset(atom_ids)
+    percent_bound_atom_ids = frozenset(
+        atom_id
+        for candidate, _ in _percent_bound_decimal_candidates(selected_ids, ledger)
+        for atom_id in candidate.atom_ids
+    )
+    return _one_decimal(selected_ids - percent_bound_atom_ids, ledger, allow_zero=True)
+
+
 def _one_money(
     cell: Cell,
     ledger: EvidenceLedger,
@@ -157,7 +249,7 @@ def _one_money(
     currencies = currencies_in_text(cell.text)
     if len(currencies) != 1 or currencies[0] != canonical_currency(expected_currency):
         return None
-    parsed = _one_positive_decimal(ledger.atoms_for_cell(cell), ledger)
+    parsed = _one_non_percentage_money_decimal(ledger.atoms_for_cell(cell), ledger)
     if parsed is None:
         return None
     amount, atom_ids = parsed
@@ -172,7 +264,7 @@ def _one_row_money(
     currencies = currencies_in_text(_row_text(row))
     if len(currencies) != 1 or currencies[0] != canonical_currency(expected_currency):
         return None
-    parsed = _one_positive_decimal(_row_atom_ids(row, ledger), ledger)
+    parsed = _one_non_percentage_money_decimal(_row_atom_ids(row, ledger), ledger)
     if parsed is None:
         return None
     amount, atom_ids = parsed
@@ -279,7 +371,7 @@ def _continuation_fx_values(
         is_gross = _contains_cue(phrase, _GROSS_FEE_CUES) or (
             pending_gross
             and canonical_currency(billing_currency) in currencies_in_text(raw_text)
-            and _one_positive_decimal(atom_ids, ledger) is not None
+            and _one_non_percentage_money_decimal(atom_ids, ledger) is not None
         )
         is_discount = _contains_cue(phrase, _DISCOUNT_CUES) and not is_gross
 
@@ -296,16 +388,40 @@ def _continuation_fx_values(
             rate_seen = True
 
         if is_percentage:
-            parsed_percentage = _one_decimal(atom_ids, ledger, allow_zero=True)
-            if percentage_seen or parsed_percentage is None:
+            parsed_percentage = _one_percent_bound_decimal(atom_ids, ledger)
+            if percentage_ambiguous or parsed_percentage is None:
                 percentage_ambiguous = True
                 fee_percentage = None
                 diagnostics.append("unparsed_foreign_currency_fee_percentage_candidate")
             else:
                 value, value_atom_ids = parsed_percentage
-                fee_percentage = ExtractedDecimal(value=value, evidence=evidence)
-                claims.append(EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, value_atom_ids))
-                pending_gross = True
+                if fee_percentage is None:
+                    if percentage_seen:
+                        percentage_ambiguous = True
+                        diagnostics.append("unparsed_foreign_currency_fee_percentage_candidate")
+                    else:
+                        fee_percentage = ExtractedDecimal(value=value, evidence=evidence)
+                        claims.append(
+                            EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, value_atom_ids)
+                        )
+                        pending_gross = True
+                elif fee_percentage.value != value:
+                    percentage_ambiguous = True
+                    fee_percentage = None
+                    diagnostics.append("unparsed_foreign_currency_fee_percentage_candidate")
+                else:
+                    fee_percentage = ExtractedDecimal(
+                        value=value,
+                        evidence=tuple(dict.fromkeys((*fee_percentage.evidence, *evidence))),
+                    )
+                    for index, claim in enumerate(claims):
+                        if claim.owner is SemanticOwner.FX_FEE_PERCENTAGE:
+                            claims[index] = EvidenceClaim(
+                                claim.owner,
+                                claim.atom_ids | value_atom_ids,
+                            )
+                            break
+                    pending_gross = True
             percentage_seen = True
 
         if is_gross:

@@ -5,7 +5,8 @@ from decimal import Decimal, localcontext
 from ccparser.evidence import Glyph
 from ccparser.fx import _contains_cue, extract_foreign_exchange
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
-from ccparser.semantic_evidence import EvidenceLedger, SemanticOwner
+from ccparser.models import EvidenceReference
+from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
 
 
 def _glyphs(text: str, x0: float, y: float) -> tuple[Glyph, ...]:
@@ -221,6 +222,76 @@ def test_extract_foreign_exchange_from_semantic_table_columns() -> None:
     }
     assert extraction.details.exchange_rate.evidence
     assert extraction.details.net_fee.evidence
+
+
+def test_explicit_zero_table_fee_is_evidenced_without_ambiguity() -> None:
+    source_row = _foreign_row()
+    fee_cell = _positioned_cell("₪0.00", "₪0.00", 50.0, 30.0)
+    row = _row(source_row.cells[0], fee_cell, *source_row.cells[2:])
+    ledger = EvidenceLedger.from_rows((row,))
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=_region(row),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is not None
+    assert extraction.details.exchange_rate.value == Decimal("2.9660")
+    assert extraction.details.net_fee is not None
+    assert extraction.details.net_fee.amount == Decimal("0.00")
+    assert extraction.details.net_fee.currency == "ILS"
+    assert extraction.details.net_fee.evidence == (
+        EvidenceReference(page_number=1, bbox=fee_cell.bbox, raw_text=fee_cell.text),
+    )
+    zero_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(ledger.atoms_for_cell(fee_cell))
+        if candidate.text == "0.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.NET_FX_FEE
+    ) == (EvidenceClaim(SemanticOwner.NET_FX_FEE, zero_atom_ids),)
+    assert extraction.diagnostics == ()
+
+
+def test_currencyless_zero_table_fee_remains_unparsed() -> None:
+    source_row = _foreign_row()
+    fee_cell = _positioned_cell("0.00", "0.00", 50.0, 30.0)
+    row = _row(source_row.cells[0], fee_cell, *source_row.cells[2:])
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=_region(row),
+        ledger=EvidenceLedger.from_rows((row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is not None
+    assert extraction.details.net_fee is None
+    assert all(claim.owner is not SemanticOwner.NET_FX_FEE for claim in extraction.claims)
+    assert extraction.diagnostics == ("unparsed_foreign_currency_fee_candidate",)
+
+
+def test_zero_exchange_rate_remains_unparsed() -> None:
+    row = _foreign_row("22/06/26 0.0000")
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=_region(row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows((row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is None
+    assert extraction.claims == ()
+    assert extraction.diagnostics == ("unparsed_exchange_rate_candidate",)
 
 
 def test_extract_foreign_exchange_does_not_require_conversion_date() -> None:
@@ -502,6 +573,161 @@ def test_percentage_then_discount_announcement_proves_gross_and_discount_sequenc
     assert extraction.diagnostics == ()
 
 
+def test_explicit_zero_pending_gross_fee_is_evidenced_without_ambiguity() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_row = _bounded_continuation(
+        _positioned_cell("foreign-currency fee 3.00%", "3.00%", 50.0, 40.0)
+    )
+    gross_cell = _positioned_cell("ILS 0.00", "ILS 0.00", 50.0, 50.0)
+    gross_row = _bounded_continuation(gross_cell)
+    rows = (base_row, percentage_row, gross_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.gross_fee is not None
+    assert extraction.details.gross_fee.amount == Decimal("0.00")
+    assert extraction.details.gross_fee.currency == "ILS"
+    assert extraction.details.gross_fee.evidence == (
+        EvidenceReference(page_number=1, bbox=gross_cell.bbox, raw_text=gross_cell.text),
+    )
+    assert extraction.details.fee_discount is None
+    assert extraction.details.net_fee is None
+    zero_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(ledger.atoms_for_cell(gross_cell))
+        if candidate.text == "0.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.GROSS_FX_FEE
+    ) == (EvidenceClaim(SemanticOwner.GROSS_FX_FEE, zero_atom_ids),)
+    assert extraction.diagnostics == ()
+
+
+def test_pending_gross_does_not_consume_percent_bound_decimal() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_row = _bounded_continuation(
+        _positioned_cell(
+            "foreign-currency fee 3.00% ILS",
+            "foreign-currency fee 3.00% ILS",
+            50.0,
+            40.0,
+        )
+    )
+    percent_only_money_row = _bounded_continuation(
+        _positioned_cell("ILS 0.00%", "ILS 0.00%", 50.0, 50.0)
+    )
+    rows = (base_row, percentage_row, percent_only_money_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("3.00")
+    assert extraction.details.gross_fee is None
+    assert all(claim.owner is not SemanticOwner.GROSS_FX_FEE for claim in extraction.claims)
+    assert ledger.validate_claims(extraction.claims).diagnostics == ()
+    assert extraction.diagnostics == ()
+
+
+def test_pending_gross_uses_separate_unique_non_percentage_money_decimal() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_row = _bounded_continuation(
+        _positioned_cell(
+            "foreign-currency fee 3.00% ILS",
+            "foreign-currency fee 3.00% ILS",
+            50.0,
+            40.0,
+        )
+    )
+    gross_cell = _positioned_cell(
+        "ILS 0.00% amount 1.25",
+        "ILS 0.00% amount 1.25",
+        50.0,
+        50.0,
+    )
+    gross_row = _bounded_continuation(gross_cell)
+    rows = (base_row, percentage_row, gross_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.gross_fee is not None
+    assert extraction.details.gross_fee.amount == Decimal("1.25")
+    money_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(ledger.atoms_for_cell(gross_cell))
+        if candidate.text == "1.25"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.GROSS_FX_FEE
+    ) == (EvidenceClaim(SemanticOwner.GROSS_FX_FEE, money_atom_ids),)
+    assert ledger.validate_claims(extraction.claims).diagnostics == ()
+    assert extraction.diagnostics == ()
+
+
+def test_explicit_zero_continuation_discount_is_evidenced_and_net_is_derived() -> None:
+    base_row = _base_row_without_fx_values()
+    continuation_rows = _continuation_rows(discount="0.00")
+    rows = (base_row, *continuation_rows)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    details = extraction.details
+    assert details.gross_fee is not None
+    assert details.gross_fee.amount == Decimal("0.88")
+    assert details.fee_discount is not None
+    assert details.fee_discount.amount == Decimal("0.00")
+    assert details.fee_discount.currency == "ILS"
+    assert details.net_fee is not None
+    assert details.net_fee.amount == Decimal("0.88")
+    assert details.net_fee.currency == "ILS"
+    assert details.net_fee.derivation == "gross_fee_minus_discount"
+    assert details.net_fee.evidence == tuple(
+        dict.fromkeys((*details.gross_fee.evidence, *details.fee_discount.evidence))
+    )
+    discount_cell = continuation_rows[-1].cells[0]
+    zero_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(ledger.atoms_for_cell(discount_cell))
+        if candidate.text == "0.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.FX_FEE_DISCOUNT
+    ) == (EvidenceClaim(SemanticOwner.FX_FEE_DISCOUNT, zero_atom_ids),)
+    assert all(claim.owner is not SemanticOwner.NET_FX_FEE for claim in extraction.claims)
+    assert extraction.diagnostics == ()
+
+
 def test_zero_fee_percentage_is_preserved() -> None:
     base_row = _base_row_without_fx_values()
     percentage = _bounded_continuation(
@@ -521,6 +747,210 @@ def test_zero_fee_percentage_is_preserved() -> None:
     assert extraction.details.fee_percentage is not None
     assert extraction.details.fee_percentage.value == Decimal("0.00")
     assert extraction.diagnostics == ()
+
+
+def test_percentage_selects_percent_bound_decimal_when_money_is_on_same_row() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_cell = _positioned_cell(
+        "foreign-currency fee 3.00% ILS 0.88",
+        "foreign-currency fee 3.00% ILS 0.88",
+        50.0,
+        40.0,
+    )
+    percentage_row = _bounded_continuation(percentage_cell)
+    rows = (base_row, percentage_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("3.00")
+    assert extraction.details.fee_percentage.evidence == (
+        EvidenceReference(
+            page_number=1,
+            bbox=percentage_cell.bbox,
+            raw_text=percentage_cell.text,
+        ),
+    )
+    percentage_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(
+            ledger.atoms_for_cell(percentage_cell)
+        )
+        if candidate.text == "3.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.FX_FEE_PERCENTAGE
+    ) == (EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, percentage_atom_ids),)
+    assert extraction.diagnostics == ()
+
+
+def test_percentage_binding_is_safe_for_percent_before_decimal() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_cell = _positioned_cell(
+        "foreign-currency fee %3.00 ILS 0.88",
+        "foreign-currency fee %3.00 ILS 0.88",
+        50.0,
+        40.0,
+    )
+    percentage_row = _bounded_continuation(percentage_cell)
+    rows = (base_row, percentage_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("3.00")
+    percentage_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(
+            ledger.atoms_for_cell(percentage_cell)
+        )
+        if candidate.text == "3.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.FX_FEE_PERCENTAGE
+    ) == (EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, percentage_atom_ids),)
+    assert extraction.diagnostics == ()
+
+
+def test_percentage_ignores_additional_unbound_percent_marker() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_cell = _positioned_cell(
+        "foreign-currency fee 3.00% note %",
+        "foreign-currency fee 3.00% note %",
+        50.0,
+        40.0,
+    )
+    percentage_row = _bounded_continuation(percentage_cell)
+    rows = (base_row, percentage_row)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("3.00")
+    percentage_atom_ids = next(
+        candidate.atom_ids
+        for candidate in ledger.positioned_decimal_candidates(
+            ledger.atoms_for_cell(percentage_cell)
+        )
+        if candidate.text == "3.00"
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.FX_FEE_PERCENTAGE
+    ) == (EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, percentage_atom_ids),)
+    assert extraction.diagnostics == ()
+
+
+def test_two_percent_bound_decimals_remain_ambiguous() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_row = _bounded_continuation(
+        _positioned_cell(
+            "foreign-currency fee 3.00% and 2.50%",
+            "foreign-currency fee 3.00% and 2.50%",
+            50.0,
+            40.0,
+        )
+    )
+    rows = (base_row, percentage_row)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is None
+    assert all(claim.owner is not SemanticOwner.FX_FEE_PERCENTAGE for claim in extraction.claims)
+    assert extraction.diagnostics == ("unparsed_foreign_currency_fee_percentage_candidate",)
+
+
+def test_repeated_identical_percentages_merge_provenance() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_cells = tuple(
+        _positioned_cell("foreign-currency fee 3.00%", "3.00%", 50.0, y) for y in (40.0, 50.0)
+    )
+    percentage_rows = tuple(_bounded_continuation(cell) for cell in percentage_cells)
+    rows = (base_row, *percentage_rows)
+    ledger = EvidenceLedger.from_rows(rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=ledger,
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.fee_percentage is not None
+    assert extraction.details.fee_percentage.value == Decimal("3.00")
+    assert extraction.details.fee_percentage.evidence == tuple(
+        EvidenceReference(page_number=1, bbox=cell.bbox, raw_text=cell.text)
+        for cell in percentage_cells
+    )
+    percentage_atom_ids = frozenset().union(
+        *(
+            next(
+                candidate.atom_ids
+                for candidate in ledger.positioned_decimal_candidates(ledger.atoms_for_cell(cell))
+                if candidate.text == "3.00"
+            )
+            for cell in percentage_cells
+        )
+    )
+    assert tuple(
+        claim for claim in extraction.claims if claim.owner is SemanticOwner.FX_FEE_PERCENTAGE
+    ) == (EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, percentage_atom_ids),)
+    assert ledger.validate_claims(extraction.claims).diagnostics == ()
+    assert extraction.diagnostics == ()
+
+
+def test_conflicting_repeated_percentages_remain_ambiguous() -> None:
+    base_row = _base_row_without_fx_values()
+    percentage_rows = tuple(
+        _bounded_continuation(
+            _positioned_cell(f"foreign-currency fee {value}%", f"{value}%", 50.0, y)
+        )
+        for value, y in (("3.00", 40.0), ("2.50", 50.0))
+    )
+    rows = (base_row, *percentage_rows)
+
+    extraction = extract_foreign_exchange(
+        rows=rows,
+        region=_region(base_row, fee_header="Auxiliary amount"),
+        ledger=EvidenceLedger.from_rows(rows),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is None
+    assert all(claim.owner is not SemanticOwner.FX_FEE_PERCENTAGE for claim in extraction.claims)
+    assert extraction.diagnostics == ("unparsed_foreign_currency_fee_percentage_candidate",)
 
 
 def test_ambiguous_explicit_continuation_rate_emits_diagnostic() -> None:
