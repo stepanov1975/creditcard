@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
-from ccparser.layout.text import logical_text_for_bbox, logical_text_for_evidence
+from ccparser.layout import Cell
+from ccparser.layout.text import (
+    cell_has_ocr_evidence,
+    logical_text_for_bbox,
+    logical_text_for_evidence,
+)
 
 
 def _quality(*, glyph_count: int, word_count: int) -> ExtractionQuality:
@@ -30,6 +37,54 @@ def _glyph(char: str, x: float, y: float = 10.0) -> Glyph:
 
 def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
     return tuple(_glyph(char, right - index * 4.0 - 3.0, y) for index, char in enumerate(text))
+
+
+@pytest.mark.parametrize(
+    ("words", "glyphs", "expected"),
+    (
+        ((), (), False),
+        (
+            (
+                Word(
+                    text="digital",
+                    bbox=(0.0, 0.0, 10.0, 10.0),
+                    source="digital",
+                    confidence=1.0,
+                ),
+            ),
+            (),
+            False,
+        ),
+        (
+            (
+                Word(
+                    text="ocr",
+                    bbox=(0.0, 0.0, 10.0, 10.0),
+                    source="ocr",
+                    confidence=0.8,
+                ),
+            ),
+            (),
+            True,
+        ),
+        ((), (_glyph("1", 0.0).model_copy(update={"source": "ocr"}),), True),
+    ),
+)
+def test_cell_has_ocr_evidence_from_words_or_glyphs(
+    words: tuple[Word, ...],
+    glyphs: tuple[Glyph, ...],
+    expected: bool,
+) -> None:
+    cell = Cell(
+        page_number=1,
+        bbox=(0.0, 0.0, 20.0, 20.0),
+        text="value",
+        words=words,
+        glyphs=glyphs,
+        confidence=1.0,
+    )
+
+    assert cell_has_ocr_evidence(cell) is expected
 
 
 def test_logical_text_orders_each_script_run_and_rtl_word_groups_from_geometry() -> None:

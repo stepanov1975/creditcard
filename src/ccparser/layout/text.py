@@ -20,9 +20,18 @@ from ccparser.geometry import (
     center_inside,
     union_bbox,
 )
+from ccparser.layout.models import Cell
 from ccparser.layout.word_dedup import deduplicate_words
 
 _VISUAL_TRAILING_SIGN_NUMBER_PATTERN = re.compile(r"^(?:\d{1,3}(?:[,.]\d{3})+|\d+)[,.]\d{2}$")
+
+
+def cell_has_ocr_evidence(cell: Cell) -> bool:
+    """Return whether any positioned source evidence in ``cell`` came from OCR."""
+
+    return any(word.source == "ocr" for word in cell.words) or any(
+        glyph.source == "ocr" for glyph in cell.glyphs
+    )
 
 
 def _normalized(text: str) -> str:
