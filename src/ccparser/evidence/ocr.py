@@ -23,6 +23,7 @@ OCR_PREPROCESSING_VERSION = "raw-pixmap-v1"
 OCR_PIPELINE_VERSION = "tesseract-tsv-fused-structured-numeric-v4"
 OCR_RECOGNITION_CACHE_VERSION = "tesseract-tsv-fused-numeric-v2"
 OCR_NUMERIC_RECOGNITION_CACHE_VERSION = "tesseract-whitelisted-numeric-v1"
+OCR_CURRENCY_RECOGNITION_CACHE_VERSION = "tesseract-isolated-currency-v1"
 TESSERACT_VERSION_TIMEOUT_SECONDS = 10.0
 TESSERACT_RECOGNITION_TIMEOUT_SECONDS = 120.0
 
@@ -319,7 +320,7 @@ class TesseractOcr:
     def _currency_cache_key(self, recognition_key: str) -> str:
         payload = {
             "command": list(self._currency_command),
-            "recognition_cache_version": "tesseract-isolated-currency-v1",
+            "recognition_cache_version": OCR_CURRENCY_RECOGNITION_CACHE_VERSION,
             "recognition_key": recognition_key,
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
