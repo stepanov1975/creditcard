@@ -2510,6 +2510,32 @@ type _IgnoredScanCounter = Literal[
     "spilled_currency",
 ]
 
+_EXPECTED_CONTINUATION_ROW_TAGS: dict[ContinuationKind, frozenset[RowTag]] = {
+    ContinuationKind.DESCRIPTION: frozenset({RowTag.DESCRIPTION_CONTINUATION}),
+    ContinuationKind.LEADING_DETAIL: frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
+    ContinuationKind.CARD_IDENTIFIER_BLOCK: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.CARD_IDENTIFIER_DETAIL,
+        }
+    ),
+    ContinuationKind.CARD_IDENTIFIER_TAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
+    ContinuationKind.FOREIGN_CONVERSION_BLOCK: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.FOREIGN_CONVERSION_DETAIL,
+        }
+    ),
+    ContinuationKind.HEBREW_NOTE: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.HEBREW_NOTE_DETAIL,
+        }
+    ),
+    ContinuationKind.AUXILIARY_FRAGMENT: frozenset({RowTag.AUXILIARY_CONTINUATION}),
+    ContinuationKind.MARKED_DETAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
+}
+
 
 @dataclass(slots=True)
 class _RegionScanState:
@@ -2563,28 +2589,31 @@ class _RegionScanState:
         self.previous = row
         self.counters = self.counters.increment_ambiguous_leading()
 
-    def accept_description(self, match: ContinuationMatch) -> None:
+    def _apply_continuation_match(self, match: ContinuationMatch) -> None:
+        expected_tags = _EXPECTED_CONTINUATION_ROW_TAGS.get(match.kind)
+        if expected_tags is None or match.row_tags != expected_tags:
+            raise ValueError("continuation match row tags do not match its kind")
+
+        matched_row_count = len(match.rows)
         self.accepted.extend(match.rows)
         self.previous = match.rows[-1]
         self.consumed_through = match.consumed_through
-        self.counters = self.counters.increment_continuation(len(match.rows))
+        if match.kind is ContinuationKind.DESCRIPTION:
+            self.counters = self.counters.increment_continuation(matched_row_count)
+        elif match.kind is ContinuationKind.AUXILIARY_FRAGMENT:
+            self.counters = self.counters.increment_auxiliary_continuation(matched_row_count)
+        else:
+            self.counters = self.counters.increment_detail_continuation(matched_row_count)
         if match.detail_policy is DetailContinuationPolicy.DISALLOW:
             self.detail_continuation_allowed = False
         if match.skipped_outside_rows:
             self.counters = self.counters.increment_ignored_outside_band(match.skipped_outside_rows)
 
+    def accept_description(self, match: ContinuationMatch) -> None:
+        self._apply_continuation_match(match)
+
     def accept_continuation(self, match: ContinuationMatch) -> None:
-        self.accepted.extend(match.rows)
-        self.previous = match.rows[-1]
-        self.consumed_through = match.consumed_through
-        if match.kind is ContinuationKind.AUXILIARY_FRAGMENT:
-            self.counters = self.counters.increment_auxiliary_continuation(len(match.rows))
-        else:
-            self.counters = self.counters.increment_detail_continuation(len(match.rows))
-        if match.detail_policy is DetailContinuationPolicy.DISALLOW:
-            self.detail_continuation_allowed = False
-        if match.skipped_outside_rows:
-            self.counters = self.counters.increment_ignored_outside_band(match.skipped_outside_rows)
+        self._apply_continuation_match(match)
 
     def stop(self, reason: str, index: int) -> None:
         if self.stop_reason is None:

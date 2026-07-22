@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ccparser.layout.continuations import (
     ContinuationKind,
     ContinuationMatch,
@@ -26,6 +28,69 @@ def _state() -> _RegionScanState:
         previous=_row(0),
         consumed_through=0,
         stop_index=20,
+    )
+
+
+def test_accept_description_rejects_inconsistent_row_tags_without_mutation() -> None:
+    state = _state()
+    initial = _state()
+    match = single_row_match(
+        _row(1),
+        start_index=1,
+        kind=ContinuationKind.DESCRIPTION,
+        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
+        detail_policy=DetailContinuationPolicy.PRESERVE,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        state.accept_description(match)
+
+    assert str(exc_info.value) == "continuation match row tags do not match its kind"
+    assert state == initial
+
+
+def test_accept_continuation_rejects_inconsistent_row_tags_without_mutation() -> None:
+    state = _state()
+    initial = _state()
+    match = single_row_match(
+        _row(1),
+        start_index=1,
+        kind=ContinuationKind.MARKED_DETAIL,
+        row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        state.accept_continuation(match)
+
+    assert str(exc_info.value) == "continuation match row tags do not match its kind"
+    assert state == initial
+
+
+def test_accept_description_preserves_eligibility_and_applies_skipped_rows() -> None:
+    state = _state()
+    description = _row(1)
+    match = ContinuationMatch(
+        rows=(description,),
+        consumed_through=3,
+        kind=ContinuationKind.DESCRIPTION,
+        row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
+        detail_policy=DetailContinuationPolicy.PRESERVE,
+        skipped_outside_rows=2,
+        start_index=1,
+    )
+    state.detail_continuation_allowed = True
+
+    state.accept_description(match)
+
+    assert state.accepted == [description]
+    assert state.regular_rows == []
+    assert state.previous is description
+    assert state.consumed_through == 3
+    assert state.detail_continuation_allowed
+    assert state.counters == _RegionScanCounters(
+        continuation_count=1,
+        ignored_outside_band_count=2,
     )
 
 
