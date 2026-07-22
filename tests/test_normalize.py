@@ -23,11 +23,11 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
+from ccparser.normalization_dates import _cross_cell_date_tokens
 from ccparser.normalization_fields import FieldDisposition
 from ccparser.normalize import (
     RowNormalizationResult,
     _column_header_text,
-    _cross_cell_date_tokens,
     _normalize_row,
     _RowNormalizationAttempt,
     _stable_unknown_columns,
@@ -3575,8 +3575,13 @@ def test_split_conversion_date_is_audited_against_explicit_conversion_date(
         "2021-06-26" if expected_status is Status.RECONCILED else "2021-06-25"
     )
     assert result.reconciliation.status is expected_status
-    assert ("conflicting_conversion_date_evidence" in transaction.ambiguities) is (
-        expected_status is Status.UNRECONCILED
+    assert transaction.ambiguities == (
+        (
+            "conflicting_conversion_date_evidence",
+            "unconsumed_transaction_semantic_text",
+        )
+        if expected_status is Status.UNRECONCILED
+        else ()
     )
 
 
