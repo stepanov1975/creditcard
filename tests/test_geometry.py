@@ -7,6 +7,7 @@ from ccparser.evidence.models import Point as EvidencePoint
 from ccparser.geometry import (
     BBox,
     Point,
+    bbox_area,
     bbox_center_x,
     bbox_center_y,
     bbox_height,
@@ -43,6 +44,21 @@ def test_bbox_measurements_preserve_degenerate_box_behavior(
     assert bbox_height(bbox) == height
     assert bbox_center_x(bbox) == center_x
     assert bbox_center_y(bbox) == center_y
+
+
+@pytest.mark.parametrize(
+    ("bbox", "expected"),
+    (
+        ((2.0, 3.0, 8.0, 11.0), 48.0),
+        ((2.0, 3.0, 2.0, 11.0), 0.0),
+        ((2.0, 3.0, 8.0, 3.0), 0.0),
+    ),
+)
+def test_bbox_area_preserves_ordinary_and_degenerate_box_behavior(
+    bbox: BBox,
+    expected: float,
+) -> None:
+    assert bbox_area(bbox) == expected
 
 
 @pytest.mark.parametrize(

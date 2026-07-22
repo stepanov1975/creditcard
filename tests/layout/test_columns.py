@@ -11,6 +11,7 @@ from ccparser.layout.columns import (
     is_date_shaped,
     is_location_identifier,
     original_currency_spilled_into_location,
+    proven_region_billed_amount_column,
     source_or_center_cells,
 )
 from ccparser.layout.models import (
@@ -118,6 +119,56 @@ def test_columns_for_role_preserves_schema_order() -> None:
     )
 
     assert columns_for_role(schema, ColumnRole.DATE) == (second, first)
+
+
+def _billed_selection_region(rows: tuple[Row, ...]) -> TableRegion:
+    headers = (
+        _cell("Billed amount", (0.0, 10.0, 40.0, 20.0)),
+        _cell("Amount", (50.0, 10.0, 90.0, 20.0)),
+    )
+    columns = tuple(
+        _column(
+            x0=index * 50.0,
+            x1=index * 50.0 + 40.0,
+            role=ColumnRole.AMOUNT,
+            source_cells=(header,),
+            index=index,
+        )
+        for index, header in enumerate(headers)
+    )
+    schema = TableSchema(
+        page_number=1,
+        bbox=(0.0, 10.0, 90.0, 100.0),
+        columns=columns,
+        header_cells=headers,
+        sample_cells=tuple(cell for row in rows for cell in row.cells),
+        confidence=1.0,
+    )
+    return TableRegion(
+        page_number=1,
+        bbox=(0.0, 10.0, 90.0, 100.0),
+        header=_row(10.0, headers),
+        rows=rows,
+        table_schema=schema,
+        confidence=1.0,
+    )
+
+
+def test_proven_region_billed_amount_column_selects_ordinary_explicit_band() -> None:
+    ordinary = _row(30.0, (_cell("10.00", (0.0, 30.0, 40.0, 40.0)),))
+    region = _billed_selection_region((ordinary,))
+
+    assert proven_region_billed_amount_column(region) == region.table_schema.columns[0]
+
+
+def test_proven_region_billed_amount_column_excludes_subordinate_detail_money() -> None:
+    ordinary = _row(30.0, (_cell("10.00", (0.0, 30.0, 40.0, 40.0)),))
+    subordinate = _row(50.0, (_cell("0.50", (50.0, 50.0, 90.0, 60.0)),)).model_copy(
+        update={"diagnostics": ("subordinate_detail_continuation",)}
+    )
+    region = _billed_selection_region((ordinary, subordinate))
+
+    assert proven_region_billed_amount_column(region) == region.table_schema.columns[0]
 
 
 def _ocr_cell(text: str, bbox: tuple[float, float, float, float]) -> Cell:

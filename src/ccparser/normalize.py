@@ -23,7 +23,7 @@ from ccparser.geometry import (
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
-    proven_billed_amount_column,
+    proven_region_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.row_tags import RowTag, has_row_tag
@@ -187,13 +187,6 @@ def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
 
 def _role_columns(region: TableRegion, role: ColumnRole) -> tuple[ColumnSpec, ...]:
     return columns_for_role(region.table_schema, role)
-
-
-def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
-    transaction_rows = tuple(
-        row for row in region.rows if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL)
-    )
-    return proven_billed_amount_column(region.table_schema, transaction_rows)
 
 
 def _row_evidence(rows: Sequence[Row]) -> tuple[EvidenceReference, ...]:
@@ -519,8 +512,8 @@ def _cross_page_leading_detail_handoffs(
             continue
         previous_row = previous_base_rows[-1]
         following_row = following_rows[0]
-        previous_billed_column = _proven_billed_amount_column(previous_region)
-        current_billed_column = _proven_billed_amount_column(current_region)
+        previous_billed_column = proven_region_billed_amount_column(previous_region)
+        current_billed_column = proven_region_billed_amount_column(current_region)
         if previous_billed_column is None or current_billed_column is None:
             continue
         previous_billed_cells = _cells_for_column(previous_row, previous_billed_column)

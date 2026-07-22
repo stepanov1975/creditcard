@@ -25,8 +25,18 @@ from ccparser.date_tokens import (
 )
 from ccparser.decimal_math import exact_difference, exact_sum
 from ccparser.evidence.models import BBox, DocumentEvidence, Glyph
+from ccparser.geometry import (
+    bbox_center_x as _center_x,
+)
+from ccparser.geometry import (
+    bbox_height,
+)
+from ccparser.geometry import (
+    center_inside as _center_inside_bbox,
+)
 from ccparser.layout import TableRegion, logical_rows
 from ccparser.layout.columns import (
+    cells_in_column,
     explicit_billed_amount_column,
     infer_column_roles,
     proven_billed_amount_column,
@@ -309,7 +319,6 @@ _FIELD_LABELS: dict[str, frozenset[str]] = {
     "card_number": frozenset({"card no", "card number", "credit card number", "מספר כרטיס"}),
     "statement_date": frozenset({"billing date", "statement date", "תאריך דוח", "תאריך חיוב"}),
 }
-_DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d{1,4})\s*([./-])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)")
 _YEAR_MONTH_TOKEN_PATTERN = re.compile(
     r"(?<!\d)(?P<year>(?:19|20)\d{2})\s*[/\-]\s*"
     r"(?P<month>0?[1-9]|1[0-2])(?!\s*[/\-]\s*\d)(?!\d)"
@@ -586,8 +595,7 @@ def _table_currencies(region: TableRegion) -> tuple[str, ...]:
             region.header.cells,
         )
         for column in billing_columns
-        for cell in cells
-        if column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= column.bbox[2]
+        for cell in cells_in_column(cells, column)
         for currency in currencies_in_text(cell.text)
     }
     return tuple(sorted(currencies))
@@ -610,11 +618,7 @@ def _can_inherit_printed_total_currency(region: TableRegion) -> bool:
     ):
         return False
     for row in region.rows:
-        cells = tuple(
-            cell
-            for cell in row.cells
-            if proven_column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= proven_column.bbox[2]
-        )
+        cells = cells_in_column(row.cells, proven_column)
         if (
             len(cells) != 1
             or not is_money_shaped(cells[0].text)
@@ -635,22 +639,8 @@ def _reading_key_bbox(page_number: int, bbox: BBox) -> tuple[int, float, float]:
     return (page_number, bbox[1], bbox[0])
 
 
-def _center_x(bbox: BBox) -> float:
-    return (bbox[0] + bbox[2]) / 2
-
-
-def _row_height(row: Row) -> float:
-    return max(0.0, row.bbox[3] - row.bbox[1])
-
-
 def _normalized_exact_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).casefold().split())
-
-
-def _center_inside_bbox(candidate: BBox, container: BBox) -> bool:
-    center_x = (candidate[0] + candidate[2]) / 2
-    center_y = (candidate[1] + candidate[3]) / 2
-    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
 
 
 def _row_glyph_authoritative_signature(
@@ -847,11 +837,11 @@ def _is_lossless_total_overlay_artifact(
     for reference in total_marker_rows:
         if reference is candidate or reference.page_number != candidate.page_number:
             continue
-        if len(reference.cells) < 2 or _row_height(reference) <= 0:
+        if len(reference.cells) < 2 or bbox_height(reference.bbox) <= 0:
             continue
-        if _row_height(candidate) > _row_height(reference) * 0.2:
+        if bbox_height(candidate.bbox) > bbox_height(reference.bbox) * 0.2:
             continue
-        if _vertical_gap(candidate.bbox, reference.bbox) > _row_height(reference) * 1.5:
+        if _vertical_gap(candidate.bbox, reference.bbox) > bbox_height(reference.bbox) * 1.5:
             continue
         if _horizontal_containment_fraction(candidate.bbox, reference.bbox) < 0.9:
             continue
@@ -985,7 +975,7 @@ def _contiguous_rate_section(
     for row in ordered:
         if section:
             previous = section[-1]
-            gap_scale = max(_row_height(previous), _row_height(row))
+            gap_scale = max(bbox_height(previous.bbox), bbox_height(row.bbox))
             if gap_scale <= 0 or _vertical_gap(previous.bbox, row.bbox) > gap_scale * 1.5:
                 break
             if _page_row_key(row) in table_header_keys or _is_financial_header_row(row):
@@ -1070,13 +1060,21 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
         while (
             start > 0
             and _vertical_gap(summary_rows[start - 1].bbox, summary_rows[start].bbox)
-            <= max(_row_height(summary_rows[start - 1]), _row_height(summary_rows[start])) * 2
+            <= max(
+                bbox_height(summary_rows[start - 1].bbox),
+                bbox_height(summary_rows[start].bbox),
+            )
+            * 2
         ):
             start -= 1
         while (
             end + 1 < len(summary_rows)
             and _vertical_gap(summary_rows[end].bbox, summary_rows[end + 1].bbox)
-            <= max(_row_height(summary_rows[end]), _row_height(summary_rows[end + 1])) * 2
+            <= max(
+                bbox_height(summary_rows[end].bbox),
+                bbox_height(summary_rows[end + 1].bbox),
+            )
+            * 2
         ):
             end += 1
         block = summary_rows[start : end + 1]
@@ -1316,11 +1314,7 @@ def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
         )
         for row in region.rows:
             for column in date_columns:
-                cells.extend(
-                    cell
-                    for cell in row.cells
-                    if column.bbox[0] <= (cell.bbox[0] + cell.bbox[2]) / 2 <= column.bbox[2]
-                )
+                cells.extend(cells_in_column(row.cells, column))
     return tuple(cells)
 
 

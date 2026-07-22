@@ -10,6 +10,18 @@ from enum import StrEnum
 from itertools import pairwise
 
 from ccparser.evidence.models import BBox, Glyph, Word
+from ccparser.geometry import (
+    bbox_center_y as _center_y,
+)
+from ccparser.geometry import (
+    bbox_height as _height,
+)
+from ccparser.geometry import (
+    center_inside as _inside_bbox,
+)
+from ccparser.geometry import (
+    union_bbox as _union_bbox,
+)
 from ccparser.layout.models import Cell, Row
 from ccparser.layout.text import logical_text_for_evidence
 
@@ -167,29 +179,6 @@ def _cell_key(cell: Cell) -> _AtomKey:
         None,
         _normalized(cell.text),
         "cell",
-    )
-
-
-def _center_y(bbox: BBox) -> float:
-    return (bbox[1] + bbox[3]) / 2
-
-
-def _inside_bbox(candidate: BBox, container: BBox) -> bool:
-    center_x = (candidate[0] + candidate[2]) / 2
-    center_y = _center_y(candidate)
-    return container[0] <= center_x <= container[2] and container[1] <= center_y <= container[3]
-
-
-def _height(bbox: BBox) -> float:
-    return max(0.0, bbox[3] - bbox[1])
-
-
-def _union_bbox(boxes: Sequence[BBox]) -> BBox:
-    return (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
     )
 
 

@@ -26,6 +26,7 @@ from ccparser.geometry import (
     union_bbox as _union_bbox,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
+from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.money import canonical_currency, is_currency_shaped, is_money_shaped
 from ccparser.text_tokens import normalize_text, phrase_tokens
 
@@ -792,6 +793,15 @@ def proven_billed_amount_column(
     ):
         return None
     return explicit_column
+
+
+def proven_region_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
+    """Select a billed column while excluding exact subordinate-detail rows."""
+
+    transaction_rows = tuple(
+        row for row in region.rows if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL)
+    )
+    return proven_billed_amount_column(region.table_schema, transaction_rows)
 
 
 def _header_anchored_columns(

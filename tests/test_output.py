@@ -25,7 +25,6 @@ from ccparser.models import (
     TransactionKind,
 )
 from ccparser.output import (
-    CSV_COLUMNS,
     canonical_json_bytes,
     transactions_csv_bytes,
     write_batch_outputs,
@@ -164,7 +163,49 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert content.startswith(b"\xef\xbb\xbf")
     rows = tuple(csv.DictReader(io.StringIO(content.decode("utf-8-sig"), newline="")))
 
-    assert tuple(rows[0]) == CSV_COLUMNS
+    assert tuple(rows[0]) == (
+        "source",
+        "source_sha256",
+        "statement_id",
+        "group_id",
+        "transaction_id",
+        "transaction_date",
+        "posting_date",
+        "conversion_date",
+        "description",
+        "category",
+        "kind",
+        "billed_amount",
+        "billing_currency",
+        "original_amount",
+        "original_currency",
+        "installment_current",
+        "installment_total",
+        "status",
+        "ambiguity_codes",
+        "diagnostic_codes",
+        "source_page",
+        "source_bbox",
+        "exchange_rate",
+        "exchange_rate_source_page",
+        "exchange_rate_source_bbox",
+        "foreign_currency_fee_percentage",
+        "foreign_currency_fee_percentage_source_page",
+        "foreign_currency_fee_percentage_source_bbox",
+        "gross_foreign_currency_fee",
+        "gross_foreign_currency_fee_currency",
+        "gross_foreign_currency_fee_source_page",
+        "gross_foreign_currency_fee_source_bbox",
+        "foreign_currency_fee_discount",
+        "foreign_currency_fee_discount_currency",
+        "foreign_currency_fee_discount_source_page",
+        "foreign_currency_fee_discount_source_bbox",
+        "net_foreign_currency_fee",
+        "net_foreign_currency_fee_currency",
+        "net_foreign_currency_fee_derivation",
+        "net_foreign_currency_fee_source_page",
+        "net_foreign_currency_fee_source_bbox",
+    )
     assert len(rows) == 1
     row = rows[0]
     assert row["source"] == "nested/statement.pdf"

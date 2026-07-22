@@ -10,10 +10,9 @@ from enum import StrEnum
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
-    proven_billed_amount_column,
+    proven_region_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
-from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.money import canonical_currency, parse_amount
 from ccparser.text_tokens import normalize_text
 
@@ -64,15 +63,6 @@ def _role_cells(row: Row, region: TableRegion, role: ColumnRole) -> tuple[Cell, 
     )
 
 
-def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
-    transaction_rows = tuple(
-        candidate
-        for candidate in region.rows
-        if not has_row_tag(candidate, RowTag.SUBORDINATE_DETAIL)
-    )
-    return proven_billed_amount_column(region.table_schema, transaction_rows)
-
-
 def _rejected_billed_fields(
     diagnostics: tuple[str, ...],
     *,
@@ -96,7 +86,7 @@ def extract_billed_fields(
 ) -> BilledFields:
     """Extract the sole billed amount against the group's printed currency."""
 
-    amount_column = _proven_billed_amount_column(region)
+    amount_column = proven_region_billed_amount_column(region)
     if amount_column is None:
         amount_columns = _role_columns(region, ColumnRole.AMOUNT)
         diagnostic = "unknown_amount_column" if not amount_columns else "multiple_amount_columns"

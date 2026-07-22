@@ -23,6 +23,7 @@ from ccparser.evidence.models import (
     Word,
 )
 from ccparser.evidence.provider import CurrencySymbolOcrProvider, OcrProvider
+from ccparser.geometry import bbox_area, bbox_height
 
 NEARLY_EMPTY_USABLE_CHARACTER_COUNT = 8
 EXCESSIVE_REPLACEMENT_CHARACTER_RATIO = 0.05
@@ -36,8 +37,8 @@ def _custom_currency_glyph_clips(
 ) -> tuple[BBox, ...]:
     clips = []
     for glyph in custom_currency_glyph_candidates(glyphs, words):
-        padding = max(0.0, glyph.bbox[3] - glyph.bbox[1]) * 0.3
-        right_padding = max(0.0, glyph.bbox[3] - glyph.bbox[1]) * 0.24
+        padding = bbox_height(glyph.bbox) * 0.3
+        right_padding = bbox_height(glyph.bbox) * 0.24
         clips.append(
             (
                 glyph.bbox[0] - padding,
@@ -208,10 +209,6 @@ def _extract_vector_rules(page: fitz.Page, rotation_matrix: fitz.Matrix) -> tupl
     return tuple(rules)
 
 
-def _rectangle_area(bbox: BBox) -> float:
-    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
-
-
 def assess_extraction_quality(
     *,
     glyphs: tuple[Glyph, ...],
@@ -237,8 +234,8 @@ def assess_extraction_quality(
     )
     replacement_ratio = replacement_count / denominator
     control_ratio = control_count / denominator
-    page_area = _rectangle_area(page_bbox)
-    image_area = sum(_rectangle_area(image.bbox) for image in images)
+    page_area = bbox_area(page_bbox)
+    image_area = sum(bbox_area(image.bbox) for image in images)
     image_ratio = min(image_area / page_area, 1.0) if page_area else 0.0
 
     reasons: list[str] = []

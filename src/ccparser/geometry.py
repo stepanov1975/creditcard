@@ -39,6 +39,12 @@ def bbox_height(bbox: BBox) -> float:
     return max(0.0, bbox[3] - bbox[1])
 
 
+def bbox_area(bbox: BBox) -> float:
+    """Return the non-negative area of a bounding box."""
+
+    return bbox_width(bbox) * bbox_height(bbox)
+
+
 def bbox_center_x(bbox: BBox) -> float:
     """Return the horizontal midpoint of a bounding box."""
 
@@ -75,11 +81,7 @@ def intersection_over_union(first: BBox, second: BBox) -> float:
     """Return intersection area divided by combined union area."""
 
     intersection = _intersection_area(first, second)
-    union = (
-        bbox_width(first) * bbox_height(first)
-        + bbox_width(second) * bbox_height(second)
-        - intersection
-    )
+    union = bbox_area(first) + bbox_area(second) - intersection
     return intersection / union if union > 0.0 else 0.0
 
 
@@ -87,10 +89,7 @@ def intersection_over_smaller(first: BBox, second: BBox) -> float:
     """Return intersection area divided by the smaller box area."""
 
     intersection = _intersection_area(first, second)
-    smaller = min(
-        bbox_width(first) * bbox_height(first),
-        bbox_width(second) * bbox_height(second),
-    )
+    smaller = min(bbox_area(first), bbox_area(second))
     return intersection / smaller if smaller > 0.0 else 0.0
 
 

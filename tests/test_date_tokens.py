@@ -55,5 +55,7 @@ def test_suffix_year_mapping_rejects_missing_or_disagreeing_evidence(
     mapping: tuple[tuple[int, int], ...],
     expected_message: str,
 ) -> None:
-    with pytest.raises(ValueError, match=expected_message):
+    with pytest.raises(ValueError) as error:
         validate_suffix_year_mapping(year, mapping)
+
+    assert str(error.value) == expected_message
