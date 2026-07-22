@@ -45,6 +45,7 @@ from ccparser.geometry import (
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
+    is_location_identifier,
     isolated_date_token,
     proven_billed_amount_column,
 )
@@ -75,7 +76,6 @@ from ccparser.normalization_fields import (
 )
 from ccparser.original_amount import (
     extract_original_amount,
-    is_location_identifier,
     original_currency_spilled_into_location,
 )
 from ccparser.reconcile import ReconciliationOutcome, reconciliation_outcome

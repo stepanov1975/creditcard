@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
@@ -20,6 +19,7 @@ from ccparser.geometry import (
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
+    is_location_identifier,
     proven_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
@@ -37,7 +37,6 @@ from ccparser.normalization_fields import BilledFields, is_installment_shaped
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
 from ccparser.text_tokens import normalize_text, phrase_tokens
 
-_LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 _MIN_DESCRIPTION_SPILL_OVERLAP = 0.2
 
 
@@ -50,12 +49,6 @@ class OriginalAmountExtraction:
     description: str | None
     claims: tuple[EvidenceClaim, ...]
     diagnostics: tuple[str, ...]
-
-
-def is_location_identifier(text: str) -> bool:
-    """Return whether text is the exact bounded location identifier shape."""
-
-    return _LOCATION_IDENTIFIER_PATTERN.fullmatch(normalize_text(text)) is not None
 
 
 def _amount_from_exact_words_between_boundary_glyphs(
@@ -715,6 +708,5 @@ def extract_original_amount(
 __all__ = [
     "OriginalAmountExtraction",
     "extract_original_amount",
-    "is_location_identifier",
     "original_currency_spilled_into_location",
 ]

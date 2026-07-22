@@ -27,12 +27,13 @@ from ccparser.geometry import (
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.money import is_money_shaped
-from ccparser.text_tokens import phrase_tokens
+from ccparser.text_tokens import normalize_text, phrase_tokens
 
 _THREE_COMPONENT_DATE_PATTERN = re.compile(
     r"(?<!\d)(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)"
 )
 _TWO_COMPONENT_SLASH_PATTERN = re.compile(r"(?<!\d)(\d{1,3})\s*/\s*(\d{1,3})(?!\d)")
+_LOCATION_IDENTIFIER_PATTERN = re.compile(r"^\d{10}$")
 _MONEY_PATTERN = re.compile(
     r"(?:[-+]?\s*(?:[$€£₪]\s*)?|\(\s*)(?:\d{1,3}(?:[, ]\d{3})+|\d+)"
     r"(?:[.,]\d{2,3})(?:\s*[$€£₪])?\s*\)?"
@@ -585,6 +586,12 @@ def is_installment_shaped(text: str) -> bool:
         return False
     current, total = (int(component) for component in match.groups())
     return 1 <= current <= total
+
+
+def is_location_identifier(text: str) -> bool:
+    """Return whether normalized text is exactly a ten-digit location identifier."""
+
+    return _LOCATION_IDENTIFIER_PATTERN.fullmatch(normalize_text(text)) is not None
 
 
 def _is_bounded_ocr_date_profile_cell(cell: Cell) -> bool:

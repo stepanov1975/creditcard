@@ -21,7 +21,7 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
-from ccparser.normalization_fields import FieldDisposition, extract_billed_fields
+from ccparser.normalization_fields import BilledFields, FieldDisposition, extract_billed_fields
 from ccparser.normalize import RowNormalizationResult, _normalize_row
 from ccparser.original_amount import OriginalAmountExtraction, extract_original_amount
 from ccparser.semantic_evidence import (
@@ -276,6 +276,32 @@ _DESCRIPTION = _cell("Merchant", 1)
                     ColumnRole.DATE,
                     ColumnRole.DESCRIPTION,
                     ColumnRole.ORIGINAL_AMOUNT,
+                    ColumnRole.ORIGINAL_CURRENCY,
+                    ColumnRole.ORIGINAL_CURRENCY,
+                    ColumnRole.AMOUNT,
+                ),
+                row=_row(
+                    _DATE,
+                    _DESCRIPTION,
+                    _cell("3.00", 2),
+                    _cell("USD", 3),
+                    _cell("EUR", 4),
+                    _cell("10.00", 5),
+                ),
+                diagnostics=("unsupported_role_cardinality:original_currency",),
+                billed_amount=Decimal("10.00"),
+                original_amount=None,
+                original_currency=None,
+                disposition=FieldDisposition.REJECT_ROW,
+            ),
+            id="duplicate-original-currency-columns",
+        ),
+        pytest.param(
+            _StructuralCase(
+                roles=(
+                    ColumnRole.DATE,
+                    ColumnRole.DESCRIPTION,
+                    ColumnRole.ORIGINAL_AMOUNT,
                     ColumnRole.AMOUNT,
                 ),
                 row=_row(_DATE, _DESCRIPTION, _cell("10.00", 3)),
@@ -336,6 +362,28 @@ _DESCRIPTION = _cell("Merchant", 1)
                 row=_row(
                     _DATE,
                     _DESCRIPTION,
+                    _cell("USD", 3),
+                    _cell("-2.00", 4),
+                ),
+                diagnostics=("missing_original_amount_cell",),
+                billed_amount=Decimal("-2.00"),
+                original_amount=None,
+                original_currency=None,
+            ),
+            id="negative-adjustment-with-original-currency-column",
+        ),
+        pytest.param(
+            _StructuralCase(
+                roles=(
+                    ColumnRole.DATE,
+                    ColumnRole.DESCRIPTION,
+                    ColumnRole.ORIGINAL_AMOUNT,
+                    ColumnRole.ORIGINAL_CURRENCY,
+                    ColumnRole.AMOUNT,
+                ),
+                row=_row(
+                    _DATE,
+                    _DESCRIPTION,
                     _cell("3.00", 2),
                     _cell("USD", 3),
                     _cell("10.00", 4),
@@ -346,6 +394,58 @@ _DESCRIPTION = _cell("Merchant", 1)
                 original_currency="USD",
             ),
             id="explicit-original-currency",
+        ),
+        pytest.param(
+            _StructuralCase(
+                roles=(
+                    ColumnRole.DATE,
+                    ColumnRole.DESCRIPTION,
+                    ColumnRole.ORIGINAL_AMOUNT,
+                    ColumnRole.ORIGINAL_CURRENCY,
+                    ColumnRole.AMOUNT,
+                ),
+                row=_row(
+                    _DATE,
+                    _DESCRIPTION,
+                    _cell("3.00", 2),
+                    _cell("10.00", 4),
+                ),
+                diagnostics=(
+                    "missing_original_currency_cell",
+                    "original_amount:unknown_currency",
+                ),
+                billed_amount=Decimal("10.00"),
+                original_amount=None,
+                original_currency=None,
+            ),
+            id="missing-original-currency-cell",
+        ),
+        pytest.param(
+            _StructuralCase(
+                roles=(
+                    ColumnRole.DATE,
+                    ColumnRole.DESCRIPTION,
+                    ColumnRole.ORIGINAL_AMOUNT,
+                    ColumnRole.ORIGINAL_CURRENCY,
+                    ColumnRole.AMOUNT,
+                ),
+                row=_row(
+                    _DATE,
+                    _DESCRIPTION,
+                    _cell("3.00", 2),
+                    _cell("USD", 3),
+                    _cell("EUR", 3),
+                    _cell("10.00", 4),
+                ),
+                diagnostics=(
+                    "multiple_original_currency_cells",
+                    "original_amount:unknown_currency",
+                ),
+                billed_amount=Decimal("10.00"),
+                original_amount=None,
+                original_currency=None,
+            ),
+            id="multiple-original-currency-cells",
         ),
         pytest.param(
             _StructuralCase(
@@ -943,6 +1043,144 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
     assert (
         tuple(claim for claim in captured_claims[0] if claim.owner is SemanticOwner.DESCRIPTION)
         == expected.description_claims
+    )
+
+
+def _direct_cardinality_case(
+    variant: str,
+) -> tuple[Row, TableRegion, BilledFields, tuple[str, ...]]:
+    if variant == "duplicate-original-amount-columns":
+        roles = (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.AMOUNT,
+        )
+        billed_cell = _cell("10.00", 4)
+        row = _row(
+            _DATE,
+            _DESCRIPTION,
+            _cell("USD 3.00", 2),
+            _cell("EUR 4.00", 3),
+            billed_cell,
+        )
+        billed_amount = Decimal("10.00")
+        diagnostics = ("multiple_original_amount_columns",)
+    elif variant == "duplicate-original-currency-columns":
+        roles = (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+        )
+        billed_cell = _cell("10.00", 5)
+        row = _row(
+            _DATE,
+            _DESCRIPTION,
+            _cell("3.00", 2),
+            _cell("USD", 3),
+            _cell("EUR", 4),
+            billed_cell,
+        )
+        billed_amount = Decimal("10.00")
+        diagnostics = (
+            "multiple_original_currency_columns",
+            "original_amount:unknown_currency",
+        )
+    elif variant == "missing-original-currency-cell":
+        roles = (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+        )
+        billed_cell = _cell("10.00", 4)
+        row = _row(_DATE, _DESCRIPTION, _cell("3.00", 2), billed_cell)
+        billed_amount = Decimal("10.00")
+        diagnostics = (
+            "missing_original_currency_cell",
+            "original_amount:unknown_currency",
+        )
+    elif variant == "multiple-original-currency-cells":
+        roles = (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+        )
+        billed_cell = _cell("10.00", 4)
+        row = _row(
+            _DATE,
+            _DESCRIPTION,
+            _cell("3.00", 2),
+            _cell("USD", 3),
+            _cell("EUR", 3),
+            billed_cell,
+        )
+        billed_amount = Decimal("10.00")
+        diagnostics = (
+            "multiple_original_currency_cells",
+            "original_amount:unknown_currency",
+        )
+    else:
+        assert variant == "negative-adjustment-with-original-currency-column"
+        roles = (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+        )
+        billed_cell = _cell("-2.00", 4)
+        row = _row(_DATE, _DESCRIPTION, _cell("USD", 3), billed_cell)
+        billed_amount = Decimal("-2.00")
+        diagnostics = ("missing_original_amount_cell",)
+    region = _region(roles, (row,))
+    billed = BilledFields(
+        amount=billed_amount,
+        currency="ILS",
+        amount_cell=billed_cell,
+        confidence=0.95,
+        diagnostics=(),
+        disposition=FieldDisposition.ACCEPT,
+    )
+    return row, region, billed, diagnostics
+
+
+@pytest.mark.parametrize(
+    "variant",
+    (
+        "duplicate-original-amount-columns",
+        "duplicate-original-currency-columns",
+        "missing-original-currency-cell",
+        "multiple-original-currency-cells",
+        "negative-adjustment-with-original-currency-column",
+    ),
+)
+def test_extract_original_amount_cardinality_contract_is_complete(variant: str) -> None:
+    row, region, billed, diagnostics = _direct_cardinality_case(variant)
+
+    extraction = extract_original_amount(
+        row=row,
+        continuation_rows=(),
+        region=region,
+        ledger=EvidenceLedger.from_rows((row,)),
+        billed=billed,
+        description="Existing description",
+        initial_claims=(),
+    )
+
+    assert extraction == OriginalAmountExtraction(
+        amount=None,
+        currency=None,
+        description="Existing description",
+        claims=(),
+        diagnostics=diagnostics,
     )
 
 

@@ -9,6 +9,7 @@ from ccparser.layout.columns import (
     infer_column_bands,
     infer_column_roles,
     is_date_shaped,
+    is_location_identifier,
     source_or_center_cells,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
@@ -186,6 +187,32 @@ def test_date_shape_allows_one_standalone_letter_around_a_complete_date() -> Non
 
 def test_date_shape_rejects_descriptive_text_around_a_date() -> None:
     assert not is_date_shaped("posted 07/03/2022")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "1234567890",
+        "  1234567890\n",
+    ),
+)
+def test_location_identifier_accepts_exact_normalized_ten_digit_field(text: str) -> None:
+    assert is_location_identifier(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "123456789",
+        "12345678901",
+        "A1234567890",
+        "1234567890A",
+        "12345 67890",
+        "12345-67890",
+    ),
+)
+def test_location_identifier_rejects_nonexact_boundaries(text: str) -> None:
+    assert not is_location_identifier(text)
 
 
 def test_infer_column_bands_finds_repeated_bands_in_scale_independent_coordinates() -> None:
