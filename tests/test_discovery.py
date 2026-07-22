@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from decimal import localcontext
+from decimal import Decimal, localcontext
 
 import pytest
 
 from ccparser.discovery import (
     DateTokenStyle,
     DocumentClassification,
+    _region_billed_amounts,
     _row_total_marker_signature,
     discover_statement,
 )
@@ -165,6 +166,23 @@ def test_discover_statement_builds_deterministic_separate_currency_groups() -> N
     )
     assert all(len(group.table_regions) == 1 for group in result.groups)
     assert result.confidence >= 0.8
+
+
+def test_unrelated_continuation_diagnostic_does_not_remove_billed_amount() -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+    discovered = discover_statement(_document(page))
+    region = discovered.table_regions[0]
+    billed_row = region.rows[0].model_copy(update={"diagnostics": ("not_a_continuation",)})
+    region = region.model_copy(update={"rows": (billed_row, *region.rows[1:])})
+
+    assert _region_billed_amounts(region, "ILS") == (Decimal("10.00"), Decimal("20.00"))
 
 
 def test_discover_statement_attaches_unique_singleton_that_exactly_closes_total() -> None:

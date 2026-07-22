@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from ccparser.decimal_math import exact_difference
 from ccparser.layout.columns import cells_in_column
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
+from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.models import (
     EvidenceReference,
     ExtractedDecimal,
@@ -68,7 +69,6 @@ _DISCOUNT_CUES = (
     "הנחה",
     "מופחתת",
 )
-_BOUNDED_DETAIL_DIAGNOSTIC = "foreign_conversion_detail_block"
 
 
 def _header_phrase(column: ColumnSpec) -> str:
@@ -268,7 +268,7 @@ def _continuation_fx_values(
     pending_gross = False
     pending_discount = False
 
-    bounded_rows = tuple(row for row in rows if _BOUNDED_DETAIL_DIAGNOSTIC in row.diagnostics)
+    bounded_rows = tuple(row for row in rows if has_row_tag(row, RowTag.FOREIGN_CONVERSION_DETAIL))
     for row in sorted(bounded_rows, key=lambda item: (item.page_number, item.bbox[1])):
         raw_text = _row_text(row)
         phrase = raw_text

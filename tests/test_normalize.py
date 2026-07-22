@@ -20,6 +20,7 @@ from ccparser.models import EvidenceReference, Status, TransactionCategory, Tran
 from ccparser.normalize import (
     _column_header_text,
     _cross_cell_date_tokens,
+    _stable_unknown_columns,
     normalize_statement,
     parse_amount,
 )
@@ -145,6 +146,20 @@ def test_column_header_text_unions_source_and_centered_header_evidence() -> None
     )
 
     assert _column_header_text(region, column) == "source centered"
+
+
+def test_unrelated_continuation_diagnostic_keeps_stable_unknown_row_evidence() -> None:
+    first = _row(_cell("Groceries", 0, 30.0), _cell("10.00", 1, 30.0)).model_copy(
+        update={"diagnostics": ("not_a_continuation",)}
+    )
+    second = _row(_cell("Dining", 0, 50.0), _cell("20.00", 1, 50.0))
+    region = _region(
+        (ColumnRole.UNKNOWN, ColumnRole.AMOUNT),
+        (first, second),
+        headers=("Category", "Amount"),
+    )
+
+    assert _stable_unknown_columns(region) == frozenset({0})
 
 
 def _discovery(

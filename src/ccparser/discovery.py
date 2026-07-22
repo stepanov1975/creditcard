@@ -39,6 +39,7 @@ from ccparser.layout.regions import (
     _page_row_key,
     _singleton_transaction_candidates,
 )
+from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continuation
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
 from ccparser.money import canonical_currency, currencies_in_text, is_money_shaped, parse_amount
@@ -1116,7 +1117,7 @@ def _amount_cells_in_nearest_billed_band(
     transaction_rows = tuple(
         candidate
         for candidate in region.rows
-        if "subordinate_detail_continuation" not in candidate.diagnostics
+        if not has_row_tag(candidate, RowTag.SUBORDINATE_DETAIL)
     )
     billed_column = proven_billed_amount_column(region.table_schema, transaction_rows)
     if billed_column is None:
@@ -1798,7 +1799,7 @@ def _region_billed_amounts(
         return None
     amounts: list[Decimal] = []
     for row in region.rows:
-        if any("continuation" in diagnostic for diagnostic in row.diagnostics):
+        if is_structural_continuation(row):
             continue
         cells = tuple(
             cell

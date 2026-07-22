@@ -49,6 +49,7 @@ from ccparser.layout.columns import (
     proven_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
+from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continuation
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import (
     EvidenceReference,
@@ -209,7 +210,7 @@ def _role_cells(row: Row, region: TableRegion, role: ColumnRole) -> tuple[Cell, 
 
 def _proven_billed_amount_column(region: TableRegion) -> ColumnSpec | None:
     transaction_rows = tuple(
-        row for row in region.rows if "subordinate_detail_continuation" not in row.diagnostics
+        row for row in region.rows if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL)
     )
     return proven_billed_amount_column(region.table_schema, transaction_rows)
 
@@ -265,7 +266,7 @@ def _proven_implicit_original_currency(
     transaction_rows = tuple(
         row
         for row in region.rows
-        if "subordinate_detail_continuation" not in row.diagnostics
+        if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL)
         and len(_cells_for_column(row, billed_column)) == 1
     )
     has_conversion_evidence = any(
@@ -1247,14 +1248,11 @@ def _is_boundary_description_continuation(
 
 
 def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
-    if "subordinate_auxiliary_continuation" in row.diagnostics:
+    if has_row_tag(row, RowTag.AUXILIARY_CONTINUATION):
         billed_column = _proven_billed_amount_column(region)
         if billed_column is None or any(
-            diagnostic in previous.diagnostics
-            for diagnostic in (
-                "subordinate_auxiliary_continuation",
-                "subordinate_detail_continuation",
-            )
+            has_row_tag(previous, tag)
+            for tag in (RowTag.AUXILIARY_CONTINUATION, RowTag.SUBORDINATE_DETAIL)
         ):
             return False
         billed_cells = _cells_for_column(previous, billed_column)
@@ -1269,11 +1267,11 @@ def _is_continuation(row: Row, previous: Row, region: TableRegion) -> bool:
         )
         gap = max(0.0, row.bbox[1] - previous.bbox[3])
         return gap <= typical_height * 1.5
-    if "subordinate_detail_continuation" in row.diagnostics:
+    if has_row_tag(row, RowTag.SUBORDINATE_DETAIL):
         billed_column = _proven_billed_amount_column(region)
         if billed_column is None:
             return False
-        if "subordinate_detail_continuation" not in previous.diagnostics:
+        if not has_row_tag(previous, RowTag.SUBORDINATE_DETAIL):
             billed_cells = _cells_for_column(previous, billed_column)
             if len(billed_cells) != 1 or not is_money_shaped(billed_cells[0].text):
                 return False
@@ -1597,13 +1595,11 @@ def _description(
     claims: list[EvidenceClaim] = []
     texts: list[str] = []
     diagnostics: list[str] = []
-    eligible_rows = tuple(
-        row for row in rows if "subordinate_detail_continuation" not in row.diagnostics
-    )
+    eligible_rows = tuple(row for row in rows if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL))
     previous_row: Row | None = None
     for index, row in enumerate(eligible_rows):
         row_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
-        if "subordinate_auxiliary_continuation" in row.diagnostics:
+        if has_row_tag(row, RowTag.AUXILIARY_CONTINUATION):
             row_cells = tuple(
                 cell
                 for cell in row_cells
@@ -1711,7 +1707,7 @@ def _description(
 def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decimal, str]]:
     corroborated: set[tuple[Decimal, str]] = set()
     for row in rows:
-        if "bounded_hebrew_note_detail" not in row.diagnostics:
+        if not has_row_tag(row, RowTag.HEBREW_NOTE_DETAIL):
             continue
         words = tuple(word for cell in row.cells for word in cell.words)
         currencies = {
@@ -1774,7 +1770,7 @@ def _original_amount_from_subordinate_detail(
     pairs: set[tuple[Decimal, str]] = set()
     supporting_confidences: list[float] = []
     for row in continuation_rows:
-        if "subordinate_detail_continuation" not in row.diagnostics:
+        if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL):
             continue
         words = tuple(word for cell in row.cells for word in cell.words)
         currencies = {
@@ -2484,11 +2480,7 @@ def _explicit_category_unknown_columns(region: TableRegion) -> frozenset[int]:
 
 def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
     stable: set[int] = set()
-    base_rows = tuple(
-        row
-        for row in region.rows
-        if not any("continuation" in diagnostic for diagnostic in row.diagnostics)
-    )
+    base_rows = tuple(row for row in region.rows if not is_structural_continuation(row))
     for column in _role_columns(region, ColumnRole.UNKNOWN):
         header_text = _column_header_text(region, column)
         values = tuple(
@@ -2627,13 +2619,12 @@ def _semantic_claims_and_diagnostics(
             _is_safe_card_identifier_cell(row, cell) for cell in row.cells
         )
         is_detail_continuation = any(
-            diagnostic
-            in {
-                "subordinate_detail_continuation",
-                "subordinate_auxiliary_continuation",
-                "bounded_hebrew_note_detail",
-            }
-            for diagnostic in row.diagnostics
+            has_row_tag(row, tag)
+            for tag in (
+                RowTag.SUBORDINATE_DETAIL,
+                RowTag.AUXILIARY_CONTINUATION,
+                RowTag.HEBREW_NOTE_DETAIL,
+            )
         )
         cross_cell_conversion_atom_ids = frozenset(
             atom_id
@@ -3259,9 +3250,7 @@ def _cross_page_leading_detail_handoffs(
             sorted(current_region.rows, key=lambda item: (item.bbox[1], item.bbox[0]))
         )
         leading_rows = tuple(
-            row
-            for row in current_rows
-            if "leading_subordinate_detail_continuation" in row.diagnostics
+            row for row in current_rows if has_row_tag(row, RowTag.LEADING_SUBORDINATE_DETAIL)
         )
         if not leading_rows or current_rows[: len(leading_rows)] != leading_rows:
             continue
@@ -3366,7 +3355,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
             index = 0
             while index < len(rows):
                 row = rows[index]
-                if "leading_subordinate_detail_continuation" in row.diagnostics:
+                if has_row_tag(row, RowTag.LEADING_SUBORDINATE_DETAIL):
                     if id(row) in owned_leading_rows:
                         index += 1
                         continue
@@ -3428,9 +3417,9 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                     row_ordinal += 1
                     continuation_diagnostic = (
                         "merged_subordinate_detail_continuation"
-                        if "subordinate_detail_continuation" in continuation.diagnostics
+                        if has_row_tag(continuation, RowTag.SUBORDINATE_DETAIL)
                         else "merged_auxiliary_continuation"
-                        if "subordinate_auxiliary_continuation" in continuation.diagnostics
+                        if has_row_tag(continuation, RowTag.AUXILIARY_CONTINUATION)
                         else "merged_description_continuation"
                     )
                     row_results.append(
