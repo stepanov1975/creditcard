@@ -24,7 +24,7 @@ def _integer_coefficient(value: Decimal) -> tuple[int, int]:
 
 
 def _from_coefficient(coefficient: int, exponent: int) -> Decimal:
-    digits = tuple(int(character) for character in str(abs(coefficient)))
+    digits = Decimal(abs(coefficient)).as_tuple().digits
     return Decimal((int(coefficient < 0), digits, exponent))
 
 

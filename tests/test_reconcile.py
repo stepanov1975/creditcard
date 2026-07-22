@@ -27,6 +27,11 @@ class _ReconciliationOutcomeCase:
     expected_diagnostics: tuple[str, ...]
 
 
+def _assert_decimal_identity(actual: Decimal, expected: Decimal) -> None:
+    if actual.as_tuple() != expected.as_tuple():
+        pytest.fail("Decimal sign, digits, or exponent differ", pytrace=False)
+
+
 def _matrix_transaction(
     transaction_id: str,
     amount: str,
@@ -720,3 +725,20 @@ def test_reconcile_preserves_amounts_larger_than_default_context() -> None:
 
     assert result.status is Status.RECONCILED
     assert result.groups[0].calculated_total == amount
+
+
+def test_reconcile_supports_arbitrary_decimal_coefficient_lengths() -> None:
+    amount_text = f"{'1234567890' * 500}.00"
+    amount = Decimal(amount_text)
+
+    with localcontext() as context:
+        context.prec = 3
+        result = reconcile(
+            (_matrix_transaction("arbitrary-coefficient", amount_text),),
+            (_matrix_total(amount_text),),
+        )
+
+    assert result.status is Status.RECONCILED
+    assert len(result.groups) == 1
+    _assert_decimal_identity(result.groups[0].calculated_total, amount)
+    _assert_decimal_identity(result.groups[0].difference, Decimal("0.00"))

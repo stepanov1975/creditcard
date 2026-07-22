@@ -13,6 +13,11 @@ from ccparser.decimal_math import (
 )
 
 
+def _assert_decimal_identity(actual: Decimal, expected: Decimal) -> None:
+    if actual.as_tuple() != expected.as_tuple():
+        pytest.fail("Decimal sign, digits, or exponent differ", pytrace=False)
+
+
 def test_exact_arithmetic_ignores_active_decimal_context() -> None:
     large = Decimal("123456789012345678901234567890.12")
     with localcontext() as context:
@@ -21,6 +26,21 @@ def test_exact_arithmetic_ignores_active_decimal_context() -> None:
         assert exact_difference(large, Decimal("0.01")) == Decimal(
             "123456789012345678901234567890.11"
         )
+
+
+def test_exact_arithmetic_supports_arbitrary_coefficient_lengths() -> None:
+    value = Decimal(f"{'1234567890' * 500}E-17")
+    zero = Decimal("0E-17")
+
+    with localcontext() as context:
+        context.prec = 3
+        total = exact_sum((value, zero))
+        negative = exact_difference(zero, value)
+        cancellation = exact_sum((value, value.copy_negate()))
+
+    _assert_decimal_identity(total, value)
+    _assert_decimal_identity(negative, value.copy_negate())
+    _assert_decimal_identity(cancellation, zero)
 
 
 def test_decimal_helpers_validate_and_format_without_rounding() -> None:
