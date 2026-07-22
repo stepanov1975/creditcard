@@ -16,7 +16,10 @@
 - Keep the approved membership inventory, source hashes, manifests, parser outputs, caches, and financial aggregates in ignored private storage.
 - Do not change files outside `/root/creditcard`.
 - Before any test or command that may use system temporary storage, run `export TMPDIR="$PWD/.superpowers/private/tmp"` and `mkdir -p "$TMPDIR"`; every temporary file must stay inside this worktree.
-- A failing or interrupted run must never create or replace an accepted baseline.
+- Any failure or interruption observed before the atomic commit must preserve the
+  accepted baseline. After commit, the candidate is accepted and no later operation
+  may report publication failure; process death may lose acknowledgement of a
+  completed atomic replacement.
 - Exit 0 means complete acceptance; exit 1 means input/runtime failure; exit 2 means completed acceptance failure.
 
 ## File Structure
@@ -24,6 +27,11 @@
 - Create `src/ccparser/corpus_gate.py`: immutable models, reason vocabulary, projections, comparisons, adapters, and orchestration.
 - Create `tests/test_corpus_gate.py`: pure comparison, validation, lifecycle, privacy, and orchestration tests.
 - Modify `src/ccparser/cli.py`: one thin `verify-corpus` command and aggregate printer.
+- Modify `src/ccparser/parser.py`: explicit trusted descriptor-root parsing policy.
+- Modify `src/ccparser/paths.py`: policy-aware traversal that preserves only exact
+  validated process-fd directory roots.
+- Modify `src/ccparser/evidence/ocr.py` and `src/ccparser/output.py` only as required
+  to retain lexical capability roots for cache/output operations.
 - Modify `tests/test_cli.py`: CLI wiring, redaction, and exit-code coverage.
 - Modify `README.md`: private local record/verify workflow without corpus-specific values.
 
@@ -487,7 +495,16 @@ def run_corpus_gate(
 
 The real runner snapshots and hashes corpus membership, times `parse_directory()`, reads the emitted canonical files, and returns the batch, `RunManifest`, and its immediately adjacent membership snapshots. Load `CorpusMembershipInventory` before running and require its retained and quarantine values to equal every per-run snapshot. Validate active-worktree Git state and toolchain before and after all four runs. Explicitly scan and reject symlink files/directories because `iter_regular_pdf_files()` intentionally skips them.
 
-Resolve every configured path and existing ancestor before mutation. All input and destination paths must be contained by `RepositoryState.root`; all destination ancestors must be non-symlinks; work, baseline, and inventory paths must be Git-ignored; and input/output/cache/baseline/inventory paths must not overlap in either direction. An existing work directory must be empty. Record mode requires `runtime_tolerance_ratio` and writes the baseline last with `write_json_atomic()`. Verify mode requires `runtime_tolerance_ratio is None`, loads the tolerance from the baseline, and never rewrites it.
+Resolve every configured path and existing ancestor before mutation as an advisory
+precheck. Authoritative private-file reads and all destination creation/publication
+must be repository-root-anchored and descriptor-relative, with no-follow component
+opens. Destination ancestors must be current-EUID-owned and not group/other writable.
+Work, baseline, and inventory paths must be Git-ignored; configured and derived paths
+must not overlap in either direction. An existing work directory must be empty.
+Record mode requires `runtime_tolerance_ratio` and publishes the baseline last from
+an exclusively created, identity-verified temporary inode. Verify mode requires
+`runtime_tolerance_ratio is None`, loads the tolerance from stable descriptor-read
+baseline bytes, and never rewrites it.
 
 The exact execution order is:
 
@@ -499,7 +516,8 @@ The exact execution order is:
 6. Require every retained statement to be `Status.RECONCILED` and every quarantine statement to be `Status.NOT_STATEMENT`.
 7. Require each run's before/after memberships and a final membership snapshot to match the inventory; compare both independent pairs and the accepted baseline.
 8. Reinspect the same clean commit and identical toolchain fingerprint.
-9. Return the aggregate attestation, or atomically write the accepted baseline and then return it in record mode.
+9. Return the aggregate attestation, or pre-sync and atomically replace the accepted
+   baseline as the final reported commit operation and then return it in record mode.
 
 - [ ] **Step 4: Run gate, parser, and path suites**
 
@@ -516,6 +534,82 @@ Expected: pass.
 git add src/ccparser/corpus_gate.py tests/test_corpus_gate.py
 git commit -m "feat: run isolated corpus acceptance gates"
 ```
+
+### Task 3A: Capability and publication hardening after independent review
+
+**Files:**
+- Modify: `src/ccparser/paths.py`
+- Modify: `src/ccparser/parser.py`
+- Modify: `src/ccparser/corpus_gate.py`
+- Modify if required for lexical propagation: `src/ccparser/evidence/ocr.py`,
+  `src/ccparser/output.py`
+- Modify: `tests/test_paths.py`, `tests/test_parser.py`, `tests/test_corpus_gate.py`
+
+**Interfaces:**
+- Produces: `DirectoryRootPolicy` with a normal resolving default and one explicit
+  trusted descriptor-root mode.
+- Produces: stable repository-root-anchored private-file reads; trusted directory
+  ancestry checks; a shared baseline-parent advisory lock; boundary reachability
+  checks; inode-owned atomic publication.
+
+- [ ] **Step 1: Add the real-parser capability-retention regression**
+
+Open input, output, and cache directory descriptors beneath a private ancestor. Call
+`parse_directory()` with exact `/proc/self/fd/N` roots and the explicit trusted policy.
+Pause at traversal, rename/substitute the pathname ancestor, and assert the statement
+parser reads only the staged approved bytes while cache markers and canonical JSON/CSV
+appear only under the held output/cache descriptors. Run the single test and confirm
+the existing resolver follows the substitute before implementing the policy.
+
+- [ ] **Step 2: Preserve only validated descriptor roots**
+
+The policy validates the exact lexical shape `/proc/self/fd/<decimal fd>`, compares
+`os.stat(path)` with `os.fstat(fd)`, and requires a directory. Under this policy,
+`parse_directory()` and `iter_regular_pdf_files()` keep roots and child source paths
+lexical; normal calls retain resolved deterministic paths. Pass the lexical cache root
+to `parse_statement()`/`TesseractOcr` and the lexical output root to
+`write_batch_outputs()`.
+
+- [ ] **Step 3: Add authoritative inventory/baseline read regressions**
+
+Swap an inventory ancestor immediately before its read and swap the verify-baseline
+name to an outside symlink immediately before its read. Both fail closed without
+running the parser or consuming substitute bytes. Implement component-wise no-follow
+parent opens, final no-follow regular-file opens, and complete fd reads that require
+stable device, inode, size, and nanosecond mtime before model validation.
+
+- [ ] **Step 4: Add ancestry, locking, reachability, and root-parent regressions**
+
+Reject baseline/work ancestry not owned by the effective UID or writable by group or
+other. Hold a nonblocking advisory lock on the securely opened shared baseline parent.
+At every run boundary, reopen work and baseline-parent paths beneath the repository
+root and compare device/inode identity with held descriptors, rejecting accidental
+relocation. Permit an ignored baseline directly under the repository root by
+duplicating the root descriptor for its empty parent-relative tuple; continue to
+reject a work directory equal to the repository root.
+
+- [ ] **Step 5: Add temporary-inode and interruption regressions**
+
+After exclusive temporary creation, substitute its name and prove publication and
+cleanup never replace or unlink the substitute. Inject `BaseException` before replace
+and at replace. A pre-commit interruption preserves old bytes; a deterministic replace
+wrapper that commits and then raises is recognized by destination dev/ino and treated
+as committed. Keep the temp fd open through replace, clear the local before a
+best-effort no-throw close, and perform no post-success filesystem operation.
+
+- [ ] **Step 6: Run focused and full verification**
+
+```bash
+.venv/bin/pytest -q tests/test_parser.py tests/test_paths.py tests/test_output.py \
+  tests/test_evidence_ocr.py tests/test_corpus_gate.py
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+.venv/bin/mypy src
+.venv/bin/pytest -q
+```
+
+Expected: every command exits zero. Document that same-effective-UID malicious rename
+and signal-after-commit acknowledgement loss are outside enforceable guarantees.
 
 ### Task 4: CLI boundary and privacy-safe attestation
 
