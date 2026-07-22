@@ -321,6 +321,36 @@ def test_semantic_validation_splits_boundary_and_general_high_confidence_atoms()
     )
 
 
+def test_proven_unanchored_short_date_is_claimed_as_ancillary_evidence() -> None:
+    first = _row(_cell("13/03/26", 0), _cell("10.00", 1))
+    second = _row(
+        _cell("20/03/26", 0, y=50.0),
+        _cell("20.00", 1, y=50.0),
+    )
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.AMOUNT),
+        (first, second),
+        headers=("Date", "Amount"),
+    )
+    ledger = EvidenceLedger.from_rows((first,))
+
+    validation = _validate(
+        rows=(first,),
+        region=region,
+        ledger=ledger,
+        amount_cell=first.cells[1],
+    )
+
+    assert tuple(atom.text for atom in ledger.atoms) == ("13/03/26", "10.00")
+    assert validation == SemanticValidation(
+        claims=(
+            EvidenceClaim(SemanticOwner.BILLED_VALUE, frozenset({1})),
+            EvidenceClaim(SemanticOwner.ANCILLARY, frozenset({0})),
+        ),
+        diagnostics=(),
+    )
+
+
 def test_semantic_validation_distinguishes_stable_and_unstable_unknown_columns() -> None:
     first = _row(_cell("Retail", 0), _cell("Alpha1", 1), _cell("10.00", 2))
     second = _row(

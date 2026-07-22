@@ -40,3 +40,20 @@ def test_suffix_year_mapping_validation_is_shared_and_canonical() -> None:
         validate_suffix_year_mapping(None, ((26, 2026), (25, 2025)))
     with pytest.raises(ValueError, match="unique"):
         validate_suffix_year_mapping(None, ((26, 2026), (26, 2026)))
+
+
+@pytest.mark.parametrize(
+    ("year", "mapping", "expected_message"),
+    (
+        (None, (), "at least one proven suffix-year mapping is required"),
+        (2026, ((25, 2025),), "single year must agree with its suffix mapping"),
+    ),
+    ids=("empty", "single_year_disagreement"),
+)
+def test_suffix_year_mapping_rejects_missing_or_disagreeing_evidence(
+    year: int | None,
+    mapping: tuple[tuple[int, int], ...],
+    expected_message: str,
+) -> None:
+    with pytest.raises(ValueError, match=expected_message):
+        validate_suffix_year_mapping(year, mapping)

@@ -229,6 +229,10 @@ def test_parse_date_preserves_all_full_and_short_styles(
     assert _parse_date(short_token, _year_context(style)) == (expected, None)
 
 
+def test_parse_date_preserves_installment_ambiguity_diagnostic() -> None:
+    assert _parse_date("2/6") == (None, "ambiguous_date_or_installment")
+
+
 def test_dates_returns_exact_five_legacy_values() -> None:
     row = _row(
         _cell("24/06/2026", 0),

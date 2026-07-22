@@ -217,6 +217,29 @@ def test_description_continuation_preserves_text_claim_order_and_ownership() -> 
     )
 
 
+def test_description_column_only_continuation_is_owned_without_boundary_fallback() -> None:
+    base = _row(
+        _cell("01/02/2026", 0),
+        _cell("Merchant", 1),
+        _cell("10.00", 3),
+    )
+    continuation = _row(
+        _cell("IRELAND", 1, 41.0),
+        _cell("note", 2, 41.0),
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.UNKNOWN,
+            ColumnRole.AMOUNT,
+        ),
+        (base, continuation),
+    )
+
+    assert is_description_continuation(continuation, base, region)
+
+
 def test_description_extracts_processor_reference_as_a_distinct_claim() -> None:
     rows: list[Row] = []
     descriptions: list[Cell] = []
