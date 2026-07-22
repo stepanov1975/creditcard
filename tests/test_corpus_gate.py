@@ -1,29 +1,46 @@
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+import ccparser.corpus_gate as corpus_gate_module
 from ccparser.corpus_gate import (
     CommitSha,
+    CompletedCorpusRun,
     CorpusBaseline,
     CorpusCounts,
+    CorpusGateAcceptanceError,
+    CorpusGateAttestation,
+    CorpusGateConfig,
+    CorpusGateDependencies,
+    CorpusGateInputError,
     CorpusGateMode,
     CorpusGateReason,
+    CorpusGateRuntimeError,
     CorpusMembership,
     CorpusMembershipInventory,
     CorpusPairManifest,
     Digest,
     FieldCount,
+    GitRepositoryInspector,
+    LocalCorpusRunner,
+    LocalToolchainInspector,
+    RepositoryState,
     RunManifest,
     ToolchainFingerprint,
     compare_independent_runs,
     compare_with_baseline,
     digest_membership,
     project_run,
+    run_corpus_gate,
 )
 from ccparser.models import (
     BatchResult,
@@ -39,7 +56,11 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
-from ccparser.output import canonical_json_bytes, transactions_csv_bytes
+from ccparser.output import (
+    canonical_json_bytes,
+    transactions_csv_bytes,
+    write_batch_outputs,
+)
 
 
 def _evidence(raw_text: str, *, page_number: int = 1, y: float = 10.0) -> EvidenceReference:
@@ -232,6 +253,1185 @@ def _baseline(
         ),
         quarantine=_pair(membership=quarantine_membership),
     )
+
+
+def _status_batch(status: Status) -> BatchResult:
+    return BatchResult(
+        status=status,
+        statements=(StatementResult(status=status, transactions=(), groups=()),),
+    )
+
+
+def _write_synthetic_pdf(directory: Path, name: str, content: bytes) -> CorpusMembership:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_bytes(content)
+    return digest_membership((sha256(content).hexdigest(),))
+
+
+def _write_inventory(
+    path: Path,
+    *,
+    retained: CorpusMembership,
+    quarantine: CorpusMembership,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    inventory = CorpusMembershipInventory(
+        version=1,
+        retained=retained,
+        quarantine=quarantine,
+    )
+    path.write_text(inventory.model_dump_json(), encoding="utf-8")
+
+
+@dataclass
+class _FakeRepository:
+    root: Path
+    states: list[RepositoryState] = field(default_factory=list)
+    ignored: bool = True
+    ignored_results: dict[Path, bool] = field(default_factory=dict)
+    ignored_paths: list[Path] = field(default_factory=list)
+
+    def state(self) -> RepositoryState:
+        if self.states:
+            return self.states.pop(0)
+        return RepositoryState(root=self.root, commit_sha="d" * 40, clean=True)
+
+    def is_ignored(self, path: Path) -> bool:
+        self.ignored_paths.append(path)
+        return self.ignored_results.get(path, self.ignored)
+
+
+@dataclass
+class _FakeToolchain:
+    fingerprints: list[ToolchainFingerprint] = field(default_factory=list)
+
+    def fingerprint(self) -> ToolchainFingerprint:
+        if self.fingerprints:
+            return self.fingerprints.pop(0)
+        return _toolchain()
+
+
+@dataclass
+class _RecordingRunner:
+    memberships: dict[Path, CorpusMembership]
+    retained_status: Status = Status.RECONCILED
+    quarantine_status: Status = Status.NOT_STATEMENT
+    on_call: Callable[[int, Path], None] | None = None
+    elapsed_values: list[Decimal] = field(default_factory=list)
+    membership_pairs: dict[int, tuple[CorpusMembership, CorpusMembership]] = field(
+        default_factory=dict
+    )
+    manifest_updates: dict[int, dict[str, object]] = field(default_factory=dict)
+    batch_overrides: dict[int, BatchResult] = field(default_factory=dict)
+    input_dirs: list[Path] = field(default_factory=list)
+    output_dirs: list[Path] = field(default_factory=list)
+    cache_dirs: list[Path] = field(default_factory=list)
+    strict_values: list[bool] = field(default_factory=list)
+    jobs_values: list[int] = field(default_factory=list)
+    cache_was_empty: list[bool] = field(default_factory=list)
+    output_was_empty: list[bool] = field(default_factory=list)
+
+    def __call__(
+        self,
+        *,
+        input_dir: Path,
+        output_dir: Path,
+        cache_dir: Path,
+        strict: bool,
+        jobs: int,
+    ) -> CompletedCorpusRun:
+        call_index = len(self.input_dirs)
+        self.input_dirs.append(input_dir)
+        self.output_dirs.append(output_dir)
+        self.cache_dirs.append(cache_dir)
+        self.strict_values.append(strict)
+        self.jobs_values.append(jobs)
+        self.output_was_empty.append(output_dir.is_dir() and not any(output_dir.iterdir()))
+        self.cache_was_empty.append(cache_dir.is_dir() and not any(cache_dir.iterdir()))
+        if self.on_call is not None:
+            self.on_call(call_index, input_dir)
+        membership = self.memberships[input_dir]
+        membership_before, membership_after = self.membership_pairs.get(
+            call_index,
+            (membership, membership),
+        )
+        status = self.retained_status if strict else self.quarantine_status
+        batch = self.batch_overrides.get(call_index, _status_batch(status))
+        elapsed = (
+            self.elapsed_values[call_index]
+            if call_index < len(self.elapsed_values)
+            else Decimal(call_index + 1)
+        )
+        manifest = project_run(batch, elapsed_seconds=elapsed).model_copy(
+            update=self.manifest_updates.get(call_index, {}),
+        )
+        return CompletedCorpusRun(
+            batch=batch,
+            manifest=manifest,
+            membership_before=membership_before,
+            membership_after=membership_after,
+        )
+
+
+def _gate_fixture(
+    tmp_path: Path,
+    *,
+    retained_status: Status = Status.RECONCILED,
+    quarantine_status: Status = Status.NOT_STATEMENT,
+    runtime_tolerance_ratio: Decimal | None = Decimal("0.2"),
+) -> tuple[CorpusGateConfig, CorpusGateDependencies, _RecordingRunner]:
+    retained_dir = tmp_path / "retained"
+    quarantine_dir = tmp_path / "quarantine"
+    retained_membership = _write_synthetic_pdf(retained_dir, "retained.pdf", b"retained")
+    quarantine_membership = _write_synthetic_pdf(quarantine_dir, "quarantine.pdf", b"quarantine")
+    inventory_path = tmp_path / "private" / "membership.json"
+    _write_inventory(
+        inventory_path,
+        retained=retained_membership,
+        quarantine=quarantine_membership,
+    )
+    config = CorpusGateConfig(
+        retained_dir=retained_dir,
+        quarantine_dir=quarantine_dir,
+        membership_inventory_path=inventory_path,
+        baseline_path=tmp_path / "private" / "baseline.json",
+        work_dir=tmp_path / "private" / "run",
+        jobs=4,
+        runtime_tolerance_ratio=runtime_tolerance_ratio,
+    )
+    runner = _RecordingRunner(
+        memberships={
+            retained_dir.resolve(): retained_membership,
+            quarantine_dir.resolve(): quarantine_membership,
+        },
+        retained_status=retained_status,
+        quarantine_status=quarantine_status,
+    )
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=_FakeToolchain(),
+    )
+    return config, dependencies, runner
+
+
+def test_orchestration_models_are_strict_frozen_and_validate_numeric_bounds(
+    tmp_path: Path,
+) -> None:
+    config = CorpusGateConfig(
+        retained_dir=tmp_path / "retained",
+        quarantine_dir=tmp_path / "quarantine",
+        membership_inventory_path=tmp_path / "membership.json",
+        baseline_path=tmp_path / "baseline.json",
+        work_dir=tmp_path / "work",
+        jobs=4,
+        runtime_tolerance_ratio=Decimal("0.2"),
+    )
+
+    with pytest.raises(ValidationError, match="frozen"):
+        config.jobs = 2
+    with pytest.raises(ValidationError):
+        CorpusGateConfig.model_validate({**config.model_dump(), "jobs": 0})
+    with pytest.raises(ValidationError):
+        CorpusGateConfig.model_validate(
+            {**config.model_dump(), "runtime_tolerance_ratio": Decimal("-0.01")}
+        )
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        CorpusGateConfig.model_validate({**config.model_dump(), "private": "value"})
+
+
+def test_record_runs_four_isolated_pairs_and_writes_baseline_last(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    inventory_content = config.membership_inventory_path.read_bytes()
+
+    attestation = run_corpus_gate(
+        config,
+        CorpusGateMode.RECORD,
+        dependencies=dependencies,
+    )
+
+    assert isinstance(attestation, CorpusGateAttestation)
+    assert attestation.passed is True
+    assert attestation.mode is CorpusGateMode.RECORD
+    assert attestation.commit_abbreviation == "d" * 12
+    assert attestation.toolchain_abbreviation == "a" * 12
+    assert attestation.retained_counts.reconciled == 1
+    assert attestation.quarantine_counts.not_statement == 1
+    assert attestation.elapsed_seconds == Decimal("10")
+    assert attestation.performance_checked is False
+    assert attestation.reason_codes == ()
+    assert runner.strict_values == [True, True, False, False]
+    assert runner.jobs_values == [4, 4, 4, 4]
+    assert len(set((*runner.output_dirs, *runner.cache_dirs))) == 8
+    assert all(runner.output_was_empty)
+    assert all(runner.cache_was_empty)
+    baseline = CorpusBaseline.model_validate_json(config.baseline_path.read_bytes())
+    assert baseline.commit_sha == "d" * 40
+    assert baseline.runtime_tolerance_ratio == Decimal("0.2")
+    assert config.membership_inventory_path.read_bytes() == inventory_content
+
+
+def test_record_failure_never_replaces_baseline(tmp_path: Path) -> None:
+    config, dependencies, _runner = _gate_fixture(
+        tmp_path,
+        retained_status=Status.UNRECONCILED,
+    )
+    config.baseline_path.write_bytes(b"accepted")
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(
+            config,
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.RETAINED_NOT_RECONCILED,)
+    assert str(caught.value) == CorpusGateReason.RETAINED_NOT_RECONCILED.value
+    assert config.baseline_path.read_bytes() == b"accepted"
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    (CorpusGateInputError, CorpusGateRuntimeError, CorpusGateAcceptanceError),
+)
+def test_typed_gate_errors_render_only_closed_reasons(
+    error_type: type[CorpusGateInputError | CorpusGateRuntimeError | CorpusGateAcceptanceError],
+) -> None:
+    error = error_type((CorpusGateReason.INVALID_CONFIGURATION,))
+
+    assert error.reasons == (CorpusGateReason.INVALID_CONFIGURATION,)
+    assert str(error) == CorpusGateReason.INVALID_CONFIGURATION.value
+
+
+@pytest.mark.parametrize("payload", (None, b"not-json", b'{"version":2}'))
+def test_record_requires_valid_approved_membership_inventory(
+    tmp_path: Path,
+    payload: bytes | None,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    if payload is None:
+        config.membership_inventory_path.unlink()
+    else:
+        config.membership_inventory_path.write_bytes(payload)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.INVENTORY_INVALID,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize("corpus_name", ("retained", "quarantine"))
+@pytest.mark.parametrize("dimension", ("document_count", "source_multiset_digest"))
+def test_record_rejects_each_approved_membership_dimension_change(
+    tmp_path: Path,
+    corpus_name: str,
+    dimension: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    inventory = CorpusMembershipInventory.model_validate_json(
+        config.membership_inventory_path.read_bytes()
+    )
+    approved = getattr(inventory, corpus_name)
+    changed_value: int | str = (
+        approved.document_count + 1 if dimension == "document_count" else "f" * 64
+    )
+    changed = approved.model_copy(update={dimension: changed_value})
+    _write_inventory(
+        config.membership_inventory_path,
+        retained=changed if corpus_name == "retained" else inventory.retained,
+        quarantine=changed if corpus_name == "quarantine" else inventory.quarantine,
+    )
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.MEMBERSHIP_DRIFT,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    (
+        (None, CorpusGateReason.BASELINE_MISSING),
+        (b"not-json", CorpusGateReason.BASELINE_INVALID),
+        (b'{"version":2}', CorpusGateReason.BASELINE_INVALID),
+    ),
+)
+def test_verify_rejects_missing_corrupt_and_unknown_baselines(
+    tmp_path: Path,
+    payload: bytes | None,
+    reason: CorpusGateReason,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
+    if payload is not None:
+        config.baseline_path.write_bytes(payload)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
+
+    assert caught.value.reasons == (reason,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_verify_validates_independent_inventory_before_loading_baseline(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
+    config.membership_inventory_path.unlink()
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.INVENTORY_INVALID,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_verify_uses_accepted_tolerance_and_never_rewrites_baseline(tmp_path: Path) -> None:
+    record_config, record_dependencies, record_runner = _gate_fixture(
+        tmp_path,
+        runtime_tolerance_ratio=Decimal("0.5"),
+    )
+    run_corpus_gate(
+        record_config,
+        CorpusGateMode.RECORD,
+        dependencies=record_dependencies,
+    )
+    accepted_content = record_config.baseline_path.read_bytes()
+    verify_runner = _RecordingRunner(
+        memberships=record_runner.memberships,
+        elapsed_values=[Decimal("3"), Decimal("3"), Decimal("3"), Decimal("4")],
+    )
+    verify_dependencies = CorpusGateDependencies(
+        runner=verify_runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=_FakeToolchain(),
+    )
+    verify_config = record_config.model_copy(
+        update={
+            "work_dir": tmp_path / "private" / "verify-run",
+            "runtime_tolerance_ratio": None,
+        }
+    )
+
+    attestation = run_corpus_gate(
+        verify_config,
+        CorpusGateMode.VERIFY,
+        dependencies=verify_dependencies,
+    )
+
+    assert attestation.performance_checked is True
+    assert verify_config.baseline_path.read_bytes() == accepted_content
+
+
+@pytest.mark.parametrize(
+    ("mode", "tolerance"),
+    (
+        (CorpusGateMode.RECORD, None),
+        (CorpusGateMode.VERIFY, Decimal("0.2")),
+    ),
+)
+def test_mode_specific_runtime_tolerance_contract_is_enforced_before_mutation(
+    tmp_path: Path,
+    mode: CorpusGateMode,
+    tolerance: Decimal | None,
+) -> None:
+    config, dependencies, runner = _gate_fixture(
+        tmp_path,
+        runtime_tolerance_ratio=tolerance,
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, mode, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.INVALID_CONFIGURATION,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_dirty_repository_is_rejected_before_toolchain_or_filesystem_mutation(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=_FakeRepository(
+            tmp_path,
+            states=[RepositoryState(root=tmp_path, commit_sha="d" * 40, clean=False)],
+        ),
+        toolchain=_FakeToolchain(),
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.DIRTY_REPOSITORY,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "membership_inventory_path",
+        "baseline_path",
+        "work_dir",
+    ),
+)
+def test_each_private_destination_must_be_git_ignored(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    path = getattr(config, field_name).resolve(strict=False)
+    repository = _FakeRepository(tmp_path, ignored_results={path: False})
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=repository,
+        toolchain=_FakeToolchain(),
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.PRIVATE_PATH_NOT_IGNORED,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "retained_dir",
+        "quarantine_dir",
+        "membership_inventory_path",
+        "baseline_path",
+        "work_dir",
+    ),
+)
+def test_every_configured_path_must_resolve_beneath_project_root(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    project_root = tmp_path / "project"
+    config, dependencies, runner = _gate_fixture(project_root)
+    outside = tmp_path / "outside"
+    replacement = outside / field_name
+    if field_name in {"retained_dir", "quarantine_dir"}:
+        replacement.mkdir(parents=True)
+    changed_config = config.model_copy(update={field_name: replacement})
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(
+            changed_config,
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PATH_OUTSIDE_REPOSITORY,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("left_field", "right_field"),
+    (
+        ("retained_dir", "quarantine_dir"),
+        ("retained_dir", "membership_inventory_path"),
+        ("retained_dir", "baseline_path"),
+        ("retained_dir", "work_dir"),
+        ("quarantine_dir", "membership_inventory_path"),
+        ("quarantine_dir", "baseline_path"),
+        ("quarantine_dir", "work_dir"),
+        ("membership_inventory_path", "baseline_path"),
+        ("membership_inventory_path", "work_dir"),
+        ("baseline_path", "work_dir"),
+    ),
+)
+def test_every_configured_path_pair_must_not_overlap(
+    tmp_path: Path,
+    left_field: str,
+    right_field: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    changed_config = config.model_copy(
+        update={right_field: getattr(config, left_field)},
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(
+            changed_config,
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+
+
+@pytest.mark.parametrize("entry_kind", ("file", "directory"))
+def test_corpus_symlink_files_and_directories_are_rejected(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    target = tmp_path / f"target-{entry_kind}"
+    link = config.retained_dir / f"linked-{entry_kind}.pdf"
+    if entry_kind == "file":
+        target.write_bytes(b"linked")
+        link.symlink_to(target)
+    else:
+        target.mkdir()
+        link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.CORPUS_SYMLINK,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_symlinked_destination_ancestor_is_rejected_before_directory_creation(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    real_destination = tmp_path / "real-destination"
+    real_destination.mkdir()
+    linked_destination = tmp_path / "linked-destination"
+    linked_destination.symlink_to(real_destination, target_is_directory=True)
+    changed_config = config.model_copy(update={"work_dir": linked_destination / "run"})
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(
+            changed_config,
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+    assert not (real_destination / "run").exists()
+
+
+def test_existing_work_directory_must_be_empty(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.work_dir.mkdir()
+    (config.work_dir / "stale").write_bytes(b"stale")
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.RUN_PATH_NOT_EMPTY,)
+    assert runner.input_dirs == []
+
+
+def test_existing_empty_work_directory_is_allowed(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.work_dir.mkdir()
+
+    run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert len(runner.input_dirs) == 4
+
+
+@pytest.mark.parametrize("unsafe_kind", ("outside", "duplicate", "input_overlap"))
+def test_derived_output_and_cache_paths_are_validated_before_work_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_kind: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    safe_pairs = list(corpus_gate_module._run_paths(config.work_dir.resolve(strict=False)))
+    if unsafe_kind == "outside":
+        safe_pairs[0] = (tmp_path.parent / "outside-output", safe_pairs[0][1])
+    elif unsafe_kind == "duplicate":
+        safe_pairs[0] = (safe_pairs[0][0], safe_pairs[0][0])
+    else:
+        safe_pairs[0] = (config.retained_dir / "nested-output", safe_pairs[0][1])
+    monkeypatch.setattr(corpus_gate_module, "_run_paths", lambda _work_dir: tuple(safe_pairs))
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    expected_reason = (
+        CorpusGateReason.PATH_OUTSIDE_REPOSITORY
+        if unsafe_kind == "outside"
+        else CorpusGateReason.UNSAFE_PATH_TOPOLOGY
+    )
+    assert caught.value.reasons == (expected_reason,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_dotdot_normalization_cannot_hide_symlinked_destination_ancestor(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    unused = tmp_path / "unused"
+    unused.mkdir()
+    real_destination = tmp_path / "real-destination"
+    real_destination.mkdir()
+    linked_destination = tmp_path / "linked-destination"
+    linked_destination.symlink_to(real_destination, target_is_directory=True)
+    disguised_work = unused / ".." / linked_destination.name / "run"
+    changed_config = config.model_copy(update={"work_dir": disguised_work})
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(
+            changed_config,
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+    assert not (real_destination / "run").exists()
+
+
+def test_existing_baseline_directory_is_rejected_before_runs(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.baseline_path.mkdir()
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.INVALID_CONFIGURATION,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+@pytest.mark.parametrize("call_index", range(4))
+@pytest.mark.parametrize("snapshot_name", ("before", "after"))
+def test_every_run_membership_snapshot_is_checked(
+    tmp_path: Path,
+    call_index: int,
+    snapshot_name: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    input_dir = config.retained_dir.resolve() if call_index < 2 else config.quarantine_dir.resolve()
+    approved = runner.memberships[input_dir]
+    changed = approved.model_copy(update={"source_multiset_digest": "f" * 64})
+    runner.membership_pairs[call_index] = (
+        (changed, approved) if snapshot_name == "before" else (approved, changed)
+    )
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.MEMBERSHIP_DRIFT,)
+    assert len(runner.input_dirs) == 4
+    assert not config.baseline_path.exists()
+
+
+@pytest.mark.parametrize("call_index", range(4))
+def test_source_mutation_during_any_run_is_rejected_by_final_snapshot(
+    tmp_path: Path,
+    call_index: int,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+
+    def mutate_source(index: int, input_dir: Path) -> None:
+        if index == call_index:
+            next(input_dir.glob("*.pdf")).write_bytes(b"mutated")
+
+    runner.on_call = mutate_source
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.MEMBERSHIP_DRIFT,)
+    assert len(runner.input_dirs) == 4
+    assert not config.baseline_path.exists()
+
+
+def test_symlink_introduced_during_a_run_is_not_skipped_by_membership_snapshot(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    target = tmp_path / "late-target.pdf"
+    target.write_bytes(b"late target")
+
+    def add_symlink(index: int, input_dir: Path) -> None:
+        if index == 0:
+            (input_dir / "late-link.pdf").symlink_to(target)
+
+    runner.on_call = add_symlink
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.CORPUS_SYMLINK,)
+    assert not config.baseline_path.exists()
+
+
+@pytest.mark.parametrize("corpus_name", ("retained", "quarantine"))
+def test_each_run_must_process_the_approved_document_count(
+    tmp_path: Path,
+    corpus_name: str,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    call_indexes = (0, 1) if corpus_name == "retained" else (2, 3)
+    status = Status.RECONCILED if corpus_name == "retained" else Status.NOT_STATEMENT
+    empty_batch = BatchResult(status=status, statements=())
+    for call_index in call_indexes:
+        runner.batch_overrides[call_index] = empty_batch
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.COUNTS_DRIFT,)
+    assert not config.baseline_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("retained_status", "quarantine_status", "reason"),
+    (
+        (
+            Status.UNRECONCILED,
+            Status.NOT_STATEMENT,
+            CorpusGateReason.RETAINED_NOT_RECONCILED,
+        ),
+        (
+            Status.RECONCILED,
+            Status.UNSUPPORTED,
+            CorpusGateReason.QUARANTINE_MISCLASSIFIED,
+        ),
+    ),
+)
+def test_completed_runs_enforce_corpus_status_policy(
+    tmp_path: Path,
+    retained_status: Status,
+    quarantine_status: Status,
+    reason: CorpusGateReason,
+) -> None:
+    config, dependencies, runner = _gate_fixture(
+        tmp_path,
+        retained_status=retained_status,
+        quarantine_status=quarantine_status,
+    )
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (reason,)
+    assert len(runner.input_dirs) == 4
+    assert not config.baseline_path.exists()
+
+
+def test_independent_output_mismatch_rejects_record_without_replacing_baseline(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.baseline_path.write_bytes(b"accepted")
+    runner.manifest_updates[1] = {"json_digest": "f" * 64}
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.JSON_DRIFT,)
+    assert config.baseline_path.read_bytes() == b"accepted"
+
+
+def test_verify_compares_both_candidate_runs_with_accepted_baseline(tmp_path: Path) -> None:
+    record_config, record_dependencies, record_runner = _gate_fixture(tmp_path)
+    run_corpus_gate(
+        record_config,
+        CorpusGateMode.RECORD,
+        dependencies=record_dependencies,
+    )
+    accepted_content = record_config.baseline_path.read_bytes()
+    verify_runner = _RecordingRunner(
+        memberships=record_runner.memberships,
+        manifest_updates={
+            0: {"json_digest": "f" * 64},
+            1: {"json_digest": "f" * 64},
+        },
+    )
+    verify_config = record_config.model_copy(
+        update={
+            "work_dir": tmp_path / "private" / "verify-run",
+            "runtime_tolerance_ratio": None,
+        }
+    )
+    verify_dependencies = CorpusGateDependencies(
+        runner=verify_runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=_FakeToolchain(),
+    )
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(
+            verify_config,
+            CorpusGateMode.VERIFY,
+            dependencies=verify_dependencies,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.JSON_DRIFT,)
+    assert verify_config.baseline_path.read_bytes() == accepted_content
+
+
+@pytest.mark.parametrize("mismatch", ("toolchain", "jobs"))
+def test_baseline_runtime_is_not_compared_across_runtime_contexts(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    record_config, record_dependencies, record_runner = _gate_fixture(tmp_path)
+    run_corpus_gate(
+        record_config,
+        CorpusGateMode.RECORD,
+        dependencies=record_dependencies,
+    )
+    verify_runner = _RecordingRunner(
+        memberships=record_runner.memberships,
+        elapsed_values=[Decimal("100")] * 4,
+    )
+    verify_config = record_config.model_copy(
+        update={
+            "work_dir": tmp_path / "private" / "verify-run",
+            "runtime_tolerance_ratio": None,
+            "jobs": 2 if mismatch == "jobs" else record_config.jobs,
+        }
+    )
+    fingerprint = _toolchain("b") if mismatch == "toolchain" else _toolchain()
+    verify_dependencies = CorpusGateDependencies(
+        runner=verify_runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=_FakeToolchain(fingerprints=[fingerprint, fingerprint]),
+    )
+
+    attestation = run_corpus_gate(
+        verify_config,
+        CorpusGateMode.VERIFY,
+        dependencies=verify_dependencies,
+    )
+
+    assert attestation.performance_checked is False
+
+
+@pytest.mark.parametrize("final_change", ("dirty", "commit", "root"))
+def test_repository_change_after_runs_rejects_before_baseline_write(
+    tmp_path: Path,
+    final_change: str,
+) -> None:
+    config, _dependencies, runner = _gate_fixture(tmp_path)
+    initial = RepositoryState(root=tmp_path, commit_sha="d" * 40, clean=True)
+    changed_root = tmp_path / "changed-root"
+    changed_root.mkdir()
+    final = RepositoryState(
+        root=changed_root if final_change == "root" else tmp_path,
+        commit_sha="e" * 40 if final_change == "commit" else "d" * 40,
+        clean=final_change != "dirty",
+    )
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=_FakeRepository(tmp_path, states=[initial, final]),
+        toolchain=_FakeToolchain(),
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.REPOSITORY_CHANGED,)
+    assert len(runner.input_dirs) == 4
+    assert not config.baseline_path.exists()
+
+
+def test_toolchain_change_after_runs_rejects_before_baseline_write(tmp_path: Path) -> None:
+    config, _dependencies, runner = _gate_fixture(tmp_path)
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=_FakeToolchain(fingerprints=[_toolchain("a"), _toolchain("b")]),
+    )
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.TOOLCHAIN_CHANGED,)
+    assert len(runner.input_dirs) == 4
+    assert not config.baseline_path.exists()
+
+
+def test_unavailable_toolchain_is_privacy_safe_and_precedes_filesystem_mutation(
+    tmp_path: Path,
+) -> None:
+    config, _dependencies, runner = _gate_fixture(tmp_path)
+
+    class UnavailableToolchain:
+        def fingerprint(self) -> ToolchainFingerprint:
+            raise RuntimeError("private.pdf merchant 123.45")
+
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=_FakeRepository(tmp_path),
+        toolchain=UnavailableToolchain(),
+    )
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.TOOLCHAIN_UNAVAILABLE,)
+    assert str(caught.value) == CorpusGateReason.TOOLCHAIN_UNAVAILABLE.value
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_parser_failure_is_privacy_safe_and_preserves_existing_baseline(tmp_path: Path) -> None:
+    config, _dependencies, _runner = _gate_fixture(tmp_path)
+    config.baseline_path.write_bytes(b"accepted")
+
+    class FailingRunner:
+        def __call__(
+            self,
+            *,
+            input_dir: Path,
+            output_dir: Path,
+            cache_dir: Path,
+            strict: bool,
+            jobs: int,
+        ) -> CompletedCorpusRun:
+            del input_dir, output_dir, cache_dir, strict, jobs
+            raise RuntimeError("private.pdf merchant 123.45")
+
+    dependencies_repository = _FakeRepository(tmp_path)
+    dependencies = CorpusGateDependencies(
+        runner=FailingRunner(),
+        repository=dependencies_repository,
+        toolchain=_FakeToolchain(),
+    )
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert str(caught.value) == CorpusGateReason.PARSER_RUNTIME_FAILED.value
+    assert config.baseline_path.read_bytes() == b"accepted"
+
+
+def test_successful_record_writes_baseline_only_after_final_attestations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _dependencies, runner = _gate_fixture(tmp_path)
+    events: list[str] = []
+    runner.on_call = lambda _index, _input_dir: events.append("run")
+    repository = _FakeRepository(tmp_path)
+    toolchain = _FakeToolchain()
+
+    class EventRepository:
+        def state(self) -> RepositoryState:
+            events.append("repository")
+            return repository.state()
+
+        def is_ignored(self, path: Path) -> bool:
+            return repository.is_ignored(path)
+
+    class EventToolchain:
+        def fingerprint(self) -> ToolchainFingerprint:
+            events.append("toolchain")
+            return toolchain.fingerprint()
+
+    original_write = corpus_gate_module.write_json_atomic
+
+    def recording_write(path: str | Path, result: CorpusBaseline) -> None:
+        events.append("write")
+        original_write(path, result)
+
+    monkeypatch.setattr(corpus_gate_module, "write_json_atomic", recording_write)
+    dependencies = CorpusGateDependencies(
+        runner=runner,
+        repository=EventRepository(),
+        toolchain=EventToolchain(),
+    )
+
+    run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert events == [
+        "repository",
+        "toolchain",
+        "run",
+        "run",
+        "run",
+        "run",
+        "repository",
+        "toolchain",
+        "write",
+    ]
+
+
+def test_local_runner_uses_adjacent_membership_snapshots_and_emitted_outputs(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    cache_dir.mkdir()
+    source = input_dir / "statement.pdf"
+    source.write_bytes(b"before")
+    expected_before = digest_membership((sha256(b"before").hexdigest(),))
+    expected_after = digest_membership((sha256(b"after").hexdigest(),))
+    batch = _status_batch(Status.RECONCILED)
+    calls: list[tuple[Path, Path, bool, int | None, Path]] = []
+
+    def fake_parser(
+        path: str | Path,
+        selected_output_dir: str | Path,
+        strict: bool = False,
+        jobs: int | None = None,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> BatchResult:
+        assert cache_dir is not None
+        calls.append(
+            (
+                Path(path),
+                Path(selected_output_dir),
+                strict,
+                jobs,
+                Path(cache_dir),
+            )
+        )
+        source.write_bytes(b"after")
+        write_batch_outputs(selected_output_dir, batch)
+        return batch
+
+    clock_values = iter((1_000_000_000, 2_250_000_000))
+    runner = LocalCorpusRunner(parser=fake_parser, monotonic_ns=lambda: next(clock_values))
+
+    completed = runner(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=True,
+        jobs=4,
+    )
+
+    assert calls == [(input_dir, output_dir, True, 4, cache_dir)]
+    assert completed.batch == batch
+    assert completed.membership_before == expected_before
+    assert completed.membership_after == expected_after
+    assert completed.manifest.elapsed_seconds == Decimal("1.25")
+    assert (
+        completed.manifest.json_digest
+        == sha256((output_dir / "results.json").read_bytes()).hexdigest()
+    )
+    assert (
+        completed.manifest.csv_digest
+        == sha256((output_dir / "transactions.csv").read_bytes()).hexdigest()
+    )
+
+
+def test_git_repository_inspector_uses_common_parent_and_active_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    common_dir = project_root / ".git"
+    active_worktree = project_root / ".worktrees" / "active"
+    common_dir.mkdir(parents=True)
+    active_worktree.mkdir(parents=True)
+    commands: list[tuple[tuple[str, ...], Path]] = []
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        check: bool,
+        stdout: int | None = None,
+        stderr: int | None = None,
+        capture_output: bool = False,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del check, stdout, stderr, capture_output, timeout
+        commands.append((command, cwd))
+        arguments = command[1:]
+        if arguments == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
+            output = f"{common_dir}\n".encode()
+            return subprocess.CompletedProcess(command, 0, output, b"")
+        if arguments == ("rev-parse", "--verify", "HEAD"):
+            return subprocess.CompletedProcess(command, 0, b"d" * 40 + b"\n", b"")
+        if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if arguments[:2] == ("check-ignore", "--quiet"):
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        raise AssertionError("unexpected Git command")
+
+    monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    inspector = GitRepositoryInspector(cwd=active_worktree)
+
+    state = inspector.state()
+    ignored = inspector.is_ignored(project_root / "private" / "baseline.json")
+
+    assert state == RepositoryState(root=project_root, commit_sha="d" * 40, clean=True)
+    assert ignored is True
+    state_commands = commands[:3]
+    ignore_commands = commands[3:]
+    assert all(cwd == active_worktree for _command, cwd in state_commands)
+    assert ignore_commands == [
+        (
+            (
+                "git",
+                "check-ignore",
+                "--quiet",
+                "--",
+                str(project_root / "private" / "baseline.json"),
+            ),
+            project_root,
+        )
+    ]
+
+
+def test_local_toolchain_fingerprint_hashes_versions_caches_and_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(corpus_gate_module.platform, "python_version", lambda: "3.13.5")
+    monkeypatch.setattr(corpus_gate_module.metadata, "version", lambda _package: "0.1.0")
+    monkeypatch.setattr(corpus_gate_module.fitz, "VersionBind", "1.28.0")
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        stdout: int,
+        stderr: int,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del check, stdout, stderr, timeout
+        assert command == ("tesseract", "--version")
+        return subprocess.CompletedProcess(command, 0, b"tesseract 5.7.1\nbuild details\n", b"")
+
+    monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    inspector = LocalToolchainInspector()
+
+    first = inspector.fingerprint()
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "tesseract_command",
+        lambda: ("tesseract", "stdin", "stdout", "--changed"),
+    )
+    changed = inspector.fingerprint()
+
+    assert first.python_version == "3.13.5"
+    assert first.package_version == "0.1.0"
+    assert first.pymupdf_version == "1.28.0"
+    assert first.tesseract_version == "tesseract 5.7.1"
+    assert first.ocr_pipeline_version == corpus_gate_module.OCR_PIPELINE_VERSION
+    assert first.ocr_cache_versions == tuple(sorted(first.ocr_cache_versions))
+    assert first.command_digest != changed.command_digest
+    assert first.digest != changed.digest
+
+
+def test_default_dependencies_bind_real_adapters_without_executing_them() -> None:
+    dependencies = corpus_gate_module._default_dependencies()
+
+    assert isinstance(dependencies.runner, LocalCorpusRunner)
+    assert isinstance(dependencies.repository, GitRepositoryInspector)
+    assert isinstance(dependencies.toolchain, LocalToolchainInspector)
 
 
 def test_project_run_tracks_structure_presence_evidence_and_ambiguity() -> None:
