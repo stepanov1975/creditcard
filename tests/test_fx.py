@@ -59,6 +59,7 @@ def _region(
     row: Row,
     *,
     fee_header: str = "Foreign-currency fee",
+    rate_header: str = "Conversion date Exchange rate",
 ) -> TableRegion:
     roles = (
         ColumnRole.AMOUNT,
@@ -71,7 +72,7 @@ def _region(
     header_texts = (
         "Amount charged",
         fee_header,
-        "Conversion date Exchange rate",
+        rate_header,
         "Original amount",
         "Merchant",
         "Transaction date",
@@ -222,6 +223,37 @@ def test_extract_foreign_exchange_from_semantic_table_columns() -> None:
     }
     assert extraction.details.exchange_rate.evidence
     assert extraction.details.net_fee.evidence
+
+
+def test_prefixed_hebrew_clitic_rate_cue_recovers_table_rate_with_evidence() -> None:
+    row = _foreign_row()
+    rate_cell = row.cells[2]
+    region = _region(
+        row,
+        fee_header="Auxiliary amount",
+        rate_header="תאריך המרה בשער המרה",
+    )
+
+    extraction = extract_foreign_exchange(
+        rows=(row,),
+        region=region,
+        ledger=EvidenceLedger.from_rows((row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.exchange_rate is not None
+    assert extraction.details.exchange_rate.value == Decimal("2.9660")
+    assert extraction.details.exchange_rate.evidence == (
+        EvidenceReference(
+            page_number=rate_cell.page_number,
+            bbox=rate_cell.bbox,
+            raw_text=rate_cell.text,
+        ),
+    )
+    assert any(claim.owner is SemanticOwner.EXCHANGE_RATE for claim in extraction.claims)
+    assert extraction.diagnostics == ()
 
 
 def test_explicit_zero_table_fee_is_evidenced_without_ambiguity() -> None:

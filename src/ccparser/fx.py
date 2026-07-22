@@ -83,7 +83,11 @@ def _header_phrase(column: ColumnSpec) -> str:
 
 
 def _contains_cue(phrase: str, cues: Iterable[str]) -> bool:
-    return contains_token_sequence(phrase, cues)
+    return contains_token_sequence(
+        phrase,
+        cues,
+        allow_hebrew_clitic_prefix=True,
+    )
 
 
 def _is_fee_column(column: ColumnSpec) -> bool:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import date
 from decimal import Decimal
 
@@ -17,7 +19,9 @@ from ccparser.discovery import (
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import (
+    BatchResult,
     EvidenceReference,
+    StatementResult,
     Status,
     Transaction,
     TransactionCategory,
@@ -33,6 +37,7 @@ from ccparser.normalize import (
     normalize_statement,
     parse_amount,
 )
+from ccparser.output import transactions_csv_bytes
 from ccparser.semantic_evidence import EvidenceLedger
 
 
@@ -5319,6 +5324,76 @@ def test_normalize_statement_preserves_structured_table_fx_values() -> None:
     assert transaction.foreign_exchange.net_fee.amount == Decimal("1.69")
     assert "unconsumed_transaction_semantic_text" not in transaction.ambiguities
     assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_prefixed_hebrew_clitic_rate_cue_preserves_normalized_output_provenance() -> None:
+    rate_cell = _cell(
+        "02/02/2026 2.9660",
+        5,
+        30.0,
+        glyphs=_glyphs("02/02/2026 2.9660", 250.0, 30.0),
+    )
+    row = _row(
+        _cell("01/02/2026", 0, 30.0),
+        _cell("Synthetic purchase", 1, 30.0),
+        _cell("3.00", 2, 30.0),
+        _cell("USD", 3, 30.0),
+        _cell("11.00", 4, 30.0),
+        rate_cell,
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.ORIGINAL_CURRENCY,
+            ColumnRole.AMOUNT,
+            ColumnRole.CONVERSION_DATE,
+        ),
+        (row,),
+        headers=(
+            "Date",
+            "Description",
+            "Original amount",
+            "Original currency",
+            "Billed amount",
+            "תאריך המרה בשער המרה",
+        ),
+    )
+
+    normalized = normalize_statement(_discovery(region, "11.00", "ILS"))
+
+    transaction = normalized.transactions[0]
+    assert transaction.foreign_exchange is not None
+    assert transaction.foreign_exchange.exchange_rate is not None
+    assert transaction.foreign_exchange.exchange_rate.value == Decimal("2.9660")
+    assert transaction.foreign_exchange.exchange_rate.evidence == (
+        EvidenceReference(
+            page_number=rate_cell.page_number,
+            bbox=rate_cell.bbox,
+            raw_text=rate_cell.text,
+        ),
+    )
+    assert transaction.ambiguities == ()
+    assert normalized.reconciliation.status is Status.RECONCILED
+
+    statement = StatementResult(
+        status=normalized.reconciliation.status,
+        transactions=normalized.transactions,
+        groups=normalized.reconciliation.groups,
+        source_name="synthetic.pdf",
+        source_sha256="a" * 64,
+        statement_id="a" * 64,
+    )
+    batch = BatchResult(status=statement.status, statements=(statement,))
+    csv_rows = tuple(
+        csv.DictReader(io.StringIO(transactions_csv_bytes(batch).decode("utf-8-sig"), newline=""))
+    )
+
+    assert len(csv_rows) == 1
+    assert csv_rows[0]["exchange_rate"] == "2.966"
+    assert csv_rows[0]["exchange_rate_source_page"] == "1"
+    assert csv_rows[0]["exchange_rate_source_bbox"] == "1:250,30,290,40"
 
 
 def test_generic_currency_with_original_and_billed_amounts_blocks_emission() -> None:
