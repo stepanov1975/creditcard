@@ -601,7 +601,7 @@ best-effort no-throw close, and perform no post-success filesystem operation.
 
 ```bash
 .venv/bin/pytest -q tests/test_parser.py tests/test_paths.py tests/test_output.py \
-  tests/test_evidence_ocr.py tests/test_corpus_gate.py
+  tests/evidence/test_ocr.py tests/test_corpus_gate.py
 .venv/bin/ruff format --check .
 .venv/bin/ruff check .
 .venv/bin/mypy src

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -63,6 +65,7 @@ from ccparser.output import (
     transactions_csv_bytes,
     write_batch_outputs,
 )
+from ccparser.paths import DirectoryRootPolicy
 
 
 def _evidence(raw_text: str, *, page_number: int = 1, y: float = 10.0) -> EvidenceReference:
@@ -504,7 +507,6 @@ def test_record_failure_never_replaces_baseline(tmp_path: Path) -> None:
         "temporary_open",
         "temporary_write",
         "temporary_fsync",
-        "temporary_close",
         "destination_revalidation",
         "parent_fsync",
         "replace",
@@ -522,7 +524,6 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
     baseline_path.write_bytes(accepted_content)
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
     original_open = corpus_gate_module.os.open
-    original_close = corpus_gate_module.os.close
     original_fsync = corpus_gate_module.os.fsync
     original_validate = corpus_gate_module._validate_baseline_destination
 
@@ -555,18 +556,6 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
             original_fsync(file_descriptor)
 
         monkeypatch.setattr(corpus_gate_module.os, "fsync", fail_selected_fsync)
-    elif failure_point == "temporary_close":
-        failure_injected = False
-
-        def fail_temporary_close(file_descriptor: int) -> None:
-            nonlocal failure_injected
-            if file_descriptor != parent_fd and not failure_injected:
-                failure_injected = True
-                original_close(file_descriptor)
-                raise OSError("injected publication failure")
-            original_close(file_descriptor)
-
-        monkeypatch.setattr(corpus_gate_module.os, "close", fail_temporary_close)
     elif failure_point == "destination_revalidation":
         validation_calls = 0
 
@@ -599,7 +588,7 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
     assert tuple(private_dir.iterdir()) == (baseline_path,)
 
 
-def test_secure_publication_suppresses_post_commit_parent_fsync_failure(
+def test_secure_publication_replace_is_the_final_filesystem_operation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -609,17 +598,40 @@ def test_secure_publication_suppresses_post_commit_parent_fsync_failure(
     baseline_path.write_bytes(b"accepted baseline bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
     original_fsync = corpus_gate_module.os.fsync
-    parent_fsync_calls = 0
+    original_replace = corpus_gate_module.os.replace
+    original_unlink = corpus_gate_module.os.unlink
+    events: list[str] = []
 
-    def fail_second_parent_fsync(file_descriptor: int) -> None:
-        nonlocal parent_fsync_calls
-        if file_descriptor == parent_fd:
-            parent_fsync_calls += 1
-            if parent_fsync_calls == 2:
-                raise OSError("post-commit fsync failure")
+    def recording_fsync(file_descriptor: int) -> None:
+        events.append("parent_fsync" if file_descriptor == parent_fd else "temporary_fsync")
         original_fsync(file_descriptor)
 
-    monkeypatch.setattr(corpus_gate_module.os, "fsync", fail_second_parent_fsync)
+    def recording_replace(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        events.append("replace")
+        original_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    def recording_unlink(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        events.append("unlink")
+        original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(corpus_gate_module.os, "fsync", recording_fsync)
+    monkeypatch.setattr(corpus_gate_module.os, "replace", recording_replace)
+    monkeypatch.setattr(corpus_gate_module.os, "unlink", recording_unlink)
     try:
         corpus_gate_module._publish_json_secure(
             parent_fd,
@@ -629,8 +641,176 @@ def test_secure_publication_suppresses_post_commit_parent_fsync_failure(
     finally:
         os.close(parent_fd)
 
-    assert parent_fsync_calls == 2
+    assert events == ["temporary_fsync", "parent_fsync", "replace"]
     assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
+
+
+def test_secure_publication_suppresses_only_post_commit_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "baseline.json"
+    baseline_path.write_bytes(b"accepted baseline bytes")
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    original_close = corpus_gate_module.os.close
+    failure_injected = False
+
+    def fail_temporary_close(file_descriptor: int) -> None:
+        nonlocal failure_injected
+        if file_descriptor != parent_fd and not failure_injected:
+            failure_injected = True
+            original_close(file_descriptor)
+            raise OSError("injected close failure")
+        original_close(file_descriptor)
+
+    monkeypatch.setattr(corpus_gate_module.os, "close", fail_temporary_close)
+    try:
+        corpus_gate_module._publish_json_secure(
+            parent_fd,
+            baseline_path.name,
+            _baseline(),
+        )
+    finally:
+        corpus_gate_module.os.close(parent_fd)
+
+    assert failure_injected is True
+    assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
+
+
+def test_secure_publication_rejects_post_create_name_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "baseline.json"
+    baseline_path.write_bytes(b"accepted baseline bytes")
+    temporary_path = private_dir / ".baseline.json.owned.tmp"
+    displaced_temporary = private_dir / "displaced-temporary"
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    original_write = corpus_gate_module._write_all
+    monkeypatch.setattr(corpus_gate_module.secrets, "token_hex", lambda _length: "owned")
+
+    def write_then_substitute(file_descriptor: int, content: bytes) -> None:
+        original_write(file_descriptor, content)
+        temporary_path.rename(displaced_temporary)
+        temporary_path.write_bytes(b"substitute")
+
+    monkeypatch.setattr(corpus_gate_module, "_write_all", write_then_substitute)
+    try:
+        with pytest.raises(CorpusGateInputError) as caught:
+            corpus_gate_module._publish_json_secure(
+                parent_fd,
+                baseline_path.name,
+                _baseline(),
+            )
+    finally:
+        os.close(parent_fd)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert temporary_path.read_bytes() == b"substitute"
+
+
+def test_secure_publication_cleanup_never_unlinks_a_substituted_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "baseline.json"
+    baseline_path.write_bytes(b"accepted baseline bytes")
+    temporary_path = private_dir / ".baseline.json.owned.tmp"
+    displaced_temporary = private_dir / "displaced-temporary"
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(corpus_gate_module.secrets, "token_hex", lambda _length: "owned")
+
+    def substitute_then_interrupt(_file_descriptor: int, _content: bytes) -> None:
+        temporary_path.rename(displaced_temporary)
+        temporary_path.write_bytes(b"substitute")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(corpus_gate_module, "_write_all", substitute_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            corpus_gate_module._publish_json_secure(
+                parent_fd,
+                baseline_path.name,
+                _baseline(),
+            )
+    finally:
+        os.close(parent_fd)
+
+    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert temporary_path.read_bytes() == b"substitute"
+
+
+def test_secure_publication_treats_commit_then_interrupt_as_committed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "baseline.json"
+    baseline_path.write_bytes(b"accepted baseline bytes")
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    original_replace = corpus_gate_module.os.replace
+
+    def commit_then_interrupt(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        original_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(corpus_gate_module.os, "replace", commit_then_interrupt)
+    try:
+        corpus_gate_module._publish_json_secure(
+            parent_fd,
+            baseline_path.name,
+            _baseline(),
+        )
+    finally:
+        os.close(parent_fd)
+
+    assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
+
+
+def test_secure_publication_propagates_interrupt_before_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "baseline.json"
+    baseline_path.write_bytes(b"accepted baseline bytes")
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+
+    def interrupt_before_replace(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(corpus_gate_module.os, "replace", interrupt_before_replace)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            corpus_gate_module._publish_json_secure(
+                parent_fd,
+                baseline_path.name,
+                _baseline(),
+            )
+    finally:
+        os.close(parent_fd)
+
+    assert baseline_path.read_bytes() == b"accepted baseline bytes"
 
 
 def test_secure_publication_never_unlinks_an_unowned_temporary_name(
@@ -757,6 +937,69 @@ def test_verify_validates_independent_inventory_before_loading_baseline(tmp_path
     assert caught.value.reasons == (CorpusGateReason.INVENTORY_INVALID,)
     assert runner.input_dirs == []
     assert not config.work_dir.exists()
+
+
+def test_inventory_ancestor_swap_immediately_before_fd_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    private_dir = tmp_path / "private"
+    displaced_private = tmp_path / "displaced-private"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "membership.json").write_bytes(b"outside substitute")
+    original_read = corpus_gate_module._read_stable_regular_file
+
+    def swap_then_read(repository_fd: int, repository_root: Path, path: Path) -> bytes:
+        if path == config.membership_inventory_path.resolve(strict=False):
+            private_dir.rename(displaced_private)
+            private_dir.symlink_to(outside_dir, target_is_directory=True)
+        return original_read(repository_fd, repository_root, path)
+
+    monkeypatch.setattr(corpus_gate_module, "_read_stable_regular_file", swap_then_read)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+
+
+def test_verify_baseline_name_swap_immediately_before_fd_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
+    retained_membership = runner.memberships[config.retained_dir.resolve()]
+    quarantine_membership = runner.memberships[config.quarantine_dir.resolve()]
+    config.baseline_path.write_bytes(
+        canonical_json_bytes(
+            _baseline(
+                retained_membership=retained_membership,
+                quarantine_membership=quarantine_membership,
+            )
+        )
+    )
+    displaced_baseline = config.baseline_path.with_name("displaced-baseline.json")
+    outside_baseline = tmp_path / "outside-baseline.json"
+    outside_baseline.write_bytes(b"outside substitute")
+    original_read = corpus_gate_module._read_stable_regular_file
+
+    def swap_then_read(repository_fd: int, repository_root: Path, path: Path) -> bytes:
+        if path == config.baseline_path.resolve(strict=False):
+            config.baseline_path.rename(displaced_baseline)
+            config.baseline_path.symlink_to(outside_baseline)
+        return original_read(repository_fd, repository_root, path)
+
+    monkeypatch.setattr(corpus_gate_module, "_read_stable_regular_file", swap_then_read)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+    assert outside_baseline.read_bytes() == b"outside substitute"
 
 
 def test_verify_uses_accepted_tolerance_and_never_rewrites_baseline(tmp_path: Path) -> None:
@@ -1005,6 +1248,291 @@ def test_existing_empty_work_directory_is_allowed(tmp_path: Path) -> None:
     run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
 
     assert len(runner.input_dirs) == 4
+
+
+@pytest.mark.parametrize("mode", (0o770, 0o707))
+def test_destination_ancestry_must_not_be_group_or_other_writable(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.baseline_path.parent.chmod(mode)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+
+
+def test_destination_ancestry_must_be_owned_by_effective_uid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    actual_uid = os.geteuid()
+    monkeypatch.setattr(corpus_gate_module.os, "geteuid", lambda: actual_uid + 1)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+
+
+def test_rejected_untrusted_ancestry_does_not_leak_directory_descriptors(
+    tmp_path: Path,
+) -> None:
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    untrusted_dir.chmod(0o770)
+    root_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    descriptors_before = set(os.listdir("/proc/self/fd"))
+    try:
+        for _ in range(10):
+            with pytest.raises(CorpusGateInputError):
+                corpus_gate_module._open_directory_beneath(
+                    root_fd,
+                    (untrusted_dir.name,),
+                    create_missing=False,
+                    require_trusted=True,
+                )
+        descriptors_after = set(os.listdir("/proc/self/fd"))
+    finally:
+        os.close(root_fd)
+
+    assert descriptors_after == descriptors_before
+
+
+def test_interrupted_initial_trust_validation_does_not_leak_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    descriptors_before = set(os.listdir("/proc/self/fd"))
+    original_close = os.close
+    cleanup_close_injected = False
+
+    def interrupt_validation(_directory_stat: os.stat_result) -> None:
+        raise KeyboardInterrupt
+
+    def close_then_fail(file_descriptor: int) -> None:
+        nonlocal cleanup_close_injected
+        original_close(file_descriptor)
+        if file_descriptor != root_fd and not cleanup_close_injected:
+            cleanup_close_injected = True
+            raise OSError("injected cleanup close failure")
+
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_validate_trusted_directory",
+        interrupt_validation,
+    )
+    monkeypatch.setattr(corpus_gate_module.os, "close", close_then_fail)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            corpus_gate_module._open_directory_beneath(
+                root_fd,
+                (),
+                create_missing=False,
+                require_trusted=True,
+            )
+        descriptors_after = set(os.listdir("/proc/self/fd"))
+    finally:
+        os.close(root_fd)
+
+    assert cleanup_close_injected
+    assert descriptors_after == descriptors_before
+
+
+def test_staging_interrupt_releases_descriptors_and_baseline_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, _runner = _gate_fixture(tmp_path)
+    descriptors_before = set(os.listdir("/proc/self/fd"))
+
+    def interrupt_staging(_source_fd: int, _destination_fd: int) -> tuple[str, ...]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(corpus_gate_module, "_copy_pdf_tree", interrupt_staging)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    descriptors_after = set(os.listdir("/proc/self/fd"))
+    lock_probe_fd = os.open(
+        config.baseline_path.parent,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+    lock_reacquired = False
+    try:
+        try:
+            fcntl.flock(lock_probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            lock_reacquired = True
+    finally:
+        os.close(lock_probe_fd)
+        for leaked_descriptor in descriptors_after - descriptors_before:
+            with suppress(OSError):
+                os.close(int(leaked_descriptor))
+
+    assert descriptors_after == descriptors_before
+    assert lock_reacquired
+
+
+def test_regular_copy_cleanup_preserves_interrupt_and_attempts_both_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "destination"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    (source_dir / "statement.pdf").write_bytes(b"statement")
+    source_parent_fd = os.open(source_dir, os.O_RDONLY | os.O_DIRECTORY)
+    destination_parent_fd = os.open(destination_dir, os.O_RDONLY | os.O_DIRECTORY)
+    descriptors_before = set(os.listdir("/proc/self/fd"))
+    original_close = os.close
+    close_attempts: list[int] = []
+
+    def interrupt_read(_file_descriptor: int, _size: int) -> bytes:
+        raise KeyboardInterrupt
+
+    def close_first_then_fail(file_descriptor: int) -> None:
+        close_attempts.append(file_descriptor)
+        original_close(file_descriptor)
+        if len(close_attempts) == 1:
+            raise OSError("injected cleanup close failure")
+
+    monkeypatch.setattr(corpus_gate_module.os, "read", interrupt_read)
+    monkeypatch.setattr(corpus_gate_module.os, "close", close_first_then_fail)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            corpus_gate_module._copy_regular_pdf(
+                source_parent_fd,
+                destination_parent_fd,
+                "statement.pdf",
+            )
+    finally:
+        original_close(source_parent_fd)
+        original_close(destination_parent_fd)
+        descriptors_after = set(os.listdir("/proc/self/fd"))
+        for leaked_descriptor in descriptors_after - descriptors_before:
+            with suppress(OSError):
+                original_close(int(leaked_descriptor))
+
+    assert len(close_attempts) == 2
+    assert len(set(close_attempts)) == 2
+
+
+def test_recursive_copy_cleanup_preserves_interrupt_and_attempts_both_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "destination"
+    (source_dir / "nested").mkdir(parents=True)
+    destination_dir.mkdir()
+    source_parent_fd = os.open(source_dir, os.O_RDONLY | os.O_DIRECTORY)
+    destination_parent_fd = os.open(destination_dir, os.O_RDONLY | os.O_DIRECTORY)
+    descriptors_before = set(os.listdir("/proc/self/fd"))
+    original_close = os.close
+    original_scandir = os.scandir
+    close_attempts: list[int] = []
+    scandir_calls = 0
+
+    def interrupt_nested_scan(file_descriptor: int) -> os.ScandirIterator[str]:
+        nonlocal scandir_calls
+        scandir_calls += 1
+        if scandir_calls == 2:
+            raise KeyboardInterrupt
+        return original_scandir(file_descriptor)
+
+    def close_first_then_fail(file_descriptor: int) -> None:
+        close_attempts.append(file_descriptor)
+        original_close(file_descriptor)
+        if len(close_attempts) == 1:
+            raise OSError("injected cleanup close failure")
+
+    monkeypatch.setattr(corpus_gate_module.os, "scandir", interrupt_nested_scan)
+    monkeypatch.setattr(corpus_gate_module.os, "close", close_first_then_fail)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            corpus_gate_module._copy_pdf_tree(
+                source_parent_fd,
+                destination_parent_fd,
+            )
+    finally:
+        original_close(source_parent_fd)
+        original_close(destination_parent_fd)
+        descriptors_after = set(os.listdir("/proc/self/fd"))
+        for leaked_descriptor in descriptors_after - descriptors_before:
+            with suppress(OSError):
+                original_close(int(leaked_descriptor))
+
+    assert len(close_attempts) == 2
+    assert len(set(close_attempts)) == 2
+
+
+def test_shared_baseline_parent_lock_excludes_a_concurrent_gate(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    parent_fd = os.open(config.baseline_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(CorpusGateInputError) as caught:
+            run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+    finally:
+        os.close(parent_fd)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert runner.input_dirs == []
+
+
+def test_verify_rejects_baseline_replaced_before_parent_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, runner = _gate_fixture(
+        tmp_path,
+        runtime_tolerance_ratio=None,
+    )
+    accepted = _baseline(
+        retained_membership=runner.memberships[config.retained_dir.resolve()],
+        quarantine_membership=runner.memberships[config.quarantine_dir.resolve()],
+    )
+    config.baseline_path.write_bytes(canonical_json_bytes(accepted))
+    replacement = accepted.model_copy(
+        update={"runtime_tolerance_ratio": Decimal("0.3")},
+    )
+    replacement_path = config.baseline_path.with_name("replacement-baseline.json")
+    original_flock = fcntl.flock
+
+    def replace_then_lock(file_descriptor: int, operation: int) -> None:
+        replacement_path.write_bytes(canonical_json_bytes(replacement))
+        os.replace(replacement_path, config.baseline_path)
+        original_flock(file_descriptor, operation)
+
+    monkeypatch.setattr(corpus_gate_module.fcntl, "flock", replace_then_lock)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_ignored_baseline_may_be_directly_under_repository_root(tmp_path: Path) -> None:
+    config, dependencies, _runner = _gate_fixture(tmp_path)
+    root_baseline = tmp_path / "baseline.json"
+    changed_config = config.model_copy(update={"baseline_path": root_baseline})
+
+    run_corpus_gate(changed_config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert CorpusBaseline.model_validate_json(root_baseline.read_bytes()).version == 1
 
 
 @pytest.mark.parametrize("unsafe_kind", ("outside", "duplicate", "input_overlap"))
@@ -1484,12 +2012,15 @@ def test_swapped_private_ancestor_cannot_redirect_run_or_baseline_writes(
 
     runner.on_call = swap_private_ancestor
 
-    run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
 
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert len(runner.input_dirs) == 1
     outside_run_entries = tuple((outside_dir / "run").iterdir())
     assert outside_run_entries == ()
     assert not (outside_dir / "baseline.json").exists()
-    assert (bound_private_dir / "baseline.json").is_file()
+    assert not (bound_private_dir / "baseline.json").exists()
     assert len(tuple((bound_private_dir / "run").iterdir())) == 10
 
 
@@ -1515,6 +2046,35 @@ def test_private_parent_swap_immediately_before_publication_uses_bound_parent(
 
     assert not (outside_dir / "baseline.json").exists()
     assert (bound_private_dir / "baseline.json").is_file()
+
+
+def test_relocation_after_final_attestation_is_rejected_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dependencies, _runner = _gate_fixture(tmp_path)
+    private_dir = tmp_path / "private"
+    displaced_private = tmp_path / "displaced-private"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    original_validate = corpus_gate_module._validate_final_state
+
+    def validate_then_relocate(
+        prepared: corpus_gate_module._PreparedGate,
+        active_dependencies: CorpusGateDependencies,
+    ) -> None:
+        original_validate(prepared, active_dependencies)
+        private_dir.rename(displaced_private)
+        private_dir.symlink_to(outside_dir, target_is_directory=True)
+
+    monkeypatch.setattr(corpus_gate_module, "_validate_final_state", validate_then_relocate)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
+    assert not (displaced_private / "baseline.json").exists()
+    assert not (outside_dir / "baseline.json").exists()
 
 
 def test_baseline_name_symlink_swap_immediately_before_publication_fails_closed(
@@ -1645,8 +2205,10 @@ def test_local_runner_uses_adjacent_membership_snapshots_and_emitted_outputs(
         jobs: int | None = None,
         *,
         cache_dir: str | Path | None = None,
+        directory_root_policy: DirectoryRootPolicy,
     ) -> BatchResult:
         assert cache_dir is not None
+        assert directory_root_policy is DirectoryRootPolicy.RESOLVE
         calls.append(
             (
                 Path(path),
@@ -1686,6 +2248,52 @@ def test_local_runner_uses_adjacent_membership_snapshots_and_emitted_outputs(
     )
 
 
+def test_local_runner_selects_trusted_policy_for_descriptor_roots(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    descriptors = tuple(
+        os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        for directory in (input_dir, output_dir, cache_dir)
+    )
+    proc_paths = tuple(Path(f"/proc/self/fd/{descriptor}") for descriptor in descriptors)
+    policies: list[DirectoryRootPolicy] = []
+    batch = _status_batch(Status.RECONCILED)
+
+    def fake_parser(
+        path: str | Path,
+        selected_output_dir: str | Path,
+        strict: bool = False,
+        jobs: int | None = None,
+        *,
+        cache_dir: str | Path | None = None,
+        directory_root_policy: DirectoryRootPolicy,
+    ) -> BatchResult:
+        del path, strict, jobs, cache_dir
+        policies.append(directory_root_policy)
+        write_batch_outputs(selected_output_dir, batch)
+        return batch
+
+    clock_values = iter((1_000_000_000, 2_000_000_000))
+    runner = LocalCorpusRunner(parser=fake_parser, monotonic_ns=lambda: next(clock_values))
+    try:
+        runner(
+            input_dir=proc_paths[0],
+            output_dir=proc_paths[1],
+            cache_dir=proc_paths[2],
+            strict=True,
+            jobs=1,
+        )
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+    assert policies == [DirectoryRootPolicy.TRUSTED_DESCRIPTOR]
+
+
 @pytest.mark.parametrize("filename", ("results.json", "transactions.csv"))
 @pytest.mark.parametrize("failure", ("missing", "mismatch"))
 def test_local_runner_requires_exact_canonical_emitted_outputs(
@@ -1709,8 +2317,9 @@ def test_local_runner_requires_exact_canonical_emitted_outputs(
         jobs: int | None = None,
         *,
         cache_dir: str | Path | None = None,
+        directory_root_policy: DirectoryRootPolicy,
     ) -> BatchResult:
-        del path, strict, jobs, cache_dir
+        del path, strict, jobs, cache_dir, directory_root_policy
         write_batch_outputs(selected_output_dir, batch)
         emitted_path = Path(selected_output_dir) / filename
         if failure == "missing":

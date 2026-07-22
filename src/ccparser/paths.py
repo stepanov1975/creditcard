@@ -3,8 +3,48 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable, Collection, Sequence
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
+
+
+class DirectoryRootPolicy(StrEnum):
+    """Control whether a directory root is resolved or retained as a capability."""
+
+    RESOLVE = "resolve"
+    TRUSTED_DESCRIPTOR = "trusted_descriptor"
+
+
+def normalize_directory_root(
+    root: str | Path,
+    *,
+    policy: DirectoryRootPolicy,
+    strict: bool,
+) -> Path:
+    """Normalize a path, preserving only an exact validated process-fd directory."""
+
+    path = Path(root)
+    if policy is DirectoryRootPolicy.RESOLVE:
+        return path.resolve(strict=strict)
+    if policy is not DirectoryRootPolicy.TRUSTED_DESCRIPTOR:
+        raise ValueError("unsupported directory-root policy")
+    descriptor_name = path.name
+    if (
+        path.parent != Path("/proc/self/fd")
+        or not descriptor_name.isdecimal()
+        or str(int(descriptor_name)) != descriptor_name
+    ):
+        raise ValueError("trusted root must be an exact process-fd path")
+    descriptor = int(descriptor_name)
+    descriptor_stat = os.fstat(descriptor)
+    path_stat = os.stat(path)
+    if not stat.S_ISDIR(descriptor_stat.st_mode) or (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ) != (path_stat.st_dev, path_stat.st_ino):
+        raise ValueError("trusted root must identify its open directory descriptor")
+    return path
 
 
 def safe_relative_posix_path(value: str) -> PurePosixPath:
@@ -38,16 +78,19 @@ def iter_regular_pdf_files(
     excluded_roots: Sequence[Path] = (),
     excluded_directory_names: Collection[str] = (),
     on_error: Callable[[OSError], None] | None = None,
+    root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
 ) -> tuple[Path, ...]:
-    """Return resolved regular PDFs beneath *root* in relative POSIX order."""
+    """Return regular PDFs beneath a normalized root in relative POSIX order."""
 
-    resolved_root = root.resolve(strict=True)
-    resolved_exclusions = tuple(path.resolve(strict=False) for path in excluded_roots)
-    if any(is_relative_to(resolved_root, excluded) for excluded in resolved_exclusions):
+    selected_root = normalize_directory_root(root, policy=root_policy, strict=True)
+    selected_exclusions = tuple(
+        normalize_directory_root(path, policy=root_policy, strict=False) for path in excluded_roots
+    )
+    if any(is_relative_to(selected_root, excluded) for excluded in selected_exclusions):
         return ()
     files: list[Path] = []
     for root_value, directory_names, file_names in os.walk(
-        resolved_root,
+        selected_root,
         followlinks=False,
         onerror=on_error,
     ):
@@ -55,12 +98,16 @@ def iter_regular_pdf_files(
         retained_directories: list[str] = []
         for directory_name in sorted(directory_names):
             directory = current_root / directory_name
-            resolved_directory = directory.resolve(strict=False)
+            selected_directory = (
+                directory.resolve(strict=False)
+                if root_policy is DirectoryRootPolicy.RESOLVE
+                else directory
+            )
             if (
                 directory_name in excluded_directory_names
                 or directory.is_symlink()
                 or any(
-                    is_relative_to(resolved_directory, excluded) for excluded in resolved_exclusions
+                    is_relative_to(selected_directory, excluded) for excluded in selected_exclusions
                 )
             ):
                 continue
@@ -70,8 +117,12 @@ def iter_regular_pdf_files(
             source = current_root / file_name
             if source.suffix.casefold() != ".pdf" or source.is_symlink() or not source.is_file():
                 continue
-            resolved_source = source.resolve(strict=False)
-            if any(is_relative_to(resolved_source, excluded) for excluded in resolved_exclusions):
+            selected_source = (
+                source.resolve(strict=False)
+                if root_policy is DirectoryRootPolicy.RESOLVE
+                else source
+            )
+            if any(is_relative_to(selected_source, excluded) for excluded in selected_exclusions):
                 continue
-            files.append(resolved_source)
-    return tuple(sorted(files, key=lambda source: source.relative_to(resolved_root).as_posix()))
+            files.append(selected_source)
+    return tuple(sorted(files, key=lambda source: source.relative_to(selected_root).as_posix()))

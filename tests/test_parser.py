@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import traceback
 from base64 import b64decode
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from decimal import Decimal
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from ccparser.parser import (
     parse_directory,
     parse_statement,
 )
+from ccparser.paths import DirectoryRootPolicy
 from ccparser.reconcile import ReconciliationOutcome
 from ccparser.summary import discovery_summary, row_summaries
 
@@ -1076,6 +1078,90 @@ def test_parse_directory_recurses_regular_pdfs_skips_trees_and_orders_posix_path
     assert sorted(calls) == ["a.PDF", "slow-b.pdf", "z.pdf"]
     assert (output_dir / "results.json").is_file()
     assert (output_dir / "transactions.csv").is_file()
+
+
+def test_parse_directory_preserves_trusted_capabilities_during_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    bound_private_dir = tmp_path / "bound-private"
+    outside_dir = tmp_path / "outside"
+    for root in (private_dir, outside_dir):
+        for name in ("input", "output", "cache"):
+            (root / name).mkdir(parents=True)
+    (private_dir / "input" / "approved.pdf").write_bytes(b"approved")
+    (outside_dir / "input" / "substitute.pdf").write_bytes(b"substitute")
+    descriptors = tuple(
+        os.open(private_dir / name, os.O_RDONLY | os.O_DIRECTORY)
+        for name in ("input", "output", "cache")
+    )
+    input_fd, output_fd, cache_fd = descriptors
+    input_root = Path(f"/proc/self/fd/{input_fd}")
+    output_root = Path(f"/proc/self/fd/{output_fd}")
+    cache_root = Path(f"/proc/self/fd/{cache_fd}")
+    original_iter = parser_module.iter_regular_pdf_files
+    seen_content: list[bytes] = []
+
+    def swap_then_iter(
+        root: Path,
+        *,
+        excluded_roots: Sequence[Path] = (),
+        excluded_directory_names: Collection[str] = (),
+        on_error: Callable[[OSError], None] | None = None,
+        root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
+    ) -> tuple[Path, ...]:
+        private_dir.rename(bound_private_dir)
+        private_dir.symlink_to(outside_dir, target_is_directory=True)
+        return original_iter(
+            root,
+            excluded_roots=excluded_roots,
+            excluded_directory_names=excluded_directory_names,
+            on_error=on_error,
+            root_policy=root_policy,
+        )
+
+    def recording_parser(
+        path: str | Path,
+        strict: bool = False,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> StatementResult:
+        del strict
+        assert cache_dir is not None
+        source = Path(path)
+        content = source.read_bytes()
+        seen_content.append(content)
+        (Path(cache_dir) / "cache-marker").write_bytes(b"cache")
+        digest = hashlib.sha256(content).hexdigest()
+        return StatementResult(
+            status=Status.RECONCILED,
+            transactions=(),
+            groups=(),
+            source_name=source.name,
+            source_sha256=digest,
+            statement_id=digest,
+        )
+
+    monkeypatch.setattr(parser_module, "iter_regular_pdf_files", swap_then_iter)
+    try:
+        parse_directory(
+            input_root,
+            output_root,
+            cache_dir=cache_root,
+            statement_parser=recording_parser,
+            directory_root_policy=DirectoryRootPolicy.TRUSTED_DESCRIPTOR,
+        )
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+    assert seen_content == [b"approved"]
+    assert (bound_private_dir / "output" / "results.json").is_file()
+    assert (bound_private_dir / "output" / "transactions.csv").is_file()
+    assert (bound_private_dir / "cache" / "cache-marker").read_bytes() == b"cache"
+    assert tuple((outside_dir / "output").iterdir()) == ()
+    assert tuple((outside_dir / "cache").iterdir()) == ()
 
 
 def test_parse_directory_jobs_are_bounded_and_byte_identical_to_sequential(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import os
@@ -46,7 +47,7 @@ from ccparser.models import (
 )
 from ccparser.output import canonical_json_bytes, transactions_csv_bytes
 from ccparser.parser import parse_directory
-from ccparser.paths import iter_regular_pdf_files, paths_overlap
+from ccparser.paths import DirectoryRootPolicy, iter_regular_pdf_files, paths_overlap
 
 type Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 type CommitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
@@ -365,6 +366,7 @@ class _DirectoryParser(Protocol):
         jobs: int | None = None,
         *,
         cache_dir: str | Path | None = None,
+        directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
     ) -> BatchResult:
         raise NotImplementedError
 
@@ -397,12 +399,18 @@ class LocalCorpusRunner:
     ) -> CompletedCorpusRun:
         membership_before = _snapshot_membership(input_dir, allow_descriptor_root=True)
         start_nanoseconds = self._monotonic_ns()
+        directory_root_policy = (
+            DirectoryRootPolicy.TRUSTED_DESCRIPTOR
+            if all(_is_process_fd_path(path) for path in (input_dir, output_dir, cache_dir))
+            else DirectoryRootPolicy.RESOLVE
+        )
         batch = self._parser(
             input_dir,
             output_dir,
             strict,
             jobs,
             cache_dir=cache_dir,
+            directory_root_policy=directory_root_policy,
         )
         end_nanoseconds = self._monotonic_ns()
         membership_after = _snapshot_membership(input_dir, allow_descriptor_root=True)
@@ -902,8 +910,27 @@ class _ObservedCorpusRun:
     original_membership_after: CorpusMembership
 
 
+def _close_descriptors(file_descriptors: Iterable[int]) -> None:
+    first_failure: BaseException | None = None
+    for file_descriptor in file_descriptors:
+        try:
+            os.close(file_descriptor)
+        except BaseException as error:
+            if first_failure is None:
+                first_failure = error
+    if first_failure is not None:
+        raise first_failure
+
+
+def _close_descriptors_no_throw(file_descriptors: Iterable[int]) -> None:
+    with suppress(BaseException):
+        _close_descriptors(file_descriptors)
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundExecutionPaths:
+    repository_fd: int
+    work_fd: int
     retained_input_fd: int
     quarantine_input_fd: int
     run_fds: tuple[tuple[int, int], ...]
@@ -941,18 +968,31 @@ def _snapshot_membership(
         raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,)) from None
 
 
-def _load_inventory(path: Path) -> CorpusMembershipInventory:
+def _load_inventory(
+    repository_fd: int,
+    repository_root: Path,
+    path: Path,
+) -> CorpusMembershipInventory:
     try:
-        return CorpusMembershipInventory.model_validate_json(path.read_bytes())
+        content = _read_stable_regular_file(repository_fd, repository_root, path)
+        return CorpusMembershipInventory.model_validate_json(content)
+    except CorpusGateError:
+        raise
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.INVENTORY_INVALID,)) from None
 
 
-def _load_baseline(path: Path) -> CorpusBaseline:
+def _load_baseline(
+    repository_fd: int,
+    repository_root: Path,
+    path: Path,
+) -> CorpusBaseline:
     try:
-        content = path.read_bytes()
+        content = _read_stable_regular_file(repository_fd, repository_root, path)
     except FileNotFoundError:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_MISSING,)) from None
+    except CorpusGateError:
+        raise
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
     try:
@@ -1171,15 +1211,31 @@ def _prepare_gate(
         if resolved.runtime_tolerance_ratio is not None:
             raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
 
-    inventory = _load_inventory(resolved.membership_inventory_path)
-    if mode is CorpusGateMode.RECORD:
-        runtime_tolerance_ratio = resolved.runtime_tolerance_ratio
-        if runtime_tolerance_ratio is None:
-            raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
-        accepted_baseline = None
-    else:
-        accepted_baseline = _load_baseline(resolved.baseline_path)
-        runtime_tolerance_ratio = accepted_baseline.runtime_tolerance_ratio
+    try:
+        repository_fd = os.open(repository_root, _DIRECTORY_OPEN_FLAGS)
+    except OSError:
+        raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,)) from None
+    try:
+        inventory = _load_inventory(
+            repository_fd,
+            repository_root,
+            resolved.membership_inventory_path,
+        )
+        if mode is CorpusGateMode.RECORD:
+            runtime_tolerance_ratio = resolved.runtime_tolerance_ratio
+            if runtime_tolerance_ratio is None:
+                raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
+            accepted_baseline = None
+        else:
+            accepted_baseline = _load_baseline(
+                repository_fd,
+                repository_root,
+                resolved.baseline_path,
+            )
+            runtime_tolerance_ratio = accepted_baseline.runtime_tolerance_ratio
+    finally:
+        with suppress(OSError):
+            os.close(repository_fd)
 
     retained_membership = _snapshot_membership(resolved.retained_dir)
     quarantine_membership = _snapshot_membership(resolved.quarantine_dir)
@@ -1212,12 +1268,21 @@ _FILE_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
-def _relative_directory_parts(repository_root: Path, path: Path) -> tuple[str, ...]:
+def _relative_directory_parts(
+    repository_root: Path,
+    path: Path,
+    *,
+    allow_root: bool = False,
+) -> tuple[str, ...]:
     try:
         relative = path.relative_to(repository_root)
     except ValueError:
         raise CorpusGateInputError((CorpusGateReason.PATH_OUTSIDE_REPOSITORY,)) from None
-    if not relative.parts or any(part in {".", ".."} for part in relative.parts):
+    if not relative.parts:
+        if allow_root:
+            return ()
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+    if any(part in {".", ".."} for part in relative.parts):
         raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
     return relative.parts
 
@@ -1227,20 +1292,124 @@ def _open_directory_beneath(
     parts: tuple[str, ...],
     *,
     create_missing: bool,
+    require_trusted: bool = False,
 ) -> int:
     current_fd = os.dup(root_fd)
     try:
+        if require_trusted:
+            _validate_trusted_directory(os.fstat(current_fd))
         for part in parts:
             if create_missing:
                 with suppress(FileExistsError):
                     os.mkdir(part, mode=0o700, dir_fd=current_fd)
             next_fd = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
-            os.close(current_fd)
+            try:
+                if require_trusted:
+                    _validate_trusted_directory(os.fstat(next_fd))
+            except BaseException:
+                with suppress(OSError):
+                    os.close(next_fd)
+                raise
+            previous_fd = current_fd
             current_fd = next_fd
+            os.close(previous_fd)
         return current_fd
-    except Exception:
-        os.close(current_fd)
+    except BaseException:
+        with suppress(OSError):
+            os.close(current_fd)
         raise
+
+
+def _validate_trusted_directory(directory_stat: os.stat_result) -> None:
+    untrusted_write_bits = stat.S_IWGRP | stat.S_IWOTH
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != os.geteuid()
+        or directory_stat.st_mode & untrusted_write_bits
+    ):
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+
+
+def _stable_file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+    )
+
+
+def _read_stable_regular_file(
+    repository_fd: int,
+    repository_root: Path,
+    path: Path,
+) -> bytes:
+    try:
+        parent_fd = _open_directory_beneath(
+            repository_fd,
+            _relative_directory_parts(
+                repository_root,
+                path.parent,
+                allow_root=True,
+            ),
+            create_missing=False,
+            require_trusted=True,
+        )
+    except CorpusGateError:
+        raise
+    except OSError:
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
+    try:
+        return _read_stable_regular_file_at(parent_fd, path.name)
+    finally:
+        with suppress(OSError):
+            os.close(parent_fd)
+
+
+def _read_stable_regular_file_at(parent_fd: int, name: str) -> bytes:
+    if not name or name in {".", ".."} or "/" in name:
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+    file_fd: int | None = None
+    try:
+        try:
+            file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            raise
+        except OSError:
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+        chunks: list[bytes] = []
+        while content := os.read(file_fd, 1024 * 1024):
+            chunks.append(content)
+        result = b"".join(chunks)
+        after = os.fstat(file_fd)
+        if (
+            _stable_file_identity(before) != _stable_file_identity(after)
+            or len(result) != before.st_size
+        ):
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+        return result
+    finally:
+        if file_fd is not None:
+            with suppress(OSError):
+                os.close(file_fd)
+
+
+def _load_locked_baseline(parent_fd: int, name: str) -> CorpusBaseline:
+    try:
+        content = _read_stable_regular_file_at(parent_fd, name)
+    except FileNotFoundError:
+        raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
+    except CorpusGateError:
+        raise
+    except Exception:
+        raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
+    try:
+        return CorpusBaseline.model_validate_json(content)
+    except Exception:
+        raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
 
 
 def _create_bound_child_directory(parent_fd: int, name: str) -> int:
@@ -1261,7 +1430,7 @@ def _write_all(file_descriptor: int, content: bytes) -> None:
 
 def _copy_regular_pdf(source_parent_fd: int, destination_parent_fd: int, name: str) -> str:
     source_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=source_parent_fd)
-    destination_fd: int | None = None
+    opened_file_descriptors = [source_fd]
     try:
         if not stat.S_ISREG(os.fstat(source_fd).st_mode):
             raise CorpusGateInputError((CorpusGateReason.CORPUS_SYMLINK,))
@@ -1271,16 +1440,18 @@ def _copy_regular_pdf(source_parent_fd: int, destination_parent_fd: int, name: s
             mode=0o400,
             dir_fd=destination_parent_fd,
         )
+        opened_file_descriptors.append(destination_fd)
         digest = sha256()
         while content := os.read(source_fd, 1024 * 1024):
             digest.update(content)
             _write_all(destination_fd, content)
         os.fchmod(destination_fd, 0o400)
-        return digest.hexdigest()
-    finally:
-        os.close(source_fd)
-        if destination_fd is not None:
-            os.close(destination_fd)
+        result = digest.hexdigest()
+    except BaseException:
+        _close_descriptors_no_throw(reversed(opened_file_descriptors))
+        raise
+    _close_descriptors(reversed(opened_file_descriptors))
+    return result
 
 
 def _copy_pdf_tree(source_fd: int, destination_fd: int) -> tuple[str, ...]:
@@ -1296,18 +1467,19 @@ def _copy_pdf_tree(source_fd: int, destination_fd: int) -> tuple[str, ...]:
                 _DIRECTORY_OPEN_FLAGS,
                 dir_fd=source_fd,
             )
-            destination_child_fd: int | None = None
+            opened_child_descriptors = [source_child_fd]
             try:
                 destination_child_fd = _create_bound_child_directory(
                     destination_fd,
                     entry.name,
                 )
+                opened_child_descriptors.append(destination_child_fd)
                 source_hashes.extend(_copy_pdf_tree(source_child_fd, destination_child_fd))
                 os.fchmod(destination_child_fd, 0o500)
-            finally:
-                os.close(source_child_fd)
-                if destination_child_fd is not None:
-                    os.close(destination_child_fd)
+            except BaseException:
+                _close_descriptors_no_throw(reversed(opened_child_descriptors))
+                raise
+            _close_descriptors(reversed(opened_child_descriptors))
             continue
         if entry.name.casefold().endswith(".pdf") and entry.is_file(follow_symlinks=False):
             source_hashes.append(_copy_regular_pdf(source_fd, destination_fd, entry.name))
@@ -1331,25 +1503,43 @@ def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
     try:
         root_fd = os.open(repository_root, _DIRECTORY_OPEN_FLAGS)
         file_descriptors.append(root_fd)
-        work_fd = _open_directory_beneath(
-            root_fd,
-            _relative_directory_parts(repository_root, prepared.config.work_dir),
-            create_missing=True,
-        )
-        file_descriptors.append(work_fd)
-        if os.listdir(work_fd):
-            raise CorpusGateInputError((CorpusGateReason.RUN_PATH_NOT_EMPTY,))
-
+        _validate_trusted_directory(os.fstat(root_fd))
         baseline_parent_fd = _open_directory_beneath(
             root_fd,
-            _relative_directory_parts(repository_root, prepared.config.baseline_path.parent),
+            _relative_directory_parts(
+                repository_root,
+                prepared.config.baseline_path.parent,
+                allow_root=True,
+            ),
             create_missing=True,
+            require_trusted=True,
         )
         file_descriptors.append(baseline_parent_fd)
+        try:
+            fcntl.flock(baseline_parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
+        if prepared.accepted_baseline is not None:
+            locked_baseline = _load_locked_baseline(
+                baseline_parent_fd,
+                prepared.config.baseline_path.name,
+            )
+            if locked_baseline != prepared.accepted_baseline:
+                raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
         _validate_baseline_destination(
             baseline_parent_fd,
             prepared.config.baseline_path.name,
         )
+
+        work_fd = _open_directory_beneath(
+            root_fd,
+            _relative_directory_parts(repository_root, prepared.config.work_dir),
+            create_missing=True,
+            require_trusted=True,
+        )
+        file_descriptors.append(work_fd)
+        if os.listdir(work_fd):
+            raise CorpusGateInputError((CorpusGateReason.RUN_PATH_NOT_EMPTY,))
 
         retained_input_fd = _create_bound_child_directory(work_fd, "retained-input")
         file_descriptors.append(retained_input_fd)
@@ -1375,8 +1565,10 @@ def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
             )
             try:
                 staged_membership = digest_membership(_copy_pdf_tree(source_fd, destination_fd))
-            finally:
-                os.close(source_fd)
+            except BaseException:
+                _close_descriptors_no_throw((source_fd,))
+                raise
+            _close_descriptors((source_fd,))
             if staged_membership != expected:
                 raise CorpusGateAcceptanceError((CorpusGateReason.MEMBERSHIP_DRIFT,))
             os.fchmod(destination_fd, 0o500)
@@ -1401,6 +1593,8 @@ def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
             ):
                 raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
         return _BoundExecutionPaths(
+            repository_fd=root_fd,
+            work_fd=work_fd,
             retained_input_fd=retained_input_fd,
             quarantine_input_fd=quarantine_input_fd,
             run_fds=tuple(run_fds),
@@ -1409,15 +1603,52 @@ def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
             _file_descriptors=tuple(file_descriptors),
         )
     except CorpusGateError:
-        for file_descriptor in reversed(file_descriptors):
-            with suppress(OSError):
-                os.close(file_descriptor)
+        _close_descriptors_no_throw(reversed(file_descriptors))
         raise
     except Exception:
-        for file_descriptor in reversed(file_descriptors):
-            with suppress(OSError):
-                os.close(file_descriptor)
+        _close_descriptors_no_throw(reversed(file_descriptors))
         raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
+    except BaseException:
+        _close_descriptors_no_throw(reversed(file_descriptors))
+        raise
+
+
+def _same_inode(left_fd: int, right_fd: int) -> bool:
+    left = os.fstat(left_fd)
+    right = os.fstat(right_fd)
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _validate_bound_reachability(
+    prepared: _PreparedGate,
+    bound_paths: _BoundExecutionPaths,
+) -> None:
+    repository_root = prepared.repository_state.root
+    for path, expected_fd, allow_root in (
+        (prepared.config.work_dir, bound_paths.work_fd, False),
+        (prepared.config.baseline_path.parent, bound_paths.baseline_parent_fd, True),
+    ):
+        try:
+            reopened_fd = _open_directory_beneath(
+                bound_paths.repository_fd,
+                _relative_directory_parts(
+                    repository_root,
+                    path,
+                    allow_root=allow_root,
+                ),
+                create_missing=False,
+                require_trusted=True,
+            )
+        except CorpusGateError:
+            raise
+        except OSError:
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
+        try:
+            if not _same_inode(reopened_fd, expected_fd):
+                raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+        finally:
+            with suppress(OSError):
+                os.close(reopened_fd)
 
 
 def _execute_run(
@@ -1449,6 +1680,31 @@ def _execute_run(
         original_membership_before=original_membership_before,
         original_membership_after=original_membership_after,
     )
+
+
+def _execute_bound_run(
+    dependencies: CorpusGateDependencies,
+    prepared: _PreparedGate,
+    bound_paths: _BoundExecutionPaths,
+    *,
+    input_dir: Path,
+    original_input_dir: Path,
+    output_dir: Path,
+    cache_dir: Path,
+    strict: bool,
+) -> _ObservedCorpusRun:
+    _validate_bound_reachability(prepared, bound_paths)
+    observed = _execute_run(
+        dependencies,
+        input_dir=input_dir,
+        original_input_dir=original_input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=strict,
+        jobs=prepared.config.jobs,
+    )
+    _validate_bound_reachability(prepared, bound_paths)
+    return observed
 
 
 def _candidate_baseline(
@@ -1565,6 +1821,21 @@ def _default_dependencies() -> CorpusGateDependencies:
     )
 
 
+type _InodeIdentity = tuple[int, int]
+
+
+def _inode_identity(file_stat: os.stat_result) -> _InodeIdentity:
+    return (file_stat.st_dev, file_stat.st_ino)
+
+
+def _name_matches_inode(parent_fd: int, name: str, identity: _InodeIdentity) -> bool:
+    try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(named.st_mode) and _inode_identity(named) == identity
+
+
 def _publish_json_secure(
     parent_fd: int,
     name: str,
@@ -1573,8 +1844,10 @@ def _publish_json_secure(
     content = canonical_json_bytes(result)
     temporary_name = f".{name}.{secrets.token_hex(16)}.tmp"
     temporary_fd: int | None = None
-    temporary_created = False
+    temporary_identity: _InodeIdentity | None = None
+    committed = False
     try:
+        _validate_trusted_directory(os.fstat(parent_fd))
         _validate_baseline_destination(parent_fd, name)
         temporary_fd = os.open(
             temporary_name,
@@ -1582,27 +1855,50 @@ def _publish_json_secure(
             mode=0o600,
             dir_fd=parent_fd,
         )
-        temporary_created = True
+        temporary_stat = os.fstat(temporary_fd)
+        if (
+            not stat.S_ISREG(temporary_stat.st_mode)
+            or temporary_stat.st_uid != os.geteuid()
+            or temporary_stat.st_nlink != 1
+        ):
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+        temporary_identity = _inode_identity(temporary_stat)
         _write_all(temporary_fd, content)
         os.fsync(temporary_fd)
-        os.close(temporary_fd)
-        temporary_fd = None
+        if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
         _validate_baseline_destination(parent_fd, name)
         os.fsync(parent_fd)
-        os.replace(
-            temporary_name,
-            name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        temporary_created = False
-        with suppress(OSError):
-            os.fsync(parent_fd)
+        if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
+            raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+        try:
+            os.replace(
+                temporary_name,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+        except BaseException:
+            if _name_matches_inode(parent_fd, name, temporary_identity):
+                committed = True
+                return
+            raise
+        committed = True
     finally:
         if temporary_fd is not None:
+            file_descriptor = temporary_fd
+            temporary_fd = None
             with suppress(OSError):
-                os.close(temporary_fd)
-        if temporary_created:
+                os.close(file_descriptor)
+        if (
+            not committed
+            and temporary_identity is not None
+            and _name_matches_inode(
+                parent_fd,
+                temporary_name,
+                temporary_identity,
+            )
+        ):
             with suppress(OSError):
                 os.unlink(temporary_name, dir_fd=parent_fd)
 
@@ -1626,43 +1922,47 @@ def run_corpus_gate(
         retained_input = _BoundExecutionPaths.path_for(bound_paths.retained_input_fd)
         quarantine_input = _BoundExecutionPaths.path_for(bound_paths.quarantine_input_fd)
         retained_runs = (
-            _execute_run(
+            _execute_bound_run(
                 active_dependencies,
+                prepared,
+                bound_paths,
                 input_dir=retained_input,
                 original_input_dir=prepared.config.retained_dir,
                 output_dir=paths[0][0],
                 cache_dir=paths[0][1],
                 strict=True,
-                jobs=prepared.config.jobs,
             ),
-            _execute_run(
+            _execute_bound_run(
                 active_dependencies,
+                prepared,
+                bound_paths,
                 input_dir=retained_input,
                 original_input_dir=prepared.config.retained_dir,
                 output_dir=paths[1][0],
                 cache_dir=paths[1][1],
                 strict=True,
-                jobs=prepared.config.jobs,
             ),
         )
         quarantine_runs = (
-            _execute_run(
+            _execute_bound_run(
                 active_dependencies,
+                prepared,
+                bound_paths,
                 input_dir=quarantine_input,
                 original_input_dir=prepared.config.quarantine_dir,
                 output_dir=paths[2][0],
                 cache_dir=paths[2][1],
                 strict=False,
-                jobs=prepared.config.jobs,
             ),
-            _execute_run(
+            _execute_bound_run(
                 active_dependencies,
+                prepared,
+                bound_paths,
                 input_dir=quarantine_input,
                 original_input_dir=prepared.config.quarantine_dir,
                 output_dir=paths[3][0],
                 cache_dir=paths[3][1],
                 strict=False,
-                jobs=prepared.config.jobs,
             ),
         )
         candidate = _candidate_baseline(prepared, retained_runs, quarantine_runs)
@@ -1696,6 +1996,7 @@ def run_corpus_gate(
             reason_codes=(),
         )
         if mode is CorpusGateMode.RECORD:
+            _validate_bound_reachability(prepared, bound_paths)
             try:
                 _publish_json_secure(
                     bound_paths.baseline_parent_fd,

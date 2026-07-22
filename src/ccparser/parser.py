@@ -24,7 +24,13 @@ from ccparser.money import parse_amount
 from ccparser.normalize import StatementNormalization, normalize_statement
 from ccparser.ocr_repair import repair_table_numeric_ocr
 from ccparser.output import write_batch_outputs
-from ccparser.paths import is_relative_to, iter_regular_pdf_files, paths_overlap
+from ccparser.paths import (
+    DirectoryRootPolicy,
+    is_relative_to,
+    iter_regular_pdf_files,
+    normalize_directory_root,
+    paths_overlap,
+)
 from ccparser.summary import discovery_summary, row_summaries
 
 MAX_WORKERS = 32
@@ -245,6 +251,7 @@ def parse_directory(
     *,
     cache_dir: str | Path | None = None,
     statement_parser: StatementParser | None = None,
+    directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
 ) -> BatchResult:
     """Recursively parse PDF files and atomically write deterministic aggregate output."""
 
@@ -262,13 +269,25 @@ def parse_directory(
     except Exception:
         raise ParserInputError("input or output path cannot be inspected") from None
     try:
-        resolved_input = input_path.resolve(strict=True)
-        resolved_output = output_path.resolve(strict=False)
+        resolved_input = normalize_directory_root(
+            input_path,
+            policy=directory_root_policy,
+            strict=True,
+        )
+        resolved_output = normalize_directory_root(
+            output_path,
+            policy=directory_root_policy,
+            strict=False,
+        )
     except Exception:
         raise ParserInputError("input directory cannot be inspected") from None
     try:
         selected_cache = Path(cache_dir) if cache_dir is not None else default_cache_directory()
-        resolved_cache = selected_cache.resolve(strict=False)
+        resolved_cache = normalize_directory_root(
+            selected_cache,
+            policy=directory_root_policy,
+            strict=False,
+        )
     except Exception:
         if cache_dir is None:
             raise ParserRuntimeError("default cache directory resolution failed") from None
@@ -283,6 +302,7 @@ def parse_directory(
             resolved_input,
             excluded_roots=(resolved_output, resolved_cache),
             on_error=raise_walk_error,
+            root_policy=directory_root_policy,
         )
     except ParserInputError:
         raise
@@ -328,7 +348,7 @@ def parse_directory(
         )
 
     try:
-        write_batch_outputs(output_path, batch)
+        write_batch_outputs(resolved_output, batch)
     except Exception:
         raise ParserRuntimeError("output writing failed") from None
     return batch
