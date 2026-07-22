@@ -15,7 +15,6 @@ from ccparser.normalization_semantics import (
     SemanticValidation,
     assignment_diagnostics,
     role_contract_diagnostics,
-    stable_unknown_columns,
     validate_transaction_semantics,
 )
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
@@ -25,10 +24,8 @@ def test_normalization_semantics_exports_exact_public_contract() -> None:
     assert normalization_semantics.__all__ == [
         "SemanticValidation",
         "assignment_diagnostics",
-        "column_header_text",
         "explicit_category_unknown_columns",
         "role_contract_diagnostics",
-        "stable_unknown_columns",
         "validate_transaction_semantics",
     ]
 
@@ -365,8 +362,10 @@ def test_proven_unanchored_short_date_is_claimed_as_ancillary_evidence() -> None
     )
 
 
-def test_semantic_validation_distinguishes_stable_and_unstable_unknown_columns() -> None:
-    first = _row(_cell("Retail", 0), _cell("Alpha1", 1), _cell("10.00", 2))
+def test_semantic_validation_distinguishes_unknown_columns_despite_unrelated_diagnostic() -> None:
+    first = _row(_cell("Retail", 0), _cell("Alpha1", 1), _cell("10.00", 2)).model_copy(
+        update={"diagnostics": ("not_a_continuation",)}
+    )
     second = _row(
         _cell("Services", 0, y=50.0),
         _cell("01/02/2026", 1, y=50.0),
@@ -391,7 +390,6 @@ def test_semantic_validation_distinguishes_stable_and_unstable_unknown_columns()
         amount_cell=first.cells[2],
     )
 
-    assert stable_unknown_columns(region) == frozenset({0})
     assert validation.claims == (
         EvidenceClaim(SemanticOwner.BILLED_VALUE, frozenset({2})),
         EvidenceClaim(SemanticOwner.ANCILLARY, frozenset({0})),

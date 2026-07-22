@@ -23,9 +23,9 @@ from ccparser.models import (
     TransactionCategory,
     TransactionKind,
 )
-from ccparser.normalization_dates import cross_cell_date_tokens
+from ccparser.normalization_dates import parsed_cross_cell_conversion_evidence
 from ccparser.normalization_fields import FieldDisposition
-from ccparser.normalization_semantics import column_header_text, stable_unknown_columns
+from ccparser.normalization_semantics import explicit_category_unknown_columns
 from ccparser.normalize import (
     RowNormalizationResult,
     _normalize_row,
@@ -140,35 +140,21 @@ def _region(
     )
 
 
-def test_column_header_text_unions_source_and_centered_header_evidence() -> None:
-    centered = _cell("centered", 0, 10.0)
-    source = _cell("source", 1, 10.0)
+def test_explicit_category_columns_union_source_and_centered_header_evidence() -> None:
+    centered = _cell("Transaction", 0, 10.0)
+    source = _cell("type", 1, 10.0)
     row = _row(_cell("value", 0, 30.0))
     region = _region((ColumnRole.UNKNOWN,), (row,))
     column = region.table_schema.columns[0].model_copy(update={"source_cells": (source,)})
     region = region.model_copy(
         update={
             "table_schema": region.table_schema.model_copy(
-                update={"columns": (column,), "header_cells": (source, centered)}
+                update={"columns": (column,), "header_cells": (centered, source)}
             )
         }
     )
 
-    assert column_header_text(region, column) == "source centered"
-
-
-def test_unrelated_continuation_diagnostic_keeps_stable_unknown_row_evidence() -> None:
-    first = _row(_cell("Groceries", 0, 30.0), _cell("10.00", 1, 30.0)).model_copy(
-        update={"diagnostics": ("not_a_continuation",)}
-    )
-    second = _row(_cell("Dining", 0, 50.0), _cell("20.00", 1, 50.0))
-    region = _region(
-        (ColumnRole.UNKNOWN, ColumnRole.AMOUNT),
-        (first, second),
-        headers=("Category", "Amount"),
-    )
-
-    assert stable_unknown_columns(region) == frozenset({0})
+    assert explicit_category_unknown_columns(region) == frozenset({0})
 
 
 def _discovery(
@@ -3502,14 +3488,24 @@ def test_cross_cell_conversion_date_evidence_excludes_unrelated_numeric_atoms() 
     row = region.rows[0]
     ledger = EvidenceLedger.from_rows((row,))
 
-    evidence = cross_cell_date_tokens(row, region, ledger)
+    year_context = _discovery(region, "19.63", "ILS", year_context=2021).date_year_context
+    assert year_context is not None
+    parsed_evidence = parsed_cross_cell_conversion_evidence(
+        row,
+        region,
+        ledger,
+        year_context,
+        date(2021, 6, 24),
+    )
 
-    assert len(evidence) == 1
+    assert len(parsed_evidence) == 1
+    candidate_date, evidence = parsed_evidence[0]
+    assert candidate_date == date(2021, 6, 26)
     unrelated_digit_ids = frozenset(
         atom.atom_id for atom in ledger.atoms if atom.text == "9" and atom.bbox[0] < 130.0
     )
     assert unrelated_digit_ids
-    assert evidence[0].atom_ids.isdisjoint(unrelated_digit_ids)
+    assert evidence.atom_ids.isdisjoint(unrelated_digit_ids)
 
 
 @pytest.mark.parametrize(

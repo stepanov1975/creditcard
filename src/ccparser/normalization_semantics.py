@@ -180,7 +180,7 @@ def _is_isolated_ocr_edge_artifact_cell(
     )
 
 
-def column_header_text(region: TableRegion, column: ColumnSpec) -> str:
+def _column_header_text(region: TableRegion, column: ColumnSpec) -> str:
     header_cells = tuple(
         cell
         for cell in region.table_schema.header_cells
@@ -195,7 +195,7 @@ def _explicit_ancillary_unknown_columns(region: TableRegion) -> frozenset[int]:
         column.index
         for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN)
         if _contains_marker(
-            column_header_text(region, column),
+            _column_header_text(region, column),
             _EXPLICIT_ANCILLARY_HEADER_MARKERS,
         )
     )
@@ -206,17 +206,17 @@ def explicit_category_unknown_columns(region: TableRegion) -> frozenset[int]:
         column.index
         for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN)
         if _contains_marker(
-            column_header_text(region, column),
+            _column_header_text(region, column),
             _EXPLICIT_CATEGORY_HEADER_MARKERS,
         )
     )
 
 
-def stable_unknown_columns(region: TableRegion) -> frozenset[int]:
+def _stable_unknown_columns(region: TableRegion) -> frozenset[int]:
     stable: set[int] = set()
     base_rows = tuple(row for row in region.rows if not is_structural_continuation(row))
     for column in columns_for_role(region.table_schema, ColumnRole.UNKNOWN):
-        header_text = column_header_text(region, column)
+        header_text = _column_header_text(region, column)
         values = tuple(
             cell
             for row in base_rows
@@ -423,7 +423,7 @@ def validate_transaction_semantics(
         ledger.atoms_for_cell(amount_cell),
     )
 
-    stable_unknowns = stable_unknown_columns(region)
+    stable_unknowns = _stable_unknown_columns(region)
     explicit_ancillary_unknowns = _explicit_ancillary_unknown_columns(region)
     explicit_category_unknowns = explicit_category_unknown_columns(region)
     description_columns = columns_for_role(region.table_schema, ColumnRole.DESCRIPTION)
@@ -671,9 +671,7 @@ def validate_transaction_semantics(
 __all__ = [
     "SemanticValidation",
     "assignment_diagnostics",
-    "column_header_text",
     "explicit_category_unknown_columns",
     "role_contract_diagnostics",
-    "stable_unknown_columns",
     "validate_transaction_semantics",
 ]

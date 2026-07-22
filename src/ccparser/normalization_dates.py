@@ -108,7 +108,7 @@ def _role_columns(region: TableRegion, role: ColumnRole) -> tuple[ColumnSpec, ..
     return columns_for_role(region.table_schema, role)
 
 
-def parse_date(
+def _parse_date(
     text: str,
     year_context: DiscoveredDateYearContext | None = None,
 ) -> tuple[date | None, str | None]:
@@ -199,7 +199,7 @@ def _parse_ocr_contaminated_cell_date(
     repaired = {
         parsed_date
         for candidate in candidates
-        if (parsed_date := parse_date(candidate, year_context)[0]) is not None
+        if (parsed_date := _parse_date(candidate, year_context)[0]) is not None
     }
     return (next(iter(repaired)), None) if len(repaired) == 1 else (None, "invalid_date")
 
@@ -208,7 +208,7 @@ def _parse_cell_date(
     cell: Cell,
     year_context: DiscoveredDateYearContext | None,
 ) -> tuple[date | None, str | None]:
-    parsed = parse_date(cell.text, year_context)
+    parsed = _parse_date(cell.text, year_context)
     parsed_year_out_of_range = (
         parsed[0] is not None
         and cell_has_ocr_evidence(cell)
@@ -225,7 +225,7 @@ def _parse_cell_date(
     word_candidates = tuple(
         candidate
         for word in cell.words
-        if (candidate := parse_date(word.text, year_context))[0] is not None
+        if (candidate := _parse_date(word.text, year_context))[0] is not None
         and candidate[1] is None
     )
     return word_candidates[0] if len(word_candidates) == 1 else parsed
@@ -331,7 +331,7 @@ def _parse_overlapping_boundary_date(
             if column.bbox[0] <= _center_x(glyph.bbox) <= column.bbox[2]
         )
         if clipped_glyphs:
-            clipped_date, clipped_diagnostic = parse_date(
+            clipped_date, clipped_diagnostic = _parse_date(
                 logical_text_for_evidence(clipped_glyphs, ()),
                 year_context,
             )
@@ -346,7 +346,7 @@ def _parse_overlapping_boundary_date(
             continue
         if cell_center > column_center and match.start() != 0:
             continue
-        parsed_date, diagnostic = parse_date(match.group(0), year_context)
+        parsed_date, diagnostic = _parse_date(match.group(0), year_context)
         if parsed_date is not None and diagnostic is None:
             candidates[parsed_date] = (parsed_date, None)
     return next(iter(candidates.values())) if len(candidates) == 1 else (None, "invalid_date")
@@ -379,7 +379,7 @@ def adjacent_boundary_date_completion(
     base_text = logical_text_for_evidence(base_glyphs, ())
     if (
         normalize_text(base_text) != normalize_text(assigned_cell.text)
-        or parse_date(base_text, year_context)[0] is not None
+        or _parse_date(base_text, year_context)[0] is not None
     ):
         return None
     sources = {glyph.source for glyph in base_glyphs}
@@ -419,7 +419,7 @@ def adjacent_boundary_date_completion(
         if gap > adjacency_tolerance:
             continue
         candidate_text = logical_text_for_evidence((*base_glyphs, glyph), ())
-        parsed_date, diagnostic = parse_date(candidate_text, year_context)
+        parsed_date, diagnostic = _parse_date(candidate_text, year_context)
         if parsed_date is not None and diagnostic is None:
             candidates.append((parsed_date, cell, glyph))
     return candidates[0] if len(candidates) == 1 else None
@@ -494,7 +494,7 @@ def _parse_date_without_duplicated_boundary_glyphs(
     remaining = tuple(glyph for glyph in assigned_cell.glyphs if glyph not in outside)
     if not remaining:
         return None, "invalid_date"
-    parsed_date, diagnostic = parse_date(
+    parsed_date, diagnostic = _parse_date(
         logical_text_for_evidence(remaining, ()),
         year_context,
     )
@@ -941,7 +941,7 @@ def _vertically_aligned(first: BBox, second: BBox) -> bool:
     return vertical_overlap(first, second) >= 0.8
 
 
-def cross_cell_date_tokens(
+def _cross_cell_date_tokens(
     row: Row,
     region: TableRegion,
     ledger: EvidenceLedger,
@@ -1013,7 +1013,7 @@ def cross_cell_date_source_cells(
     ledger: EvidenceLedger,
 ) -> frozenset[Cell]:
     return frozenset(
-        cell for evidence in cross_cell_date_tokens(row, region, ledger) for cell in evidence.cells
+        cell for evidence in _cross_cell_date_tokens(row, region, ledger) for cell in evidence.cells
     )
 
 
@@ -1027,7 +1027,7 @@ def parsed_cross_cell_conversion_evidence(
     if transaction_date is None:
         return ()
     parsed: list[tuple[date, CrossCellDateEvidence]] = []
-    for evidence in cross_cell_date_tokens(row, region, ledger):
+    for evidence in _cross_cell_date_tokens(row, region, ledger):
         value = _parse_date_near_anchor(evidence.text, year_context, transaction_date)
         if value is not None and abs((value - transaction_date).days) <= 31:
             parsed.append((value, evidence))
@@ -1039,7 +1039,7 @@ def _parse_date_near_anchor(
     year_context: DiscoveredDateYearContext | None,
     anchor: date | None,
 ) -> date | None:
-    parsed = parse_date(text, year_context)[0]
+    parsed = _parse_date(text, year_context)[0]
     if parsed is not None or anchor is None:
         return parsed
     if year_context is None:
@@ -1068,7 +1068,7 @@ def _parse_date_near_anchor(
             "year_by_suffix": tuple(sorted((year % 100, year) for year in local_years)),
         }
     )
-    parsed = parse_date(text, local_context)[0]
+    parsed = _parse_date(text, local_context)[0]
     if parsed is None or abs((parsed - anchor).days) > 31:
         return None
     return parsed
@@ -1125,7 +1125,7 @@ def extract_conversion_date(
         for cell in candidate_cells
         for candidate in ledger.fragmented_date_candidates(cell)
     )
-    raw_cross_cell_evidence = cross_cell_date_tokens(row, region, ledger)
+    raw_cross_cell_evidence = _cross_cell_date_tokens(row, region, ledger)
     parsed_cross_cell_evidence = parsed_cross_cell_conversion_evidence(
         row,
         region,
@@ -1182,14 +1182,12 @@ __all__ = [
     "boundary_date_description_splits",
     "contains_date_cue",
     "cross_cell_date_source_cells",
-    "cross_cell_date_tokens",
     "date_column_header_kind",
     "extract_conversion_date",
     "extract_dates",
     "has_proven_unanchored_short_date",
     "is_date_shaped",
     "matching_date_atom_ids",
-    "parse_date",
     "parsed_cross_cell_conversion_evidence",
     "proven_unanchored_short_date_style",
     "structural_date_column_kinds",

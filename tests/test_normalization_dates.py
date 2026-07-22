@@ -15,10 +15,8 @@ from ccparser.normalization_dates import (
     ConversionDateExtraction,
     DateColumnKind,
     DateExtraction,
-    cross_cell_date_tokens,
     extract_conversion_date,
     extract_dates,
-    parse_date,
     structural_date_column_kinds,
 )
 from ccparser.semantic_evidence import EvidenceLedger
@@ -35,14 +33,12 @@ def test_normalization_dates_exports_exact_public_contract() -> None:
         "boundary_date_description_splits",
         "contains_date_cue",
         "cross_cell_date_source_cells",
-        "cross_cell_date_tokens",
         "date_column_header_kind",
         "extract_conversion_date",
         "extract_dates",
         "has_proven_unanchored_short_date",
         "is_date_shaped",
         "matching_date_atom_ids",
-        "parse_date",
         "parsed_cross_cell_conversion_evidence",
         "proven_unanchored_short_date_style",
         "structural_date_column_kinds",
@@ -295,13 +291,41 @@ def test_parse_date_preserves_all_full_and_short_styles(
     short_token: str,
 ) -> None:
     expected = date(2026, 6, 24)
+    full_row = _row(_cell(full_token, 0), _cell("10.00", 1))
+    short_row = _row(_cell(short_token, 0), _cell("10.00", 1))
+    full_region = _region((ColumnRole.DATE, ColumnRole.AMOUNT), (full_row,))
+    short_region = _region((ColumnRole.DATE, ColumnRole.AMOUNT), (short_row,))
 
-    assert parse_date(full_token) == (expected, None)
-    assert parse_date(short_token, _year_context(style)) == (expected, None)
+    assert extract_dates(full_row, full_region, None, {}) == DateExtraction(
+        expected,
+        None,
+        None,
+        (),
+        (),
+    )
+    assert extract_dates(short_row, short_region, _year_context(style), {}) == DateExtraction(
+        expected,
+        None,
+        None,
+        (),
+        (),
+    )
 
 
 def test_parse_date_preserves_installment_ambiguity_diagnostic() -> None:
-    assert parse_date("2/6") == (None, "ambiguous_date_or_installment")
+    row = _row(_cell("2/6", 0), _cell("10.00", 1))
+    region = _region((ColumnRole.DATE, ColumnRole.AMOUNT), (row,))
+
+    assert extract_dates(row, region, None, {}) == DateExtraction(
+        None,
+        None,
+        None,
+        (
+            "invalid_transaction_date",
+            "transaction_date:ambiguous_date_or_installment",
+        ),
+        (),
+    )
 
 
 def test_dates_returns_exact_five_legacy_values() -> None:
@@ -654,7 +678,6 @@ def test_semantic_conversion_date_preserves_cross_cell_sources() -> None:
     row = region.rows[0]
     ledger = EvidenceLedger.from_rows((row,))
 
-    evidence = cross_cell_date_tokens(row, region, ledger)
     result = extract_conversion_date(
         row,
         region,
@@ -666,9 +689,6 @@ def test_semantic_conversion_date_preserves_cross_cell_sources() -> None:
         existing_conversion_date=None,
     )
 
-    assert len(evidence) == 1
-    assert evidence[0].text == "26/06/21"
-    assert evidence[0].cells == frozenset((left, right))
     assert result == ConversionDateExtraction(date(2021, 6, 26), (), frozenset((left, right)))
     assert any(source is left for source in result.source_cells)
     assert any(source is right for source in result.source_cells)
