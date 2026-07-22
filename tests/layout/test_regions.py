@@ -4,11 +4,25 @@ import pytest
 
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
+from ccparser.layout.continuations import (
+    ContinuationKind,
+    ContinuationMatch,
+    DetailContinuationPolicy,
+)
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
 from ccparser.layout.regions import (
+    _apply_continuation_match,
+    _bounded_auxiliary_fragment,
+    _bounded_card_identifier_detail_block,
+    _bounded_card_identifier_tail,
     _bounded_complementary_transaction_rows,
+    _bounded_hebrew_note_detail,
+    _bounded_leading_detail_before_transaction,
+    _candidate_schema,
+    _foreign_conversion_detail_block,
     _has_strong_single_row_evidence,
     _horizontal_gap,
+    _is_marked_detail_continuation,
     _merge_header_rows,
     _merged_header_bands,
     _page_row_key,
@@ -21,6 +35,7 @@ from ccparser.layout.regions import (
     detect_table_regions,
     logical_rows,
 )
+from ccparser.layout.row_tags import RowTag
 from ccparser.layout.text import logical_text_for_evidence
 
 
@@ -862,6 +877,582 @@ def _duplicate_amount_data(
         _word("4.00", 80.0, 88.0, y),
         _word("Market", 96.0, 104.0, y),
         _word("01/02/2026", 112.0, 120.0, y),
+    )
+
+
+def _continuation_detector_context(
+    page: PageEvidence,
+) -> tuple[tuple[Row, ...], Row, TableSchema]:
+    rows = logical_rows(page)
+    header = rows[0]
+    return rows, header, _candidate_schema(page, rows, 0)
+
+
+def _with_diagnostics(row: Row, *diagnostics: str) -> Row:
+    return row.model_copy(
+        update={
+            "diagnostics": tuple(dict.fromkeys((*row.diagnostics, *diagnostics))),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "kind",
+        "rows",
+        "row_tags",
+        "detail_policy",
+        "skipped_outside_rows",
+        "expected_counts",
+        "expected_detail_allowed",
+    ),
+    (
+        (
+            ContinuationKind.DESCRIPTION,
+            (
+                Row(
+                    page_number=1,
+                    bbox=(0.0, 20.0, 10.0, 30.0),
+                    cells=(),
+                    confidence=1.0,
+                ),
+            ),
+            frozenset({RowTag.DESCRIPTION_CONTINUATION}),
+            DetailContinuationPolicy.PRESERVE,
+            0,
+            (3, 3, 4),
+            True,
+        ),
+        (
+            ContinuationKind.AUXILIARY_FRAGMENT,
+            (
+                Row(
+                    page_number=1,
+                    bbox=(0.0, 20.0, 10.0, 30.0),
+                    cells=(),
+                    confidence=1.0,
+                ),
+            ),
+            frozenset({RowTag.AUXILIARY_CONTINUATION}),
+            DetailContinuationPolicy.DISALLOW,
+            0,
+            (2, 3, 5),
+            False,
+        ),
+        (
+            ContinuationKind.FOREIGN_CONVERSION_BLOCK,
+            (
+                Row(
+                    page_number=1,
+                    bbox=(0.0, 20.0, 10.0, 30.0),
+                    cells=(),
+                    confidence=1.0,
+                ),
+                Row(
+                    page_number=1,
+                    bbox=(0.0, 31.0, 10.0, 41.0),
+                    cells=(),
+                    confidence=1.0,
+                ),
+            ),
+            frozenset(
+                {
+                    RowTag.SUBORDINATE_DETAIL,
+                    RowTag.FOREIGN_CONVERSION_DETAIL,
+                }
+            ),
+            DetailContinuationPolicy.DISALLOW,
+            2,
+            (2, 5, 4),
+            False,
+        ),
+    ),
+)
+def test_apply_continuation_match_updates_only_explicit_scanner_effects(
+    kind: ContinuationKind,
+    rows: tuple[Row, ...],
+    row_tags: frozenset[RowTag],
+    detail_policy: DetailContinuationPolicy,
+    skipped_outside_rows: int,
+    expected_counts: tuple[int, int, int],
+    expected_detail_allowed: bool,
+) -> None:
+    accepted = [
+        Row(
+            page_number=1,
+            bbox=(0.0, 0.0, 10.0, 10.0),
+            cells=(),
+            confidence=1.0,
+        )
+    ]
+    match = ContinuationMatch(
+        rows=rows,
+        consumed_through=4,
+        kind=kind,
+        row_tags=row_tags,
+        detail_policy=detail_policy,
+        skipped_outside_rows=skipped_outside_rows,
+        start_index=3,
+    )
+
+    result = _apply_continuation_match(
+        match,
+        accepted,
+        consumed_through=2,
+        continuation_count=2,
+        detail_continuation_count=3,
+        auxiliary_continuation_count=4,
+        detail_continuation_allowed=True,
+        ignored_outside_band_count=5,
+    )
+
+    assert accepted == [accepted[0], *rows]
+    assert result == (
+        rows[-1],
+        4,
+        *expected_counts,
+        expected_detail_allowed,
+        5 + skipped_outside_rows,
+    )
+
+
+def test_continuation_match_leading_detail_preserves_exact_boundary_result() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            _word("detail", 108.0, 120.0, 30.0),
+            _word("merchant 1234", 90.0, 100.0, 30.0),
+            _word("$3.00 note", 72.0, 82.0, 30.0),
+            _word("3.70x", 54.0, 64.0, 30.0),
+            _word("03.02x", 36.0, 46.0, 30.0),
+            _word("$", 18.0, 28.0, 30.0),
+            _word("12.40", 0.0, 10.0, 50.0),
+            _word("3.70", 18.0, 28.0, 50.0),
+            _word("03/02/2026", 36.0, 46.0, 50.0),
+            _word("$4.00", 72.0, 82.0, 50.0),
+            _word("Market", 90.0, 100.0, 50.0),
+            _word("01/02/2026", 108.0, 120.0, 50.0),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    expected = _with_diagnostics(
+        _project_row_to_header_bands(rows[1], header),
+        "leading_subordinate_detail_continuation",
+    )
+
+    match = _bounded_leading_detail_before_transaction(
+        page,
+        rows,
+        1,
+        header,
+        schema,
+    )
+
+    assert match == ContinuationMatch(
+        rows=(expected,),
+        consumed_through=1,
+        kind=ContinuationKind.LEADING_DETAIL,
+        row_tags=frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        start_index=1,
+    )
+
+
+def test_continuation_match_card_identifier_block_preserves_exact_boundary_result() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("donation notice", 30.0, 55.0, 61.0),
+            _word("מזהה כרטיס", 30.0, 55.0, 72.0),
+            _word("9313", 65.0, 75.0, 72.0),
+            *_auxiliary_data(83.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    previous = _project_row_to_header_bands(rows[2], header)
+    expected = tuple(
+        _with_diagnostics(
+            _project_row_to_header_bands(rows[index], header),
+            "subordinate_detail_continuation",
+            "bounded_card_identifier_detail_block",
+        )
+        for index in (3, 4)
+    )
+
+    match = _bounded_card_identifier_detail_block(
+        page,
+        rows,
+        3,
+        header,
+        schema,
+        previous,
+    )
+
+    assert match == ContinuationMatch(
+        rows=expected,
+        consumed_through=4,
+        kind=ContinuationKind.CARD_IDENTIFIER_BLOCK,
+        row_tags=frozenset(
+            {
+                RowTag.SUBORDINATE_DETAIL,
+                RowTag.CARD_IDENTIFIER_DETAIL,
+            }
+        ),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        start_index=3,
+    )
+
+
+def test_continuation_match_card_identifier_tail_preserves_exact_boundary_result() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(
+                50.0,
+                "02/02/2026",
+                "Merchant prefix",
+                "מזהה כרטיס אינטרנט",
+                "₪20.00",
+            ),
+            _word("Merchant suffix", 30.0, 55.0, 61.0),
+            _word("8312", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    previous = _project_row_to_header_bands(rows[2], header)
+    expected = _with_diagnostics(
+        _project_row_to_header_bands(rows[3], header),
+        "subordinate_detail_continuation",
+        "bounded_card_identifier_tail",
+    )
+
+    match = _bounded_card_identifier_tail(
+        page,
+        rows,
+        3,
+        header,
+        schema,
+        previous,
+    )
+
+    assert match == ContinuationMatch(
+        rows=(expected,),
+        consumed_through=3,
+        kind=ContinuationKind.CARD_IDENTIFIER_TAIL,
+        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        start_index=3,
+    )
+
+
+def test_continuation_match_foreign_block_preserves_rows_index_and_skipped_count() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            _word("discount applied", 30.0, 85.0, 83.0),
+            _word("sidebar", 150.0, 175.0, 95.0),
+            _word("special arrangement", 30.0, 85.0, 107.0),
+            *_foreign_data(118.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        ),
+        width=190.0,
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    accepted = tuple(_project_row_to_header_bands(row, header) for row in rows[1:3])
+    expected = tuple(
+        _with_diagnostics(
+            _project_row_to_header_bands(rows[index], header),
+            "subordinate_detail_continuation",
+            "foreign_conversion_detail_block",
+        )
+        for index in (3, 4, 5, 7)
+    )
+
+    match = _foreign_conversion_detail_block(
+        page,
+        rows,
+        3,
+        header,
+        schema,
+        accepted[-1],
+        (header, *accepted),
+    )
+
+    assert match == ContinuationMatch(
+        rows=expected,
+        consumed_through=7,
+        kind=ContinuationKind.FOREIGN_CONVERSION_BLOCK,
+        row_tags=frozenset(
+            {
+                RowTag.SUBORDINATE_DETAIL,
+                RowTag.FOREIGN_CONVERSION_DETAIL,
+            }
+        ),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        skipped_outside_rows=1,
+        start_index=3,
+    )
+
+
+def test_continuation_match_hebrew_note_preserves_row_index_and_skipped_count() -> None:
+    page = _page(
+        (
+            *_wide_financial_header(10.0),
+            *_wide_sparse_data(30.0, include_conversion_date=True),
+            _word("הערה USD", 90.0, 100.0, 41.0),
+            _word(".", 150.0, 151.0, 48.5),
+            *_wide_sparse_data(59.0, include_conversion_date=True),
+        ),
+        width=160.0,
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    previous = _project_row_to_header_bands(rows[1], header)
+    expected = _with_diagnostics(
+        _project_row_to_header_bands(rows[2], header),
+        "subordinate_detail_continuation",
+        "bounded_hebrew_note_detail",
+    )
+
+    match = _bounded_hebrew_note_detail(
+        page,
+        rows,
+        2,
+        header,
+        schema,
+        previous,
+    )
+
+    assert match == ContinuationMatch(
+        rows=(expected,),
+        consumed_through=3,
+        kind=ContinuationKind.HEBREW_NOTE,
+        row_tags=frozenset(
+            {
+                RowTag.SUBORDINATE_DETAIL,
+                RowTag.HEBREW_NOTE_DETAIL,
+            }
+        ),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        skipped_outside_rows=1,
+        start_index=2,
+    )
+
+
+def test_continuation_match_auxiliary_fragment_preserves_exact_boundary_result() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            *_auxiliary_data(72.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    previous = _project_row_to_header_bands(rows[2], header)
+    expected = _with_diagnostics(
+        _project_row_to_header_bands(rows[3], header),
+        "subordinate_auxiliary_continuation",
+    )
+
+    match = _bounded_auxiliary_fragment(
+        page,
+        rows,
+        3,
+        header,
+        schema,
+        previous,
+    )
+
+    assert match == ContinuationMatch(
+        rows=(expected,),
+        consumed_through=3,
+        kind=ContinuationKind.AUXILIARY_FRAGMENT,
+        row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
+        detail_policy=DetailContinuationPolicy.DISALLOW,
+        start_index=3,
+    )
+
+
+def test_marked_detail_predicate_remains_distinct_from_match_construction() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "10.00"),
+            _word("Exchange rate", 0.0, 22.0, 41.0),
+            _word("Fee 0.50", 35.0, 72.0, 41.0),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+
+    assert _is_marked_detail_continuation(
+        _project_row_to_header_bands(rows[2], header),
+        _project_row_to_header_bands(rows[1], header),
+        schema,
+    )
+
+
+def test_foreign_detail_boundary_rejects_excessive_gap() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("Fee", 30.0, 55.0, 61.0),
+            _word("special arrangement", 30.0, 55.0, 87.0),
+            *_foreign_data(98.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    accepted = tuple(_project_row_to_header_bands(row, header) for row in rows[1:3])
+
+    assert (
+        _foreign_conversion_detail_block(
+            page,
+            rows,
+            3,
+            header,
+            schema,
+            accepted[-1],
+            (header, *accepted),
+        )
+        is None
+    )
+
+
+def test_foreign_detail_boundary_rejects_currency_mismatch_without_issuer_proof() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Local shop", "₪11.00", "₪11.00"),
+            _word("converted at issuer rate", 30.0, 85.0, 61.0),
+            _word("Fee", 30.0, 55.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    accepted = tuple(_project_row_to_header_bands(row, header) for row in rows[1:3])
+
+    assert (
+        _foreign_conversion_detail_block(
+            page,
+            rows,
+            3,
+            header,
+            schema,
+            accepted[-1],
+            (header, *accepted),
+        )
+        is None
+    )
+
+
+def test_foreign_detail_boundary_rejects_extra_date_shape() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("Fee", 30.0, 55.0, 61.0),
+            _word("03/02/2026", 65.0, 85.0, 61.0),
+            *_foreign_data(72.0, "04/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+    accepted = tuple(_project_row_to_header_bands(row, header) for row in rows[1:3])
+
+    assert (
+        _foreign_conversion_detail_block(
+            page,
+            rows,
+            3,
+            header,
+            schema,
+            accepted[-1],
+            (header, *accepted),
+        )
+        is None
+    )
+
+
+def test_marked_detail_boundary_rejects_ambiguous_single_cell_marker() -> None:
+    page = _page(
+        (
+            *_header(10.0),
+            *_data(30.0, "01/02/2026", "Market", "10.00"),
+            _word("Fee", 35.0, 72.0, 41.0),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+
+    assert not _is_marked_detail_continuation(
+        _project_row_to_header_bands(rows[2], header),
+        _project_row_to_header_bands(rows[1], header),
+        schema,
+    )
+
+
+def test_card_identifier_block_boundary_rejects_invalid_identifier() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("donation notice", 30.0, 55.0, 61.0),
+            _word("מזהה כרטיס", 30.0, 55.0, 72.0),
+            _word("931", 65.0, 75.0, 72.0),
+            *_auxiliary_data(83.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        )
+    )
+    rows, header, schema = _continuation_detector_context(page)
+
+    assert (
+        _bounded_card_identifier_detail_block(
+            page,
+            rows,
+            3,
+            header,
+            schema,
+            _project_row_to_header_bands(rows[2], header),
+        )
+        is None
+    )
+
+
+def test_auxiliary_fragment_boundary_rejects_lookahead_beyond_limit() -> None:
+    page = _page(
+        (
+            *_auxiliary_table_header(10.0),
+            *_auxiliary_data(30.0, "01/02/2026", "Market", "Food", "₪10.00"),
+            *_auxiliary_data(50.0, "02/02/2026", "Hotel", "Travel", "₪20.00"),
+            _word("continued", 65.0, 85.0, 61.0),
+            _word("sidebar one", 150.0, 175.0, 72.0),
+            _word("sidebar two", 150.0, 175.0, 83.0),
+            _word("sidebar three", 150.0, 175.0, 94.0),
+            *_auxiliary_data(105.0, "03/02/2026", "Cafe", "Food", "₪30.00"),
+        ),
+        width=190.0,
+    )
+    rows, header, schema = _continuation_detector_context(page)
+
+    assert (
+        _bounded_auxiliary_fragment(
+            page,
+            rows,
+            3,
+            header,
+            schema,
+            _project_row_to_header_bands(rows[2], header),
+        )
+        is None
     )
 
 
