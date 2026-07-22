@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from hashlib import sha256
 from typing import Annotated, Literal, Self
 
@@ -54,6 +55,58 @@ type _EvidenceReferenceProjection = tuple[int, tuple[float, float, float, float]
 type _EvidenceSiteProjection = tuple[str, tuple[_EvidenceReferenceProjection, ...]]
 type _EvidenceProvenance = tuple[tuple[tuple[_EvidenceSiteProjection, ...], ...], ...]
 type _AmbiguityProjection = tuple[tuple[tuple[str, ...], ...], ...]
+
+
+class CorpusGateMode(StrEnum):
+    """Supported corpus gate lifecycle modes."""
+
+    VERIFY = "verify"
+    RECORD = "record"
+
+
+class CorpusGateReason(StrEnum):
+    """Closed, policy-ordered vocabulary for corpus gate failures."""
+
+    INVALID_CONFIGURATION = "invalid_configuration"
+    PATH_OUTSIDE_REPOSITORY = "path_outside_repository"
+    UNSAFE_PATH_TOPOLOGY = "unsafe_path_topology"
+    PRIVATE_PATH_NOT_IGNORED = "private_path_not_ignored"
+    CORPUS_SYMLINK = "corpus_symlink"
+    RUN_PATH_NOT_EMPTY = "run_path_not_empty"
+    DIRTY_REPOSITORY = "dirty_repository"
+    REPOSITORY_CHANGED = "repository_changed"
+    TOOLCHAIN_UNAVAILABLE = "toolchain_unavailable"
+    TOOLCHAIN_CHANGED = "toolchain_changed"
+    INVENTORY_INVALID = "inventory_invalid"
+    BASELINE_MISSING = "baseline_missing"
+    BASELINE_INVALID = "baseline_invalid"
+    PARSER_RUNTIME_FAILED = "parser_runtime_failed"
+    MEMBERSHIP_DRIFT = "membership_drift"
+    RETAINED_NOT_RECONCILED = "retained_not_reconciled"
+    QUARANTINE_MISCLASSIFIED = "quarantine_misclassified"
+    COUNTS_DRIFT = "counts_drift"
+    JSON_DRIFT = "json_drift"
+    CSV_DRIFT = "csv_drift"
+    STATUS_DRIFT = "status_drift"
+    GROUP_STRUCTURE_DRIFT = "group_structure_drift"
+    TRANSACTION_STRUCTURE_DRIFT = "transaction_structure_drift"
+    FIELD_PRESENCE_DRIFT = "field_presence_drift"
+    EVIDENCE_PROVENANCE_DRIFT = "evidence_provenance_drift"
+    AMBIGUITY_DRIFT = "ambiguity_drift"
+    RUNTIME_REGRESSION = "runtime_regression"
+
+    @property
+    def exit_code(self) -> Literal[1, 2]:
+        """Map input/runtime failures to 1 and acceptance failures to 2."""
+
+        if self in _INPUT_OR_RUNTIME_FAILURE_REASONS:
+            return 1
+        return 2
+
+
+_INPUT_OR_RUNTIME_FAILURE_REASONS = frozenset(
+    tuple(CorpusGateReason)[: tuple(CorpusGateReason).index(CorpusGateReason.MEMBERSHIP_DRIFT)]
+)
 
 
 class _GateModel(BaseModel):
@@ -123,6 +176,53 @@ class RunManifest(_GateModel):
     field_presence_digest: Digest
     evidence_provenance_digest: Digest
     ambiguity_digest: Digest
+
+
+class ToolchainFingerprint(_GateModel):
+    """Version and command fingerprint for a corpus run environment."""
+
+    python_version: str
+    package_version: str
+    pymupdf_version: str
+    tesseract_version: str
+    ocr_pipeline_version: str
+    ocr_cache_versions: tuple[str, ...]
+    command_digest: Digest
+    digest: Digest
+
+    @model_validator(mode="after")
+    def validate_ocr_cache_versions(self) -> Self:
+        if self.ocr_cache_versions != tuple(sorted(self.ocr_cache_versions)):
+            raise ValueError("OCR cache versions must be sorted")
+        return self
+
+
+class CorpusPairManifest(_GateModel):
+    """Membership and projections from two independent corpus runs."""
+
+    membership: CorpusMembership
+    first: RunManifest
+    second: RunManifest
+    worst_elapsed_seconds: Decimal = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_worst_elapsed_seconds(self) -> Self:
+        expected = max(self.first.elapsed_seconds, self.second.elapsed_seconds)
+        if self.worst_elapsed_seconds != expected:
+            raise ValueError("worst elapsed seconds must equal the maximum run time")
+        return self
+
+
+class CorpusBaseline(_GateModel):
+    """Versioned private baseline for retained and quarantine corpora."""
+
+    version: Literal[1]
+    commit_sha: CommitSha
+    jobs: int = Field(gt=0)
+    runtime_tolerance_ratio: Decimal = Field(ge=0)
+    toolchain: ToolchainFingerprint
+    retained: CorpusPairManifest
+    quarantine: CorpusPairManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,3 +463,73 @@ def project_run(batch: BatchResult, *, elapsed_seconds: Decimal) -> RunManifest:
         evidence_provenance_digest=_digest_json(projections.evidence_provenance),
         ambiguity_digest=_digest_json(projections.ambiguities),
     )
+
+
+def compare_independent_runs(
+    first: RunManifest, second: RunManifest
+) -> tuple[CorpusGateReason, ...]:
+    """Return every deterministic-output difference in closed policy order."""
+
+    checks = (
+        (first.counts != second.counts, CorpusGateReason.COUNTS_DRIFT),
+        (first.json_digest != second.json_digest, CorpusGateReason.JSON_DRIFT),
+        (first.csv_digest != second.csv_digest, CorpusGateReason.CSV_DRIFT),
+        (
+            first.ordered_status_digest != second.ordered_status_digest,
+            CorpusGateReason.STATUS_DRIFT,
+        ),
+        (
+            first.group_structure_digest != second.group_structure_digest,
+            CorpusGateReason.GROUP_STRUCTURE_DRIFT,
+        ),
+        (
+            first.transaction_identity_digest != second.transaction_identity_digest,
+            CorpusGateReason.TRANSACTION_STRUCTURE_DRIFT,
+        ),
+        (
+            first.field_presence_digest != second.field_presence_digest,
+            CorpusGateReason.FIELD_PRESENCE_DRIFT,
+        ),
+        (
+            first.evidence_provenance_digest != second.evidence_provenance_digest,
+            CorpusGateReason.EVIDENCE_PROVENANCE_DRIFT,
+        ),
+        (
+            first.ambiguity_digest != second.ambiguity_digest,
+            CorpusGateReason.AMBIGUITY_DRIFT,
+        ),
+    )
+    return tuple(reason for failed, reason in checks if failed)
+
+
+def compare_with_baseline(
+    baseline: CorpusBaseline, candidate: CorpusBaseline
+) -> tuple[CorpusGateReason, ...]:
+    """Compare a candidate with an accepted baseline using the closed policy."""
+
+    failed: set[CorpusGateReason] = set()
+    if baseline.toolchain.digest != candidate.toolchain.digest:
+        failed.add(CorpusGateReason.TOOLCHAIN_CHANGED)
+
+    for accepted_pair, candidate_pair in (
+        (baseline.retained, candidate.retained),
+        (baseline.quarantine, candidate.quarantine),
+    ):
+        if accepted_pair.membership != candidate_pair.membership:
+            failed.add(CorpusGateReason.MEMBERSHIP_DRIFT)
+        for accepted_run, candidate_run in (
+            (accepted_pair.first, candidate_pair.first),
+            (accepted_pair.second, candidate_pair.second),
+        ):
+            failed.update(compare_independent_runs(accepted_run, candidate_run))
+
+    matching_runtime_context = (
+        baseline.toolchain.digest == candidate.toolchain.digest and baseline.jobs == candidate.jobs
+    )
+    runtime_limit = baseline.retained.worst_elapsed_seconds * (
+        Decimal(1) + baseline.runtime_tolerance_ratio
+    )
+    if matching_runtime_context and candidate.retained.worst_elapsed_seconds > runtime_limit:
+        failed.add(CorpusGateReason.RUNTIME_REGRESSION)
+
+    return tuple(reason for reason in CorpusGateReason if reason in failed)
