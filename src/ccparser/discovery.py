@@ -371,7 +371,7 @@ def _is_future_billing_region(region: TableRegion, rows: Sequence[Row]) -> bool:
     if not preceding:
         return False
     heading = max(preceding, key=lambda row: row.bbox[3])
-    heading_height = max(0.0, heading.bbox[3] - heading.bbox[1])
+    heading_height = bbox_height(heading.bbox)
     gap = region.header.bbox[1] - heading.bbox[3]
     return (
         heading_height > 0
