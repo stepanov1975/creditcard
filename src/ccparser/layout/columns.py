@@ -25,8 +25,8 @@ from ccparser.geometry import (
 from ccparser.geometry import (
     union_bbox as _union_bbox,
 )
-from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
-from ccparser.money import is_money_shaped
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
+from ccparser.money import canonical_currency, is_currency_shaped, is_money_shaped
 from ccparser.text_tokens import normalize_text, phrase_tokens
 
 _THREE_COMPONENT_DATE_PATTERN = re.compile(
@@ -592,6 +592,85 @@ def is_location_identifier(text: str) -> bool:
     """Return whether normalized text is exactly a ten-digit location identifier."""
 
     return _LOCATION_IDENTIFIER_PATTERN.fullmatch(normalize_text(text)) is not None
+
+
+def original_currency_spilled_into_location(
+    cell: Cell,
+    region: TableRegion,
+) -> str | None:
+    """Return an original currency proven to have spilled into a location cell."""
+
+    original_columns = columns_for_role(region.table_schema, ColumnRole.ORIGINAL_AMOUNT)
+    location_columns = columns_for_role(region.table_schema, ColumnRole.LOCATION)
+    if (
+        len(original_columns) != 1
+        or len(location_columns) != 1
+        or abs(original_columns[0].index - location_columns[0].index) != 1
+        or len(cell.words) < 2
+        or any(word.source != "digital" for word in cell.words)
+    ):
+        return None
+    currency_words = tuple(
+        word
+        for word in cell.words
+        if not any(char.isdigit() for char in word.text)
+        and canonical_currency(word.text) is not None
+    )
+    if len(currency_words) != 1:
+        return None
+    currency_word = currency_words[0]
+    residual_words = tuple(word for word in cell.words if word is not currency_word)
+    residual_text = normalize_text(" ".join(word.text for word in residual_words))
+    has_proven_location_value = (
+        len(residual_words) == 1 and is_location_identifier(residual_text)
+    ) or (
+        any(char.isalpha() for char in residual_text)
+        and not any(char.isdigit() for char in residual_text)
+        and not is_money_shaped(residual_text)
+        and not is_currency_shaped(residual_text)
+    )
+    if not has_proven_location_value:
+        return None
+    compact_cell = "".join(normalize_text(cell.text).split())
+    compact_words = "".join(
+        "".join(normalize_text(word.text).split())
+        for word in sorted(cell.words, key=lambda word: word.bbox[0])
+    )
+    original_on_left = _center_x(original_columns[0].bbox) < _center_x(location_columns[0].bbox)
+    description_columns = columns_for_role(region.table_schema, ColumnRole.DESCRIPTION)
+    glyph_only_residual = (
+        compact_cell[len(compact_words) :]
+        if original_on_left and compact_cell.startswith(compact_words)
+        else (
+            compact_cell[: -len(compact_words)]
+            if not original_on_left and compact_cell.endswith(compact_words)
+            else ""
+        )
+    )
+    description_on_outer_edge = (
+        len(description_columns) == 1
+        and description_columns[0].index
+        == location_columns[0].index + (1 if original_on_left else -1)
+        and max(
+            0.0,
+            min(cell.bbox[2], description_columns[0].bbox[2])
+            - max(cell.bbox[0], description_columns[0].bbox[0]),
+        )
+        > 0
+    )
+    if compact_cell != compact_words and not (
+        glyph_only_residual
+        and all(char.isalpha() for char in glyph_only_residual)
+        and description_on_outer_edge
+    ):
+        return None
+    residual_edge_center = _center_x(_union_bbox(word.bbox for word in residual_words))
+    currency_on_original_edge = (
+        _center_x(currency_word.bbox) < residual_edge_center
+        if original_on_left
+        else _center_x(currency_word.bbox) > residual_edge_center
+    )
+    return canonical_currency(currency_word.text) if currency_on_original_edge else None
 
 
 def _is_bounded_ocr_date_profile_cell(cell: Cell) -> bool:

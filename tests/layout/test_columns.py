@@ -10,9 +10,17 @@ from ccparser.layout.columns import (
     infer_column_roles,
     is_date_shaped,
     is_location_identifier,
+    original_currency_spilled_into_location,
     source_or_center_cells,
 )
-from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
+from ccparser.layout.models import (
+    Cell,
+    ColumnRole,
+    ColumnSpec,
+    Row,
+    TableRegion,
+    TableSchema,
+)
 
 
 def _cell(
@@ -213,6 +221,145 @@ def test_location_identifier_accepts_exact_normalized_ten_digit_field(text: str)
 )
 def test_location_identifier_rejects_nonexact_boundaries(text: str) -> None:
     assert not is_location_identifier(text)
+
+
+def _positioned_word(text: str, x0: float, x1: float, *, source: str = "digital") -> Word:
+    return Word(
+        text=text,
+        bbox=(x0, 30.0, x1, 40.0),
+        source=source,
+        confidence=1.0,
+    )
+
+
+def _location_spill_region(
+    roles: tuple[ColumnRole, ...],
+    location_cell: Cell,
+) -> TableRegion:
+    headers = tuple(
+        _cell(role.value, (index * 50.0, 10.0, index * 50.0 + 40.0, 20.0))
+        for index, role in enumerate(roles)
+    )
+    columns = tuple(
+        _column(
+            x0=index * 50.0,
+            x1=index * 50.0 + 40.0,
+            role=role,
+            source_cells=(headers[index],),
+            index=index,
+        )
+        for index, role in enumerate(roles)
+    )
+    header = _row(10.0, headers)
+    row = _row(30.0, (location_cell,))
+    schema = TableSchema(
+        page_number=1,
+        bbox=(0.0, 10.0, len(roles) * 50.0 - 10.0, 100.0),
+        columns=columns,
+        header_cells=headers,
+        sample_cells=(location_cell,),
+        confidence=1.0,
+    )
+    return TableRegion(
+        page_number=1,
+        bbox=(0.0, 10.0, len(roles) * 50.0 - 10.0, 40.0),
+        header=header,
+        rows=(row,),
+        table_schema=schema,
+        confidence=1.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("roles", "text", "words", "expected"),
+    (
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.LOCATION, ColumnRole.DESCRIPTION),
+            "USD London",
+            (
+                _positioned_word("USD", 52.0, 60.0),
+                _positioned_word("London", 65.0, 85.0),
+            ),
+            "USD",
+        ),
+        (
+            (ColumnRole.DESCRIPTION, ColumnRole.LOCATION, ColumnRole.ORIGINAL_AMOUNT),
+            "London EUR",
+            (
+                _positioned_word("London", 52.0, 70.0),
+                _positioned_word("EUR", 76.0, 86.0),
+            ),
+            "EUR",
+        ),
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.LOCATION, ColumnRole.DESCRIPTION),
+            "USD 1234567890",
+            (
+                _positioned_word("USD", 52.0, 60.0),
+                _positioned_word("1234567890", 64.0, 88.0),
+            ),
+            "USD",
+        ),
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.DESCRIPTION, ColumnRole.LOCATION),
+            "USD London",
+            (
+                _positioned_word("USD", 102.0, 110.0),
+                _positioned_word("London", 115.0, 135.0),
+            ),
+            None,
+        ),
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.LOCATION, ColumnRole.DESCRIPTION),
+            "London USD",
+            (
+                _positioned_word("London", 52.0, 70.0),
+                _positioned_word("USD", 76.0, 86.0),
+            ),
+            None,
+        ),
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.LOCATION, ColumnRole.DESCRIPTION),
+            "USD London",
+            (
+                _positioned_word("USD", 52.0, 60.0, source="ocr"),
+                _positioned_word("London", 65.0, 85.0, source="ocr"),
+            ),
+            None,
+        ),
+        (
+            (ColumnRole.ORIGINAL_AMOUNT, ColumnRole.LOCATION, ColumnRole.DESCRIPTION),
+            "USD 1234",
+            (
+                _positioned_word("USD", 52.0, 60.0),
+                _positioned_word("1234", 65.0, 85.0),
+            ),
+            None,
+        ),
+    ),
+)
+def test_original_currency_spilled_into_location_uses_column_evidence(
+    roles: tuple[ColumnRole, ...],
+    text: str,
+    words: tuple[Word, ...],
+    expected: str | None,
+) -> None:
+    location_index = roles.index(ColumnRole.LOCATION)
+    location_cell = Cell(
+        page_number=1,
+        bbox=(
+            location_index * 50.0,
+            30.0,
+            location_index * 50.0 + 40.0,
+            40.0,
+        ),
+        text=text,
+        words=words,
+        confidence=1.0,
+    )
+    region = _location_spill_region(roles, location_cell)
+
+    assert original_currency_spilled_into_location(location_cell, region) == expected
 
 
 def test_infer_column_bands_finds_repeated_bands_in_scale_independent_coordinates() -> None:

@@ -22,6 +22,7 @@ from ccparser.models import (
     TransactionKind,
 )
 from ccparser.normalization_fields import BilledFields, FieldDisposition, extract_billed_fields
+from ccparser.normalization_semantics import SemanticValidation
 from ccparser.normalize import RowNormalizationResult, _normalize_row
 from ccparser.original_amount import OriginalAmountExtraction, extract_original_amount
 from ccparser.semantic_evidence import (
@@ -984,7 +985,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
 ) -> None:
     row, continuation_rows, region, expected = _spill_setup(variant)
     captured_claims: list[tuple[EvidenceClaim, ...]] = []
-    original_validation = normalize_module._semantic_claims_and_diagnostics
+    original_validation = normalize_module.validate_transaction_semantics
 
     def capture_claims(
         *,
@@ -1001,7 +1002,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
         conversion_date: date | None,
         year_context: DiscoveredDateYearContext | None,
         date_column_kinds: Mapping[int, str],
-    ) -> tuple[tuple[EvidenceClaim, ...], tuple[str, ...]]:
+    ) -> SemanticValidation:
         captured_claims.append(tuple(initial_claims))
         return original_validation(
             rows=rows,
@@ -1019,7 +1020,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
             date_column_kinds=date_column_kinds,
         )
 
-    monkeypatch.setattr(normalize_module, "_semantic_claims_and_diagnostics", capture_claims)
+    monkeypatch.setattr(normalize_module, "validate_transaction_semantics", capture_claims)
     attempt = _normalize_row(
         row=row,
         continuation_rows=continuation_rows,

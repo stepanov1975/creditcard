@@ -19,7 +19,7 @@ from ccparser.geometry import (
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
-    is_location_identifier,
+    original_currency_spilled_into_location,
     proven_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
@@ -139,85 +139,6 @@ def _proven_implicit_original_currency(
             return None
         proven_row_count += 1
     return canonical_currency(billing_currency) if proven_row_count >= minimum_proven_rows else None
-
-
-def original_currency_spilled_into_location(
-    cell: Cell,
-    region: TableRegion,
-) -> str | None:
-    original_columns = columns_for_role(region.table_schema, ColumnRole.ORIGINAL_AMOUNT)
-    location_columns = columns_for_role(region.table_schema, ColumnRole.LOCATION)
-    if (
-        len(original_columns) != 1
-        or len(location_columns) != 1
-        or abs(original_columns[0].index - location_columns[0].index) != 1
-        or len(cell.words) < 2
-        or any(word.source != "digital" for word in cell.words)
-    ):
-        return None
-    currency_words = tuple(
-        word
-        for word in cell.words
-        if not any(char.isdigit() for char in word.text)
-        and canonical_currency(word.text) is not None
-    )
-    if len(currency_words) != 1:
-        return None
-    currency_word = currency_words[0]
-    residual_words = tuple(word for word in cell.words if word is not currency_word)
-    residual_text = normalize_text(" ".join(word.text for word in residual_words))
-    has_proven_location_value = (
-        len(residual_words) == 1 and is_location_identifier(residual_text)
-    ) or (
-        any(char.isalpha() for char in residual_text)
-        and not any(char.isdigit() for char in residual_text)
-        and not is_money_shaped(residual_text)
-        and not is_currency_shaped(residual_text)
-    )
-    if not has_proven_location_value:
-        return None
-    compact_cell = "".join(normalize_text(cell.text).split())
-    compact_words = "".join(
-        "".join(normalize_text(word.text).split())
-        for word in sorted(cell.words, key=lambda word: word.bbox[0])
-    )
-    original_on_left = bbox_center_x(original_columns[0].bbox) < bbox_center_x(
-        location_columns[0].bbox
-    )
-    description_columns = columns_for_role(region.table_schema, ColumnRole.DESCRIPTION)
-    glyph_only_residual = (
-        compact_cell[len(compact_words) :]
-        if original_on_left and compact_cell.startswith(compact_words)
-        else (
-            compact_cell[: -len(compact_words)]
-            if not original_on_left and compact_cell.endswith(compact_words)
-            else ""
-        )
-    )
-    description_on_outer_edge = (
-        len(description_columns) == 1
-        and description_columns[0].index
-        == location_columns[0].index + (1 if original_on_left else -1)
-        and max(
-            0.0,
-            min(cell.bbox[2], description_columns[0].bbox[2])
-            - max(cell.bbox[0], description_columns[0].bbox[0]),
-        )
-        > 0
-    )
-    if compact_cell != compact_words and not (
-        glyph_only_residual
-        and all(char.isalpha() for char in glyph_only_residual)
-        and description_on_outer_edge
-    ):
-        return None
-    residual_edge_center = bbox_center_x(union_bbox(word.bbox for word in residual_words))
-    currency_on_original_edge = (
-        bbox_center_x(currency_word.bbox) < residual_edge_center
-        if original_on_left
-        else bbox_center_x(currency_word.bbox) > residual_edge_center
-    )
-    return canonical_currency(currency_word.text) if currency_on_original_edge else None
 
 
 def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decimal, str]]:
@@ -708,5 +629,4 @@ def extract_original_amount(
 __all__ = [
     "OriginalAmountExtraction",
     "extract_original_amount",
-    "original_currency_spilled_into_location",
 ]

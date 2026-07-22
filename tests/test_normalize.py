@@ -25,12 +25,11 @@ from ccparser.models import (
 )
 from ccparser.normalization_dates import _cross_cell_date_tokens
 from ccparser.normalization_fields import FieldDisposition
+from ccparser.normalization_semantics import _column_header_text, _stable_unknown_columns
 from ccparser.normalize import (
     RowNormalizationResult,
-    _column_header_text,
     _normalize_row,
     _RowNormalizationAttempt,
-    _stable_unknown_columns,
     normalize_statement,
     parse_amount,
 )
