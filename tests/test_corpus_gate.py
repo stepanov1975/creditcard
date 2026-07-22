@@ -360,7 +360,7 @@ def test_gate_models_are_frozen_and_forbid_extra_fields() -> None:
 
 def test_present_field_paths_are_closed_sorted_and_unique() -> None:
     with pytest.raises(ValidationError):
-        FieldCount(path="arbitrary.private.path", count=1)  # type: ignore[arg-type]
+        FieldCount.model_validate({"path": "arbitrary.private.path", "count": 1})
     with pytest.raises(ValidationError, match="sorted"):
         _counts(
             present_fields=(
