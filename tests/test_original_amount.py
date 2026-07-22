@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -534,6 +534,45 @@ def test_original_amount_structural_and_currency_matrix_preserves_complete_row_r
         )
 
 
+def test_implicit_original_currency_proof_ignores_active_decimal_context() -> None:
+    roles = (
+        ColumnRole.DATE,
+        ColumnRole.DESCRIPTION,
+        ColumnRole.ORIGINAL_AMOUNT,
+        ColumnRole.AMOUNT,
+    )
+    billed_cell = _cell("123457.00", 3)
+    row = _row(
+        _DATE,
+        _DESCRIPTION,
+        _cell("123456.00", 2),
+        billed_cell,
+    )
+    region = _region(roles, (row,))
+    billed = extract_billed_fields(row=row, region=region, printed_currency="ILS")
+    assert billed.disposition is FieldDisposition.ACCEPT
+
+    with localcontext() as context:
+        context.prec = 5
+        extraction = extract_original_amount(
+            row=row,
+            continuation_rows=(),
+            region=region,
+            ledger=EvidenceLedger.from_rows((row,)),
+            billed=billed,
+            description="Merchant",
+            initial_claims=(),
+        )
+
+    assert extraction == OriginalAmountExtraction(
+        amount=None,
+        currency=None,
+        description="Merchant",
+        claims=(),
+        diagnostics=("original_amount:unknown_currency",),
+    )
+
+
 @pytest.mark.parametrize("conflicting", (False, True))
 def test_location_currency_spill_matrix(conflicting: bool) -> None:
     first_location = _cell(
@@ -579,15 +618,37 @@ def test_location_currency_spill_matrix(conflicting: bool) -> None:
     )
 
 
-def test_ocr_original_amount_is_corroborated_by_exact_billed_value() -> None:
+@pytest.mark.parametrize(
+    ("damaged_text", "billed_text", "expected_amount"),
+    (
+        pytest.param(
+            "1,601,00",
+            "1,601.00",
+            Decimal("1601.00"),
+            id="two-decimal-scale",
+        ),
+        pytest.param("1,601,", "1601", Decimal("1601"), id="integer-scale"),
+        pytest.param(
+            "1,60,1",
+            "160.1",
+            Decimal("160.1"),
+            id="one-decimal-positive-scale",
+        ),
+    ),
+)
+def test_ocr_original_amount_is_corroborated_by_exact_billed_value(
+    damaged_text: str,
+    billed_text: str,
+    expected_amount: Decimal,
+) -> None:
     damaged_original = _cell(
-        "1,601,00",
+        damaged_text,
         2,
         y=50.0,
         bbox=(100.0, 50.0, 140.0, 60.0),
         words=(
             _word(
-                "1,601,00",
+                damaged_text,
                 100.0,
                 140.0,
                 y=50.0,
@@ -601,7 +662,7 @@ def test_ocr_original_amount_is_corroborated_by_exact_billed_value() -> None:
         _cell("02/02/2026", 0, y=50.0),
         _cell("OCR damaged", 1, y=50.0),
         damaged_original,
-        _cell("1,601.00", 3, y=50.0),
+        _cell(billed_text, 3, y=50.0),
     )
     rows = (
         _row(
@@ -642,10 +703,10 @@ def test_ocr_original_amount_is_corroborated_by_exact_billed_value() -> None:
 
     assert attempt.result == _expected_result(
         row=target,
-        billed_amount=Decimal("1601.00"),
+        billed_amount=expected_amount,
         diagnostics=(),
         description="OCR damaged",
-        original_amount=Decimal("1601.00"),
+        original_amount=expected_amount,
         original_currency="ILS",
         transaction_date=date(2026, 2, 2),
     )

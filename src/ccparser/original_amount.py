@@ -135,7 +135,7 @@ def _proven_implicit_original_currency(
             continue
         if original.amount is None or original.currency is None:
             continue
-        if abs(original.amount) != abs(billed.amount):
+        if original.amount.copy_abs() != billed.amount.copy_abs():
             return None
         proven_row_count += 1
     return canonical_currency(billing_currency) if proven_row_count >= minimum_proven_rows else None
@@ -181,7 +181,8 @@ def _ocr_original_amount_corroborated_by_billed(
     ):
         return None
     observed_digits = "".join(char for char in original_cell.text if char.isdigit())
-    billed_digits = "".join(char for char in f"{billed.amount:.2f}" if char.isdigit())
+    billed_text = format(billed.amount.copy_abs(), "f")
+    billed_digits = "".join(char for char in billed_text if char.isdigit())
     if observed_digits != billed_digits:
         return None
     return AmountParseResult(

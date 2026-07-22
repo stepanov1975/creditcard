@@ -42,10 +42,10 @@ def exact_difference(minuend: Decimal, subtrahend: Decimal) -> Decimal:
 
 
 def is_exact_multiple(value: Decimal, unit: Decimal) -> bool:
-    if unit <= 0:
-        raise ValueError("minor unit must be positive")
     value_coefficient, value_exponent = _integer_coefficient(value)
     unit_coefficient, unit_exponent = _integer_coefficient(unit)
+    if unit_coefficient <= 0:
+        raise ValueError("minor unit must be positive")
     common_exponent = min(value_exponent, unit_exponent)
     scaled_value: int = value_coefficient * 10 ** (value_exponent - common_exponent)
     scaled_unit: int = unit_coefficient * 10 ** (unit_exponent - common_exponent)
