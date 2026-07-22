@@ -23,6 +23,7 @@ ownership, or reconciliation rule and covered by a minimized synthetic test.
 - Keep documents, source hashes, canonical parser output, and derived financial data
   in ignored private storage outside Git.
 - Make no changes outside `/root/creditcard` during this recovery.
+- Direct all process temporary storage to ignored paths inside the active worktree.
 - Preserve the public JSON/CSV schema, ordering, evidence, and deterministic output.
 
 ## Established Baseline
@@ -75,19 +76,27 @@ The command requires explicit paths for:
 
 - the retained statement directory;
 - the quarantined/non-statement directory;
+- an ignored, independently approved membership inventory;
 - an ignored private baseline manifest;
 - an ignored private work directory.
 
 It refuses overlapping input/output/cache topology, symlinks masquerading as corpus
-members, a dirty Git worktree, a missing baseline in verification mode, and any
-pre-populated run cache. Raw parser output and per-document hashes are written only
-below the private work directory.
+members, paths resolving outside the repository, symlinked destination ancestors, a
+dirty Git worktree, a missing baseline in verification mode, and any pre-populated
+run cache. Raw parser output and per-document hashes are written only below the
+private work directory.
 
 Two modes are supported:
 
 1. `verify` compares a new run with the last explicitly accepted private baseline.
 2. `record` creates a baseline only after all strict, determinism, quarantine, and
-   structural checks pass. It never records a failing run as accepted.
+   structural checks pass. It never records a failing run as accepted and never
+   creates or updates the membership inventory.
+
+The membership inventory contains the approved retained and quarantine document
+counts and source-hash multiset digests. It is established independently from the
+previously proven complete corpus. Both modes require every before/after run snapshot
+to match it, so a smaller all-green directory cannot become a baseline accidentally.
 
 There is no permissive force flag. A legitimate output migration requires reviewing
 the private delta and running `record` from a clean committed revision.
@@ -135,6 +144,9 @@ Verification against the accepted baseline rejects:
 Runtime comparison is a hard gate only when the toolchain fingerprint and configured
 worker count match. Deterministic unit tests additionally guard hot-path tokenization
 call counts so a performance regression does not depend only on wall-clock timing.
+Before the first optimized baseline is recorded, its fresh strict runtime is also
+compared with the trusted pre-refactor private runtime reference under matching
+toolchain, worker-count, and membership conditions.
 
 ## Strict Semantic Recovery
 
@@ -220,6 +232,7 @@ Every production change follows red-green-refactor. Required tracked tests inclu
 
 - manifest validation, versioning, atomic writes, and corruption handling;
 - empty-cache enforcement and safe path topology;
+- independent approved-membership enforcement, including record-mode subset rejection;
 - clean-revision and toolchain fingerprint behavior through injected protocols;
 - synthetic retained/quarantined batches for every gate failure reason;
 - exact structural comparison, including non-null-to-null and provenance loss;
@@ -243,6 +256,8 @@ Private acceptance then runs:
 
 - All tracked tests and repository quality gates pass.
 - The gate itself is covered by synthetic tests and cannot record a failed baseline.
+- Record mode cannot generate or change the independent membership inventory, and a
+  passing subset or replacement corpus is rejected.
 - Both fresh-cache retained-corpus runs report 104 documents, 104 reconciled, and no
   other status.
 - The two retained JSON/CSV output pairs are byte-identical.
