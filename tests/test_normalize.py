@@ -266,6 +266,8 @@ def test_parse_amount_preserves_each_single_negative_sign_form(raw: str) -> None
 
 
 def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconciles() -> None:
+    from ccparser.reconcile import ReconciliationOutcome
+
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
         (
@@ -280,6 +282,7 @@ def test_normalize_statement_emits_authoritative_purchase_and_refund_and_reconci
 
     result = normalize_statement(_discovery(region, "5.00", "ILS"))
 
+    assert isinstance(result.reconciliation, ReconciliationOutcome)
     assert tuple(transaction.transaction_id for transaction in result.transactions) == (
         "group-0001-p001-r0001",
         "group-0001-p001-r0002",

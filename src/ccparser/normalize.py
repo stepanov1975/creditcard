@@ -53,7 +53,6 @@ from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import (
     EvidenceReference,
     PrintedTotal,
-    StatementResult,
     Status,
     Transaction,
     TransactionCategory,
@@ -67,7 +66,7 @@ from ccparser.money import (
     is_money_shaped,
     parse_amount,
 )
-from ccparser.reconcile import reconcile
+from ccparser.reconcile import ReconciliationOutcome, reconciliation_outcome
 from ccparser.semantic_evidence import (
     DescriptionExtraction,
     EvidenceClaim,
@@ -101,7 +100,7 @@ class StatementNormalization(_ImmutableNormalizationModel):
     transactions: tuple[Transaction, ...]
     printed_totals: tuple[PrintedTotal, ...]
     row_results: tuple[RowNormalizationResult, ...]
-    reconciliation: StatementResult
+    reconciliation: ReconciliationOutcome
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = ()
 
@@ -3447,7 +3446,7 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                 index = continuation_index
     if rows_not_emitted:
         diagnostics.append(f"rows_not_emitted:{rows_not_emitted}")
-    reconciliation = reconcile(transactions, totals)
+    reconciliation = reconciliation_outcome(transactions, totals)
     if diagnostics:
         reconciliation = reconciliation.model_copy(
             update={

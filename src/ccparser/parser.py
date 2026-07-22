@@ -80,17 +80,17 @@ def _diagnostics(discovery: StatementDiscovery) -> tuple[str, ...]:
 
 def _is_exact_unambiguous(
     normalization: StatementNormalization,
-    result: StatementResult,
 ) -> bool:
+    outcome = normalization.reconciliation
     return (
-        result.status is Status.RECONCILED
-        and bool(result.groups)
+        outcome.status is Status.RECONCILED
+        and bool(outcome.groups)
         and not normalization.diagnostics
-        and not result.diagnostics
-        and all(not transaction.ambiguities for transaction in result.transactions)
+        and not outcome.diagnostics
+        and all(not transaction.ambiguities for transaction in normalization.transactions)
         and all(
             group.status is Status.RECONCILED and group.difference == 0 and not group.diagnostics
-            for group in result.groups
+            for group in outcome.groups
         )
     )
 
@@ -169,11 +169,9 @@ def parse_statement(
                 discovery=discovery_summary(discovery),
             )
         normalization = normalize(discovery)
-        normalized_result = normalization.reconciliation
-        if not _is_exact_unambiguous(
-            normalization,
-            normalized_result,
-        ) and any(page.quality.requires_ocr for page in evidence.pages):
+        if not _is_exact_unambiguous(normalization) and any(
+            page.quality.requires_ocr for page in evidence.pages
+        ):
             currency_hints, expected_totals = _numeric_ocr_repair_inputs(discovery)
             repaired_evidence = repair_table_numeric_ocr(
                 evidence,
@@ -186,31 +184,26 @@ def parse_statement(
                 repaired_discovery = discover(repaired_evidence)
                 if repaired_discovery.classification is DocumentClassification.STATEMENT:
                     repaired_normalization = normalize(repaired_discovery)
-                    repaired_result = repaired_normalization.reconciliation
-                    if _is_exact_unambiguous(repaired_normalization, repaired_result):
+                    if _is_exact_unambiguous(repaired_normalization):
                         evidence = repaired_evidence
                         discovery = repaired_discovery
                         discovery_diagnostics = _diagnostics(discovery)
                         normalization = repaired_normalization
-                        normalized_result = repaired_result
-        status = (
-            Status.RECONCILED
-            if _is_exact_unambiguous(normalization, normalized_result)
-            else Status.UNRECONCILED
-        )
+        status = Status.RECONCILED if _is_exact_unambiguous(normalization) else Status.UNRECONCILED
+        reconciliation = normalization.reconciliation
         diagnostics = tuple(
             dict.fromkeys(
                 (
                     *discovery_diagnostics,
                     *normalization.diagnostics,
-                    *normalized_result.diagnostics,
+                    *reconciliation.diagnostics,
                 )
             )
         )
         return StatementResult(
             status=status,
             transactions=normalization.transactions,
-            groups=normalized_result.groups,
+            groups=reconciliation.groups,
             diagnostics=diagnostics,
             source_name=source.name,
             source_sha256=evidence.source_sha256,

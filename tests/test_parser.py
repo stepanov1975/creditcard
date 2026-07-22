@@ -29,6 +29,7 @@ from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, Tabl
 from ccparser.models import (
     BatchResult,
     EvidenceReference,
+    PrintedTotal,
     ReconciliationGroup,
     StatementResult,
     Status,
@@ -43,6 +44,7 @@ from ccparser.parser import (
     parse_directory,
     parse_statement,
 )
+from ccparser.reconcile import ReconciliationOutcome
 from ccparser.summary import discovery_summary, row_summaries
 
 
@@ -85,9 +87,11 @@ def _normalizer(
             if status is Status.RECONCILED
             else ()
         )
-        reconciliation = StatementResult(
+        reconciliation = ReconciliationOutcome(
             status=status,
-            transactions=(),
+            accepted_transaction_ids=(),
+            accepted_transaction_indices=(),
+            rejected_transactions=(),
             groups=groups,
             diagnostics=diagnostics,
         )
@@ -776,6 +780,8 @@ def test_parse_statement_preserves_group_structure_and_table_association(
 def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transactions(
     tmp_path: Path,
 ) -> None:
+    from ccparser.reconcile import reconciliation_outcome
+
     source = tmp_path / "statement.pdf"
     source.write_bytes(b"synthetic")
     discovery = _structured_discovery(DocumentClassification.STATEMENT)
@@ -784,7 +790,12 @@ def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transa
         kind=TransactionKind.CHARGE,
         billed_amount=Decimal("10.00"),
         billing_currency="ILS",
-        reconciliation_group_ids=("group-0001",),
+        reconciliation_group_ids=(),
+    )
+    printed_total = PrintedTotal(
+        group_id="group-0001",
+        amount=Decimal("10.00"),
+        currency="ILS",
     )
     accepted_evidence = EvidenceReference(
         page_number=1,
@@ -822,27 +833,13 @@ def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transa
             diagnostics=("merged_description_continuation",),
         ),
     )
-    group = ReconciliationGroup(
-        group_id="group-0001",
-        currency="ILS",
-        printed_total=Decimal("10.00"),
-        calculated_total=Decimal("0.00"),
-        difference=Decimal("-10.00"),
-        transaction_ids=(),
-        status=Status.UNRECONCILED,
-        diagnostics=("transaction_filtered",),
-    )
+    reconciliation = reconciliation_outcome((transaction,), (printed_total,))
     normalization = StatementNormalization(
         discovery=discovery,
         transactions=(transaction,),
-        printed_totals=(),
+        printed_totals=(printed_total,),
         row_results=row_results,
-        reconciliation=StatementResult(
-            status=Status.UNRECONCILED,
-            transactions=(),
-            groups=(group,),
-            diagnostics=("reconciliation_diagnostic",),
-        ),
+        reconciliation=reconciliation,
         confidence=0.65,
         diagnostics=("rows_not_emitted:1",),
     )
@@ -854,11 +851,36 @@ def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transa
         normalizer=lambda value: normalization,
         ocr_provider=object(),
     )
+    expected = StatementResult(
+        status=Status.UNRECONCILED,
+        transactions=(transaction,),
+        groups=reconciliation.groups,
+        diagnostics=(
+            "structured_reason",
+            "discovery_diagnostic",
+            "rows_not_emitted:1",
+            "transaction 'group-0001-p001-r0001' must belong to exactly one "
+            "reconciliation group; found 0",
+        ),
+        source_name=source.name,
+        source_sha256=_evidence(source.read_bytes()).source_sha256,
+        statement_id=_evidence(source.read_bytes()).source_sha256,
+        discovery=discovery_summary(discovery),
+        row_results=row_summaries(normalization),
+        normalization_confidence=normalization.confidence,
+        normalization_diagnostics=normalization.diagnostics,
+    )
     payload = result.model_dump(mode="json")
+    canonical_bytes = canonical_json_bytes(result)
 
+    assert result == expected
+    assert canonical_bytes == canonical_json_bytes(expected)
+    assert hashlib.sha256(canonical_bytes).hexdigest() == (
+        "1be4654d892b2c24543c83977a1e23cc9608d3252cac63491b01345aba07aeb8"
+    )
     assert result.status is Status.UNRECONCILED
     assert result.transactions == (transaction,)
-    assert result.groups == (group,)
+    assert result.groups == reconciliation.groups
     assert tuple(row.raw_text for row in result.row_results) == (
         "accepted raw row",
         "rejected raw row",

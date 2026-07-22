@@ -32,7 +32,6 @@ from ccparser.models import (
     RowNormalizationSummary,
     StatementDiscoverySummary,
     StatementGroupDiscoverySummary,
-    StatementResult,
     Status,
     TableRegionSummary,
     Transaction,
@@ -40,6 +39,7 @@ from ccparser.models import (
 )
 from ccparser.normalize import RowNormalizationResult, StatementNormalization
 from ccparser.output import canonical_json_bytes
+from ccparser.reconcile import ReconciliationOutcome
 from ccparser.summary import (
     cell_summary,
     column_summary,
@@ -287,10 +287,13 @@ def _summary_graph() -> _SummaryGraph:
                 diagnostics=("normalized_row",),
             ),
         ),
-        reconciliation=StatementResult(
+        reconciliation=ReconciliationOutcome(
             status=Status.RECONCILED,
-            transactions=(transaction,),
+            accepted_transaction_ids=(transaction.transaction_id,),
+            accepted_transaction_indices=(0,),
+            rejected_transactions=(),
             groups=(reconciliation_group,),
+            diagnostics=(),
         ),
         confidence=0.87,
         diagnostics=("normalization_advisory",),
