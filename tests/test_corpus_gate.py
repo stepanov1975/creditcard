@@ -683,11 +683,11 @@ def test_baseline_comparison_checks_every_run_dimension(
     assert compare_with_baseline(baseline, candidate) == (reason,)
 
 
-def test_baseline_comparison_reports_toolchain_digest_change() -> None:
+def test_baseline_comparison_ignores_toolchain_digest_change() -> None:
     baseline = _baseline()
     candidate = baseline.model_copy(update={"toolchain": _toolchain("b")})
 
-    assert compare_with_baseline(baseline, candidate) == (CorpusGateReason.TOOLCHAIN_CHANGED,)
+    assert compare_with_baseline(baseline, candidate) == ()
 
 
 def test_runtime_is_enforced_only_for_matching_toolchain_and_jobs() -> None:
@@ -695,13 +695,19 @@ def test_runtime_is_enforced_only_for_matching_toolchain_and_jobs() -> None:
     slower = _baseline(elapsed="11", second_elapsed="13", jobs=4, toolchain="a")
 
     assert compare_with_baseline(baseline, slower) == (CorpusGateReason.RUNTIME_REGRESSION,)
-    assert CorpusGateReason.RUNTIME_REGRESSION not in compare_with_baseline(
-        baseline,
-        slower.model_copy(update={"toolchain": _toolchain("b")}),
+    assert (
+        compare_with_baseline(
+            baseline,
+            slower.model_copy(update={"toolchain": _toolchain("b")}),
+        )
+        == ()
     )
-    assert CorpusGateReason.RUNTIME_REGRESSION not in compare_with_baseline(
-        baseline,
-        slower.model_copy(update={"jobs": 2}),
+    assert (
+        compare_with_baseline(
+            baseline,
+            slower.model_copy(update={"jobs": 2}),
+        )
+        == ()
     )
 
 

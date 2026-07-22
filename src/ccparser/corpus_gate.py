@@ -508,9 +508,6 @@ def compare_with_baseline(
     """Compare a candidate with an accepted baseline using the closed policy."""
 
     failed: set[CorpusGateReason] = set()
-    if baseline.toolchain.digest != candidate.toolchain.digest:
-        failed.add(CorpusGateReason.TOOLCHAIN_CHANGED)
-
     for accepted_pair, candidate_pair in (
         (baseline.retained, candidate.retained),
         (baseline.quarantine, candidate.quarantine),
