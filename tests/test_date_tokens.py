@@ -94,5 +94,7 @@ def test_date_tokens_exports_exact_public_contract() -> None:
         "DateTokenStyle",
         "SuffixYearMappingValidationError",
         "SuffixYearMappingViolation",
+        "has_date_numeric_run_boundaries",
+        "has_date_token_boundaries",
         "validate_suffix_year_mapping",
     ]

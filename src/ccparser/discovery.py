@@ -53,7 +53,13 @@ from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continua
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.models import EvidenceReference
 from ccparser.money import canonical_currency, currencies_in_text, is_money_shaped, parse_amount
-from ccparser.text_tokens import contains_token_sequence, phrase_tokens
+from ccparser.text_tokens import (
+    CompiledTokenPhrases,
+    TokenSequence,
+    compile_token_phrases,
+    contains_compiled_token_sequence,
+    phrase_tokens,
+)
 
 
 class _ImmutableDiscoveryModel(BaseModel):
@@ -329,25 +335,57 @@ _COMPOUND_TOTAL_AMOUNT_PATTERN = re.compile(
 )
 
 
+def _compile_discovery_markers(markers: Iterable[str]) -> CompiledTokenPhrases:
+    return compile_token_phrases(
+        sorted(markers),
+        ignore_acronym_quotes=True,
+    )
+
+
+_COMPILED_TOTAL_MARKERS = _compile_discovery_markers(_TOTAL_MARKERS)
+_COMPILED_NO_ACTIVITY_MARKERS = _compile_discovery_markers(_NO_ACTIVITY_MARKERS)
+_COMPILED_CONTINUATION_HEADING_MARKERS = _compile_discovery_markers(_CONTINUATION_HEADING_MARKERS)
+_COMPILED_TRANSACTION_HISTORY_TITLE_MARKERS = _compile_discovery_markers(
+    _TRANSACTION_HISTORY_TITLE_MARKERS
+)
+_COMPILED_FUTURE_BILLING_HEADING_MARKERS = _compile_discovery_markers(
+    _FUTURE_BILLING_HEADING_MARKERS
+)
+_COMPILED_POINTS_UNIT_MARKERS = _compile_discovery_markers(_POINTS_UNIT_MARKERS)
+_COMPILED_FEE_SUMMARY_MARKERS = _compile_discovery_markers(_FEE_SUMMARY_MARKERS)
+_COMPILED_PAID_FEE_SUMMARY_MARKERS = _compile_discovery_markers(_PAID_FEE_SUMMARY_MARKERS)
+_COMPILED_TAX_SUMMARY_MARKERS = _compile_discovery_markers(_TAX_SUMMARY_MARKERS)
+_COMPILED_RATE_HEADER_MARKERS = _compile_discovery_markers(_RATE_HEADER_MARKERS)
+_COMPILED_FORM_TITLES = _compile_discovery_markers(_FORM_TITLES)
+_COMPILED_FORM_FIELDS = _compile_discovery_markers(_FORM_FIELDS)
+_COMPILED_CANCELLATION_PURPOSES = _compile_discovery_markers(_CANCELLATION_PURPOSES)
+
+
 def _normalized_phrase(text: str) -> str:
     return " ".join(phrase_tokens(text, ignore_acronym_quotes=True))
 
 
-def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
-    candidates = tuple(phrases)
-    if contains_token_sequence(text, candidates, ignore_acronym_quotes=True):
+def _contains_compiled_phrase(
+    tokens: TokenSequence,
+    phrases: CompiledTokenPhrases,
+) -> bool:
+    if contains_compiled_token_sequence(tokens, phrases):
         return True
-    tokens = phrase_tokens(text, ignore_acronym_quotes=True)
-    for phrase in candidates:
-        candidate_tokens = phrase_tokens(phrase, ignore_acronym_quotes=True)
-        compact_phrase = "".join(candidate_tokens)
-        if len(candidate_tokens) > 1 and compact_phrase in tokens:
+    for candidate in phrases:
+        compact_phrase = "".join(candidate)
+        if len(candidate) > 1 and compact_phrase in tokens:
             return True
-        if any("\u0590" <= char <= "\u05ff" for char in phrase) and any(
-            token.startswith(compact_phrase) for token in tokens
-        ):
+        candidate_is_hebrew = any(
+            "\u0590" <= char <= "\u05ff" for token in candidate for char in token
+        )
+        if candidate_is_hebrew and any(token.startswith(compact_phrase) for token in tokens):
             return True
     return False
+
+
+def _contains_phrase(text: str, phrases: CompiledTokenPhrases) -> bool:
+    tokens = phrase_tokens(text, ignore_acronym_quotes=True)
+    return _contains_compiled_phrase(tokens, phrases)
 
 
 def _positive_zero_activity_evidence(rows: Sequence[Row]) -> Cell | None:
@@ -356,7 +394,7 @@ def _positive_zero_activity_evidence(rows: Sequence[Row]) -> Cell | None:
             cell
             for row in rows
             for cell in row.cells
-            if _contains_phrase(cell.text, _NO_ACTIVITY_MARKERS)
+            if _contains_phrase(cell.text, _COMPILED_NO_ACTIVITY_MARKERS)
         ),
         None,
     )
@@ -377,7 +415,8 @@ def _is_future_billing_region(region: TableRegion, rows: Sequence[Row]) -> bool:
         heading_height > 0
         and gap <= heading_height * 2
         and any(
-            _contains_phrase(cell.text, _FUTURE_BILLING_HEADING_MARKERS) for cell in heading.cells
+            _contains_phrase(cell.text, _COMPILED_FUTURE_BILLING_HEADING_MARKERS)
+            for cell in heading.cells
         )
     )
 
@@ -806,12 +845,13 @@ def _has_lossless_compound_total_overlay_signature(
 
 
 def _row_total_marker_signature(row: Row) -> tuple[str, ...]:
+    cell_tokens = tuple(phrase_tokens(cell.text, ignore_acronym_quotes=True) for cell in row.cells)
     return tuple(
         sorted(
             {
-                "".join(_normalized_phrase(marker).split())
-                for marker in _TOTAL_MARKERS
-                if any(_contains_phrase(cell.text, (marker,)) for cell in row.cells)
+                "".join(marker)
+                for marker in _COMPILED_TOTAL_MARKERS
+                if any(_contains_compiled_phrase(tokens, (marker,)) for tokens in cell_tokens)
             }
         )
     )
@@ -907,7 +947,7 @@ def _is_points_ledger_total(
         if row.page_number == candidate.page_number
         and _reading_key_bbox(row.page_number, row.bbox) < candidate_key
         for cell in row.cells
-        if _contains_phrase(cell.text, _POINTS_UNIT_MARKERS)
+        if _contains_phrase(cell.text, _COMPILED_POINTS_UNIT_MARKERS)
         and any(cell.bbox[0] <= _center_x(count.bbox) <= cell.bbox[2] for count in count_cells)
     )
     if not preceding_headers:
@@ -924,7 +964,9 @@ def _is_points_ledger_total(
         and header_key < _reading_key_bbox(row.page_number, row.bbox) < candidate_key
     )
     if any(
-        _contains_phrase(cell.text, _TOTAL_MARKERS) for row in section_rows for cell in row.cells
+        _contains_phrase(cell.text, _COMPILED_TOTAL_MARKERS)
+        for row in section_rows
+        for cell in row.cells
     ):
         return False
     if any(
@@ -946,7 +988,7 @@ def _is_points_ledger_total(
 
 
 def _is_rate_ledger_header(row: Row) -> bool:
-    return any(_contains_phrase(cell.text, _RATE_HEADER_MARKERS) for cell in row.cells)
+    return any(_contains_phrase(cell.text, _COMPILED_RATE_HEADER_MARKERS) for cell in row.cells)
 
 
 def _is_percentage_value(text: str) -> bool:
@@ -1022,14 +1064,14 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
 
     candidate_currency_evidence_count = currency_evidence_count(candidate)
     explicit_fee_tax_summary = (
-        _contains_phrase(text, _FEE_SUMMARY_MARKERS)
-        and _contains_phrase(text, _TAX_SUMMARY_MARKERS)
+        _contains_phrase(text, _COMPILED_FEE_SUMMARY_MARKERS)
+        and _contains_phrase(text, _COMPILED_TAX_SUMMARY_MARKERS)
         and candidate_currency_evidence_count >= 2
     )
     explicit_paid_fee_summary = (
-        _contains_phrase(text, _TOTAL_MARKERS)
-        and _contains_phrase(text, _FEE_SUMMARY_MARKERS)
-        and _contains_phrase(text, _PAID_FEE_SUMMARY_MARKERS)
+        _contains_phrase(text, _COMPILED_TOTAL_MARKERS)
+        and _contains_phrase(text, _COMPILED_FEE_SUMMARY_MARKERS)
+        and _contains_phrase(text, _COMPILED_PAID_FEE_SUMMARY_MARKERS)
         and candidate_currency_evidence_count >= 1
     )
     summary_rows = tuple(
@@ -1038,14 +1080,15 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
                 row
                 for row in rows
                 if row.page_number == candidate.page_number
-                and any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
+                and any(_contains_phrase(cell.text, _COMPILED_TOTAL_MARKERS) for cell in row.cells)
                 and (
                     _contains_phrase(
                         " ".join(cell.text for cell in row.cells),
-                        _FEE_SUMMARY_MARKERS,
+                        _COMPILED_FEE_SUMMARY_MARKERS,
                     )
                     or _contains_phrase(
-                        " ".join(cell.text for cell in row.cells), _TAX_SUMMARY_MARKERS
+                        " ".join(cell.text for cell in row.cells),
+                        _COMPILED_TAX_SUMMARY_MARKERS,
                     )
                 )
             ),
@@ -1083,13 +1126,13 @@ def _is_fee_tax_summary_total(candidate: Row, rows: Sequence[Row] = ()) -> bool:
             len(block) >= 2
             and all(currency_evidence_count(row) >= 1 for row in block)
             and any(
-                _contains_phrase(value, _FEE_SUMMARY_MARKERS)
-                and _contains_phrase(value, _TAX_SUMMARY_MARKERS)
+                _contains_phrase(value, _COMPILED_FEE_SUMMARY_MARKERS)
+                and _contains_phrase(value, _COMPILED_TAX_SUMMARY_MARKERS)
                 for value in block_texts
             )
             and all(
-                _contains_phrase(value, _FEE_SUMMARY_MARKERS)
-                or _contains_phrase(value, _TAX_SUMMARY_MARKERS)
+                _contains_phrase(value, _COMPILED_FEE_SUMMARY_MARKERS)
+                or _contains_phrase(value, _COMPILED_TAX_SUMMARY_MARKERS)
                 for value in block_texts
             )
         )
@@ -1166,7 +1209,9 @@ def _total_from_row(
     preceding_regions: Sequence[TableRegion],
     document_currency: str | None = None,
 ) -> tuple[DiscoveredPrintedTotal | None, tuple[str, ...]]:
-    label_cells = tuple(cell for cell in row.cells if _contains_phrase(cell.text, _TOTAL_MARKERS))
+    label_cells = tuple(
+        cell for cell in row.cells if _contains_phrase(cell.text, _COMPILED_TOTAL_MARKERS)
+    )
     if not label_cells:
         return None, ()
     diagnostics: list[str] = []
@@ -1545,23 +1590,28 @@ def _date_year_context(
 
 
 def _positive_form_evidence(rows: Sequence[Row]) -> bool:
-    has_title = any(_contains_phrase(cell.text, _FORM_TITLES) for row in rows for cell in row.cells)
+    has_title = any(
+        _contains_phrase(cell.text, _COMPILED_FORM_TITLES) for row in rows for cell in row.cells
+    )
     field_count = sum(
-        _contains_phrase(cell.text, _FORM_FIELDS) for row in rows for cell in row.cells
+        _contains_phrase(cell.text, _COMPILED_FORM_FIELDS) for row in rows for cell in row.cells
     )
     return has_title and field_count >= 2
 
 
 def _positive_cancellation_correspondence_evidence(rows: Sequence[Row]) -> bool:
     return any(
-        _contains_phrase(" ".join(cell.text for cell in row.cells), _CANCELLATION_PURPOSES)
+        _contains_phrase(
+            " ".join(cell.text for cell in row.cells),
+            _COMPILED_CANCELLATION_PURPOSES,
+        )
         for row in rows
     )
 
 
 def _positive_transaction_history_export_evidence(rows: Sequence[Row]) -> bool:
     has_title = any(
-        _contains_phrase(cell.text, _TRANSACTION_HISTORY_TITLE_MARKERS)
+        _contains_phrase(cell.text, _COMPILED_TRANSACTION_HISTORY_TITLE_MARKERS)
         for row in rows
         for cell in row.cells
     )
@@ -1688,7 +1738,7 @@ def _has_explicit_continuation_heading(
     return any(
         cell.bbox[3] <= region.header.bbox[1]
         and region.header.bbox[1] - cell.bbox[3] <= page_height * 0.12
-        and _contains_phrase(cell.text, _CONTINUATION_HEADING_MARKERS)
+        and _contains_phrase(cell.text, _COMPILED_CONTINUATION_HEADING_MARKERS)
         for row in rows
         for cell in row.cells
     )
@@ -2005,7 +2055,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     observed_total_marker_rows = tuple(
         row
         for row in page_rows
-        if any(_contains_phrase(cell.text, _TOTAL_MARKERS) for cell in row.cells)
+        if any(_contains_phrase(cell.text, _COMPILED_TOTAL_MARKERS) for cell in row.cells)
     )
     proven_total_overlay_keys = frozenset(
         _page_row_key(row)
@@ -2049,6 +2099,7 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         for page in ordered_pages
         for candidate in _singleton_transaction_candidates(
             page,
+            merged_rows_by_page[page.page_number],
             tuple(region for region in regions if region.page_number == page.page_number),
         )
         if not _is_future_billing_region(candidate, page_rows)

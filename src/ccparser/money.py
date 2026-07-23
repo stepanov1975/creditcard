@@ -10,7 +10,12 @@ from decimal import Decimal, InvalidOperation
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ccparser.text_tokens import contains_token_sequence, normalize_text, phrase_tokens
+from ccparser.text_tokens import (
+    HEBREW_CLITIC_PREFIXES,
+    contains_token_sequence,
+    normalize_text,
+    phrase_tokens,
+)
 
 
 class AmountParseResult(BaseModel):
@@ -80,15 +85,26 @@ def _normalized_phrase(text: str) -> str:
 
 
 def _contains_marker(text: str, markers: Iterable[str]) -> bool:
-    return contains_token_sequence(text, markers)
+    return contains_token_sequence(text, markers, allow_hebrew_clitic_prefix=True)
+
+
+def contains_credit_marker(text: str) -> bool:
+    """Return whether text explicitly marks a monetary value as a credit."""
+
+    return _contains_marker(text, _CREDIT_MARKERS)
 
 
 def _remove_markers(text: str, markers: Iterable[str]) -> str:
     result = text
     for marker in sorted(markers, key=len, reverse=True):
         escaped = re.escape(marker).replace(r"\ ", r"\s+")
+        clitic_prefix = (
+            f"[{''.join(sorted(HEBREW_CLITIC_PREFIXES))}]?"
+            if any("\u0590" <= char <= "\u05ff" for char in marker)
+            else ""
+        )
         result = re.sub(
-            rf"(?<!\w){escaped}(?!\w)",
+            rf"(?<!\w){clitic_prefix}{escaped}(?!\w)",
             " ",
             result,
             flags=re.IGNORECASE,
@@ -205,7 +221,7 @@ def _sign_and_number(text: str) -> tuple[str, bool, bool, str | None]:
 
 
 def _parse_lexical(text: str, currency_hint: str | None) -> _LexicalAmount:
-    raw_text = unicodedata.normalize("NFC", text)
+    raw_text = normalize_text(text)
     diagnostics: list[str] = []
     explicit_currencies = currencies_in_text(raw_text)
     hint = canonical_currency(currency_hint)
@@ -283,6 +299,7 @@ def parse_amount(text: str, *, currency_hint: str | None = None) -> AmountParseR
 __all__ = [
     "AmountParseResult",
     "canonical_currency",
+    "contains_credit_marker",
     "currencies_in_text",
     "is_currency_shaped",
     "is_money_shaped",

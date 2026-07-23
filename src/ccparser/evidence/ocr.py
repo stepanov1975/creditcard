@@ -7,13 +7,18 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 import unicodedata
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import cast
 
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 
+from ccparser._traced_subprocess import run_traced_subprocess
 from ccparser.evidence.currency import CURRENCY_OCR_SYMBOLS
 from ccparser.evidence.models import Word
 from ccparser.geometry import BBox, Point, intersection_over_smaller
@@ -30,6 +35,109 @@ TESSERACT_RECOGNITION_TIMEOUT_SECONDS = 120.0
 
 class OcrError(RuntimeError):
     """A typed failure from local OCR version detection or recognition."""
+
+
+@dataclass(frozen=True, slots=True)
+class TesseractExecutionRuntime:
+    """Descriptor-backed Tesseract executable, data root, and child context."""
+
+    executable_path: str
+    tessdata_directory: str
+    pass_fds: tuple[int, ...]
+    environment: tuple[tuple[str, str], ...]
+    command_prefix: tuple[str, ...] = ()
+    allowed_file_descriptors: tuple[int, ...] = ()
+    staging_validator: Callable[[], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def child_environment(self) -> dict[str, str]:
+        """Return a fresh environment mapping for one subprocess invocation."""
+
+        return dict(self.environment)
+
+    def run(
+        self,
+        command: tuple[str, ...],
+        *,
+        input_bytes: bytes | None,
+        timeout: float,
+        stderr_to_stdout: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Execute one OCR command with the bound native mapping policy."""
+
+        if self.staging_validator is not None:
+            self.staging_validator()
+        try:
+            completed = run_traced_subprocess(
+                command,
+                cwd=Path.cwd(),
+                environment=self.child_environment(),
+                inherited_file_descriptors=self.pass_fds,
+                allowed_file_descriptors=self.allowed_file_descriptors,
+                timeout=timeout,
+                input_bytes=input_bytes,
+                stderr_to_stdout=stderr_to_stdout,
+            )
+        finally:
+            if self.staging_validator is not None:
+                self.staging_validator()
+        if completed.returncode != 0:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                command,
+                completed.stdout,
+                completed.stderr,
+            )
+        return completed
+
+
+_ACTIVE_TESSERACT_RUNTIME: TesseractExecutionRuntime | None = None
+_TESSERACT_RUNTIME_LOCK = threading.Lock()
+
+
+@contextmanager
+def bind_tesseract_runtime(runtime: TesseractExecutionRuntime) -> Iterator[None]:
+    """Activate one immutable gate runtime across OCR worker threads."""
+
+    global _ACTIVE_TESSERACT_RUNTIME
+    with _TESSERACT_RUNTIME_LOCK:
+        if _ACTIVE_TESSERACT_RUNTIME is not None:
+            raise RuntimeError("Tesseract runtime is already bound")
+        _ACTIVE_TESSERACT_RUNTIME = runtime
+    try:
+        yield
+    finally:
+        with _TESSERACT_RUNTIME_LOCK:
+            if _ACTIVE_TESSERACT_RUNTIME is not runtime:
+                raise RuntimeError("Tesseract runtime binding changed")
+            _ACTIVE_TESSERACT_RUNTIME = None
+
+
+def _bound_tesseract_invocation(
+    command: tuple[str, ...],
+    *,
+    include_tessdata: bool,
+) -> tuple[tuple[str, ...], TesseractExecutionRuntime | None]:
+    runtime = _ACTIVE_TESSERACT_RUNTIME
+    if runtime is None:
+        return command, None
+    if not command or command[0] != "tesseract":
+        raise OcrError("Tesseract command is incompatible with the bound runtime")
+    arguments = command[1:]
+    if include_tessdata:
+        if not arguments:
+            raise OcrError("Tesseract command is incomplete")
+        arguments = (
+            *arguments[:-1],
+            "--tessdata-dir",
+            runtime.tessdata_directory,
+            arguments[-1],
+        )
+    prefix = runtime.command_prefix or (runtime.executable_path,)
+    return (*prefix, *arguments), runtime
 
 
 def tesseract_command() -> tuple[str, ...]:
@@ -265,14 +373,42 @@ class TesseractOcr:
     def _tesseract_version(self) -> str:
         if self._version is None:
             try:
-                completed = subprocess.run(
+                command, runtime = _bound_tesseract_invocation(
                     (self._command[0], "--version"),
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                    include_tessdata=False,
                 )
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as error:
+                if runtime is None:
+                    completed = subprocess.run(
+                        command,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                    )
+                else:
+                    if runtime.allowed_file_descriptors:
+                        completed = runtime.run(
+                            command,
+                            input_bytes=None,
+                            timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                            stderr_to_stdout=True,
+                        )
+                    else:
+                        completed = subprocess.run(
+                            command,
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            env=runtime.child_environment(),
+                            pass_fds=runtime.pass_fds,
+                            timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                        )
+            except (
+                subprocess.TimeoutExpired,
+                subprocess.CalledProcessError,
+                OSError,
+                RuntimeError,
+            ) as error:
                 raise OcrError("Tesseract version detection failed") from error
             first_line = completed.stdout.decode("utf-8", errors="replace").splitlines()
             self._version = first_line[0].strip() if first_line else "unknown"
@@ -328,14 +464,42 @@ class TesseractOcr:
 
     def _recognize(self, image: bytes, command: tuple[str, ...]) -> bytes:
         try:
-            completed = subprocess.run(
+            execution_command, runtime = _bound_tesseract_invocation(
                 command,
-                input=image,
-                check=True,
-                capture_output=True,
-                timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                include_tessdata=True,
             )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as error:
+            if runtime is None:
+                completed = subprocess.run(
+                    execution_command,
+                    input=image,
+                    check=True,
+                    capture_output=True,
+                    timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                )
+            else:
+                if runtime.allowed_file_descriptors:
+                    completed = runtime.run(
+                        execution_command,
+                        input_bytes=image,
+                        timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                        stderr_to_stdout=False,
+                    )
+                else:
+                    completed = subprocess.run(
+                        execution_command,
+                        input=image,
+                        check=True,
+                        capture_output=True,
+                        env=runtime.child_environment(),
+                        pass_fds=runtime.pass_fds,
+                        timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                    )
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            OSError,
+            RuntimeError,
+        ) as error:
             raise OcrError("Tesseract recognition failed") from error
         return completed.stdout
 

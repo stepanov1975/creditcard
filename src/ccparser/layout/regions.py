@@ -50,6 +50,7 @@ from ccparser.layout.continuations import (
     DetailContinuationPolicy,
     single_row_match,
 )
+from ccparser.layout.marker_bands import separate_repeated_ocr_marker_band
 from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSchema
 from ccparser.layout.row_tags import RowTag
 from ccparser.layout.rows import cluster_rows
@@ -3168,7 +3169,7 @@ def _detect_table_regions_from_rows(
         if region is None:
             index = max(next_index, index + 1)
             continue
-        regions.append(region)
+        regions.append(separate_repeated_ocr_marker_band(region))
         inherited_source = region
         while "stopped_at_total" in inherited_source.diagnostics and next_index < len(rows):
             inherited, inherited_next_index = _inherited_region_after_total(
@@ -3188,7 +3189,7 @@ def _detect_table_regions_from_rows(
                     continue
                 next_index += 1
                 break
-            regions.append(inherited)
+            regions.append(separate_repeated_ocr_marker_band(inherited))
             inherited_source = inherited
             next_index = inherited_next_index
         index = max(next_index, index + 1)
@@ -3206,9 +3207,9 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
 
 def _singleton_transaction_candidates(
     page_evidence: PageEvidence,
+    rows: Sequence[Row],
     existing_regions: Sequence[TableRegion],
 ) -> tuple[TableRegion, ...]:
-    rows = _merged_header_bands(logical_rows(page_evidence))
     existing_row_bboxes = {row.bbox for region in existing_regions for row in region.rows}
     candidates: list[TableRegion] = []
     observed_bboxes: set[BBox] = set()

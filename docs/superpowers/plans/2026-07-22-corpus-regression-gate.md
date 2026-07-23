@@ -4,7 +4,9 @@
 
 **Goal:** Add a privacy-safe, commit-bound corpus gate that can record only a fully passing deterministic baseline and reject later correctness, provenance, corpus, or performance regressions.
 
-**Architecture:** `corpus_gate.py` owns immutable manifest models, pure projections/comparisons, protocol-driven execution, and baseline lifecycle. The existing Typer CLI supplies a thin `verify-corpus` boundary. Private inputs and artifacts stay below already ignored paths; tracked tests use synthetic `BatchResult` values and injected adapters.
+**Architecture:** `corpus_gate.py` owns immutable manifest models, pure projections/comparisons, protocol-driven execution, and baseline lifecycle. The existing Typer CLI supplies a thin `verify-corpus` boundary. Private inputs and artifacts stay below already ignored paths; tracked tests use synthetic `BatchResult` values and injected adapters. The production boundary starts a fresh `python -I -S` worker and sends configuration through a private pipe; injected adapters remain an in-process test seam.
+
+**2026-07-23 hardening addendum:** This addendum supersedes older snippets below wherever they differ. `verify` requires both the independently pinned membership-inventory SHA-256 and the independently pinned accepted-baseline SHA-256. `record` writes only a new, absent promotion-candidate path with exclusive create semantics and refuses to overwrite any prior candidate or accepted baseline. The version-6 toolchain fingerprint is self-consistent and compares the complete Python runtime/flags/environment identity, standard-library bytes, actual closed-distribution bytes and loaded origins, native Python mappings, PyMuPDF binding and engine versions, full Tesseract version output, required traineddata/config content identities, OCR/cache versions, and parser command policy. Git and Tesseract execute from sealed copies of their executable, ELF interpreter, and shared-library closure; a selective Linux seccomp/ptrace broker rejects unapproved executable mappings before user-space execution. OCR data and loader staging topology is checked immediately before and after every invocation. This is a deterministic regression boundary on a trusted worker, not a hostile-native-code or hostile-same-UID sandbox: the broker Python runtime is fingerprinted but not itself sealed, and an already executing approved native tool can use process-memory interfaces such as `/proc/self/mem` to alter its private pages. Loaded-origin checks rely on trusted interpreter/import machinery and static pre/post byte identities; they do not authenticate a deliberately forged live Python object graph or transient in-process self-modification. A candidate becomes an accepted baseline only through a separate private review and promotion step that pins its SHA-256 outside the candidate file.
 
 **Tech Stack:** Python 3.13, Pydantic 2, Typer, pytest 9, standard-library hashing/subprocess/path APIs.
 
@@ -16,10 +18,10 @@
 - Keep the approved membership inventory, source hashes, manifests, parser outputs, caches, and financial aggregates in ignored private storage.
 - Do not change files outside `/root/creditcard`.
 - Before any test or command that may use system temporary storage, run `export TMPDIR="$PWD/.superpowers/private/tmp"` and `mkdir -p "$TMPDIR"`; every temporary file must stay inside this worktree.
-- Any failure or interruption observed before the atomic commit must preserve the
-  accepted baseline. After commit, the candidate is accepted and no later operation
-  may report publication failure; process death may lose acknowledgement of a
-  completed atomic replacement.
+- Any failure or interruption before exclusive publication must leave the requested
+  promotion-candidate path absent. Publication must never replace an existing path;
+  if a link operation commits before reporting an error, inode identity determines
+  that the candidate was published and only the temporary link is cleaned up.
 - Exit 0 means complete acceptance; exit 1 means input/runtime failure; exit 2 means completed acceptance failure.
 
 ## File Structure
@@ -208,11 +210,11 @@ def test_independent_run_difference_has_exact_reason(field: str, reason: CorpusG
     assert compare_independent_runs(first, second) == (reason,)
 
 
-def test_runtime_is_enforced_only_for_matching_toolchain_and_jobs() -> None:
+def test_runtime_context_mismatch_is_rejected() -> None:
     baseline = _baseline(elapsed="10", jobs=4, toolchain="a")
     slower = _baseline(elapsed="13", jobs=4, toolchain="a")
     assert CorpusGateReason.RUNTIME_REGRESSION in compare_with_baseline(baseline, slower)
-    assert CorpusGateReason.RUNTIME_REGRESSION not in compare_with_baseline(
+    assert CorpusGateReason.RUNTIME_CONTEXT_DRIFT in compare_with_baseline(
         baseline, slower.model_copy(update={"toolchain": _toolchain("b")})
     )
 
@@ -275,10 +277,17 @@ class CorpusGateMode(StrEnum):
 
 
 class ToolchainFingerprint(_GateModel):
+    version: Literal[2]
     python_version: str
-    package_version: str
-    pymupdf_version: str
+    python_implementation: str
+    python_runtime_digest: Digest
+    runtime_environment_digest: Digest
+    dependencies: tuple[RuntimeDependency, ...]
+    pymupdf_binding_version: str
+    pymupdf_engine_version: str
     tesseract_version: str
+    tesseract_version_output_digest: Digest
+    tesseract_assets: tuple[ToolchainAsset, ...]
     ocr_pipeline_version: str
     ocr_cache_versions: tuple[str, ...]
     command_digest: Digest
@@ -335,7 +344,7 @@ def compare_independent_runs(first: RunManifest, second: RunManifest) -> tuple[C
     return tuple(reason for failed, reason in checks if failed)
 ```
 
-Baseline comparison must reject any exact membership, count, or digest change. The two-run retained runtime stored in `worst_elapsed_seconds` is `max(first.elapsed_seconds, second.elapsed_seconds)`. Verification uses only the tolerance recorded in the accepted baseline; it does not accept a replacement tolerance. Runtime uses `candidate_seconds > baseline_seconds * (Decimal(1) + baseline.runtime_tolerance_ratio)` only when toolchain digest and jobs match.
+Baseline comparison must reject any exact membership, count, or digest change. The two-run retained runtime stored in `worst_elapsed_seconds` is `max(first.elapsed_seconds, second.elapsed_seconds)`. Verification uses only the tolerance recorded in the accepted baseline; it does not accept a replacement tolerance. Any full toolchain-fingerprint or jobs mismatch fails with `runtime_context_drift`; when both match, runtime uses `candidate_seconds > baseline_seconds * (Decimal(1) + baseline.runtime_tolerance_ratio)`. The fingerprint validator requires the exact dependency and asset role collections and recomputes `digest` from every other version-2 field.
 
 - [ ] **Step 4: Run focused and output tests**
 
@@ -367,17 +376,32 @@ git commit -m "feat: compare corpus runs conservatively"
 Use injected fakes; never invoke real PDFs in tracked tests:
 
 ```python
-def test_record_failure_never_replaces_baseline(tmp_path: Path) -> None:
-    baseline = tmp_path / "artifacts" / "baseline.json"
-    baseline.parent.mkdir()
-    baseline.write_bytes(b"accepted")
+def test_record_failure_never_publishes_candidate(tmp_path: Path) -> None:
+    candidate = tmp_path / "artifacts" / "baseline-candidate.json"
+    candidate.parent.mkdir()
     dependencies = _dependencies(retained_status=Status.UNRECONCILED)
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
-        run_corpus_gate(_config(tmp_path, baseline), CorpusGateMode.RECORD, dependencies=dependencies)
+        run_corpus_gate(
+            _config(tmp_path, candidate),
+            CorpusGateMode.RECORD,
+            dependencies=dependencies,
+        )
 
     assert caught.value.reasons == (CorpusGateReason.RETAINED_NOT_RECONCILED,)
-    assert baseline.read_bytes() == b"accepted"
+    assert not candidate.exists()
+
+
+def test_record_refuses_to_overwrite_existing_candidate(tmp_path: Path) -> None:
+    candidate = tmp_path / "artifacts" / "baseline-candidate.json"
+    candidate.parent.mkdir()
+    candidate.write_bytes(b"prior candidate")
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(_config(tmp_path, candidate), CorpusGateMode.RECORD)
+
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
+    assert candidate.read_bytes() == b"prior candidate"
 
 
 def test_four_runs_receive_distinct_empty_caches(tmp_path: Path) -> None:
@@ -387,7 +411,7 @@ def test_four_runs_receive_distinct_empty_caches(tmp_path: Path) -> None:
     assert all(was_empty for was_empty in runner.cache_was_empty)
 ```
 
-Add cases for missing/corrupt/unknown-version baseline, dirty repository before and after, unignored destinations, every path-overlap pair, symlink members, source mutation, toolchain mutation, parser failure, and output mismatch.
+Add cases for missing/corrupt/unknown-version baseline, independently pinned baseline-content mismatch, dirty repository before and after, unignored destinations, every path-overlap pair, symlink members, source mutation, toolchain mutation, parser failure, and output mismatch. Verify canonical loaded origins, loader kinds, cache paths, executable-artifact classifications, every closed dependency version, Python runtime/environment identity, full Tesseract version-output identity, and that each required executable/traineddata/config asset independently affects the toolchain fingerprint.
 
 Also add these acceptance and containment cases:
 
@@ -396,7 +420,7 @@ Also add these acceptance and containment cases:
 - each run captures membership immediately before and after parsing, and mutation between any two of the four runs is rejected;
 - retained, quarantine, inventory, baseline, work, output, and cache paths must resolve beneath `RepositoryState.root`;
 - destination paths with a symlinked existing ancestor are rejected before any directory is created;
-- record mode requires an explicit runtime tolerance, while verify mode rejects one supplied by the caller and uses the accepted baseline tolerance;
+- record mode requires an explicit runtime tolerance, rejects a baseline SHA, and publishes only to an absent candidate path; verify mode rejects a supplied tolerance, requires an independently pinned baseline SHA, and uses the accepted baseline tolerance;
 - the work directory must be absent or empty before a run, and all four output/cache pairs are distinct newly created children that did not exist at validation time.
 
 - [ ] **Step 2: Confirm lifecycle tests fail**
@@ -420,8 +444,11 @@ class CorpusGateConfig(_GateModel):
     retained_dir: Path
     quarantine_dir: Path
     membership_inventory_path: Path
+    membership_inventory_sha256: Digest
     baseline_path: Path
+    baseline_sha256: Digest | None = None
     work_dir: Path
+    expected_commit_sha: CommitSha
     jobs: int = Field(gt=0)
     runtime_tolerance_ratio: Decimal | None = Field(default=None, ge=0)
 
@@ -493,31 +520,35 @@ def run_corpus_gate(
 
 `RepositoryState.root` is the project containment root: resolve `git rev-parse --git-common-dir` and use the parent of that `.git` directory. In a linked worktree this is intentionally broader than `git rev-parse --show-toplevel`, so read-only private corpora at the main project root and generated artifacts inside the linked worktree are both allowed while paths outside `/root/creditcard` remain forbidden. Git cleanliness and commit checks still execute against the active worktree, never the main checkout by accident.
 
-The real runner snapshots and hashes corpus membership, times `parse_directory()`, reads the emitted canonical files, and returns the batch, `RunManifest`, and its immediately adjacent membership snapshots. Load `CorpusMembershipInventory` before running and require its retained and quarantine values to equal every per-run snapshot. Validate active-worktree Git state and toolchain before and after all four runs. Explicitly scan and reject symlink files/directories because `iter_regular_pdf_files()` intentionally skips them.
+The real runner snapshots and hashes corpus membership, times `parse_directory()`, reads the emitted canonical files, and returns the batch, `RunManifest`, and its immediately adjacent membership snapshots. Load `CorpusMembershipInventory` before running and require its retained and quarantine values to equal every per-run snapshot. Validate active-worktree Git state and the complete toolchain fingerprint before and after all four runs. The default production entrypoint performs this work in a fresh `python -I -S` process, passes search roots and configuration over stdin, captures all worker stderr, and accepts only the closed JSON response schema. Explicitly scan and reject symlink files/directories because `iter_regular_pdf_files()` intentionally skips them.
 
 Resolve every configured path and existing ancestor before mutation as an advisory
 precheck. Authoritative private-file reads and all destination creation/publication
 must be repository-root-anchored and descriptor-relative, with no-follow component
 opens. Destination ancestors must be current-EUID-owned and not group/other writable.
-Work, baseline, and inventory paths must be Git-ignored; configured and derived paths
-must not overlap in either direction. An existing work directory must be empty.
-Record mode requires `runtime_tolerance_ratio` and publishes the baseline last from
-an exclusively created, identity-verified temporary inode. Verify mode requires
-`runtime_tolerance_ratio is None`, loads the tolerance from stable descriptor-read
-baseline bytes, and never rewrites it.
+Work, baseline-candidate/baseline, and inventory paths must be Git-ignored;
+configured and derived paths must not overlap in either direction. An existing work
+directory must be empty. Record mode requires `runtime_tolerance_ratio`, requires
+`baseline_sha256 is None`, rejects an existing candidate path, and publishes a new
+candidate last from an exclusively created, identity-verified temporary inode using
+a no-replace hard link. Verify mode requires `runtime_tolerance_ratio is None` and a
+non-null independently protected `baseline_sha256`; it hashes stable descriptor-read
+baseline bytes before model validation, loads the recorded tolerance, and never
+rewrites the accepted baseline.
 
 The exact execution order is:
 
-1. Inspect a clean repository state and fingerprint the toolchain.
-2. Validate containment, ignored paths, non-overlap, non-symlink topology, an absent-or-empty work directory with absent run children, and the mode-specific tolerance contract.
-3. Load the version-1 membership inventory and, in verify mode, the version-1 baseline.
+1. In production, start a fresh isolated/no-site/environment-ignoring interpreter; then inspect the exact expected clean commit, validate executed package code attribution, and fingerprint the complete toolchain.
+2. Validate containment, ignored paths, non-overlap, non-symlink topology, an absent-or-empty work directory with absent run children, and the complete mode contract (including the baseline pin in verify and candidate absence in record).
+3. Hash and load the version-1 membership inventory; in verify mode, hash and load the pinned version-1 accepted baseline.
 4. Require current retained and quarantine memberships to match the inventory.
 5. Run retained twice with `strict=True`, then quarantine twice with `strict=False`, using four distinct newly created output/cache pairs.
 6. Require every retained statement to be `Status.RECONCILED` and every quarantine statement to be `Status.NOT_STATEMENT`.
 7. Require each run's before/after memberships and a final membership snapshot to match the inventory; compare both independent pairs and the accepted baseline.
-8. Reinspect the same clean commit and identical toolchain fingerprint.
-9. Return the aggregate attestation, or pre-sync and atomically replace the accepted
-   baseline as the final reported commit operation and then return it in record mode.
+8. Reinspect the same clean commit, executed package attribution, and identical complete toolchain fingerprint.
+9. Return the aggregate attestation in verify mode. In record mode, publish a new
+   promotion candidate with exclusive no-overwrite semantics as the final commit
+   operation and return the attestation; private review/promotion later pins its SHA.
 
 - [ ] **Step 4: Run gate, parser, and path suites**
 
@@ -631,7 +662,10 @@ def test_verify_corpus_cli_prints_only_aggregate_attestation(monkeypatch: pytest
         [
             "verify-corpus", "retained", "--quarantine-dir", "quarantine",
             "--membership-inventory", "artifacts/membership.json",
+            "--membership-inventory-sha256", "a" * 64,
             "--baseline", "artifacts/baseline.json", "--work-dir", "artifacts/run",
+            "--baseline-sha256", "b" * 64,
+            "--expected-commit-sha", "c" * 40,
             "--mode", "verify", "--jobs", "4",
         ],
     )
@@ -642,7 +676,7 @@ def test_verify_corpus_cli_prints_only_aggregate_attestation(monkeypatch: pytest
     )
 ```
 
-Add exit-1 and exit-2 tests whose fake exceptions contain a filename, hash, merchant, and amount; assert none appears in output. Add option-contract tests proving record requires `--runtime-tolerance`, verify rejects it, and both modes require `--membership-inventory`.
+Add exit-1 and exit-2 tests whose fake exceptions contain a filename, hash, merchant, and amount; assert none appears in output. Add option-contract tests proving record requires `--runtime-tolerance` and rejects `--baseline-sha256`, verify rejects a runtime tolerance and requires `--baseline-sha256`, and both modes require the inventory path, inventory SHA-256, and exact reviewed commit SHA.
 
 - [ ] **Step 2: Confirm the command is absent**
 
@@ -652,7 +686,7 @@ Expected: failures because Typer has no `verify-corpus` command.
 
 - [ ] **Step 3: Implement validated CLI options and exit mapping**
 
-Add `verify_corpus_command()` with explicit retained, quarantine, membership-inventory, baseline, work, mode, jobs, and optional runtime-tolerance options. Parse numeric strings without float conversion. Enforce the mode-specific tolerance contract before running. Catch typed gate input/runtime errors as exit 1 and typed acceptance errors as exit 2. Print only fields from `CorpusGateAttestation`.
+Add `verify_corpus_command()` with explicit retained, quarantine, membership-inventory, membership-inventory SHA-256, baseline, optional baseline SHA-256, work, exact reviewed commit SHA, mode, jobs, and optional runtime-tolerance options. Parse numeric strings without float conversion and require lowercase fixed-width hashes. Enforce the complete mode-specific pin/tolerance contract before running. Catch typed gate input/runtime errors as exit 1 and typed acceptance errors as exit 2. Print only fields from `CorpusGateAttestation`.
 
 - [ ] **Step 4: Run CLI and gate tests**
 
@@ -680,7 +714,7 @@ git commit -m "feat: expose corpus verification command"
 
 - [ ] **Step 1: Add generic ignored-path examples**
 
-Document commands using `artifacts/corpus-membership.json`, `artifacts/corpus-baseline.json`, and a unique `artifacts/corpus-run-*` directory; do not include source hashes, transaction totals, or current corpus values. Explain that the ignored membership inventory is an independent acceptance input derived from the previously approved complete corpus, not something `record` regenerates. Explain that `record` is permitted only from a clean committed revision after review, requires `--runtime-tolerance`, and can never change the approved membership inventory. Verify omits the tolerance and uses the accepted value.
+Document commands using `artifacts/corpus-membership.json`, a unique absent `artifacts/corpus-baseline-candidate-*` path for record, an accepted `artifacts/corpus-baseline.json` plus its separately protected SHA-256 for verify, and unique `artifacts/corpus-run-*` directories; do not include source hashes, transaction totals, or current corpus values. Explain that the ignored membership inventory is an independent acceptance input derived from the previously approved complete corpus, not something `record` regenerates. Explain that `record` is permitted only from a clean exact reviewed revision, requires `--runtime-tolerance`, refuses every existing destination, and produces only a promotion candidate. After private review, promotion stores the accepted baseline SHA-256 outside that file. Verify omits the tolerance, requires that pin, and uses the accepted recorded value.
 
 - [ ] **Step 2: Run all repository gates**
 

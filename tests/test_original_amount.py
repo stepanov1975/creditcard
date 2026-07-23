@@ -1064,6 +1064,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
         conversion_date: date | None,
         year_context: DiscoveredDateYearContext | None,
         date_column_kinds: Mapping[int, DateColumnKind],
+        accepted_conversion_date_atom_ids: frozenset[int],
     ) -> SemanticValidation:
         captured_claims.append(tuple(initial_claims))
         return original_validation(
@@ -1080,6 +1081,7 @@ def test_description_spill_matrix_preserves_result_direction_and_exact_claims(
             conversion_date=conversion_date,
             year_context=year_context,
             date_column_kinds=date_column_kinds,
+            accepted_conversion_date_atom_ids=accepted_conversion_date_atom_ids,
         )
 
     monkeypatch.setattr(normalize_module, "validate_transaction_semantics", capture_claims)

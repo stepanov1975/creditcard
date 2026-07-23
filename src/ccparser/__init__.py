@@ -1,5 +1,8 @@
 """Public local credit-card statement parser API."""
 
+from __future__ import annotations
+
+from ccparser._runtime_attribution import _EXECUTED_PACKAGE_CODES as _EXECUTED_PACKAGE_CODES
 from ccparser.audit import audit_directory
 from ccparser.models import BatchResult, StatementResult, Status, Transaction
 from ccparser.parser import (

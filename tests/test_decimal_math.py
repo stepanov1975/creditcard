@@ -6,6 +6,7 @@ import pytest
 
 from ccparser.decimal_math import (
     exact_difference,
+    exact_product,
     exact_sum,
     finite_decimal,
     is_exact_multiple,
@@ -26,6 +27,29 @@ def test_exact_arithmetic_ignores_active_decimal_context() -> None:
         assert exact_difference(large, Decimal("0.01")) == Decimal(
             "123456789012345678901234567890.11"
         )
+
+
+def test_exact_product_ignores_active_decimal_context() -> None:
+    with localcontext() as context:
+        context.prec = 2
+        product = exact_product((Decimal("29.72"), Decimal("3.00"), Decimal("0.05")))
+
+    _assert_decimal_identity(product, Decimal("4.458000"))
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    (
+        ((Decimal("-0.00"), Decimal("2.0")), Decimal("-0.000")),
+        ((Decimal("-0.00"), Decimal("-2.0")), Decimal("0.000")),
+        ((Decimal("0.00"), Decimal("-2.0")), Decimal("-0.000")),
+    ),
+)
+def test_exact_product_preserves_signed_zero_parity_and_exponent(
+    values: tuple[Decimal, ...],
+    expected: Decimal,
+) -> None:
+    _assert_decimal_identity(exact_product(values), expected)
 
 
 def test_exact_arithmetic_supports_arbitrary_coefficient_lengths() -> None:

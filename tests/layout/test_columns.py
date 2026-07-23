@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import ccparser.layout.columns as columns_module
 from ccparser.evidence import VectorRule, Word
 from ccparser.layout.columns import (
     cells_in_column,
@@ -40,6 +41,33 @@ def _cell(
     )
 
 
+def _ocr_sliver_header(
+    text: str = "=",
+    *,
+    confidence: float = 0.59,
+    diagnostics: tuple[str, ...] = (),
+) -> Cell:
+    bbox = (289.5, 10.0, 290.5, 20.0)
+    return Cell(
+        page_number=1,
+        bbox=bbox,
+        text=text,
+        words=(Word(text=text, bbox=bbox, source="ocr", confidence=confidence),),
+        confidence=confidence,
+        diagnostics=diagnostics,
+    )
+
+
+def _ocr_sample(text: str, bbox: tuple[float, float, float, float]) -> Cell:
+    return Cell(
+        page_number=1,
+        bbox=bbox,
+        text=text,
+        words=(Word(text=text, bbox=bbox, source="ocr", confidence=0.95),),
+        confidence=0.95,
+    )
+
+
 def _column(
     *,
     x0: float,
@@ -58,6 +86,44 @@ def _column(
         source_cells=source_cells,
         confidence=1.0,
     )
+
+
+def test_header_scores_tokenize_each_observed_header_once_independent_of_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extra_terms = tuple(
+        columns_module._tokenized_header(f"synthetic header term {index}") for index in range(200)
+    )
+    expanded = dict(columns_module._COMPILED_HEADER_VOCABULARY)
+    expanded[ColumnRole.DESCRIPTION] = (
+        *expanded[ColumnRole.DESCRIPTION],
+        *extra_terms,
+    )
+    monkeypatch.setattr(columns_module, "_COMPILED_HEADER_VOCABULARY", expanded)
+
+    calls: list[str] = []
+    original = columns_module.phrase_tokens
+
+    def counting_phrase_tokens(text: str) -> tuple[str, ...]:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(columns_module, "phrase_tokens", counting_phrase_tokens)
+    headers = ("Original amount", "Billed amount", "Exchange rate")
+
+    scores = columns_module._header_scores(headers)
+
+    assert calls == list(headers)
+    assert scores[ColumnRole.ORIGINAL_AMOUNT] == 1.0
+    assert scores[ColumnRole.AMOUNT] == 1.0
+    assert scores[ColumnRole.EXCHANGE_RATE] == 1.0
+
+
+def test_compiled_header_policy_is_read_only() -> None:
+    description_terms = columns_module._COMPILED_HEADER_VOCABULARY[ColumnRole.DESCRIPTION]
+
+    with pytest.raises(TypeError):
+        columns_module._COMPILED_HEADER_VOCABULARY[ColumnRole.DESCRIPTION] = description_terms
 
 
 def test_cells_in_column_uses_inclusive_cell_centers() -> None:
@@ -268,6 +334,8 @@ def test_location_identifier_accepts_exact_normalized_ten_digit_field(text: str)
         "1234567890A",
         "12345 67890",
         "12345-67890",
+        "12345\u200b67890",
+        "12345\u206267890",
     ),
 )
 def test_location_identifier_rejects_nonexact_boundaries(text: str) -> None:
@@ -670,6 +738,131 @@ def test_infer_column_roles_uses_profiles_but_retains_ambiguous_unknown_column()
         ColumnRole.UNKNOWN,
     )
     assert "ambiguous_columns:3" in schema.diagnostics
+
+
+def test_infer_column_roles_discards_bracketed_ocr_sliver_header_anchor() -> None:
+    merchant = _cell("Merchant", (140.0, 30.0, 180.0, 40.0))
+    processor_reference = _cell("123-456", (220.0, 30.0, 242.0, 40.0))
+    transaction_date = _cell("01/02/2026", (300.0, 30.0, 340.0, 40.0))
+
+    schema = infer_column_roles(
+        (
+            _cell("Description", (100.0, 10.0, 240.0, 20.0)),
+            _ocr_sliver_header(),
+            _cell("Date", (300.0, 10.0, 340.0, 20.0)),
+        ),
+        (merchant, processor_reference, transaction_date),
+    )
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.DESCRIPTION,
+        ColumnRole.DATE,
+    )
+    assert processor_reference in schema.columns[0].source_cells
+    assert processor_reference.bbox[0] >= schema.header_cells[0].bbox[0]
+    assert processor_reference.bbox[2] <= schema.header_cells[0].bbox[2] + 2.0
+
+
+def test_infer_column_roles_accepts_strong_neighbor_value_profile_for_sliver_proof() -> None:
+    processor_reference = _cell("123-456", (220.0, 30.0, 242.0, 40.0))
+
+    schema = infer_column_roles(
+        (
+            _cell("Description", (100.0, 10.0, 240.0, 20.0)),
+            _ocr_sliver_header(),
+            _cell("When", (300.0, 10.0, 340.0, 20.0)),
+        ),
+        (
+            _cell("Merchant", (140.0, 30.0, 180.0, 40.0)),
+            processor_reference,
+            _cell("01/02/2026", (300.0, 30.0, 340.0, 40.0)),
+        ),
+    )
+
+    assert tuple(column.role for column in schema.columns) == (
+        ColumnRole.DESCRIPTION,
+        ColumnRole.DATE,
+    )
+    assert processor_reference in schema.columns[0].source_cells
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    ("$", "%", "+", "-", "\N{MINUS SIGN}", "\N{PLUS-MINUS SIGN}"),
+)
+def test_infer_column_roles_retains_meaningful_symbol_header_anchor(symbol: str) -> None:
+    symbol_header = _ocr_sliver_header(symbol)
+
+    schema = infer_column_roles(
+        (
+            _cell("Description", (100.0, 10.0, 240.0, 20.0)),
+            symbol_header,
+            _cell("Date", (300.0, 10.0, 340.0, 20.0)),
+        ),
+        (
+            _cell("Merchant", (140.0, 30.0, 180.0, 40.0)),
+            _cell("123-456", (220.0, 30.0, 242.0, 40.0)),
+            _cell("01/02/2026", (300.0, 30.0, 340.0, 40.0)),
+        ),
+    )
+
+    assert len(schema.columns) == 3
+    assert symbol_header in schema.header_cells
+
+
+def test_infer_column_roles_retains_header_with_repeated_marker_evidence() -> None:
+    marker_header = _ocr_sliver_header()
+
+    schema = infer_column_roles(
+        (
+            _cell("Description", (100.0, 10.0, 240.0, 20.0)),
+            marker_header,
+            _cell("Date", (285.0, 10.0, 340.0, 20.0)),
+        ),
+        (
+            _cell("Merchant", (140.0, 30.0, 180.0, 40.0)),
+            _ocr_sample("A", (286.0, 30.0, 295.0, 40.0)),
+            _ocr_sample("B", (286.2, 50.0, 295.2, 60.0)),
+            _ocr_sample("C", (285.8, 70.0, 294.8, 80.0)),
+            _cell("01/02/2026", (300.0, 30.0, 340.0, 40.0)),
+        ),
+    )
+
+    assert len(schema.columns) == 3
+    assert marker_header in schema.header_cells
+
+
+@pytest.mark.parametrize(
+    ("value", "is_ocr"),
+    (("◆", True), ("123-456", False)),
+)
+def test_infer_column_roles_retains_well_aligned_positioned_field(
+    value: str,
+    is_ocr: bool,
+) -> None:
+    field_header = _ocr_sliver_header()
+    field = (
+        _ocr_sample(value, (286.0, 30.0, 295.0, 40.0))
+        if is_ocr
+        else _cell(value, (286.0, 30.0, 295.0, 40.0))
+    )
+
+    schema = infer_column_roles(
+        (
+            _cell("Description", (100.0, 10.0, 240.0, 20.0)),
+            field_header,
+            _cell("Date", (285.0, 10.0, 340.0, 20.0)),
+        ),
+        (
+            _cell("Merchant", (140.0, 30.0, 180.0, 40.0)),
+            field,
+            _cell("01/02/2026", (300.0, 30.0, 340.0, 40.0)),
+        ),
+    )
+
+    assert len(schema.columns) == 3
+    assert field_header in schema.header_cells
+    assert field in schema.columns[1].source_cells
 
 
 @pytest.mark.parametrize("header", ("City", "Location", "עיר"))

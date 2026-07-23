@@ -41,7 +41,9 @@ from ccparser.money import (
     parse_amount,
 )
 from ccparser.normalization_dates import (
+    ConversionDateExtraction,
     DateColumnKind,
+    accepted_conversion_date_atom_ids,
     extract_conversion_date,
     extract_dates,
     structural_date_column_kinds,
@@ -63,7 +65,7 @@ from ccparser.normalization_semantics import (
 )
 from ccparser.original_amount import extract_original_amount
 from ccparser.reconcile import ReconciliationOutcome, reconciliation_outcome
-from ccparser.semantic_evidence import EvidenceLedger
+from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
 from ccparser.text_tokens import contains_token_sequence, normalize_text
 
 
@@ -163,6 +165,22 @@ class _RowNormalizationContext:
             diagnostics=transaction.ambiguities,
         )
         return _RowNormalizationAttempt(result, FieldDisposition.ACCEPT)
+
+
+def _assign_semantic_atom_ids(
+    claims: Sequence[EvidenceClaim],
+    owner: SemanticOwner,
+    atom_ids: frozenset[int],
+) -> list[EvidenceClaim]:
+    if not atom_ids:
+        return list(claims)
+    reassigned = [
+        EvidenceClaim(claim.owner, remaining_ids)
+        for claim in claims
+        if (remaining_ids := claim.atom_ids - atom_ids)
+    ]
+    reassigned.append(EvidenceClaim(owner, atom_ids))
+    return reassigned
 
 
 _CATEGORY_VOCABULARY: tuple[tuple[TransactionCategory, tuple[str, ...]], ...] = (
@@ -281,12 +299,13 @@ def _normalize_row(
         rows=rows,
         evidence=_row_evidence(rows),
         raw_text=_row_text(rows),
-        diagnostics=list(assignment_diagnostics(row, region, ledger)),
+        diagnostics=[],
     )
     diagnostics = context.diagnostics
     contract_diagnostics = role_contract_diagnostics(region)
-    diagnostics.extend(contract_diagnostics)
     if contract_diagnostics:
+        diagnostics.extend(assignment_diagnostics(row, region, ledger, year_context=year_context))
+        diagnostics.extend(contract_diagnostics)
         return context.rejected_attempt()
 
     billed = extract_billed_fields(
@@ -297,6 +316,7 @@ def _normalize_row(
     if billed.disposition is FieldDisposition.REJECT_ROW:
         if billed.amount_cell is not None:
             return context.rejected_attempt(diagnostics=billed.diagnostics)
+        diagnostics.extend(assignment_diagnostics(row, region, ledger, year_context=year_context))
         diagnostics.extend(billed.diagnostics)
         return context.rejected_attempt()
     if billed.disposition is FieldDisposition.IGNORE_ROW:
@@ -307,43 +327,85 @@ def _normalize_row(
     if billed.amount is None or billed.currency is None or billed.amount_cell is None:
         raise RuntimeError("accepted billed fields must contain complete source values")
 
-    description_extraction = extract_description(rows, region, year_context, ledger)
-    description = description_extraction.value
-    semantic_claims = list(description_extraction.claims)
-    diagnostics.extend(description_extraction.diagnostics)
-    date_extraction = extract_dates(row, region, year_context, date_column_kinds)
+    date_extraction = extract_dates(
+        row,
+        region,
+        year_context,
+        date_column_kinds,
+        ledger=ledger,
+    )
     transaction_date = date_extraction.transaction_date
     posting_date = date_extraction.posting_date
     conversion_date = date_extraction.conversion_date
     unresolved_conversion_cells = date_extraction.unresolved_conversion_cells
-    diagnostics.extend(date_extraction.diagnostics)
-
-    original_extraction = extract_original_amount(
-        row=row,
-        continuation_rows=continuation_rows,
-        region=region,
-        ledger=ledger,
-        billed=billed,
-        description=description,
-        initial_claims=semantic_claims,
-    )
-    original_amount = original_extraction.amount
-    original_currency = original_extraction.currency
-    description = original_extraction.description
-    semantic_claims.extend(original_extraction.claims)
-    diagnostics.extend(original_extraction.diagnostics)
-
-    conversion_extraction = extract_conversion_date(
+    explicit_conversion_atom_ids = accepted_conversion_date_atom_ids(
         row,
         region,
         ledger,
         year_context,
-        original_currency=original_currency,
-        billing_currency=billed.currency,
-        transaction_date=transaction_date,
-        existing_conversion_date=conversion_date,
+        explicit_conversion_date=conversion_date,
+        semantic_extraction=ConversionDateExtraction(None, (), frozenset(), frozenset()),
     )
+    assignment_diagnostic_index = len(diagnostics)
+    diagnostics.extend(date_extraction.diagnostics)
+
+    accepted_conversion_atom_ids = explicit_conversion_atom_ids
+    conversion_ownership_stable = False
+    for iteration in range(3):
+        description_extraction = extract_description(
+            rows,
+            region,
+            year_context,
+            ledger,
+            excluded_atom_ids=accepted_conversion_atom_ids,
+        )
+        semantic_claims = _assign_semantic_atom_ids(
+            description_extraction.claims,
+            SemanticOwner.CONVERSION_DATE,
+            accepted_conversion_atom_ids,
+        )
+        original_extraction = extract_original_amount(
+            row=row,
+            continuation_rows=continuation_rows,
+            region=region,
+            ledger=ledger,
+            billed=billed,
+            description=description_extraction.value,
+            initial_claims=semantic_claims,
+        )
+        semantic_claims.extend(original_extraction.claims)
+        conversion_extraction = extract_conversion_date(
+            row,
+            region,
+            ledger,
+            year_context,
+            original_currency=original_extraction.currency,
+            billing_currency=billed.currency,
+            transaction_date=transaction_date,
+            existing_conversion_date=conversion_date,
+        )
+        next_atom_ids = accepted_conversion_date_atom_ids(
+            row,
+            region,
+            ledger,
+            year_context,
+            explicit_conversion_date=conversion_date,
+            semantic_extraction=conversion_extraction,
+        )
+        if next_atom_ids == accepted_conversion_atom_ids:
+            conversion_ownership_stable = True
+            break
+        if iteration < 2:
+            accepted_conversion_atom_ids = next_atom_ids
+
+    description = original_extraction.description
+    original_amount = original_extraction.amount
+    original_currency = original_extraction.currency
+    diagnostics.extend(description_extraction.diagnostics)
+    diagnostics.extend(original_extraction.diagnostics)
     diagnostics.extend(conversion_extraction.diagnostics)
+    if not conversion_ownership_stable:
+        diagnostics.append("unstable_conversion_evidence_ownership")
     if conversion_date is None:
         conversion_date = conversion_extraction.value
     elif conversion_extraction.value is not None and conversion_extraction.value != conversion_date:
@@ -357,9 +419,20 @@ def _normalize_row(
         ledger=ledger,
         original_currency=original_currency,
         billing_currency=billed.currency,
+        excluded_atom_ids=accepted_conversion_atom_ids,
+        original_amount=original_amount,
+        billed_amount=billed.amount,
     )
     semantic_claims.extend(foreign_exchange_extraction.claims)
     diagnostics.extend(foreign_exchange_extraction.diagnostics)
+
+    diagnostics[assignment_diagnostic_index:assignment_diagnostic_index] = assignment_diagnostics(
+        row,
+        region,
+        ledger,
+        accepted_conversion_date_atom_ids=accepted_conversion_atom_ids,
+        year_context=year_context,
+    )
 
     installment = extract_installment_fields(row=row, region=region)
     diagnostics.extend(installment.diagnostics)
@@ -380,6 +453,7 @@ def _normalize_row(
         conversion_date=conversion_date,
         year_context=year_context,
         date_column_kinds=date_column_kinds,
+        accepted_conversion_date_atom_ids=accepted_conversion_atom_ids,
     )
     semantic_claims = list(semantic_validation.claims)
     diagnostics.extend(semantic_validation.diagnostics)

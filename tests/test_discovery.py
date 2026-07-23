@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from decimal import Decimal, localcontext
 
 import pytest
 
+import ccparser.discovery as discovery_module
+import ccparser.layout.regions as regions_module
 from ccparser.discovery import (
     DateTokenStyle,
     DocumentClassification,
@@ -62,6 +65,28 @@ def _page(
 
 def _document(*pages: PageEvidence) -> DocumentEvidence:
     return DocumentEvidence(source_sha256="a" * 64, pages=tuple(pages))
+
+
+def test_discovery_reuses_prepared_rows_for_singleton_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _page(
+        1,
+        (
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    def reject_duplicate_row_reconstruction(_page: PageEvidence) -> tuple[Row, ...]:
+        raise AssertionError("singleton scan must reuse the page rows prepared by discovery")
+
+    monkeypatch.setattr(regions_module, "logical_rows", reject_duplicate_row_reconstruction)
+
+    result = discover_statement(_document(page))
+
+    assert result.classification is DocumentClassification.STATEMENT
 
 
 def _table(y: float, currency: str, first: str, second: str) -> tuple[Word, ...]:
@@ -594,6 +619,71 @@ def test_lossless_tiny_duplicate_of_valid_total_is_excluded_as_overlay_artifact(
     assert result.rejected_total_candidates == ()
     assert result.diagnostics == ()
     assert normalize_statement(result).reconciliation.status is Status.RECONCILED
+
+
+def test_total_marker_signature_tokenization_is_vocabulary_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    words = (
+        _word("סהכחיוב", 10.0, 60.0, 10.0),
+        _word("₪30.00", 70.0, 110.0, 10.0),
+    )
+    row = Row(
+        page_number=1,
+        bbox=(10.0, 10.0, 110.0, 20.0),
+        cells=tuple(
+            Cell(
+                page_number=1,
+                bbox=word.bbox,
+                text=word.text,
+                words=(word,),
+                confidence=1.0,
+            )
+            for word in words
+        ),
+        words=words,
+        confidence=1.0,
+    )
+    expanded_markers = (
+        *discovery_module._COMPILED_TOTAL_MARKERS,
+        *((f"synthetic{index}",) for index in range(200)),
+    )
+    monkeypatch.setattr(
+        discovery_module,
+        "_COMPILED_TOTAL_MARKERS",
+        expanded_markers,
+    )
+
+    def fail_static_marker_recompilation(
+        phrases: Iterable[str],
+        *,
+        ignore_acronym_quotes: bool = False,
+    ) -> tuple[tuple[str, ...], ...]:
+        del phrases, ignore_acronym_quotes
+        raise AssertionError("static marker vocabulary must compile only at import")
+
+    monkeypatch.setattr(
+        discovery_module,
+        "compile_token_phrases",
+        fail_static_marker_recompilation,
+    )
+    calls: list[str] = []
+    original = discovery_module.phrase_tokens
+
+    def counting_phrase_tokens(
+        text: str,
+        *,
+        ignore_acronym_quotes: bool = False,
+    ) -> tuple[str, ...]:
+        calls.append(text)
+        return original(text, ignore_acronym_quotes=ignore_acronym_quotes)
+
+    monkeypatch.setattr(discovery_module, "phrase_tokens", counting_phrase_tokens)
+
+    signature = _row_total_marker_signature(row)
+
+    assert "סהכחיוב" in signature
+    assert calls == ["סהכחיוב", "₪30.00"]
 
 
 def test_total_marker_signature_canonicalizes_compact_hebrew_acronym_aliases() -> None:

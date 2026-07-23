@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import pairwise
 
+from ccparser.date_tokens import has_date_token_boundaries
 from ccparser.evidence.models import BBox, Glyph, Word
 from ccparser.geometry import (
     bbox_center_y as _center_y,
@@ -24,6 +25,8 @@ from ccparser.geometry import (
 )
 from ccparser.layout.models import Cell, Row
 from ccparser.layout.text import logical_text_for_evidence
+from ccparser.money import canonical_currency
+from ccparser.text_tokens import normalize_text
 
 
 class SemanticOwner(StrEnum):
@@ -89,18 +92,55 @@ class EvidenceCluster:
 
 @dataclass(frozen=True, slots=True)
 class FragmentedDateCandidate:
-    """A date-shaped token reconstructed from contiguous positioned glyphs."""
+    """A date-shaped token reconstructed from positioned source evidence."""
 
     text: str
     atom_ids: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
-class PositionedDecimalCandidate:
-    """A decimal reconstructed from one contiguous positioned numeric run."""
+class PositionedNumberCandidate:
+    """A number reconstructed from one positioned numeric source run."""
 
     text: str
     atom_ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class PositionedDecimalCandidate(PositionedNumberCandidate):
+    """A decimal reconstructed from one positioned numeric source run."""
+
+
+@dataclass(frozen=True, slots=True)
+class PositionedWholeNumberCandidate(PositionedNumberCandidate):
+    """A whole number reconstructed from one positioned numeric source run."""
+
+
+@dataclass(frozen=True, slots=True)
+class PositionedPercentageCandidate:
+    """A positioned number bound to explicit percentage-marker evidence."""
+
+    number: PositionedNumberCandidate
+    marker_atom_ids: frozenset[int]
+    marker_count: int
+
+    @property
+    def text(self) -> str:
+        """Return the marker-free numeric text."""
+
+        return self.number.text
+
+    @property
+    def numeric_atom_ids(self) -> frozenset[int]:
+        """Return atoms supporting the numeric value."""
+
+        return self.number.atom_ids
+
+    @property
+    def semantic_atom_ids(self) -> frozenset[int]:
+        """Return every atom supporting the percentage semantic value."""
+
+        return self.numeric_atom_ids | self.marker_atom_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +182,214 @@ class _AtomDraft:
 
 
 def _normalized(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFC", text).split())
+    return normalize_text(text)
+
+
+def _has_unique_ordered_word_subset(text: str, words: Sequence[Word]) -> bool:
+    logical = _normalized(text)
+    if not logical or not words:
+        return False
+    ordered = tuple(
+        sorted(
+            words,
+            key=lambda word: (_center_y(word.bbox), word.bbox[0], word.bbox[2], word.text),
+        )
+    )
+    matches = 0
+    for start in range(len(ordered)):
+        for end in range(start + 1, len(ordered) + 1):
+            if _normalized(" ".join(word.text for word in ordered[start:end])) == logical:
+                matches += 1
+                if matches > 1:
+                    return False
+    return matches == 1
+
+
+_DECIMAL_WORD_WRAPPERS = frozenset("+-()[]{}%\N{MINUS SIGN}\N{EN DASH}\N{EM DASH}")
+_DECIMAL_GLYPH_WRAPPERS = _DECIMAL_WORD_WRAPPERS | frozenset(".,;:=\N{EN DASH}\N{EM DASH}")
+_DECIMAL_GLYPH_HARD_BOUNDARIES = frozenset(".,;:=")
+_DATE_WORD_WRAPPERS = frozenset("()[]{}")
+
+
+def _wrapped_word_decimal(
+    text: str,
+    pattern: re.Pattern[str],
+) -> str | None:
+    """Return one decimal only when the rest of a WORD is a semantic wrapper."""
+
+    matches = tuple(pattern.finditer(text))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    numeric_start = match.start()
+    while numeric_start > 0 and (
+        text[numeric_start - 1].isdigit() or text[numeric_start - 1] in ".,"
+    ):
+        numeric_start -= 1
+    numeric_end = match.end()
+    while numeric_end < len(text) and (text[numeric_end].isdigit() or text[numeric_end] in ".,"):
+        numeric_end += 1
+    numeric_remainder = text[numeric_start : match.start()] + text[match.end() : numeric_end]
+    if any(char.isdigit() for char in numeric_remainder):
+        return None
+    prefix = text[: match.start()]
+    suffix = text[match.end() :]
+    prefix_boundaries = tuple(
+        index for index, char in enumerate(prefix) if char in _DECIMAL_GLYPH_HARD_BOUNDARIES
+    )
+    if prefix_boundaries:
+        prefix = prefix[max(prefix_boundaries) + 1 :]
+    suffix_boundaries = tuple(
+        index for index, char in enumerate(suffix) if char in _DECIMAL_GLYPH_HARD_BOUNDARIES
+    )
+    if suffix_boundaries:
+        suffix = suffix[: min(suffix_boundaries)]
+    for boundary in (prefix, suffix):
+        semantic_text = "".join(
+            char
+            for char in boundary
+            if not char.isspace()
+            and char not in _DECIMAL_WORD_WRAPPERS
+            and unicodedata.category(char) != "Sc"
+        )
+        if semantic_text and canonical_currency(semantic_text) is None:
+            return None
+    return match.group(0)
+
+
+def _wrapped_word_date(text: str, pattern: re.Pattern[str]) -> str | None:
+    matches = tuple(pattern.finditer(text))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    numeric_start = match.start()
+    while numeric_start > 0 and (
+        text[numeric_start - 1].isdigit() or text[numeric_start - 1] in "./-"
+    ):
+        numeric_start -= 1
+    numeric_end = match.end()
+    while numeric_end < len(text) and (text[numeric_end].isdigit() or text[numeric_end] in "./-"):
+        numeric_end += 1
+    numeric_remainder = text[numeric_start : match.start()] + text[match.end() : numeric_end]
+    if any(char.isdigit() for char in numeric_remainder):
+        return None
+    prefix = text[: match.start()]
+    suffix = text[match.end() :]
+    prefix_boundaries = tuple(
+        index for index, char in enumerate(prefix) if char in _DECIMAL_GLYPH_HARD_BOUNDARIES
+    )
+    if prefix_boundaries:
+        prefix = prefix[max(prefix_boundaries) + 1 :]
+    suffix_boundaries = tuple(
+        index for index, char in enumerate(suffix) if char in _DECIMAL_GLYPH_HARD_BOUNDARIES
+    )
+    if suffix_boundaries:
+        suffix = suffix[: min(suffix_boundaries)]
+    if any(
+        char not in _DATE_WORD_WRAPPERS and not char.isspace()
+        for boundary in (prefix, suffix)
+        for char in boundary
+    ):
+        return None
+    return match.group(0)
+
+
+def _touching_word_boundary_text(
+    candidate: EvidenceAtom,
+    word_atoms: Sequence[EvidenceAtom],
+    *,
+    before: bool,
+    logical_texts: Sequence[str],
+) -> str:
+    candidate_center_x = (candidate.bbox[0] + candidate.bbox[2]) / 2
+    nearby = tuple(
+        atom
+        for atom in word_atoms
+        if atom.atom_id != candidate.atom_id
+        and atom.page_number == candidate.page_number
+        and abs(_center_y(atom.bbox) - _center_y(candidate.bbox))
+        <= min(_height(atom.bbox), _height(candidate.bbox)) * 0.5
+        and (
+            (atom.bbox[0] + atom.bbox[2]) / 2 < candidate_center_x
+            if before
+            else (atom.bbox[0] + atom.bbox[2]) / 2 > candidate_center_x
+        )
+    )
+    ordered = sorted(
+        nearby,
+        key=lambda atom: atom.bbox[2] if before else atom.bbox[0],
+        reverse=before,
+    )
+    edge = candidate.bbox[0] if before else candidate.bbox[2]
+    attached_text = candidate.text
+    run: list[EvidenceAtom] = []
+    for atom in ordered:
+        gap = edge - atom.bbox[2] if before else atom.bbox[0] - edge
+        if gap > min(_height(atom.bbox), _height(candidate.bbox)) * 0.05:
+            break
+        combined_text = f"{atom.text}{attached_text}" if before else f"{attached_text}{atom.text}"
+        if not any(combined_text in logical_text for logical_text in logical_texts):
+            break
+        run.append(atom)
+        attached_text = combined_text
+        edge = atom.bbox[0] if before else atom.bbox[2]
+    if before:
+        run.reverse()
+    return "".join(atom.text for atom in run)
+
+
+def _word_date_has_boundaries(
+    candidate: EvidenceAtom,
+    word_atoms: Sequence[EvidenceAtom],
+    pattern: re.Pattern[str],
+    date_text: str,
+    logical_texts: Sequence[str],
+) -> bool:
+    combined = "".join(
+        (
+            _touching_word_boundary_text(
+                candidate,
+                word_atoms,
+                before=True,
+                logical_texts=logical_texts,
+            ),
+            candidate.text,
+            _touching_word_boundary_text(
+                candidate,
+                word_atoms,
+                before=False,
+                logical_texts=logical_texts,
+            ),
+        )
+    )
+    return _wrapped_word_date(combined, pattern) == date_text
+
+
+def _word_decimal_has_boundaries(
+    candidate: EvidenceAtom,
+    word_atoms: Sequence[EvidenceAtom],
+    pattern: re.Pattern[str],
+    decimal_text: str,
+    logical_texts: Sequence[str],
+) -> bool:
+    combined = "".join(
+        (
+            _touching_word_boundary_text(
+                candidate,
+                word_atoms,
+                before=True,
+                logical_texts=logical_texts,
+            ),
+            candidate.text,
+            _touching_word_boundary_text(
+                candidate,
+                word_atoms,
+                before=False,
+                logical_texts=logical_texts,
+            ),
+        )
+    )
+    return _wrapped_word_decimal(combined, pattern) == decimal_text
 
 
 def _character_signature(text: str) -> tuple[str, ...]:
@@ -268,8 +515,10 @@ class EvidenceLedger:
                         if previous is None or draft.confidence > previous.confidence:
                             drafts[key] = draft
                         cell_keys.append(key)
-                elif cell.words and _character_signature(cell.text) == _character_signature(
-                    "".join(word.text for word in cell.words)
+                elif cell.words and (
+                    _character_signature(cell.text)
+                    == _character_signature("".join(word.text for word in cell.words))
+                    or _has_unique_ordered_word_subset(cell.text, cell.words)
                 ):
                     for word in cell.words:
                         text = _normalized(word.text)
@@ -411,9 +660,13 @@ class EvidenceLedger:
         return tuple(sorted(clusters, key=lambda cluster: (cluster.bbox[1], cluster.bbox[0])))
 
     def fragmented_date_candidates(self, cell: Cell) -> tuple[FragmentedDateCandidate, ...]:
-        """Recover date-shaped tokens from physical glyph order, not logical cell text."""
+        """Recover date-shaped tokens from positioned glyph or word evidence."""
 
         cell_atom_ids = self.atoms_for_cell(cell)
+        date_pattern = re.compile(
+            r"(?<!\d)\d{1,4}(?P<separator>[./-])\d{1,2}"
+            r"(?P=separator)\d{1,4}(?!\d)"
+        )
         atom_id_by_glyph_key = {
             _glyph_key(atom.page_number, atom.glyph): atom.atom_id
             for atom in self.atoms
@@ -423,8 +676,32 @@ class EvidenceLedger:
             (glyph, atom_id_by_glyph_key.get(_glyph_key(cell.page_number, glyph)))
             for glyph in cell.glyphs
         )
-        if not positioned:
-            return ()
+        if not atom_id_by_glyph_key:
+            word_atoms = tuple(
+                atom
+                for atom in self.atoms
+                if atom.atom_id in cell_atom_ids and atom.word is not None
+            )
+            word_candidates = tuple(
+                FragmentedDateCandidate(
+                    text=date_text,
+                    atom_ids=frozenset((atom.atom_id,)),
+                )
+                for atom in word_atoms
+                if (date_text := _wrapped_word_date(atom.text, date_pattern)) is not None
+                if _word_date_has_boundaries(
+                    atom,
+                    word_atoms,
+                    date_pattern,
+                    date_text,
+                    (cell.text,),
+                )
+            )
+            return tuple(
+                {
+                    (candidate.text, candidate.atom_ids): candidate for candidate in word_candidates
+                }.values()
+            )
 
         lines: list[list[tuple[Glyph, int | None]]] = []
         for item in sorted(positioned, key=lambda value: _center_y(value[0].bbox)):
@@ -451,18 +728,72 @@ class EvidenceLedger:
             )
             for line in sorted(lines, key=lambda line: _center_y(line[0][0].bbox))
         )
-        date_pattern = re.compile(
-            r"(?<!\d)\d{1,4}(?P<separator>[./-])\d{1,2}"
-            r"(?P=separator)\d{1,4}(?!\d)"
-        )
         candidates: list[FragmentedDateCandidate] = []
         segment: list[tuple[Glyph, int]] = []
+
+        def has_physical_token_boundaries(candidate: FragmentedDateCandidate) -> bool:
+            candidate_atoms = tuple(self.atoms[atom_id] for atom_id in candidate.atom_ids)
+            candidate_bbox = _union_bbox(tuple(atom.bbox for atom in candidate_atoms))
+            candidate_glyph_keys = {
+                _glyph_key(atom.page_number, atom.glyph)
+                for atom in candidate_atoms
+                if atom.glyph is not None
+            }
+            same_line = tuple(
+                glyph
+                for glyph in cell.glyphs
+                if _glyph_key(cell.page_number, glyph) not in candidate_glyph_keys
+                and abs(_center_y(glyph.bbox) - _center_y(candidate_bbox))
+                <= min(_height(glyph.bbox), _height(candidate_bbox)) * 0.5
+            )
+            candidate_center_x = (candidate_bbox[0] + candidate_bbox[2]) / 2
+            left = max(
+                (
+                    glyph
+                    for glyph in same_line
+                    if (glyph.bbox[0] + glyph.bbox[2]) / 2 < candidate_center_x
+                ),
+                key=lambda glyph: (glyph.bbox[0] + glyph.bbox[2]) / 2,
+                default=None,
+            )
+            right = min(
+                (
+                    glyph
+                    for glyph in same_line
+                    if (glyph.bbox[0] + glyph.bbox[2]) / 2 > candidate_center_x
+                ),
+                key=lambda glyph: (glyph.bbox[0] + glyph.bbox[2]) / 2,
+                default=None,
+            )
+            invalid_boundaries = tuple(
+                glyph
+                for glyph in (left, right)
+                if glyph is not None
+                and glyph.char.isalnum()
+                and max(
+                    candidate_bbox[0] - glyph.bbox[2],
+                    glyph.bbox[0] - candidate_bbox[2],
+                    0.0,
+                )
+                <= min(_height(glyph.bbox), _height(candidate_bbox)) * 0.6
+            )
+            if not invalid_boundaries:
+                return True
+            physical_text = "".join(glyph.char for glyph in cell.glyphs)
+            is_reordered_hebrew_source = (
+                candidate.text not in cell.text
+                and _character_signature(cell.text) == _character_signature(physical_text)
+                and all("\u0590" <= glyph.char <= "\u05ff" for glyph in invalid_boundaries)
+            )
+            return is_reordered_hebrew_source
 
         def flush() -> None:
             if not segment:
                 return
             text = "".join(glyph.char for glyph, _ in segment)
             for match in date_pattern.finditer(text):
+                if not has_date_token_boundaries(text, match.start(), match.end()):
+                    continue
                 matched = segment[match.start() : match.end()]
                 candidates.append(
                     FragmentedDateCandidate(
@@ -492,8 +823,25 @@ class EvidenceLedger:
                 previous = glyph
             flush()
 
-        unique = {(candidate.text, candidate.atom_ids): candidate for candidate in candidates}
+        unique = {
+            (candidate.text, candidate.atom_ids): candidate
+            for candidate in candidates
+            if has_physical_token_boundaries(candidate)
+        }
         return tuple(unique.values())
+
+    def fragmented_date_atom_ids(self, atom_ids: Iterable[int]) -> frozenset[int]:
+        """Return selected atom IDs participating in complete positioned date tokens."""
+
+        selected_ids = frozenset(atom_ids)
+        return frozenset(
+            atom_id
+            for cell, membership in self._cell_memberships
+            if membership & selected_ids
+            for candidate in self.fragmented_date_candidates(cell)
+            if candidate.atom_ids <= selected_ids
+            for atom_id in candidate.atom_ids
+        )
 
     def positioned_decimal_candidates(
         self,
@@ -501,16 +849,157 @@ class EvidenceLedger:
         *,
         max_fraction_digits: int = 6,
     ) -> tuple[PositionedDecimalCandidate, ...]:
-        """Recover decimals from bounded, contiguous, physically positioned glyphs."""
+        """Recover bounded, physically positioned decimal glyph or word evidence."""
 
         if max_fraction_digits < 1:
             raise ValueError("maximum fraction digits must be positive")
+        candidates = self._positioned_number_candidates(
+            atom_ids,
+            pattern=re.compile(rf"\d+[.,]\d{{1,{max_fraction_digits}}}"),
+        )
+        return tuple(
+            PositionedDecimalCandidate(candidate.text, candidate.atom_ids)
+            for candidate in candidates
+        )
+
+    def positioned_whole_number_candidates(
+        self,
+        atom_ids: Iterable[int],
+    ) -> tuple[PositionedWholeNumberCandidate, ...]:
+        """Recover bounded, physically positioned whole-number evidence."""
+
+        candidates = self._positioned_number_candidates(
+            atom_ids,
+            pattern=re.compile(r"\d+"),
+        )
+        return tuple(
+            PositionedWholeNumberCandidate(candidate.text, candidate.atom_ids)
+            for candidate in candidates
+        )
+
+    def _positioned_number_candidates(
+        self,
+        atom_ids: Iterable[int],
+        *,
+        pattern: re.Pattern[str],
+    ) -> tuple[PositionedNumberCandidate, ...]:
+        """Recover numbers through the shared positioned-evidence engine."""
+
         selected_ids = frozenset(atom_ids)
+        word_atoms = tuple(
+            atom for atom in self.atoms if atom.atom_id in selected_ids and atom.word is not None
+        )
+        logical_texts_by_word_atom = {
+            atom.atom_id: tuple(
+                cell.text
+                for cell, membership in self._cell_memberships
+                if atom.atom_id in membership
+            )
+            for atom in word_atoms
+        }
+        candidates = [
+            PositionedNumberCandidate(
+                text=decimal_text,
+                atom_ids=frozenset((atom.atom_id,)),
+            )
+            for atom in word_atoms
+            if (decimal_text := _wrapped_word_decimal(atom.text, pattern)) is not None
+            if _word_decimal_has_boundaries(
+                atom,
+                word_atoms,
+                pattern,
+                decimal_text,
+                logical_texts_by_word_atom[atom.atom_id],
+            )
+        ]
         selected = tuple(
             atom for atom in self.atoms if atom.atom_id in selected_ids and atom.glyph is not None
         )
-        if not selected:
-            return ()
+        whitespace_glyphs = tuple(
+            (cell.page_number, glyph)
+            for cell, membership in self._cell_memberships
+            if membership & selected_ids
+            for glyph in cell.glyphs
+            if glyph.char.isspace()
+        )
+
+        def has_whitespace_between(
+            *,
+            page_number: int,
+            y_center: float,
+            height: float,
+            left_edge: float,
+            right_edge: float,
+        ) -> bool:
+            return any(
+                whitespace_page == page_number
+                and abs(_center_y(glyph.bbox) - y_center) <= min(_height(glyph.bbox), height) * 0.5
+                and left_edge <= (glyph.bbox[0] + glyph.bbox[2]) / 2 <= right_edge
+                for whitespace_page, glyph in whitespace_glyphs
+            )
+
+        def adjacent_boundary_text(
+            candidate_atoms: tuple[EvidenceAtom, ...],
+            *,
+            before: bool,
+        ) -> str:
+            candidate_bbox = _union_bbox(tuple(atom.bbox for atom in candidate_atoms))
+            page_number = candidate_atoms[0].page_number
+            y_center = _center_y(candidate_bbox)
+            height = _height(candidate_bbox)
+            candidate_center_x = (candidate_bbox[0] + candidate_bbox[2]) / 2
+            nearby = tuple(
+                atom
+                for atom in selected
+                if atom.atom_id not in {item.atom_id for item in candidate_atoms}
+                and atom.page_number == page_number
+                and abs(_center_y(atom.bbox) - y_center) <= min(_height(atom.bbox), height) * 0.5
+                and (
+                    (atom.bbox[0] + atom.bbox[2]) / 2 < candidate_center_x
+                    if before
+                    else (atom.bbox[0] + atom.bbox[2]) / 2 > candidate_center_x
+                )
+            )
+            ordered = sorted(
+                nearby,
+                key=lambda atom: atom.bbox[2] if before else atom.bbox[0],
+                reverse=before,
+            )
+            edge = candidate_bbox[0] if before else candidate_bbox[2]
+            run: list[EvidenceAtom] = []
+            for atom in ordered:
+                gap = edge - atom.bbox[2] if before else atom.bbox[0] - edge
+                left_edge = atom.bbox[2] if before else edge
+                right_edge = edge if before else atom.bbox[0]
+                if gap > min(_height(atom.bbox), height) * 0.4 or has_whitespace_between(
+                    page_number=page_number,
+                    y_center=y_center,
+                    height=height,
+                    left_edge=left_edge,
+                    right_edge=right_edge,
+                ):
+                    break
+                run.append(atom)
+                edge = atom.bbox[0] if before else atom.bbox[2]
+                if atom.text in _DECIMAL_GLYPH_HARD_BOUNDARIES:
+                    break
+            if before:
+                run.reverse()
+            return "".join(atom.text for atom in run)
+
+        def has_valid_glyph_boundaries(candidate_atoms: tuple[EvidenceAtom, ...]) -> bool:
+            for boundary in (
+                adjacent_boundary_text(candidate_atoms, before=True),
+                adjacent_boundary_text(candidate_atoms, before=False),
+            ):
+                semantic_text = "".join(
+                    char
+                    for char in boundary
+                    if char not in _DECIMAL_GLYPH_WRAPPERS and unicodedata.category(char) != "Sc"
+                )
+                if semantic_text and canonical_currency(semantic_text) is None:
+                    return False
+            return True
 
         lines: list[list[EvidenceAtom]] = []
         for atom in sorted(
@@ -532,9 +1021,6 @@ class EvidenceLedger:
             else:
                 matching_line.append(atom)
 
-        pattern = re.compile(rf"\d+[.,]\d{{1,{max_fraction_digits}}}")
-        candidates: list[PositionedDecimalCandidate] = []
-
         def flush(segment: list[EvidenceAtom]) -> None:
             if not segment:
                 return
@@ -548,7 +1034,7 @@ class EvidenceLedger:
             text = "".join(atom.text for atom in matched_atoms)
             if pattern.fullmatch(text) is not None:
                 candidates.append(
-                    PositionedDecimalCandidate(
+                    PositionedNumberCandidate(
                         text=text,
                         atom_ids=frozenset(atom.atom_id for atom in matched_atoms),
                     )
@@ -561,8 +1047,16 @@ class EvidenceLedger:
             previous: EvidenceAtom | None = None
             for atom in sorted(line, key=lambda item: (item.bbox[0], item.bbox[2])):
                 gap = 0.0 if previous is None else atom.bbox[0] - previous.bbox[2]
-                contiguous = (
-                    previous is None or gap <= min(_height(previous.bbox), _height(atom.bbox)) * 0.6
+                whitespace_between = previous is not None and any(
+                    page_number == atom.page_number
+                    and abs(_center_y(glyph.bbox) - _center_y(atom.bbox))
+                    <= min(_height(glyph.bbox), _height(atom.bbox)) * 0.5
+                    and previous.bbox[2] <= (glyph.bbox[0] + glyph.bbox[2]) / 2 <= atom.bbox[0]
+                    for page_number, glyph in whitespace_glyphs
+                )
+                contiguous = previous is None or (
+                    not whitespace_between
+                    and gap <= min(_height(previous.bbox), _height(atom.bbox)) * 0.6
                 )
                 if not contiguous:
                     flush(segment)
@@ -573,14 +1067,260 @@ class EvidenceLedger:
                 previous = atom
             flush(segment)
 
-        unique: list[PositionedDecimalCandidate] = []
+        glyph_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if all(self.atoms[atom_id].glyph is not None for atom_id in candidate.atom_ids)
+        )
+        word_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if all(self.atoms[atom_id].word is not None for atom_id in candidate.atom_ids)
+        )
+        unique: list[PositionedNumberCandidate] = []
         seen: set[tuple[str, frozenset[int]]] = set()
         for candidate in candidates:
+            candidate_atoms = tuple(self.atoms[atom_id] for atom_id in candidate.atom_ids)
+            if candidate_atoms and all(atom.word is not None for atom in candidate_atoms):
+                word_bbox = _union_bbox(tuple(atom.bbox for atom in candidate_atoms))
+                integer_part = re.split(r"[.,]", candidate.text, maxsplit=1)[0]
+                has_grouping_prefix = len(integer_part) == 3 and any(
+                    atom.atom_id in selected_ids
+                    and atom.word is not None
+                    and atom.text.isdigit()
+                    and atom.page_number == candidate_atoms[0].page_number
+                    and abs(_center_y(atom.bbox) - _center_y(word_bbox))
+                    <= min(_height(atom.bbox), _height(word_bbox)) * 0.5
+                    and 0
+                    <= word_bbox[0] - atom.bbox[2]
+                    <= min(_height(atom.bbox), _height(word_bbox)) * 0.6
+                    and not any(
+                        other.atom_id in selected_ids
+                        and other.atom_id != atom.atom_id
+                        and other.atom_id not in candidate.atom_ids
+                        and other.page_number == atom.page_number
+                        and atom.bbox[2] < (other.bbox[0] + other.bbox[2]) / 2 < word_bbox[0]
+                        for other in self.atoms
+                    )
+                    for atom in self.atoms
+                )
+                if has_grouping_prefix:
+                    continue
+                if any(
+                    glyph_candidate.text == candidate.text
+                    and all(
+                        self.atoms[atom_id].page_number == candidate_atoms[0].page_number
+                        for atom_id in glyph_candidate.atom_ids
+                    )
+                    and all(
+                        _inside_bbox(self.atoms[atom_id].bbox, word_bbox)
+                        for atom_id in glyph_candidate.atom_ids
+                    )
+                    for glyph_candidate in glyph_candidates
+                ):
+                    continue
+            elif candidate_atoms and all(atom.glyph is not None for atom in candidate_atoms):
+                if not has_valid_glyph_boundaries(candidate_atoms):
+                    continue
+                glyph_page = candidate_atoms[0].page_number
+                glyph_bbox = _union_bbox(tuple(atom.bbox for atom in candidate_atoms))
+                integer_part = re.split(r"[.,]", candidate.text, maxsplit=1)[0]
+                has_grouping_prefix = len(integer_part) == 3 and any(
+                    atom.atom_id in selected_ids
+                    and atom.atom_id not in candidate.atom_ids
+                    and atom.glyph is not None
+                    and atom.text.isdigit()
+                    and atom.page_number == glyph_page
+                    and abs(_center_y(atom.bbox) - _center_y(glyph_bbox))
+                    <= min(_height(atom.bbox), _height(glyph_bbox)) * 0.5
+                    and 0
+                    <= glyph_bbox[0] - atom.bbox[2]
+                    <= min(_height(atom.bbox), _height(glyph_bbox)) * 0.6
+                    and any(
+                        page_number == glyph_page
+                        and abs(_center_y(glyph.bbox) - _center_y(glyph_bbox))
+                        <= min(_height(glyph.bbox), _height(glyph_bbox)) * 0.5
+                        and atom.bbox[2] <= (glyph.bbox[0] + glyph.bbox[2]) / 2 <= glyph_bbox[0]
+                        for page_number, glyph in whitespace_glyphs
+                    )
+                    and not any(
+                        other.atom_id in selected_ids
+                        and other.atom_id != atom.atom_id
+                        and other.atom_id not in candidate.atom_ids
+                        and other.page_number == glyph_page
+                        and atom.bbox[2] < (other.bbox[0] + other.bbox[2]) / 2 < glyph_bbox[0]
+                        for other in self.atoms
+                    )
+                    for atom in selected
+                )
+                if has_grouping_prefix:
+                    continue
+                equivalent_word_ids = frozenset(
+                    atom_id
+                    for word_candidate in word_candidates
+                    if word_candidate.text == candidate.text
+                    if (
+                        word_atoms := tuple(
+                            self.atoms[atom_id] for atom_id in word_candidate.atom_ids
+                        )
+                    )
+                    if all(atom.page_number == glyph_page for atom in word_atoms)
+                    if all(
+                        _inside_bbox(
+                            glyph_atom.bbox,
+                            _union_bbox(tuple(atom.bbox for atom in word_atoms)),
+                        )
+                        for glyph_atom in candidate_atoms
+                    )
+                    for atom_id in word_candidate.atom_ids
+                )
+                if equivalent_word_ids:
+                    candidate = PositionedNumberCandidate(
+                        text=candidate.text,
+                        atom_ids=candidate.atom_ids | equivalent_word_ids,
+                    )
             key = (candidate.text, candidate.atom_ids)
             if key not in seen:
                 seen.add(key)
                 unique.append(candidate)
         return tuple(unique)
+
+    def positioned_percentage_candidates(
+        self,
+        atom_ids: Iterable[int],
+        *,
+        max_fraction_digits: int = 6,
+    ) -> tuple[PositionedPercentageCandidate, ...]:
+        """Bind positioned decimal or whole-number evidence to percent markers."""
+
+        selected_ids = frozenset(atom_ids)
+        number_candidates: tuple[PositionedNumberCandidate, ...] = (
+            *self.positioned_decimal_candidates(
+                selected_ids,
+                max_fraction_digits=max_fraction_digits,
+            ),
+            *self.positioned_whole_number_candidates(selected_ids),
+        )
+        explicit_marker_atoms = tuple(
+            atom for atom in self.atoms if atom.atom_id in selected_ids and atom.text == "%"
+        )
+
+        def is_immediate_marker_neighbor(
+            candidate: PositionedNumberCandidate,
+            marker_atom: EvidenceAtom,
+        ) -> bool:
+            candidate_atoms = tuple(self.atoms[atom_id] for atom_id in candidate.atom_ids)
+            candidate_bbox = _union_bbox(tuple(atom.bbox for atom in candidate_atoms))
+            if (
+                candidate_atoms[0].page_number != marker_atom.page_number
+                or abs(_center_y(candidate_bbox) - _center_y(marker_atom.bbox))
+                > min(_height(candidate_bbox), _height(marker_atom.bbox)) * 0.5
+            ):
+                return False
+            if candidate_bbox[2] <= marker_atom.bbox[0]:
+                left_edge = candidate_bbox[2]
+                right_edge = marker_atom.bbox[0]
+            elif marker_atom.bbox[2] <= candidate_bbox[0]:
+                left_edge = marker_atom.bbox[2]
+                right_edge = candidate_bbox[0]
+            else:
+                left_edge = right_edge = candidate_bbox[0]
+            intervening_atoms = tuple(
+                atom
+                for atom in self.atoms
+                if atom.atom_id not in candidate.atom_ids
+                and atom.atom_id != marker_atom.atom_id
+                and atom.atom_id in selected_ids
+                and atom.page_number == marker_atom.page_number
+                and abs(_center_y(atom.bbox) - _center_y(marker_atom.bbox))
+                <= min(_height(atom.bbox), _height(marker_atom.bbox)) * 0.5
+                and left_edge < (atom.bbox[0] + atom.bbox[2]) / 2 < right_edge
+            )
+            if any(atom.text != "%" for atom in intervening_atoms):
+                return False
+            marker_chain = tuple(
+                sorted(
+                    (
+                        candidate_bbox,
+                        marker_atom.bbox,
+                        *(atom.bbox for atom in intervening_atoms),
+                    ),
+                    key=lambda bbox: (bbox[0] + bbox[2]) / 2,
+                )
+            )
+            return all(
+                right[0] - left[2] <= min(_height(left), _height(right)) * 0.6
+                for left, right in pairwise(marker_chain)
+            )
+
+        def opposite_backing(left: EvidenceAtom, right: EvidenceAtom) -> bool:
+            return (left.word is not None and right.glyph is not None) or (
+                left.glyph is not None and right.word is not None
+            )
+
+        def represents_same_marker(left: EvidenceAtom, right: EvidenceAtom) -> bool:
+            if left.page_number != right.page_number or not opposite_backing(left, right):
+                return False
+            left_center = (
+                (left.bbox[0] + left.bbox[2]) / 2,
+                (left.bbox[1] + left.bbox[3]) / 2,
+            )
+            right_center = (
+                (right.bbox[0] + right.bbox[2]) / 2,
+                (right.bbox[1] + right.bbox[3]) / 2,
+            )
+            return (
+                left.bbox[0] <= right_center[0] <= left.bbox[2]
+                and left.bbox[1] <= right_center[1] <= left.bbox[3]
+            ) or (
+                right.bbox[0] <= left_center[0] <= right.bbox[2]
+                and right.bbox[1] <= left_center[1] <= right.bbox[3]
+            )
+
+        bound: list[PositionedPercentageCandidate] = []
+        for number in number_candidates:
+            embedded_atoms = tuple(
+                self.atoms[atom_id]
+                for atom_id in number.atom_ids
+                if "%" in self.atoms[atom_id].text
+            )
+            neighboring_atoms = tuple(
+                marker_atom
+                for marker_atom in explicit_marker_atoms
+                if is_immediate_marker_neighbor(number, marker_atom)
+            )
+            marker_slots: list[tuple[EvidenceAtom, set[int]]] = [
+                (atom, {atom.atom_id})
+                for atom in embedded_atoms
+                for _ in range(atom.text.count("%"))
+            ]
+            for neighbor in neighboring_atoms:
+                equivalent_slot = next(
+                    (
+                        slot
+                        for slot in marker_slots
+                        if neighbor.atom_id not in slot[1]
+                        and represents_same_marker(slot[0], neighbor)
+                    ),
+                    None,
+                )
+                if equivalent_slot is None:
+                    marker_slots.append((neighbor, {neighbor.atom_id}))
+                else:
+                    equivalent_slot[1].add(neighbor.atom_id)
+            if marker_slots:
+                bound.append(
+                    PositionedPercentageCandidate(
+                        number=number,
+                        marker_atom_ids=frozenset(
+                            atom_id
+                            for _, slot_atom_ids in marker_slots
+                            for atom_id in slot_atom_ids
+                        ),
+                        marker_count=len(marker_slots),
+                    )
+                )
+        return tuple(bound)
 
     def render(self, atom_ids: Iterable[int]) -> str:
         """Render selected atoms using exact positioned glyph and word evidence."""
@@ -648,5 +1388,8 @@ __all__ = [
     "EvidenceLedger",
     "FragmentedDateCandidate",
     "PositionedDecimalCandidate",
+    "PositionedNumberCandidate",
+    "PositionedPercentageCandidate",
+    "PositionedWholeNumberCandidate",
     "SemanticOwner",
 ]

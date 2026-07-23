@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import statistics
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Sequence
 
 from ccparser.evidence.currency import (
@@ -57,35 +58,52 @@ def _dominant_direction(texts: Sequence[str]) -> str:
     return "rtl" if rtl > ltr else "ltr"
 
 
+def _extend_bbox(bbox: BBox, item_bbox: BBox) -> BBox:
+    return (
+        min(bbox[0], item_bbox[0]),
+        min(bbox[1], item_bbox[1]),
+        max(bbox[2], item_bbox[2]),
+        max(bbox[3], item_bbox[3]),
+    )
+
+
 def _cluster_lines[T: (Glyph, Word)](items: Sequence[T]) -> list[list[T]]:
-    lines: list[list[T]] = []
+    lines: list[tuple[list[T], BBox]] = []
     for item in sorted(items, key=lambda value: (bbox_center_y(value.bbox), value.bbox[0])):
-        best_line: list[T] | None = None
+        best_line_index: int | None = None
         best_distance = float("inf")
-        for line in lines:
-            line_bbox = union_bbox(value.bbox for value in line)
+        for line_index, (_, line_bbox) in enumerate(lines):
             distance = abs(bbox_center_y(item.bbox) - bbox_center_y(line_bbox))
             tolerance = 0.6 * max(bbox_height(item.bbox), bbox_height(line_bbox))
             if distance <= tolerance and distance < best_distance:
-                best_line = line
+                best_line_index = line_index
                 best_distance = distance
-        if best_line is None:
-            lines.append([item])
+        if best_line_index is None:
+            lines.append(([item], item.bbox))
         else:
+            best_line, line_bbox = lines[best_line_index]
             best_line.append(item)
-    return sorted(lines, key=lambda line: union_bbox(item.bbox for item in line)[1])
+            lines[best_line_index] = (best_line, _extend_bbox(line_bbox, item.bbox))
+    return [line for line, _ in sorted(lines, key=lambda candidate: candidate[1][1])]
 
 
 def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
     visible = sorted((glyph for glyph in line if not glyph.char.isspace()), key=lambda g: g.bbox[0])
     if not visible:
         return []
+    whitespace_centers = tuple(
+        sorted(bbox_center_x(glyph.bbox) for glyph in line if glyph.char.isspace())
+    )
     typical_height = statistics.median(bbox_height(glyph.bbox) for glyph in visible)
     groups: list[list[Glyph]] = [[visible[0]]]
     last_direction = _strong_direction(visible[0].char)
     for glyph in visible[1:]:
         previous = groups[-1][-1]
         gap = glyph.bbox[0] - previous.bbox[2]
+        boundary_index = bisect_right(whitespace_centers, bbox_center_x(previous.bbox))
+        explicit_boundary = boundary_index < len(whitespace_centers) and whitespace_centers[
+            boundary_index
+        ] < bbox_center_x(glyph.bbox)
         direction = _strong_direction(glyph.char)
         direction_changed = (
             direction is not None and last_direction is not None and direction != last_direction
@@ -95,7 +113,12 @@ def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
             and previous.char in CURRENCY_OCR_SYMBOLS
             and any(char.isdigit() for preceding in groups[-1][:-1] for char in preceding.char)
         )
-        if gap > typical_height * 0.4 or direction_changed or currency_suffix_boundary:
+        if (
+            explicit_boundary
+            or gap > typical_height * 0.4
+            or direction_changed
+            or currency_suffix_boundary
+        ):
             groups.append([glyph])
             last_direction = direction
         else:
@@ -106,12 +129,17 @@ def _glyph_groups(line: Sequence[Glyph]) -> list[list[Glyph]]:
 
 
 def _ordered_glyph_text(group: Sequence[Glyph], direction: str) -> str:
-    bases = tuple(
-        glyph
-        for glyph in group
-        if not glyph.char or any(unicodedata.combining(char) == 0 for char in glyph.char)
-    )
-    combining = tuple(glyph for glyph in group if glyph not in bases)
+    base_glyphs: list[Glyph] = []
+    combining_glyphs: list[Glyph] = []
+    for glyph in group:
+        destination = (
+            base_glyphs
+            if not glyph.char or any(unicodedata.combining(char) == 0 for char in glyph.char)
+            else combining_glyphs
+        )
+        destination.append(glyph)
+    bases = tuple(base_glyphs)
+    combining = tuple(combining_glyphs)
     if not bases:
         return "".join(
             glyph.char

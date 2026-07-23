@@ -16,6 +16,7 @@ from ccparser.evidence.ocr import (
     OCR_LANGUAGES,
     OCR_PREPROCESSING_VERSION,
     OCR_RECOGNITION_CACHE_VERSION,
+    TesseractExecutionRuntime,
     TesseractOcr,
     currency_tesseract_command,
     fuse_ocr_words,
@@ -242,6 +243,40 @@ def test_ocr_uses_named_version_and_recognition_timeouts() -> None:
     assert getattr(ocr_module, "TESSERACT_RECOGNITION_TIMEOUT_SECONDS", None) == 120.0
 
 
+def test_bound_runtime_validates_staging_before_and_after_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def validate() -> None:
+        events.append("validate")
+
+    def fake_run(*_: Any, **__: Any) -> subprocess.CompletedProcess[bytes]:
+        events.append("execute")
+        return subprocess.CompletedProcess(("bound",), 0, b"recognized", b"")
+
+    monkeypatch.setattr(ocr_module, "run_traced_subprocess", fake_run)
+    runtime = TesseractExecutionRuntime(
+        executable_path="/proc/self/fd/10",
+        tessdata_directory="/proc/self/fd/11",
+        pass_fds=(10, 11),
+        environment=(),
+        command_prefix=("bound",),
+        allowed_file_descriptors=(10,),
+        staging_validator=validate,
+    )
+
+    completed = runtime.run(
+        ("bound", "stdin", "stdout"),
+        input_bytes=b"image",
+        timeout=1.0,
+        stderr_to_stdout=False,
+    )
+
+    assert completed.stdout == b"recognized"
+    assert events == ["validate", "execute", "validate"]
+
+
 def test_ocr_constructor_has_no_command_override() -> None:
     constructor = inspect.signature(TesseractOcr)
 
@@ -258,12 +293,13 @@ def test_ocr_constructor_has_no_command_override() -> None:
         subprocess.TimeoutExpired(("tesseract", "--version"), timeout=10.0),
         subprocess.CalledProcessError(2, ("tesseract", "--version")),
         OSError("synthetic version launch failure"),
+        RuntimeError("synthetic bound-runtime violation"),
     ),
 )
 def test_version_detection_wraps_subprocess_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: subprocess.SubprocessError | OSError,
+    failure: subprocess.SubprocessError | OSError | RuntimeError,
 ) -> None:
     observed_timeouts: list[float | None] = []
 
@@ -287,12 +323,13 @@ def test_version_detection_wraps_subprocess_failures(
         subprocess.TimeoutExpired(tesseract_command(), timeout=120.0),
         subprocess.CalledProcessError(2, tesseract_command()),
         OSError("synthetic recognition launch failure"),
+        RuntimeError("synthetic bound-runtime violation"),
     ),
 )
 def test_recognition_wraps_subprocess_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: subprocess.SubprocessError | OSError,
+    failure: subprocess.SubprocessError | OSError | RuntimeError,
 ) -> None:
     path = tmp_path / "recognition.pdf"
     _save_blank_pdf(path)

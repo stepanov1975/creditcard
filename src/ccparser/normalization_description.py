@@ -6,6 +6,7 @@ import re
 import statistics
 import unicodedata
 from collections.abc import Sequence
+from dataclasses import dataclass
 from itertools import pairwise
 
 from ccparser.discovery import DiscoveredDateYearContext
@@ -15,6 +16,7 @@ from ccparser.geometry import (
     bbox_center_y,
     bbox_height,
     horizontal_overlap,
+    vertical_overlap,
 )
 from ccparser.layout.columns import (
     cells_in_column,
@@ -23,7 +25,7 @@ from ccparser.layout.columns import (
     proven_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
-from ccparser.layout.row_tags import RowTag, has_row_tag
+from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continuation
 from ccparser.money import is_currency_shaped, is_money_shaped
 from ccparser.normalization_dates import (
     adjacent_boundary_date_completion,
@@ -32,6 +34,7 @@ from ccparser.normalization_dates import (
 from ccparser.normalization_fields import is_installment_shaped
 from ccparser.semantic_evidence import (
     DescriptionExtraction,
+    EvidenceAtomKind,
     EvidenceClaim,
     EvidenceCluster,
     EvidenceLedger,
@@ -41,6 +44,8 @@ from ccparser.text_tokens import normalize_text, phrase_tokens
 
 _HEBREW_GERSHAYIM_PATTERN = re.compile(r'(?<=[\u0590-\u05ff])\s*"\s*(?=[\u0590-\u05ff])')
 _SINGLE_RTL_PARENTHETICAL_PATTERN = re.compile(r"^[()]\s*([\u0590-\u05ff])$")
+_NUMERIC_EDGE_WRAPPERS = "+-\N{MINUS SIGN}()"
+_NUMERIC_BODY_SEPARATORS = frozenset(".,")
 
 
 def _cells_for_column(row: Row, column: ColumnSpec) -> tuple[Cell, ...]:
@@ -251,19 +256,54 @@ def _alphabetic_span_signatures(text: str) -> frozenset[str]:
     return frozenset(signature for span in spans if (signature := " ".join(phrase_tokens(span))))
 
 
-def _corroborated_processor_reference_signatures(region: TableRegion) -> frozenset[str]:
+type _NumericProcessorOccurrenceKey = tuple[int, BBox, BBox, BBox, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessorReferenceProof:
+    external_signatures: frozenset[str]
+    numeric_occurrences: frozenset[_NumericProcessorOccurrenceKey]
+    positioned_anchor_occurrences: frozenset[_NumericProcessorOccurrenceKey]
+
+
+def _numeric_processor_occurrence_key(
+    cell: Cell,
+    primary: EvidenceCluster,
+    cluster: EvidenceCluster,
+) -> _NumericProcessorOccurrenceKey:
+    return (
+        cell.page_number,
+        cell.bbox,
+        primary.bbox,
+        cluster.bbox,
+        _cluster_signature(cluster),
+    )
+
+
+def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorReferenceProof:
     counts: dict[str, int] = {}
-    for row in region.rows:
+    numeric_samples: list[tuple[int, _NumericProcessorOccurrenceKey, str, float, float, int]] = []
+    positioned_anchor_samples: list[
+        tuple[int, _NumericProcessorOccurrenceKey, float, float, int]
+    ] = []
+    for row_index, row in enumerate(region.rows):
         row_ledger = EvidenceLedger.from_rows((row,))
         description_cells = frozenset(_role_cells(row, region, ColumnRole.DESCRIPTION))
         external_signatures = frozenset(
             signature
             for cell in row.cells
             if cell not in description_cells
-            for source_text in (cell.text, *(word.text for word in cell.words))
-            for signature in _alphabetic_span_signatures(source_text)
+            for word in cell.words
+            if word.confidence >= 0.8 and not _is_typed_non_description_text(word.text)
+            for signature in _alphabetic_span_signatures(word.text)
         )
         row_signatures: set[str] = set()
+        row_numeric_samples: list[
+            tuple[_NumericProcessorOccurrenceKey, str, float, float, int]
+        ] = []
+        row_positioned_anchor_samples: list[
+            tuple[_NumericProcessorOccurrenceKey, float, float, int]
+        ] = []
         for cell in description_cells:
             for line in _cluster_lines(row_ledger.clusters_for_cell(cell)):
                 if len(line) < 2:
@@ -276,14 +316,253 @@ def _corroborated_processor_reference_signatures(region: TableRegion) -> frozens
                     and normalize_text(cluster.text).startswith((".", "@"))
                     and (signature := _cluster_signature(cluster)) in external_signatures
                 )
+                if is_structural_continuation(row):
+                    continue
+                for secondary in line:
+                    if secondary is primary:
+                        continue
+                    if (
+                        sample := _numeric_processor_occurrence_sample(
+                            row_ledger,
+                            cell,
+                            line,
+                            primary,
+                            secondary,
+                        )
+                    ) is not None:
+                        row_numeric_samples.append(sample)
+                    if (
+                        anchor_sample := _positioned_processor_anchor_sample(
+                            row_ledger,
+                            cell,
+                            line,
+                            primary,
+                            secondary,
+                            external_signatures,
+                        )
+                    ) is not None:
+                        row_positioned_anchor_samples.append(anchor_sample)
         for signature in row_signatures:
             counts[signature] = counts.get(signature, 0) + 1
-    return frozenset(signature for signature, count in counts.items() if count >= 2)
+        if len(row_numeric_samples) == 1:
+            numeric_samples.append((row_index, *row_numeric_samples[0]))
+        if len(row_positioned_anchor_samples) == 1:
+            positioned_anchor_samples.append((row_index, *row_positioned_anchor_samples[0]))
+    corroborated_occurrences: set[_NumericProcessorOccurrenceKey] = set()
+    corroborated_anchor_occurrences: set[_NumericProcessorOccurrenceKey] = set()
+    for index, first in enumerate(numeric_samples):
+        first_row, first_key, first_signature, first_center, first_height, first_side = first
+        for second in numeric_samples[index + 1 :]:
+            (
+                second_row,
+                second_key,
+                second_signature,
+                second_center,
+                second_height,
+                second_side,
+            ) = second
+            if (
+                first_row != second_row
+                and first_signature == second_signature
+                and first_side == second_side
+                and abs(first_center - second_center) <= min(first_height, second_height) * 0.5
+            ):
+                corroborated_occurrences.update((first_key, second_key))
+        for (
+            anchor_row,
+            anchor_key,
+            anchor_center,
+            anchor_height,
+            anchor_side,
+        ) in positioned_anchor_samples:
+            if (
+                first_row != anchor_row
+                and first_side == anchor_side
+                and abs(first_center - anchor_center) <= min(first_height, anchor_height) * 0.5
+            ):
+                corroborated_occurrences.add(first_key)
+                corroborated_anchor_occurrences.add(anchor_key)
+    return _ProcessorReferenceProof(
+        external_signatures=frozenset(
+            signature for signature, count in counts.items() if count >= 2
+        ),
+        numeric_occurrences=frozenset(corroborated_occurrences),
+        positioned_anchor_occurrences=frozenset(corroborated_anchor_occurrences),
+    )
+
+
+def _has_bounded_processor_identifier_shape(text: str) -> bool:
+    normalized = normalize_text(text)
+    compact = "".join(normalized.split())
+    separators = tuple(index for index, char in enumerate(compact) if not char.isdigit())
+    return sum(char.isdigit() for char in compact) >= 6 and (
+        not separators
+        or (
+            len(separators) == 1
+            and 0 < separators[0] < len(compact) - 1
+            and unicodedata.category(compact[separators[0]]) == "Pd"
+        )
+    )
+
+
+def is_numeric_processor_reference(text: str) -> bool:
+    """Return whether text has a bounded, non-financial processor-reference shape."""
+
+    normalized = normalize_text(text)
+    return (
+        _has_bounded_processor_identifier_shape(normalized)
+        and not _is_typed_non_description_text(normalized)
+        and not _is_partial_calendar_date(normalized)
+    )
+
+
+def _is_partial_calendar_date(text: str) -> bool:
+    compact = "".join(normalize_text(text).split())
+    separators = tuple(index for index, char in enumerate(compact) if not char.isdigit())
+    if len(separators) != 1:
+        return False
+    separator_index = separators[0]
+    first, second = compact[:separator_index], compact[separator_index + 1 :]
+    if len(first) == 4 and 1 <= len(second) <= 2:
+        year_text, month_text = first, second
+    elif len(second) == 4 and 1 <= len(first) <= 2:
+        year_text, month_text = second, first
+    else:
+        return False
+    return 1900 <= int(year_text) <= 2199 and 1 <= int(month_text) <= 12
+
+
+def has_processor_reference_alignment(reference: BBox, primary: BBox) -> bool:
+    """Return whether two boxes provide comparable same-line reference geometry."""
+
+    reference_height = bbox_height(reference)
+    primary_height = bbox_height(primary)
+    if reference_height <= 0.0 or primary_height <= 0.0:
+        return False
+    return (
+        min(reference_height, primary_height) / max(reference_height, primary_height) >= 0.65
+        and vertical_overlap(reference, primary) >= 0.75
+        and abs(bbox_center_y(reference) - bbox_center_y(primary))
+        <= min(reference_height, primary_height) * 0.25
+    )
+
+
+def matching_positioned_cell_text(
+    ledger: EvidenceLedger,
+    cell: Cell,
+) -> str | None:
+    """Return exact logical cell text only when positioned atoms independently back it."""
+
+    atom_ids = ledger.atoms_for_cell(cell)
+    if not atom_ids or any(
+        ledger.atoms[atom_id].kind is EvidenceAtomKind.CELL_TEXT for atom_id in atom_ids
+    ):
+        return None
+    rendered = normalize_text(ledger.render(atom_ids))
+    return rendered if rendered == normalize_text(cell.text) else None
+
+
+def _is_uncorroborated_whole_unit_numeric_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return "".join(normalized.split()).isdigit() and _has_bounded_processor_identifier_shape(
+        normalized
+    )
+
+
+def _has_digital_positioned_backing(
+    ledger: EvidenceLedger,
+    cluster: EvidenceCluster,
+) -> bool:
+    atoms = tuple(ledger.atoms[atom_id] for atom_id in cluster.atom_ids)
+    return bool(atoms) and all(
+        (atom.glyph is not None and atom.glyph.source == "digital")
+        or (atom.word is not None and atom.word.source == "digital")
+        for atom in atoms
+    )
+
+
+def _numeric_processor_occurrence_sample(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    line: Sequence[EvidenceCluster],
+    primary: EvidenceCluster,
+    cluster: EvidenceCluster,
+) -> tuple[_NumericProcessorOccurrenceKey, str, float, float, int] | None:
+    primary_text = normalize_text(primary.text)
+    if (
+        len(line) != 2
+        or not any(char.isalpha() for char in primary_text)
+        or any(char.isdigit() for char in primary_text)
+        or _is_typed_non_description_text(primary_text)
+        or not _is_uncorroborated_whole_unit_numeric_text(cluster.text)
+        or not _has_digital_positioned_backing(ledger, cluster)
+        or not has_processor_reference_alignment(cluster.bbox, primary.bbox)
+    ):
+        return None
+    if cluster.bbox[0] >= primary.bbox[2]:
+        gap = cluster.bbox[0] - primary.bbox[2]
+        side = 1
+    elif primary.bbox[0] >= cluster.bbox[2]:
+        gap = primary.bbox[0] - cluster.bbox[2]
+        side = -1
+    else:
+        return None
+    typical_height = min(bbox_height(primary.bbox), bbox_height(cluster.bbox))
+    if typical_height <= 0.0 or gap <= typical_height * 0.5:
+        return None
+    return (
+        _numeric_processor_occurrence_key(cell, primary, cluster),
+        _cluster_signature(cluster),
+        bbox_center_x(cluster.bbox),
+        bbox_height(cluster.bbox),
+        side,
+    )
+
+
+def _positioned_processor_anchor_sample(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    line: Sequence[EvidenceCluster],
+    primary: EvidenceCluster,
+    cluster: EvidenceCluster,
+    external_signatures: frozenset[str],
+) -> tuple[_NumericProcessorOccurrenceKey, float, float, int] | None:
+    primary_text = normalize_text(primary.text)
+    anchor_text = normalize_text(cluster.text)
+    if (
+        len(line) != 2
+        or not any(char.isalpha() for char in primary_text)
+        or any(char.isdigit() for char in primary_text)
+        or _is_typed_non_description_text(primary_text)
+        or not anchor_text.startswith((".", "@"))
+        or not any(char.isalpha() for char in anchor_text)
+        or any(char.isdigit() for char in anchor_text)
+        or _cluster_signature(cluster) not in external_signatures
+        or not _has_digital_positioned_backing(ledger, cluster)
+        or not has_processor_reference_alignment(cluster.bbox, primary.bbox)
+    ):
+        return None
+    if cluster.bbox[0] >= primary.bbox[2]:
+        gap = cluster.bbox[0] - primary.bbox[2]
+        side = 1
+    elif primary.bbox[0] >= cluster.bbox[2]:
+        gap = primary.bbox[0] - cluster.bbox[2]
+        side = -1
+    else:
+        return None
+    typical_height = min(bbox_height(primary.bbox), bbox_height(cluster.bbox))
+    if typical_height <= 0.0 or gap <= typical_height * 0.5:
+        return None
+    return (
+        _numeric_processor_occurrence_key(cell, primary, cluster),
+        bbox_center_x(cluster.bbox),
+        bbox_height(cluster.bbox),
+        side,
+    )
 
 
 def _is_numeric_processor_cluster(cluster: EvidenceCluster) -> bool:
-    compact = "".join(cluster.text.split())
-    return len(compact) >= 6 and compact.isdigit()
+    return is_numeric_processor_reference(cluster.text)
 
 
 def _is_processor_reference_cluster(
@@ -301,7 +580,10 @@ def _is_processor_reference_cluster(
 def _selected_description_cell_atoms(
     ledger: EvidenceLedger,
     cell: Cell,
-    corroborated_signatures: frozenset[str],
+    proof: _ProcessorReferenceProof,
+    excluded_atom_ids: frozenset[int],
+    *,
+    allow_repeated_numeric: bool,
 ) -> tuple[frozenset[int], frozenset[int]]:
     selected: set[int] = set()
     processor: set[int] = set()
@@ -309,15 +591,136 @@ def _selected_description_cell_atoms(
         if not line:
             continue
         primary = _primary_description_cluster(line)
+        primary_is_description = is_standalone_primary_description(primary.text)
         selected.update(primary.atom_ids)
         for cluster in line:
             if cluster is primary:
                 continue
-            if _is_processor_reference_cluster(cluster, corroborated_signatures):
+            is_repeated_numeric = (
+                allow_repeated_numeric
+                and _numeric_processor_occurrence_sample(
+                    ledger,
+                    cell,
+                    line,
+                    primary,
+                    cluster,
+                )
+                is not None
+                and _numeric_processor_occurrence_key(cell, primary, cluster)
+                in proof.numeric_occurrences
+            )
+            is_positioned_anchor = (
+                _numeric_processor_occurrence_key(cell, primary, cluster)
+                in proof.positioned_anchor_occurrences
+            )
+            is_numeric_processor = _is_numeric_processor_cluster(cluster) or is_repeated_numeric
+            has_competing_numeric_cluster = is_numeric_processor and any(
+                other is not cluster
+                and any(
+                    any(char.isdigit() for char in ledger.atoms[atom_id].text)
+                    for atom_id in other.atom_ids - excluded_atom_ids
+                )
+                for other in line
+            )
+            if (
+                primary_is_description
+                and (
+                    _is_processor_reference_cluster(
+                        cluster,
+                        proof.external_signatures,
+                    )
+                    or is_repeated_numeric
+                    or is_positioned_anchor
+                )
+            ) and not has_competing_numeric_cluster:
                 processor.update(cluster.atom_ids)
+            elif _is_uncorroborated_whole_unit_numeric_text(cluster.text):
+                continue
             else:
                 selected.update(cluster.atom_ids)
     return frozenset(selected), frozenset(processor)
+
+
+def _is_standalone_processor_reference_cluster(cluster: EvidenceCluster) -> bool:
+    return is_numeric_processor_reference(cluster.text)
+
+
+def _is_short_unsigned_description_component(text: str) -> bool:
+    compact = "".join(normalize_text(text).split())
+    return compact.isdigit() and len(compact) < 6
+
+
+def is_standalone_primary_description(text: str) -> bool:
+    """Return whether one isolated cell can serve as the row's primary description."""
+
+    normalized = normalize_text(text)
+    compact = "".join(normalized.split())
+    return _is_short_unsigned_description_component(normalized) or (
+        bool(compact)
+        and any(char.isalpha() for char in normalized)
+        and not _is_typed_non_description_text(normalized)
+        and not _has_bounded_processor_identifier_shape(normalized)
+    )
+
+
+def _standalone_processor_reference_cell_sets(
+    ledger: EvidenceLedger,
+    cells: Sequence[Cell],
+) -> tuple[frozenset[Cell], frozenset[Cell]]:
+    candidates = frozenset(
+        cell
+        for cell in cells
+        if len(lines := _cluster_lines(ledger.clusters_for_cell(cell))) == 1
+        and len(lines[0]) == 1
+        and (cell_text := matching_positioned_cell_text(ledger, cell)) is not None
+        and is_numeric_processor_reference(cell_text)
+        and _is_standalone_processor_reference_cluster(lines[0][0])
+    )
+    primary_cells = tuple(
+        cell
+        for cell in cells
+        if cell not in candidates and is_standalone_primary_description(cell.text)
+    )
+    eligible = frozenset(
+        cell
+        for cell in candidates
+        if any(
+            has_processor_reference_alignment(cell.bbox, primary.bbox) for primary in primary_cells
+        )
+    )
+    if len(candidates) == 1 and eligible == candidates:
+        return eligible, frozenset()
+    return frozenset(), candidates
+
+
+def _is_typed_non_description_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    compact = "".join(normalized.split())
+    unwrapped = compact.strip(_NUMERIC_EDGE_WRAPPERS)
+    has_numeric_edge_wrapper = (
+        unwrapped != compact
+        and bool(unwrapped)
+        and any(char.isdigit() for char in unwrapped)
+        and all(char.isdigit() or char in _NUMERIC_BODY_SEPARATORS for char in unwrapped)
+    )
+    return (
+        is_money_shaped(normalized)
+        or is_currency_shaped(normalized)
+        or "%" in normalized
+        or isolated_date_token(normalized) is not None
+        or is_installment_shaped(normalized)
+        or has_numeric_edge_wrapper
+    )
+
+
+def _standalone_typed_semantic_cells(cells: Sequence[Cell]) -> frozenset[Cell]:
+    candidates = frozenset(
+        cell
+        for cell in cells
+        if _is_typed_non_description_text(cell.text)
+        and not _is_short_unsigned_description_component(cell.text)
+    )
+    return candidates if len(cells) > 1 else frozenset()
 
 
 def _has_competing_description_clusters(
@@ -402,8 +805,10 @@ def extract_description(
     region: TableRegion,
     year_context: DiscoveredDateYearContext | None,
     ledger: EvidenceLedger,
+    *,
+    excluded_atom_ids: frozenset[int] = frozenset(),
 ) -> DescriptionExtraction:
-    processor_signatures = _corroborated_processor_reference_signatures(region)
+    processor_proof = _corroborated_processor_reference_proof(region)
     claims: list[EvidenceClaim] = []
     texts: list[str] = []
     diagnostics: list[str] = []
@@ -430,17 +835,37 @@ def extract_description(
         selected_ids: set[int] = set()
         processor_ids: set[int] = set()
         fallback_texts: list[str] = []
+        standalone_processor_cells: frozenset[Cell]
+        ambiguous_processor_cells: frozenset[Cell]
+        if is_structural_continuation(row):
+            standalone_processor_cells = frozenset()
+            ambiguous_processor_cells = frozenset()
+        else:
+            standalone_processor_cells, ambiguous_processor_cells = (
+                _standalone_processor_reference_cell_sets(
+                    ledger,
+                    row_cells,
+                )
+            )
+        standalone_typed_semantic_cells = _standalone_typed_semantic_cells(row_cells)
         if index > 0 and _has_competing_description_clusters(
             ledger,
             row_cells,
-            processor_signatures,
+            processor_proof.external_signatures,
         ):
             diagnostics.append("ambiguous_description_continuation")
         for cell in row_cells:
+            if cell in standalone_processor_cells:
+                processor_ids.update(ledger.atoms_for_cell(cell))
+                continue
+            if cell in standalone_typed_semantic_cells or cell in ambiguous_processor_cells:
+                continue
             selected, processor = _selected_description_cell_atoms(
                 ledger,
                 cell,
-                processor_signatures,
+                processor_proof,
+                excluded_atom_ids,
+                allow_repeated_numeric=not is_structural_continuation(row),
             )
             selected_ids.update(selected)
             processor_ids.update(processor)
@@ -494,6 +919,8 @@ def extract_description(
             selected_ids.update(adjacent_ids)
             if ancillary_ids:
                 claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, ancillary_ids))
+        selected_ids.difference_update(excluded_atom_ids)
+        processor_ids.difference_update(excluded_atom_ids)
         rendered = _merchant_punctuation(ledger.render(selected_ids)) if selected_ids else ""
         row_text = normalize_text(" ".join((*fallback_texts, rendered)))
         if row_text:
@@ -516,4 +943,11 @@ def extract_description(
     )
 
 
-__all__ = ["extract_description", "is_description_continuation"]
+__all__ = [
+    "extract_description",
+    "has_processor_reference_alignment",
+    "is_description_continuation",
+    "is_numeric_processor_reference",
+    "is_standalone_primary_description",
+    "matching_positioned_cell_text",
+]

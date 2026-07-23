@@ -58,6 +58,33 @@ SHORT_DATE_TOKEN_PATTERNS: Mapping[DateTokenStyle, re.Pattern[str]] = {
 }
 
 
+def has_date_numeric_run_boundaries(text: str, start: int, end: int) -> bool:
+    """Return whether a matched date is not embedded in a larger numeric run."""
+
+    if not 0 <= start < end <= len(text):
+        raise ValueError("date token span must be a non-empty slice of text")
+    numeric_start = start
+    while numeric_start > 0 and (
+        text[numeric_start - 1].isdigit() or text[numeric_start - 1] in "./-"
+    ):
+        numeric_start -= 1
+    numeric_end = end
+    while numeric_end < len(text) and (text[numeric_end].isdigit() or text[numeric_end] in "./-"):
+        numeric_end += 1
+    numeric_remainder = text[numeric_start:start] + text[end:numeric_end]
+    return not any(char.isdigit() for char in numeric_remainder)
+
+
+def has_date_token_boundaries(text: str, start: int, end: int) -> bool:
+    """Return whether one matched date is a complete alphanumeric/numeric token."""
+
+    if not has_date_numeric_run_boundaries(text, start, end):
+        return False
+    if start > 0 and text[start - 1].isalnum():
+        return False
+    return not (end < len(text) and text[end].isalnum())
+
+
 class SuffixYearMappingViolation(StrEnum):
     EMPTY = "empty"
     UNSORTED = "unsorted"
@@ -160,5 +187,7 @@ __all__ = [
     "DateTokenStyle",
     "SuffixYearMappingValidationError",
     "SuffixYearMappingViolation",
+    "has_date_numeric_run_boundaries",
+    "has_date_token_boundaries",
     "validate_suffix_year_mapping",
 ]

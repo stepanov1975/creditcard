@@ -40,6 +40,9 @@ _PRIVATE_GATE_BAIT = (
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef "
     "SECRET MERCHANT 2026-07-22 amount=1234.56 total=7890.12"
 )
+_EXPECTED_COMMIT_SHA = "d" * 40
+_MEMBERSHIP_INVENTORY_SHA256 = "e" * 64
+_BASELINE_SHA256 = "f" * 64
 
 
 def _statement(status: Status, source: str = "synthetic.pdf") -> StatementResult:
@@ -112,23 +115,34 @@ def _verify_corpus_arguments(
     mode: str = "verify",
     jobs: str = "4",
     runtime_tolerance: str | None = None,
+    expected_commit_sha: str | None = _EXPECTED_COMMIT_SHA,
+    membership_inventory_sha256: str | None = _MEMBERSHIP_INVENTORY_SHA256,
+    baseline_sha256: str | None = _BASELINE_SHA256,
 ) -> list[str]:
     arguments = [
         "verify-corpus",
         "retained",
-        "--quarantine-dir",
-        "quarantine",
-        "--membership-inventory",
-        "artifacts/membership.json",
-        "--baseline",
-        "artifacts/baseline.json",
-        "--work-dir",
-        "artifacts/run",
-        "--mode",
-        mode,
-        "--jobs",
-        jobs,
     ]
+    if expected_commit_sha is not None:
+        arguments.extend(("--expected-commit-sha", expected_commit_sha))
+    arguments.extend(("--quarantine-dir", "quarantine"))
+    arguments.extend(("--membership-inventory", "artifacts/membership.json"))
+    if membership_inventory_sha256 is not None:
+        arguments.extend(("--membership-inventory-sha256", membership_inventory_sha256))
+    arguments.extend(
+        (
+            "--baseline",
+            "artifacts/baseline.json",
+            "--work-dir",
+            "artifacts/run",
+            "--mode",
+            mode,
+            "--jobs",
+            jobs,
+        )
+    )
+    if baseline_sha256 is not None and mode == "verify":
+        arguments.extend(("--baseline-sha256", baseline_sha256))
     if runtime_tolerance is not None:
         arguments.extend(("--runtime-tolerance", runtime_tolerance))
     return arguments
@@ -460,6 +474,102 @@ def test_verify_corpus_cli_prints_only_exact_aggregate_attestation(
     )
 
 
+def test_verify_corpus_cli_requires_sha_bound_acceptance_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+    arguments = _verify_corpus_arguments()
+    for option in (
+        "--expected-commit-sha",
+        "--membership-inventory-sha256",
+        "--baseline-sha256",
+    ):
+        option_index = arguments.index(option)
+        del arguments[option_index : option_index + 2]
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+def test_verify_corpus_cli_forwards_sha_bound_acceptance_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[CorpusGateConfig] = []
+
+    def fake_gate(config: CorpusGateConfig, mode: CorpusGateMode) -> CorpusGateAttestation:
+        captured.append(config)
+        return _corpus_attestation(mode=mode)
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, _verify_corpus_arguments())
+
+    assert result.exit_code == 0
+    assert len(captured) == 1
+    assert captured[0].expected_commit_sha == _EXPECTED_COMMIT_SHA
+    assert captured[0].membership_inventory_sha256 == _MEMBERSHIP_INVENTORY_SHA256
+    assert captured[0].baseline_sha256 == _BASELINE_SHA256
+    assert _EXPECTED_COMMIT_SHA not in result.output
+    assert _MEMBERSHIP_INVENTORY_SHA256 not in result.output
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    (
+        ("expected_commit_sha", "d" * 39),
+        ("expected_commit_sha", "D" * 40),
+        ("expected_commit_sha", "g" * 40),
+        ("membership_inventory_sha256", "e" * 63),
+        ("membership_inventory_sha256", "E" * 64),
+        ("membership_inventory_sha256", "g" * 64),
+        ("baseline_sha256", "f" * 63),
+        ("baseline_sha256", "F" * 64),
+        ("baseline_sha256", "g" * 64),
+    ),
+)
+def test_verify_corpus_cli_rejects_malformed_sha_pins_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    malformed_value: str,
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+    arguments = _verify_corpus_arguments(
+        expected_commit_sha=(
+            malformed_value if field_name == "expected_commit_sha" else _EXPECTED_COMMIT_SHA
+        ),
+        membership_inventory_sha256=(
+            malformed_value
+            if field_name == "membership_inventory_sha256"
+            else _MEMBERSHIP_INVENTORY_SHA256
+        ),
+        baseline_sha256=(malformed_value if field_name == "baseline_sha256" else _BASELINE_SHA256),
+    )
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert malformed_value not in result.output
+    assert called is False
+
+
 @pytest.mark.parametrize(
     ("mode", "runtime_tolerance", "expected_tolerance"),
     (
@@ -477,7 +587,10 @@ def test_verify_corpus_cli_forwards_complete_immutable_configuration(
 
     def fake_gate(config: CorpusGateConfig, actual_mode: CorpusGateMode) -> CorpusGateAttestation:
         captured.append((config, actual_mode))
-        return _corpus_attestation(mode=actual_mode)
+        return _corpus_attestation(
+            mode=actual_mode,
+            performance_checked=actual_mode is CorpusGateMode.VERIFY,
+        )
 
     monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
 
@@ -495,10 +608,13 @@ def test_verify_corpus_cli_forwards_complete_immutable_configuration(
     config, actual_mode = captured[0]
     assert actual_mode is mode
     assert config == CorpusGateConfig(
+        expected_commit_sha=_EXPECTED_COMMIT_SHA,
         retained_dir=Path("retained"),
         quarantine_dir=Path("quarantine"),
         membership_inventory_path=Path("artifacts/membership.json"),
+        membership_inventory_sha256=_MEMBERSHIP_INVENTORY_SHA256,
         baseline_path=Path("artifacts/baseline.json"),
+        baseline_sha256=(_BASELINE_SHA256 if mode is CorpusGateMode.VERIFY else None),
         work_dir=Path("artifacts/run"),
         jobs=7,
         runtime_tolerance_ratio=expected_tolerance,
@@ -538,8 +654,51 @@ def test_verify_corpus_cli_rejects_mode_specific_tolerance_contract_before_runni
 
 
 @pytest.mark.parametrize(
+    "arguments",
+    (
+        _verify_corpus_arguments(baseline_sha256=None),
+        [
+            *_verify_corpus_arguments(mode="record", runtime_tolerance="0.2"),
+            "--baseline-sha256",
+            _BASELINE_SHA256,
+        ],
+    ),
+    ids=("verify-missing-baseline-pin", "record-supplied-baseline-pin"),
+)
+def test_verify_corpus_cli_enforces_mode_specific_baseline_pin_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    called = False
+
+    def fake_gate(*_args: object, **_kwargs: object) -> CorpusGateAttestation:
+        nonlocal called
+        called = True
+        return _corpus_attestation()
+
+    monkeypatch.setattr(cli_module, "run_corpus_gate", fake_gate, raising=False)
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1
+    assert result.output == "status=error reason_codes=invalid_configuration\n"
+    assert called is False
+
+
+@pytest.mark.parametrize(
     "missing_value",
-    ("retained", "quarantine", "inventory", "baseline", "work", "mode", "jobs"),
+    (
+        "retained",
+        "expected_commit",
+        "quarantine",
+        "inventory",
+        "inventory_sha256",
+        "baseline",
+        "baseline_sha256",
+        "work",
+        "mode",
+        "jobs",
+    ),
 )
 def test_verify_corpus_cli_maps_omitted_contract_values_to_exit_one(
     monkeypatch: pytest.MonkeyPatch,
@@ -547,9 +706,12 @@ def test_verify_corpus_cli_maps_omitted_contract_values_to_exit_one(
 ) -> None:
     arguments = _verify_corpus_arguments()
     option_by_value = {
+        "expected_commit": "--expected-commit-sha",
         "quarantine": "--quarantine-dir",
         "inventory": "--membership-inventory",
+        "inventory_sha256": "--membership-inventory-sha256",
         "baseline": "--baseline",
+        "baseline_sha256": "--baseline-sha256",
         "work": "--work-dir",
         "mode": "--mode",
         "jobs": "--jobs",
@@ -750,7 +912,7 @@ def test_verify_corpus_cli_prints_only_ordered_closed_acceptance_reason_codes(
     assert all(fragment not in result.output for fragment in _PRIVATE_GATE_BAIT.split())
 
 
-def test_verify_corpus_cli_explicitly_reports_unchecked_performance_without_extra_output(
+def test_verify_corpus_cli_rejects_unchecked_performance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -762,11 +924,8 @@ def test_verify_corpus_cli_explicitly_reports_unchecked_performance_without_extr
 
     result = runner.invoke(app, _verify_corpus_arguments())
 
-    assert result.exit_code == 0
-    assert result.output == (
-        "status=passed mode=verify retained=3 reconciled=3 "
-        "quarantined=2 elapsed_seconds=1.25 performance_checked=false\n"
-    )
+    assert result.exit_code == 2
+    assert result.output == "status=failed reason_codes=runtime_context_drift\n"
 
 
 def test_verify_corpus_cli_never_exits_zero_for_an_unpassed_attestation(
@@ -809,10 +968,14 @@ def test_verify_corpus_cli_never_mutates_approved_membership_inventory(
     arguments = [
         "verify-corpus",
         str(tmp_path / "retained"),
+        "--expected-commit-sha",
+        _EXPECTED_COMMIT_SHA,
         "--quarantine-dir",
         str(tmp_path / "quarantine"),
         "--membership-inventory",
         str(inventory),
+        "--membership-inventory-sha256",
+        _MEMBERSHIP_INVENTORY_SHA256,
         "--baseline",
         str(tmp_path / "baseline.json"),
         "--work-dir",
@@ -822,6 +985,8 @@ def test_verify_corpus_cli_never_mutates_approved_membership_inventory(
         "--jobs",
         "3",
     ]
+    if mode == "verify":
+        arguments.extend(("--baseline-sha256", _BASELINE_SHA256))
     if runtime_tolerance is not None:
         arguments.extend(("--runtime-tolerance", runtime_tolerance))
 

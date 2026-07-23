@@ -2,37 +2,69 @@
 
 from __future__ import annotations
 
+import _imp
 import fcntl
 import json
+import locale
 import math
 import os
 import platform
+import re
 import secrets
+import shutil
 import stat
+import struct
 import subprocess
+import sys
+import sysconfig
+import tempfile
 import time
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable
-from contextlib import suppress
+from collections.abc import Iterable, Mapping
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
 from importlib import metadata
-from pathlib import Path
-from typing import Annotated, Literal, Protocol, Self
+from importlib.machinery import (
+    EXTENSION_SUFFIXES,
+    BuiltinImporter,
+    ExtensionFileLoader,
+    FrozenImporter,
+    SourceFileLoader,
+    SourcelessFileLoader,
+)
+from importlib.util import cache_from_source
+from pathlib import Path, PurePosixPath
+from types import (
+    BuiltinFunctionType,
+    ClassMethodDescriptorType,
+    CodeType,
+    FunctionType,
+    GetSetDescriptorType,
+    MemberDescriptorType,
+    MethodDescriptorType,
+    ModuleType,
+    WrapperDescriptorType,
+)
+from typing import Annotated, Literal, Protocol, Self, runtime_checkable
 
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ccparser._traced_subprocess import run_traced_subprocess
 from ccparser.evidence.ocr import (
     OCR_CURRENCY_RECOGNITION_CACHE_VERSION,
     OCR_NUMERIC_RECOGNITION_CACHE_VERSION,
     OCR_PIPELINE_VERSION,
     OCR_PREPROCESSING_VERSION,
     OCR_RECOGNITION_CACHE_VERSION,
+    TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
     TESSERACT_VERSION_TIMEOUT_SECONDS,
+    TesseractExecutionRuntime,
+    bind_tesseract_runtime,
     currency_tesseract_command,
     numeric_tesseract_command,
     supplemental_tesseract_command,
@@ -118,6 +150,7 @@ class CorpusGateReason(StrEnum):
     FIELD_PRESENCE_DRIFT = "field_presence_drift"
     EVIDENCE_PROVENANCE_DRIFT = "evidence_provenance_drift"
     AMBIGUITY_DRIFT = "ambiguity_drift"
+    RUNTIME_CONTEXT_DRIFT = "runtime_context_drift"
     RUNTIME_REGRESSION = "runtime_regression"
 
     @property
@@ -206,10 +239,13 @@ class RepositoryState(_GateModel):
 class CorpusGateConfig(_GateModel):
     """Filesystem and runtime configuration for one corpus gate execution."""
 
+    expected_commit_sha: CommitSha
     retained_dir: Path
     quarantine_dir: Path
     membership_inventory_path: Path
+    membership_inventory_sha256: Digest
     baseline_path: Path
+    baseline_sha256: Digest | None = None
     work_dir: Path
     jobs: int = Field(gt=0)
     runtime_tolerance_ratio: Decimal | None = Field(default=None, ge=0)
@@ -269,22 +305,124 @@ class CompletedCorpusRun:
     membership_after: CorpusMembership
 
 
-class ToolchainFingerprint(_GateModel):
-    """Version and command fingerprint for a corpus run environment."""
+type RuntimeDependencyName = Literal[
+    "annotated-doc",
+    "annotated-types",
+    "ccparser",
+    "pydantic",
+    "pydantic-core",
+    "pymupdf",
+    "shellingham",
+    "typer",
+    "typing-extensions",
+    "typing-inspection",
+]
+type ToolchainAssetRole = Literal[
+    "config:tsv",
+    "git-executable",
+    "tesseract-executable",
+    "traineddata:eng",
+    "traineddata:heb",
+]
 
+_RUNTIME_DEPENDENCY_NAMES: tuple[RuntimeDependencyName, ...] = (
+    "annotated-doc",
+    "annotated-types",
+    "ccparser",
+    "pydantic",
+    "pydantic-core",
+    "pymupdf",
+    "shellingham",
+    "typer",
+    "typing-extensions",
+    "typing-inspection",
+)
+_TOOLCHAIN_ASSET_ROLES: tuple[ToolchainAssetRole, ...] = (
+    "config:tsv",
+    "tesseract-executable",
+    "traineddata:eng",
+    "traineddata:heb",
+)
+
+
+class RuntimeDependency(_GateModel):
+    """Version and aggregate byte identity of one installed distribution."""
+
+    name: RuntimeDependencyName
+    version: str = Field(min_length=1)
+    file_count: int = Field(gt=0)
+    size_bytes: int = Field(ge=0)
+    content_digest: Digest
+
+
+class RuntimeArtifactIdentity(_GateModel):
+    """Aggregate content identity for a closed runtime artifact set."""
+
+    file_count: int = Field(gt=0)
+    size_bytes: int = Field(ge=0)
+    digest: Digest
+
+
+class ToolchainAsset(_GateModel):
+    """Content identity of one executable or OCR data asset."""
+
+    role: ToolchainAssetRole
+    size_bytes: int = Field(ge=0)
+    sha256: Digest
+
+
+def _toolchain_payload_digest(payload: Mapping[str, object]) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(serialized).hexdigest()
+
+
+class ToolchainFingerprint(_GateModel):
+    """Self-authenticating runtime, dependency, executable, and OCR identity."""
+
+    version: Literal[6]
     python_version: str
-    package_version: str
-    pymupdf_version: str
+    python_implementation: str
+    python_runtime_digest: Digest
+    standard_library: RuntimeArtifactIdentity
+    runtime_environment_digest: Digest
+    dependencies: tuple[RuntimeDependency, ...]
+    git_executable: ToolchainAsset
+    git_native_closure: RuntimeArtifactIdentity
+    native_runtime: RuntimeArtifactIdentity
+    pymupdf_binding_version: str
+    pymupdf_engine_version: str
     tesseract_version: str
+    tesseract_version_output_digest: Digest
+    tesseract_assets: tuple[ToolchainAsset, ...]
+    tesseract_native_closure: RuntimeArtifactIdentity
     ocr_pipeline_version: str
     ocr_cache_versions: tuple[str, ...]
     command_digest: Digest
     digest: Digest
 
     @model_validator(mode="after")
-    def validate_ocr_cache_versions(self) -> Self:
-        if self.ocr_cache_versions != tuple(sorted(self.ocr_cache_versions)):
-            raise ValueError("OCR cache versions must be sorted")
+    def validate_complete_fingerprint(self) -> Self:
+        dependency_names = tuple(dependency.name for dependency in self.dependencies)
+        if dependency_names != _RUNTIME_DEPENDENCY_NAMES:
+            raise ValueError("runtime dependencies must be complete, sorted, and unique")
+        if self.git_executable.role != "git-executable":
+            raise ValueError("Git executable identity is invalid")
+        asset_roles = tuple(asset.role for asset in self.tesseract_assets)
+        if asset_roles != _TOOLCHAIN_ASSET_ROLES:
+            raise ValueError("toolchain assets must be complete, sorted, and unique")
+        if self.ocr_cache_versions != tuple(sorted(self.ocr_cache_versions)) or len(
+            self.ocr_cache_versions
+        ) != len(set(self.ocr_cache_versions)):
+            raise ValueError("OCR cache versions must be sorted and unique")
+        payload = self.model_dump(mode="json", exclude={"digest"})
+        if self.digest != _toolchain_payload_digest(payload):
+            raise ValueError("toolchain digest does not match fingerprint fields")
         return self
 
 
@@ -341,6 +479,12 @@ class RepositoryInspector(Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
+class _SourceCodeLoader(Protocol):
+    def get_code(self, fullname: str) -> CodeType | None:
+        raise NotImplementedError
+
+
 class ToolchainInspector(Protocol):
     """Produce the complete parser toolchain fingerprint."""
 
@@ -355,6 +499,7 @@ class CorpusGateDependencies:
     runner: CorpusRunner
     repository: RepositoryInspector
     toolchain: ToolchainInspector
+    runtime_capabilities: _GateRuntimeCapabilities | None = None
 
 
 class _DirectoryParser(Protocol):
@@ -444,23 +589,649 @@ class LocalCorpusRunner:
         )
 
 
+_CHILD_ENVIRONMENT_KEYS = frozenset(
+    {
+        "MALLOC_ARENA_MAX",
+        "OPENBLAS_NUM_THREADS",
+    }
+)
+_CHILD_ENVIRONMENT_PREFIXES = ("GOMP_", "KMP_", "OMP_")
+
+
+def _sanitized_child_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _CHILD_ENVIRONMENT_KEYS
+        or any(key.startswith(prefix) for prefix in _CHILD_ENVIRONMENT_PREFIXES)
+    }
+    environment["LANG"] = "C.UTF-8"
+    environment["LANGUAGE"] = "C"
+    environment["LC_ALL"] = "C.UTF-8"
+    environment["PATH"] = "/nonexistent"
+    environment["SASL_PATH"] = "/nonexistent"
+    environment["TZ"] = "UTC"
+    return environment
+
+
+def _git_child_environment() -> dict[str, str]:
+    environment = _sanitized_child_environment()
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
+        }
+    )
+    return environment
+
+
+@dataclass(frozen=True, slots=True)
+class _SealedCapability:
+    """Immutable descriptor-backed bytes used for one gate capability."""
+
+    file_descriptor: int
+    size_bytes: int
+    sha256: str
+    executable: bool
+
+    @classmethod
+    def bind_path(cls, path: Path, *, executable: bool) -> _SealedCapability:
+        resolved = path.resolve(strict=True)
+        source_fd = os.open(
+            resolved,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        capability_fd: int | None = None
+        try:
+            before = os.fstat(source_fd)
+            if not stat.S_ISREG(before.st_mode) or (executable and before.st_mode & 0o111 == 0):
+                raise RuntimeError("toolchain capability unavailable")
+            capability_fd = os.memfd_create(
+                "ccparser-capability",
+                flags=os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+            )
+            digest = sha256()
+            size = 0
+            while content := os.read(source_fd, 1024 * 1024):
+                digest.update(content)
+                size += len(content)
+                offset = 0
+                while offset < len(content):
+                    offset += os.write(capability_fd, content[offset:])
+            after = os.fstat(source_fd)
+            if (
+                _stable_file_identity(before) != _stable_file_identity(after)
+                or size != before.st_size
+            ):
+                raise RuntimeError("toolchain capability changed")
+            os.fchmod(capability_fd, 0o500 if executable else 0o400)
+            os.lseek(capability_fd, 0, os.SEEK_SET)
+            seals = fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_WRITE | fcntl.F_SEAL_SEAL
+            fcntl.fcntl(capability_fd, fcntl.F_ADD_SEALS, seals)
+            capability = cls(
+                file_descriptor=capability_fd,
+                size_bytes=size,
+                sha256=digest.hexdigest(),
+                executable=executable,
+            )
+            capability_fd = None
+            return capability
+        finally:
+            with suppress(OSError):
+                os.close(source_fd)
+            if capability_fd is not None:
+                with suppress(OSError):
+                    os.close(capability_fd)
+
+    @classmethod
+    def bind_command(cls, command: str) -> _SealedCapability:
+        executable = shutil.which(command)
+        if executable is None:
+            raise RuntimeError("toolchain executable unavailable")
+        return cls.bind_path(Path(executable), executable=True)
+
+    @property
+    def descriptor_path(self) -> str:
+        return f"/proc/self/fd/{self.file_descriptor}"
+
+    def asset(self, role: ToolchainAssetRole) -> ToolchainAsset:
+        return ToolchainAsset(
+            role=role,
+            size_bytes=self.size_bytes,
+            sha256=self.sha256,
+        )
+
+    def close(self) -> None:
+        with suppress(OSError):
+            os.close(self.file_descriptor)
+
+
+def _elf_interpreter(capability: _SealedCapability) -> Path:
+    header = os.pread(capability.file_descriptor, 64, 0)
+    if len(header) < 52 or header[:4] != b"\x7fELF":
+        raise RuntimeError("external runtime unavailable")
+    elf_class = header[4]
+    byte_order = {1: "<", 2: ">"}.get(header[5])
+    if byte_order is None:
+        raise RuntimeError("external runtime unavailable")
+    try:
+        if elf_class == 2:
+            values = struct.unpack(f"{byte_order}16sHHIQQQIHHHHHH", header[:64])
+            program_offset = values[5]
+            program_entry_size = values[9]
+            program_count = values[10]
+            program_format = f"{byte_order}IIQQQQQQ"
+            offset_index = 2
+            size_index = 5
+        elif elf_class == 1:
+            values = struct.unpack(f"{byte_order}16sHHIIIIIHHHHHH", header[:52])
+            program_offset = values[5]
+            program_entry_size = values[9]
+            program_count = values[10]
+            program_format = f"{byte_order}IIIIIIII"
+            offset_index = 1
+            size_index = 4
+        else:
+            raise RuntimeError("external runtime unavailable")
+    except struct.error:
+        raise RuntimeError("external runtime unavailable") from None
+    expected_machine = {"aarch64": 183, "x86_64": 62}.get(platform.machine().lower())
+    if expected_machine is None or values[2] != expected_machine:
+        raise RuntimeError("external runtime unavailable")
+    expected_entry_size = struct.calcsize(program_format)
+    if program_entry_size != expected_entry_size or program_count <= 0 or program_count > 1024:
+        raise RuntimeError("external runtime unavailable")
+    interpreter: Path | None = None
+    for index in range(program_count):
+        raw_entry = os.pread(
+            capability.file_descriptor,
+            program_entry_size,
+            program_offset + index * program_entry_size,
+        )
+        if len(raw_entry) != program_entry_size:
+            raise RuntimeError("external runtime unavailable")
+        entry = struct.unpack(program_format, raw_entry)
+        if entry[0] != 3:  # PT_INTERP
+            continue
+        raw_interpreter = os.pread(
+            capability.file_descriptor,
+            entry[size_index],
+            entry[offset_index],
+        )
+        if (
+            not raw_interpreter.endswith(b"\0")
+            or b"\0" in raw_interpreter[:-1]
+            or interpreter is not None
+        ):
+            raise RuntimeError("external runtime unavailable")
+        try:
+            decoded = os.fsdecode(raw_interpreter[:-1])
+        except UnicodeError:
+            raise RuntimeError("external runtime unavailable") from None
+        candidate = Path(decoded)
+        if not candidate.is_absolute():
+            raise RuntimeError("external runtime unavailable")
+        interpreter = candidate.resolve(strict=True)
+    if interpreter is None:
+        raise RuntimeError("external runtime unavailable")
+    return interpreter
+
+
+def _script_interpreter(
+    capability: _SealedCapability,
+) -> tuple[Path, tuple[str, ...]] | None:
+    first_line = os.pread(capability.file_descriptor, 4096, 0).partition(b"\n")[0]
+    if not first_line.startswith(b"#!"):
+        return None
+    try:
+        specification = os.fsdecode(first_line[2:]).strip()
+    except UnicodeError:
+        raise RuntimeError("external runtime unavailable") from None
+    fields = specification.split(maxsplit=1)
+    if not fields or not Path(fields[0]).is_absolute():
+        raise RuntimeError("external runtime unavailable")
+    if Path(fields[0]).name == "env":
+        raise RuntimeError("external runtime unavailable")
+    arguments = () if len(fields) == 1 else (fields[1],)
+    return Path(fields[0]).resolve(strict=True), arguments
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundDynamicLibrary:
+    alias: str
+    capability: _SealedCapability
+
+
+@dataclass(slots=True)
+class _BoundDynamicExecutable:
+    """Executable plus a sealed ELF interpreter and shared-library closure."""
+
+    executable: _SealedCapability
+    program: _SealedCapability
+    interpreter: _SealedCapability
+    libraries: tuple[_BoundDynamicLibrary, ...]
+    staging_path: Path
+    staging_file_descriptor: int
+    script_arguments: tuple[str, ...]
+    _closed: bool = False
+
+    @classmethod
+    def bind_command(
+        cls,
+        command: str,
+        *,
+        staging_parent: Path,
+    ) -> _BoundDynamicExecutable:
+        executable = shutil.which(command)
+        if executable is None:
+            raise RuntimeError("external runtime unavailable")
+        return cls.bind_path(Path(executable), staging_parent=staging_parent)
+
+    @classmethod
+    def bind_path(
+        cls,
+        path: Path,
+        *,
+        staging_parent: Path,
+    ) -> _BoundDynamicExecutable:
+        capabilities: list[_SealedCapability] = []
+        directory_fd: int | None = None
+        staging_path: Path | None = None
+        created_aliases: list[str] = []
+        try:
+            executable = _SealedCapability.bind_path(path, executable=True)
+            capabilities.append(executable)
+            script = _script_interpreter(executable)
+            if script is None:
+                program = executable
+                script_arguments: tuple[str, ...] = ()
+            else:
+                program = _SealedCapability.bind_path(script[0], executable=True)
+                capabilities.append(program)
+                script_arguments = (*script[1], executable.descriptor_path)
+            interpreter_path = _elf_interpreter(program)
+            interpreter = _SealedCapability.bind_path(interpreter_path, executable=True)
+            capabilities.append(interpreter)
+            discovery = subprocess.run(
+                (interpreter.descriptor_path, "--list", program.descriptor_path),
+                check=True,
+                capture_output=True,
+                env=_sanitized_child_environment(),
+                pass_fds=(interpreter.file_descriptor, program.file_descriptor),
+                timeout=10.0,
+            ).stdout.decode("utf-8", errors="strict")
+            library_sources: dict[Path, _SealedCapability] = {}
+            libraries: list[_BoundDynamicLibrary] = []
+            aliases: set[str] = set()
+            for line in discovery.splitlines():
+                match = _DYNAMIC_LIBRARY_LIST_LINE.fullmatch(line)
+                if match is None:
+                    continue
+                alias = match.group("alias")
+                if "/" in alias:
+                    continue
+                if alias in aliases or alias in {"", ".", ".."}:
+                    raise RuntimeError("external runtime unavailable")
+                source = Path(match.group("path")).resolve(strict=True)
+                capability = library_sources.get(source)
+                if capability is None:
+                    capability = _SealedCapability.bind_path(source, executable=False)
+                    capabilities.append(capability)
+                    library_sources[source] = capability
+                aliases.add(alias)
+                libraries.append(_BoundDynamicLibrary(alias, capability))
+            if not libraries:
+                raise RuntimeError("external runtime unavailable")
+            staging_parent = staging_parent.resolve(strict=True)
+            if not staging_parent.is_dir():
+                raise RuntimeError("external runtime unavailable")
+            staging_path = Path(
+                tempfile.mkdtemp(prefix="ccparser-runtime-", dir=staging_parent)
+            ).resolve(strict=True)
+            directory_fd = os.open(staging_path, _DIRECTORY_OPEN_FLAGS)
+            for library in libraries:
+                os.symlink(
+                    library.capability.descriptor_path,
+                    library.alias,
+                    dir_fd=directory_fd,
+                )
+                created_aliases.append(library.alias)
+            os.fchmod(directory_fd, 0o500)
+            result = cls(
+                executable=executable,
+                program=program,
+                interpreter=interpreter,
+                libraries=tuple(libraries),
+                staging_path=staging_path,
+                staging_file_descriptor=directory_fd,
+                script_arguments=script_arguments,
+            )
+            capabilities.clear()
+            directory_fd = None
+            staging_path = None
+            return result
+        except RuntimeError:
+            raise
+        except Exception:
+            raise RuntimeError("external runtime unavailable") from None
+        finally:
+            if directory_fd is not None:
+                with suppress(OSError):
+                    os.fchmod(directory_fd, 0o700)
+                for alias in reversed(created_aliases):
+                    with suppress(OSError):
+                        os.unlink(alias, dir_fd=directory_fd)
+                with suppress(OSError):
+                    os.close(directory_fd)
+            if staging_path is not None:
+                with suppress(OSError):
+                    os.rmdir(staging_path)
+            for capability in reversed(capabilities):
+                capability.close()
+
+    @property
+    def executable_file_descriptors(self) -> tuple[int, ...]:
+        unique = {
+            capability.file_descriptor: capability
+            for capability in (
+                self.program,
+                self.interpreter,
+                *(library.capability for library in self.libraries),
+            )
+        }
+        return tuple(unique)
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    self.executable.file_descriptor,
+                    *self.executable_file_descriptors,
+                    self.staging_file_descriptor,
+                )
+            )
+        )
+
+    @property
+    def native_closure(self) -> RuntimeArtifactIdentity:
+        unique = {
+            capability.file_descriptor: capability
+            for capability in (
+                self.program,
+                self.interpreter,
+                *(library.capability for library in self.libraries),
+            )
+        }
+        records = tuple(
+            sorted((capability.size_bytes, capability.sha256) for capability in unique.values())
+        )
+        bindings = (
+            ("program", self.program.sha256),
+            ("interpreter", self.interpreter.sha256),
+            *(sorted((library.alias, library.capability.sha256) for library in self.libraries)),
+        )
+        return RuntimeArtifactIdentity(
+            file_count=len(records),
+            size_bytes=sum(size for size, _digest in records),
+            digest=_toolchain_payload_digest({"bindings": bindings, "files": records}),
+        )
+
+    def _validate_staging(self) -> None:
+        directory = os.fstat(self.staging_file_descriptor)
+        named_directory = os.stat(self.staging_path, follow_symlinks=False)
+        expected_names = tuple(sorted(library.alias for library in self.libraries))
+        if (
+            not stat.S_ISDIR(directory.st_mode)
+            or directory.st_uid != os.geteuid()
+            or stat.S_IMODE(directory.st_mode) != 0o500
+            or _stable_file_identity(directory) != _stable_file_identity(named_directory)
+            or tuple(sorted(os.listdir(self.staging_file_descriptor))) != expected_names
+        ):
+            raise RuntimeError("external runtime unavailable")
+        for library in self.libraries:
+            capability = os.fstat(library.capability.file_descriptor)
+            link = os.stat(
+                library.alias,
+                dir_fd=self.staging_file_descriptor,
+                follow_symlinks=False,
+            )
+            target = os.stat(
+                library.alias,
+                dir_fd=self.staging_file_descriptor,
+                follow_symlinks=True,
+            )
+            if (
+                not stat.S_ISLNK(link.st_mode)
+                or os.readlink(library.alias, dir_fd=self.staging_file_descriptor)
+                != library.capability.descriptor_path
+                or _stable_file_identity(target) != _stable_file_identity(capability)
+            ):
+                raise RuntimeError("external runtime unavailable")
+
+    def command(self, arguments: tuple[str, ...], *, argv0: str) -> tuple[str, ...]:
+        return (
+            self.interpreter.descriptor_path,
+            "--inhibit-cache",
+            "--library-path",
+            f"/proc/self/fd/{self.staging_file_descriptor}",
+            "--glibc-hwcaps-mask",
+            "",
+            "--argv0",
+            argv0,
+            self.program.descriptor_path,
+            *self.script_arguments,
+            *arguments,
+        )
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        cwd: Path,
+        environment: tuple[tuple[str, str], ...],
+        timeout: float,
+        input_bytes: bytes | None = None,
+        stderr_to_stdout: bool = False,
+        allowed_file_descriptors: tuple[int, ...] | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if self._closed:
+            raise RuntimeError("external runtime unavailable")
+        self._validate_staging()
+        try:
+            return run_traced_subprocess(
+                self.command(arguments, argv0="external-tool"),
+                cwd=cwd,
+                environment=dict(environment),
+                inherited_file_descriptors=self.pass_fds,
+                allowed_file_descriptors=(
+                    self.executable_file_descriptors
+                    if allowed_file_descriptors is None
+                    else allowed_file_descriptors
+                ),
+                timeout=timeout,
+                input_bytes=input_bytes,
+                stderr_to_stdout=stderr_to_stdout,
+            )
+        finally:
+            self._validate_staging()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        with suppress(OSError):
+            os.fchmod(self.staging_file_descriptor, 0o700)
+        for library in self.libraries:
+            with suppress(OSError):
+                os.unlink(library.alias, dir_fd=self.staging_file_descriptor)
+        with suppress(OSError):
+            os.close(self.staging_file_descriptor)
+        with suppress(OSError):
+            os.rmdir(self.staging_path)
+        unique = {
+            capability.file_descriptor: capability
+            for capability in (
+                self.executable,
+                self.program,
+                self.interpreter,
+                *(library.capability for library in self.libraries),
+            )
+        }
+        for capability in reversed(tuple(unique.values())):
+            capability.close()
+
+
+_DYNAMIC_LIBRARY_LIST_LINE = re.compile(r"\s*(?P<alias>\S+) => (?P<path>/\S+) \(0x[0-9a-fA-F]+\)")
+
+
+def _active_git_directory(cwd: Path) -> Path:
+    resolved = cwd.resolve(strict=True)
+    for candidate_root in (resolved, *resolved.parents):
+        marker = candidate_root / ".git"
+        if marker.is_dir():
+            return marker.resolve(strict=True)
+        if not marker.is_file() or marker.is_symlink():
+            continue
+        content = marker.read_text(encoding="utf-8").strip()
+        prefix = "gitdir: "
+        if not content.startswith(prefix) or "\n" in content:
+            raise RuntimeError("external runtime unavailable")
+        git_directory = Path(content.removeprefix(prefix))
+        if not git_directory.is_absolute():
+            git_directory = marker.parent / git_directory
+        return git_directory.resolve(strict=True)
+    raise RuntimeError("external runtime unavailable")
+
+
+@dataclass(slots=True)
+class _GateRuntimeCapabilities:
+    """Exact external capabilities shared by every adapter in one gate."""
+
+    git: _SealedCapability
+    git_runtime: _BoundDynamicExecutable
+    staging_parent: Path
+    git_environment: tuple[tuple[str, str], ...]
+    tesseract_environment: tuple[tuple[str, str], ...]
+    tesseract: _BoundTesseract | None = None
+
+    @classmethod
+    def bind(cls) -> _GateRuntimeCapabilities:
+        staging_parent = _active_git_directory(Path.cwd())
+        git_runtime = _BoundDynamicExecutable.bind_command(
+            "git",
+            staging_parent=staging_parent,
+        )
+        return cls(
+            git=git_runtime.executable,
+            git_runtime=git_runtime,
+            staging_parent=staging_parent,
+            git_environment=tuple(sorted(_git_child_environment().items())),
+            tesseract_environment=tuple(sorted(_sanitized_child_environment().items())),
+        )
+
+    def tesseract_metadata(
+        self,
+        commands: tuple[tuple[str, ...], ...],
+    ) -> tuple[str, str, tuple[ToolchainAsset, ...]]:
+        if self.tesseract is None:
+            self.tesseract = _BoundTesseract.bind(
+                commands,
+                environment=self.tesseract_environment,
+                staging_parent=self.staging_parent,
+            )
+        return self.tesseract.metadata()
+
+    def stage_tesseract(self, work_fd: int) -> _StagedTesseractRuntime:
+        if self.tesseract is None:
+            raise RuntimeError("Tesseract capability is not fingerprinted")
+        return self.tesseract.stage(work_fd)
+
+    @property
+    def tesseract_native_closure(self) -> RuntimeArtifactIdentity:
+        if self.tesseract is None:
+            raise RuntimeError("Tesseract capability is not fingerprinted")
+        return self.tesseract.execution_runtime.native_closure
+
+    def close(self) -> None:
+        if self.tesseract is not None:
+            self.tesseract.close()
+        self.git_runtime.close()
+
+
 class GitRepositoryInspector:
     """Inspect the active worktree while deriving containment from Git common state."""
 
     _TIMEOUT_SECONDS = 10.0
+    _PACKAGE_ERROR = "active worktree package unavailable"
+    _PACKAGE_PREFIX = ("src", "ccparser")
+    _PACKAGE_PATHSPEC = ":(top,literal)src/ccparser"
 
-    def __init__(self, *, cwd: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cwd: Path | None = None,
+        executable: _SealedCapability | None = None,
+        execution_runtime: _BoundDynamicExecutable | None = None,
+        environment: tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
         self._cwd = (cwd or Path.cwd()).resolve(strict=True)
+        self._execution_runtime = execution_runtime
+        self._executable = executable or (
+            execution_runtime.executable
+            if execution_runtime is not None
+            else _SealedCapability.bind_command("git")
+        )
+        self._owns_executable = executable is None
+        self._environment = environment or tuple(sorted(_git_child_environment().items()))
+
+    @property
+    def executable_asset(self) -> ToolchainAsset:
+        return self._executable.asset("git-executable")
+
+    def _command(self, *arguments: str) -> tuple[str, ...]:
+        return (self._executable.descriptor_path, "--no-replace-objects", *arguments)
 
     def _git_output(self, *arguments: str) -> bytes:
+        if self._execution_runtime is not None:
+            completed = self._execution_runtime.run(
+                ("--no-replace-objects", *arguments),
+                cwd=self._cwd,
+                environment=self._environment,
+                timeout=self._TIMEOUT_SECONDS,
+            )
+            if completed.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    completed.returncode,
+                    completed.args,
+                    completed.stdout,
+                    completed.stderr,
+                )
+            return completed.stdout
         completed = subprocess.run(
-            ("git", *arguments),
+            self._command(*arguments),
             cwd=self._cwd,
             check=True,
             capture_output=True,
+            env=dict(self._environment),
+            pass_fds=(self._executable.file_descriptor,),
             timeout=self._TIMEOUT_SECONDS,
         )
         return completed.stdout
+
+    def close(self) -> None:
+        if self._owns_executable:
+            if self._execution_runtime is not None:
+                self._execution_runtime.close()
+            else:
+                self._executable.close()
 
     def _read_project_root(self) -> Path:
         common_output = self._git_output(
@@ -473,8 +1244,312 @@ class GitRepositoryInspector:
             raise RuntimeError("Git metadata unavailable")
         return Path(common_value).resolve(strict=True).parent
 
-    def state(self) -> RepositoryState:
-        project_root = self._read_project_root()
+    def _validate_active_worktree_package(self) -> Path:
+        try:
+            active_output = self._git_output("rev-parse", "--show-toplevel")
+            active_value = active_output.decode("utf-8").strip()
+            if not active_value:
+                raise ValueError
+            active_root = Path(active_value).resolve(strict=True)
+            expected_module = (active_root / "src" / "ccparser" / "corpus_gate.py").resolve(
+                strict=True
+            )
+            imported_module = Path(__file__).resolve(strict=True)
+            if (
+                not expected_module.is_relative_to(active_root)
+                or expected_module != imported_module
+            ):
+                raise ValueError
+        except Exception:
+            raise RuntimeError(self._PACKAGE_ERROR) from None
+        return active_root
+
+    @classmethod
+    def _runtime_path(cls, raw_path: bytes) -> PurePosixPath:
+        decoded_path = os.fsdecode(raw_path)
+        path = PurePosixPath(decoded_path)
+        if (
+            path.is_absolute()
+            or path.as_posix() != decoded_path
+            or len(path.parts) <= len(cls._PACKAGE_PREFIX)
+            or path.parts[: len(cls._PACKAGE_PREFIX)] != cls._PACKAGE_PREFIX
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ValueError
+        return path
+
+    def _indexed_runtime_paths(self) -> frozenset[PurePosixPath]:
+        output = self._git_output(
+            "ls-files",
+            "-v",
+            "-z",
+            "--full-name",
+            "--",
+            self._PACKAGE_PATHSPEC,
+        )
+        paths: set[PurePosixPath] = set()
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            if len(record) < 3 or record[1:2] != b" " or record[:1] != b"H":
+                raise ValueError
+            path = self._runtime_path(record[2:])
+            if path in paths:
+                raise ValueError
+            paths.add(path)
+        if not paths:
+            raise ValueError
+        return frozenset(paths)
+
+    def _head_runtime_sources(
+        self,
+        active_root: Path,
+        commit_sha: str,
+    ) -> Mapping[Path, bytes]:
+        output = self._git_output(
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit_sha,
+            "--",
+            self._PACKAGE_PATHSPEC,
+        )
+        indexed_paths = self._indexed_runtime_paths()
+        tree_paths: set[PurePosixPath] = set()
+        sources: dict[Path, bytes] = {}
+        active_root_fd = os.open(active_root, _DIRECTORY_OPEN_FLAGS)
+        try:
+            for record in output.split(b"\0"):
+                if not record:
+                    continue
+                metadata_bytes, separator, raw_path = record.partition(b"\t")
+                metadata = metadata_bytes.split(b" ")
+                if separator != b"\t" or len(metadata) != 3:
+                    raise ValueError
+                mode, object_type, raw_object_id = metadata
+                if mode not in {b"100644", b"100755"} or object_type != b"blob":
+                    raise ValueError
+                object_id = raw_object_id.decode("ascii")
+                if len(object_id) != 40 or any(
+                    character not in "0123456789abcdef" for character in object_id
+                ):
+                    raise ValueError
+                path = self._runtime_path(raw_path)
+                if path in tree_paths:
+                    raise ValueError
+                tree_paths.add(path)
+                active_path = active_root.joinpath(*path.parts)
+                if active_path.resolve(strict=True) != active_path:
+                    raise ValueError
+                active_source = _read_stable_regular_file(
+                    active_root_fd,
+                    active_root,
+                    active_path,
+                )
+                if active_source != self._git_output("cat-file", "blob", object_id):
+                    raise ValueError
+                sources[active_path] = active_source
+        finally:
+            os.close(active_root_fd)
+        if frozenset(tree_paths) != indexed_paths:
+            raise ValueError
+        expected_gate = active_root.joinpath(*self._PACKAGE_PREFIX, "corpus_gate.py")
+        if expected_gate not in sources:
+            raise ValueError
+        return sources
+
+    @staticmethod
+    def _nested_code_objects(code: CodeType) -> frozenset[CodeType]:
+        nested = {code}
+        for constant in code.co_consts:
+            if isinstance(constant, CodeType):
+                nested.update(GitRepositoryInspector._nested_code_objects(constant))
+        return frozenset(nested)
+
+    @staticmethod
+    def _runtime_functions(module: ModuleType) -> tuple[FunctionType, ...]:
+        functions: set[FunctionType] = set()
+        seen_classes: set[type[object]] = set()
+
+        def collect(value: object) -> None:
+            if isinstance(value, FunctionType):
+                if value.__module__ == "ccparser" or value.__module__.startswith("ccparser."):
+                    functions.add(value)
+                return
+            if isinstance(value, staticmethod | classmethod):
+                collect(value.__func__)
+                return
+            if isinstance(value, property):
+                for accessor in (value.fget, value.fset, value.fdel):
+                    if accessor is not None:
+                        collect(accessor)
+                return
+            if (
+                isinstance(value, type)
+                and value not in seen_classes
+                and (value.__module__ == "ccparser" or value.__module__.startswith("ccparser."))
+            ):
+                seen_classes.add(value)
+                for member in vars(value).values():
+                    collect(member)
+
+        for attribute in vars(module).values():
+            collect(attribute)
+        return tuple(
+            sorted(
+                functions,
+                key=lambda function: (
+                    function.__module__,
+                    function.__qualname__,
+                    function.__code__.co_filename,
+                    function.__code__.co_firstlineno,
+                ),
+            )
+        )
+
+    @classmethod
+    def _validate_live_runtime_code(
+        cls,
+        loaded_modules: tuple[tuple[str, ModuleType], ...],
+        sources: Mapping[Path, bytes],
+    ) -> None:
+        compiled_by_origin: dict[tuple[Path, str], frozenset[CodeType]] = {}
+        for _module_name, module in loaded_modules:
+            for function in cls._runtime_functions(module):
+                code = function.__code__
+                if code.co_filename.startswith("<"):
+                    continue
+                try:
+                    source_path = Path(code.co_filename).resolve(strict=True)
+                except OSError:
+                    raise ValueError from None
+                source = sources.get(source_path)
+                if source is None:
+                    if "ccparser" in source_path.parts:
+                        raise ValueError
+                    continue
+                cache_key = (source_path, code.co_filename)
+                allowed_codes = compiled_by_origin.get(cache_key)
+                if allowed_codes is None:
+                    allowed_codes = cls._nested_code_objects(
+                        compile(
+                            source,
+                            code.co_filename,
+                            "exec",
+                            dont_inherit=True,
+                            optimize=sys.flags.optimize,
+                        )
+                    )
+                    compiled_by_origin[cache_key] = allowed_codes
+                if code not in allowed_codes:
+                    raise ValueError
+
+    @staticmethod
+    def _executed_package_top_levels(
+        package: ModuleType,
+        sources: Mapping[Path, bytes],
+    ) -> Mapping[Path, frozenset[CodeType]]:
+        raw_registry = vars(package).get("_EXECUTED_PACKAGE_CODES")
+        if not isinstance(raw_registry, dict):
+            raise ValueError
+        registry: dict[Path, frozenset[CodeType]] = {}
+        for raw_path, raw_codes in raw_registry.items():
+            if not isinstance(raw_path, str) or not isinstance(raw_codes, set) or not raw_codes:
+                raise ValueError
+            source_path = Path(raw_path).resolve(strict=True)
+            if (
+                str(source_path) != raw_path
+                or source_path not in sources
+                or source_path in registry
+            ):
+                raise ValueError
+            codes: set[CodeType] = set()
+            for code in raw_codes:
+                if (
+                    not isinstance(code, CodeType)
+                    or code.co_name != "<module>"
+                    or Path(code.co_filename).resolve(strict=True) != source_path
+                ):
+                    raise ValueError
+                codes.add(code)
+            approved_code = compile(
+                sources[source_path],
+                raw_path,
+                "exec",
+                dont_inherit=True,
+                optimize=sys.flags.optimize,
+            )
+            if codes != {approved_code}:
+                raise ValueError
+            registry[source_path] = frozenset(codes)
+        return registry
+
+    @classmethod
+    def _validate_loaded_runtime(cls, sources: Mapping[Path, bytes]) -> None:
+        gate_loaded = False
+        raw_loaded_modules = tuple(
+            sorted(
+                (
+                    (name, module)
+                    for name, module in sys.modules.items()
+                    if name == "ccparser" or name.startswith("ccparser.")
+                ),
+                key=lambda item: item[0],
+            )
+        )
+        package = dict(raw_loaded_modules).get("ccparser")
+        if not isinstance(package, ModuleType):
+            raise ValueError
+        executed_top_levels = cls._executed_package_top_levels(package, sources)
+        loaded_modules: list[tuple[str, ModuleType]] = []
+        for module_name, module in raw_loaded_modules:
+            if not isinstance(module, ModuleType):
+                raise ValueError
+            loaded_modules.append((module_name, module))
+            module_file = getattr(module, "__file__", None)
+            specification = module.__spec__
+            if (
+                not isinstance(module_file, str)
+                or specification is None
+                or specification.name != module_name
+                or not isinstance(specification.origin, str)
+                or not isinstance(specification.loader, _SourceCodeLoader)
+            ):
+                raise ValueError
+            module_path = Path(module_file).resolve(strict=True)
+            if Path(specification.origin).resolve(strict=True) != module_path:
+                raise ValueError
+            source = sources.get(module_path)
+            if source is None:
+                raise ValueError
+            loaded_code = specification.loader.get_code(module_name)
+            if not isinstance(loaded_code, CodeType):
+                raise ValueError
+            compiled_code = compile(
+                source,
+                specification.origin,
+                "exec",
+                dont_inherit=True,
+                optimize=sys.flags.optimize,
+            )
+            if loaded_code != compiled_code:
+                raise ValueError
+            if compiled_code not in executed_top_levels.get(module_path, frozenset()):
+                raise ValueError
+            gate_loaded = gate_loaded or module_name == "ccparser.corpus_gate"
+        if not gate_loaded:
+            raise ValueError
+        cls._validate_live_runtime_code(tuple(loaded_modules), sources)
+
+    def _validate_runtime_attribution(self, active_root: Path, commit_sha: str) -> None:
+        try:
+            sources = self._head_runtime_sources(active_root, commit_sha)
+            self._validate_loaded_runtime(sources)
+        except Exception:
+            raise RuntimeError(self._PACKAGE_ERROR) from None
+
+    def _repository_observation(self) -> tuple[str, bytes]:
         commit_output = self._git_output("rev-parse", "--verify", "HEAD")
         status_output = self._git_output(
             "status",
@@ -482,8 +1557,19 @@ class GitRepositoryInspector:
             "--untracked-files=all",
         )
         commit_sha = commit_output.decode("ascii").strip()
-        if not commit_sha:
+        if len(commit_sha) != 40 or any(
+            character not in "0123456789abcdef" for character in commit_sha
+        ):
             raise RuntimeError("Git metadata unavailable")
+        return commit_sha, status_output
+
+    def state(self) -> RepositoryState:
+        active_root = self._validate_active_worktree_package()
+        project_root = self._read_project_root()
+        commit_sha, status_output = self._repository_observation()
+        self._validate_runtime_attribution(active_root, commit_sha)
+        if self._repository_observation() != (commit_sha, status_output):
+            raise RuntimeError(self._PACKAGE_ERROR)
         return RepositoryState(
             root=project_root,
             commit_sha=commit_sha,
@@ -505,21 +1591,1092 @@ class GitRepositoryInspector:
     def is_ignored(self, path: Path) -> bool:
         resolved_path = path.resolve(strict=False)
         worktree_root = self._worktree_for_path(resolved_path)
-        completed = subprocess.run(
-            ("git", "check-ignore", "--quiet", "--", str(resolved_path)),
-            cwd=worktree_root,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=self._TIMEOUT_SECONDS,
-        )
+        if self._execution_runtime is None:
+            completed = subprocess.run(
+                self._command("check-ignore", "--quiet", "--", str(resolved_path)),
+                cwd=worktree_root,
+                check=False,
+                env=dict(self._environment),
+                pass_fds=(self._executable.file_descriptor,),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self._TIMEOUT_SECONDS,
+            )
+        else:
+            completed = self._execution_runtime.run(
+                (
+                    "--no-replace-objects",
+                    "check-ignore",
+                    "--quiet",
+                    "--",
+                    str(resolved_path),
+                ),
+                cwd=worktree_root,
+                environment=self._environment,
+                timeout=self._TIMEOUT_SECONDS,
+            )
         if completed.returncode not in {0, 1}:
             raise RuntimeError("Git ignore policy unavailable")
         return completed.returncode == 0
 
 
+_RUNTIME_ENVIRONMENT_KEYS = frozenset(
+    {
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "MALLOC_ARENA_MAX",
+        "OPENBLAS_NUM_THREADS",
+        "PATH",
+        "PYTHONHASHSEED",
+        "PYTHONMALLOC",
+        "PYTHONUTF8",
+        "TESSDATA_PREFIX",
+        "TZ",
+    }
+)
+_RUNTIME_ENVIRONMENT_PREFIXES = ("GOMP_", "KMP_", "LC_", "OMP_")
+_TESSDATA_HEADER = re.compile(r'^List of available languages in "(?P<directory>.+)" \(\d+\):$')
+
+
+def _stable_content_identity(path: Path, *, require_executable: bool = False) -> tuple[int, str]:
+    resolved = path.resolve(strict=True)
+    file_descriptor = os.open(
+        resolved,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        before = os.fstat(file_descriptor)
+        if not stat.S_ISREG(before.st_mode) or (require_executable and before.st_mode & 0o111 == 0):
+            raise RuntimeError("toolchain asset unavailable")
+        digest = sha256()
+        size = 0
+        while content := os.read(file_descriptor, 1024 * 1024):
+            digest.update(content)
+            size += len(content)
+        after = os.fstat(file_descriptor)
+        if _stable_file_identity(before) != _stable_file_identity(after) or size != before.st_size:
+            raise RuntimeError("toolchain asset changed")
+        return size, digest.hexdigest()
+    finally:
+        os.close(file_descriptor)
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeDistributionSnapshot:
+    dependency: RuntimeDependency
+    installation_root: Path
+    artifact_paths: frozenset[Path]
+    source_origins: frozenset[tuple[str, Path]]
+    bytecode_origins: frozenset[tuple[str, Path]]
+    native_origins: frozenset[tuple[str, Path]]
+
+
+@dataclass(frozen=True, slots=True)
+class _StandardLibrarySnapshot:
+    identity: RuntimeArtifactIdentity
+    artifact_paths: frozenset[Path]
+    source_origins: frozenset[Path]
+    bytecode_origins: frozenset[Path]
+    native_origins: frozenset[Path]
+
+
+type _StandardLibraryCandidate = tuple[str, Path, str | None]
+type _LoadedModuleKind = Literal["source", "bytecode", "native"]
+
+_STANDARD_LIBRARY_EXCLUDED_DIRECTORIES = frozenset({"dist-packages", "site-packages"})
+
+
+def _module_artifact_kind(filename: str) -> _LoadedModuleKind | None:
+    if filename.endswith(".py"):
+        return "source"
+    if filename.endswith((".pyc", ".pyo")):
+        return "bytecode"
+    if any(filename.endswith(suffix) for suffix in EXTENSION_SUFFIXES):
+        return "native"
+    return None
+
+
+def _standard_library_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for scheme_name in ("stdlib", "platstdlib"):
+        raw_root = sysconfig.get_path(scheme_name)
+        if not isinstance(raw_root, str) or not raw_root:
+            raise RuntimeError("standard-library inventory unavailable")
+        root = Path(raw_root).resolve(strict=True)
+        if not root.is_dir():
+            raise RuntimeError("standard-library inventory unavailable")
+        if root not in roots:
+            roots.append(root)
+    if not roots:
+        raise RuntimeError("standard-library inventory unavailable")
+    return tuple(roots)
+
+
+def _standard_library_candidates(
+    roots: tuple[Path, ...],
+) -> tuple[_StandardLibraryCandidate, ...]:
+    candidates: list[_StandardLibraryCandidate] = []
+
+    def fail_walk(error: OSError) -> None:
+        raise RuntimeError("standard-library inventory unavailable") from error
+
+    for root_index, root in enumerate(roots):
+        for raw_directory, raw_directories, raw_filenames in os.walk(
+            root,
+            topdown=True,
+            onerror=fail_walk,
+            followlinks=False,
+        ):
+            directory = Path(raw_directory)
+            directories: list[str] = []
+            for name in sorted(raw_directories):
+                child = directory / name
+                if name in _STANDARD_LIBRARY_EXCLUDED_DIRECTORIES:
+                    continue
+                if child.is_symlink():
+                    raise RuntimeError("standard-library inventory unavailable")
+                directories.append(name)
+            raw_directories[:] = directories
+            for filename in sorted(raw_filenames):
+                path = directory / filename
+                relative_path = path.relative_to(root)
+                if path.is_symlink():
+                    try:
+                        link_target: str | None = os.readlink(path)
+                    except OSError:
+                        raise RuntimeError("standard-library inventory unavailable") from None
+                else:
+                    link_target = None
+                candidates.append(
+                    (
+                        f"{root_index}:{relative_path.as_posix()}",
+                        path,
+                        link_target,
+                    )
+                )
+    return tuple(candidates)
+
+
+def _snapshot_standard_library(
+    roots: tuple[Path, ...] | None = None,
+) -> _StandardLibrarySnapshot:
+    raw_roots = _standard_library_roots() if roots is None else roots
+    normalized_roots: list[Path] = []
+    for raw_root in raw_roots:
+        root = raw_root.resolve(strict=True)
+        if not root.is_dir():
+            raise RuntimeError("standard-library inventory unavailable")
+        if root not in normalized_roots:
+            normalized_roots.append(root)
+    if not normalized_roots:
+        raise RuntimeError("standard-library inventory unavailable")
+    active_roots = tuple(normalized_roots)
+    candidates = _standard_library_candidates(active_roots)
+    records: list[tuple[str, str | None, int, str]] = []
+    artifact_paths: set[Path] = set()
+    source_origins: set[Path] = set()
+    bytecode_origins: set[Path] = set()
+    native_origins: set[Path] = set()
+    for label, path, link_target in candidates:
+        resolved_path = path.resolve(strict=True)
+        size_bytes, content_digest = _stable_content_identity(resolved_path)
+        artifact_paths.add(resolved_path)
+        lexical_kind = _module_artifact_kind(path.name)
+        resolved_kind = _module_artifact_kind(resolved_path.name)
+        artifact_kind = lexical_kind if lexical_kind == resolved_kind else None
+        if artifact_kind == "source":
+            source_origins.add(resolved_path)
+        elif artifact_kind == "bytecode":
+            bytecode_origins.add(resolved_path)
+        elif artifact_kind == "native":
+            native_origins.add(resolved_path)
+        records.append((label, link_target, size_bytes, content_digest))
+    if not records or _standard_library_candidates(active_roots) != candidates:
+        raise RuntimeError("standard-library inventory unavailable")
+    identity = RuntimeArtifactIdentity(
+        file_count=len(records),
+        size_bytes=sum(record[2] for record in records),
+        digest=_toolchain_payload_digest({"files": tuple(records)}),
+    )
+    return _StandardLibrarySnapshot(
+        identity=identity,
+        artifact_paths=frozenset(artifact_paths),
+        source_origins=frozenset(source_origins),
+        bytecode_origins=frozenset(bytecode_origins),
+        native_origins=frozenset(native_origins),
+    )
+
+
+def _is_runtime_distribution_file(relative_path: PurePosixPath) -> bool:
+    return bool(relative_path.parts)
+
+
+def _module_top_level(relative_path: PurePosixPath) -> str | None:
+    if (
+        not relative_path.parts
+        or relative_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+        or relative_path.parts[0].endswith((".data", ".dist-info"))
+    ):
+        return None
+    filename = relative_path.name
+    is_python = filename.endswith(".py")
+    is_bytecode = filename.endswith((".pyc", ".pyo"))
+    is_extension = any(filename.endswith(suffix) for suffix in EXTENSION_SUFFIXES)
+    if not (is_python or is_bytecode or is_extension):
+        return None
+    if is_bytecode and relative_path.parts[0] == "__pycache__":
+        return filename.partition(".")[0]
+    if len(relative_path.parts) > 1:
+        return relative_path.parts[0]
+    if is_python:
+        return filename.removesuffix(".py")
+    if is_bytecode:
+        return filename.partition(".")[0]
+    for suffix in EXTENSION_SUFFIXES:
+        if filename.endswith(suffix):
+            return filename.removesuffix(suffix)
+    raise AssertionError("unreachable extension suffix")
+
+
+def _snapshot_runtime_distribution(
+    name: RuntimeDependencyName,
+    *,
+    distribution: metadata.Distribution | None = None,
+) -> _RuntimeDistributionSnapshot:
+    installed = distribution or metadata.distribution(name)
+    raw_files = installed.files
+    if raw_files is None:
+        raise RuntimeError("runtime distribution inventory unavailable")
+    records: list[tuple[str, int, str]] = []
+    artifact_paths: set[Path] = set()
+    source_origins: set[tuple[str, Path]] = set()
+    bytecode_origins: set[tuple[str, Path]] = set()
+    native_origins: set[tuple[str, Path]] = set()
+    seen_labels: set[str] = set()
+    seen_paths: set[Path] = set()
+    for raw_file in sorted(raw_files, key=str):
+        relative_path = PurePosixPath(str(raw_file))
+        label = relative_path.as_posix()
+        if not label or relative_path.is_absolute() or label in seen_labels:
+            raise RuntimeError("runtime distribution inventory unavailable")
+        seen_labels.add(label)
+        if not _is_runtime_distribution_file(relative_path):
+            continue
+        actual_path = Path(str(installed.locate_file(raw_file))).resolve(strict=True)
+        if actual_path in seen_paths:
+            raise RuntimeError("runtime distribution inventory unavailable")
+        seen_paths.add(actual_path)
+        artifact_paths.add(actual_path)
+        size_bytes, content_digest = _stable_content_identity(actual_path)
+        records.append((label, size_bytes, content_digest))
+        top_level = _module_top_level(relative_path)
+        lexical_kind = _module_artifact_kind(relative_path.name)
+        resolved_kind = _module_artifact_kind(actual_path.name)
+        artifact_kind = lexical_kind if lexical_kind == resolved_kind else None
+        if top_level is not None and artifact_kind is not None:
+            origin = (top_level, actual_path)
+            if artifact_kind == "source":
+                source_origins.add(origin)
+            elif artifact_kind == "bytecode":
+                bytecode_origins.add(origin)
+            else:
+                native_origins.add(origin)
+    if not records:
+        raise RuntimeError("runtime distribution inventory unavailable")
+    version = str(installed.version)
+    dependency = RuntimeDependency(
+        name=name,
+        version=version,
+        file_count=len(records),
+        size_bytes=sum(record[1] for record in records),
+        content_digest=_toolchain_payload_digest({"files": tuple(records)}),
+    )
+    return _RuntimeDistributionSnapshot(
+        dependency=dependency,
+        installation_root=Path(str(installed.locate_file(""))).resolve(strict=True),
+        artifact_paths=frozenset(artifact_paths),
+        source_origins=frozenset(source_origins),
+        bytecode_origins=frozenset(bytecode_origins),
+        native_origins=frozenset(native_origins),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedModuleBinding:
+    kind: _LoadedModuleKind
+    origin: Path
+    cached_origin: Path | None
+
+
+def _canonical_file_module_binding(
+    module_name: str,
+    module: ModuleType,
+) -> _LoadedModuleBinding:
+    module_file = getattr(module, "__file__", None)
+    specification = module.__spec__
+    if (
+        not isinstance(module_file, str)
+        or specification is None
+        or specification.name != module_name
+        or module.__name__ != module_name
+        or not isinstance(specification.origin, str)
+        or module_file != specification.origin
+        or module.__loader__ is not specification.loader
+    ):
+        raise RuntimeError("loaded runtime origin unavailable")
+    loader: object = specification.loader
+    if not isinstance(
+        loader,
+        SourceFileLoader | SourcelessFileLoader | ExtensionFileLoader,
+    ):
+        raise RuntimeError("loaded runtime origin unavailable")
+    if type(loader) not in (
+        SourceFileLoader,
+        SourcelessFileLoader,
+        ExtensionFileLoader,
+    ):
+        raise RuntimeError("loaded runtime origin unavailable")
+    if loader.name != module_name or loader.path != module_file:
+        raise RuntimeError("loaded runtime origin unavailable")
+    origin = Path(module_file).resolve(strict=True)
+    cached_path: Path | None = None
+    raw_cached = getattr(module, "__cached__", None)
+    if raw_cached != specification.cached:
+        raise RuntimeError("loaded runtime origin unavailable")
+    if type(loader) is SourceFileLoader:
+        if not Path(module_file).name.endswith(".py"):
+            raise RuntimeError("loaded runtime origin unavailable")
+        if raw_cached is not None:
+            if not isinstance(raw_cached, str) or raw_cached != cache_from_source(module_file):
+                raise RuntimeError("loaded runtime origin unavailable")
+            cached_candidate = Path(raw_cached)
+            if cached_candidate.exists():
+                cached_path = cached_candidate.resolve(strict=True)
+        loaded_code = loader.get_code(module_name)
+        if not isinstance(loaded_code, CodeType):
+            raise RuntimeError("loaded runtime origin unavailable")
+        return _LoadedModuleBinding(
+            kind="source",
+            origin=origin,
+            cached_origin=cached_path,
+        )
+    if type(loader) is SourcelessFileLoader:
+        if not Path(module_file).name.endswith((".pyc", ".pyo")):
+            raise RuntimeError("loaded runtime origin unavailable")
+        if raw_cached not in {None, module_file}:
+            raise RuntimeError("loaded runtime origin unavailable")
+        loaded_code = loader.get_code(module_name)
+        if not isinstance(loaded_code, CodeType):
+            raise RuntimeError("loaded runtime origin unavailable")
+        return _LoadedModuleBinding(
+            kind="bytecode",
+            origin=origin,
+            cached_origin=origin,
+        )
+    if (
+        not any(Path(module_file).name.endswith(suffix) for suffix in EXTENSION_SUFFIXES)
+        or raw_cached is not None
+        or loader.get_code(module_name) is not None
+    ):
+        raise RuntimeError("loaded runtime origin unavailable")
+    return _LoadedModuleBinding(
+        kind="native",
+        origin=origin,
+        cached_origin=None,
+    )
+
+
+_NATIVE_TYPE_MEMBER_TYPES = (
+    BuiltinFunctionType,
+    ClassMethodDescriptorType,
+    GetSetDescriptorType,
+    MemberDescriptorType,
+    MethodDescriptorType,
+    WrapperDescriptorType,
+)
+
+
+def _is_native_type_metadata(value: object) -> bool:
+    if value is None or isinstance(value, bool | bytes | int | str):
+        return True
+    return isinstance(value, tuple) and all(_is_native_type_metadata(item) for item in value)
+
+
+def _is_native_extension_type(value: object, *, module_name: str) -> bool:
+    if not isinstance(value, type) or value.__module__ != module_name:
+        return False
+    has_native_member = False
+    for member in vars(value).values():
+        if isinstance(member, _NATIVE_TYPE_MEMBER_TYPES):
+            has_native_member = True
+        elif not _is_native_type_metadata(member):
+            return False
+    return has_native_member
+
+
+def _is_python_capsule(value: object) -> bool:
+    value_type = type(value)
+    return (
+        value_type.__module__ == "builtins"
+        and value_type.__name__ == "PyCapsule"
+        and value_type.__flags__ & (1 << 9) == 0  # Py_TPFLAGS_HEAPTYPE
+    )
+
+
+def _is_originless_native_data_module(module_name: str, module: ModuleType) -> bool:
+    if (
+        module.__name__ != module_name
+        or module.__spec__ is not None
+        or getattr(module, "__file__", None) is not None
+        or getattr(module, "__cached__", None) is not None
+        or module.__loader__ is not None
+    ):
+        return False
+    has_native_value = False
+    for name, value in vars(module).items():
+        if name in {"__name__", "__doc__", "__package__", "__loader__", "__spec__"}:
+            continue
+        if _is_native_extension_type(value, module_name=module_name) or _is_python_capsule(value):
+            has_native_value = True
+            continue
+        return False
+    return has_native_value
+
+
+def _is_canonical_intrinsic_module(
+    mapping_name: str,
+    module_name: str,
+    module: ModuleType,
+) -> bool:
+    specification = module.__spec__
+    if (
+        specification is None
+        or specification.name not in {mapping_name, module_name}
+        or module.__loader__ is not specification.loader
+    ):
+        return False
+    loader: object = specification.loader
+    if specification.origin == "built-in":
+        return loader is BuiltinImporter and _imp.is_builtin(specification.name) != 0
+    if specification.origin == "frozen":
+        return loader is FrozenImporter and _imp.is_frozen(specification.name)
+    return False
+
+
+def _validate_loaded_distribution_origins(
+    snapshots: tuple[_RuntimeDistributionSnapshot, ...],
+    *,
+    standard_library: _StandardLibrarySnapshot | None = None,
+    loaded_modules: Mapping[str, object] | None = None,
+) -> None:
+    approved_sources_by_top_level: dict[str, set[Path]] = {}
+    approved_bytecode_by_top_level: dict[str, set[Path]] = {}
+    approved_native_by_top_level: dict[str, set[Path]] = {}
+    for snapshot in snapshots:
+        for top_level, origin in snapshot.source_origins:
+            approved_sources_by_top_level.setdefault(top_level, set()).add(origin)
+        for top_level, origin in snapshot.bytecode_origins:
+            approved_bytecode_by_top_level.setdefault(top_level, set()).add(origin)
+        for top_level, origin in snapshot.native_origins:
+            approved_native_by_top_level.setdefault(top_level, set()).add(origin)
+    standard_library_source_paths = (
+        frozenset() if standard_library is None else standard_library.source_origins
+    )
+    standard_library_bytecode_paths = (
+        frozenset() if standard_library is None else standard_library.bytecode_origins
+    )
+    standard_library_native_paths = (
+        frozenset() if standard_library is None else standard_library.native_origins
+    )
+    observed_modules = sys.modules if loaded_modules is None else loaded_modules
+    seen_modules: set[int] = set()
+    for mapping_name, raw_module in tuple(observed_modules.items()):
+        if not isinstance(mapping_name, str):
+            raise RuntimeError("loaded runtime origin unavailable")
+        if raw_module is None:
+            continue
+        if not isinstance(raw_module, ModuleType):
+            raise RuntimeError("loaded runtime origin unavailable")
+        module_identity = id(raw_module)
+        if module_identity in seen_modules:
+            continue
+        seen_modules.add(module_identity)
+        module_name = raw_module.__name__
+        top_level = module_name.partition(".")[0]
+        if top_level == "ccparser":
+            continue
+        specification = raw_module.__spec__
+        if module_name == "__main__" and specification is None:
+            continue
+        if specification is None and _is_originless_native_data_module(module_name, raw_module):
+            continue
+        if _is_canonical_intrinsic_module(mapping_name, module_name, raw_module):
+            continue
+        dependency_owned = any(
+            top_level in approved
+            for approved in (
+                approved_sources_by_top_level,
+                approved_bytecode_by_top_level,
+                approved_native_by_top_level,
+            )
+        )
+        try:
+            binding = _canonical_file_module_binding(module_name, raw_module)
+        except Exception:
+            if dependency_owned:
+                raise RuntimeError("loaded dependency origin unavailable") from None
+            raise RuntimeError("loaded runtime origin unavailable") from None
+        if binding.kind == "source":
+            standard_library_owned = binding.origin in standard_library_source_paths
+            approved_dependency_origins = approved_sources_by_top_level.get(top_level, set())
+        elif binding.kind == "bytecode":
+            standard_library_owned = binding.origin in standard_library_bytecode_paths
+            approved_dependency_origins = approved_bytecode_by_top_level.get(top_level, set())
+        else:
+            standard_library_owned = binding.origin in standard_library_native_paths
+            approved_dependency_origins = approved_native_by_top_level.get(top_level, set())
+        if standard_library_owned:
+            if (
+                binding.cached_origin is not None
+                and binding.cached_origin not in standard_library_bytecode_paths
+            ):
+                raise RuntimeError("loaded runtime origin unavailable")
+        elif binding.origin not in approved_dependency_origins:
+            if not dependency_owned:
+                raise RuntimeError("loaded runtime origin unavailable")
+            raise RuntimeError("loaded dependency origin unavailable")
+        elif binding.cached_origin is not None and binding.cached_origin not in (
+            approved_bytecode_by_top_level.get(top_level, set())
+        ):
+            raise RuntimeError("loaded dependency origin unavailable")
+
+
+def _runtime_dependency_snapshots() -> tuple[_RuntimeDistributionSnapshot, ...]:
+    return tuple(_snapshot_runtime_distribution(name) for name in _RUNTIME_DEPENDENCY_NAMES)
+
+
+def _python_runtime_digest() -> str:
+    executable_size, executable_digest = _stable_content_identity(
+        Path(sys.executable),
+        require_executable=True,
+    )
+    flags = {
+        name: value
+        for name in dir(sys.flags)
+        if not name.startswith("_")
+        and isinstance((value := getattr(sys.flags, name)), bool | int | str | type(None))
+    }
+    implementation_version = sys.implementation.version
+    affinity = tuple(sorted(os.sched_getaffinity(0))) if hasattr(os, "sched_getaffinity") else ()
+    payload: dict[str, object] = {
+        "affinity": affinity,
+        "byteorder": sys.byteorder,
+        "cpu_count": os.cpu_count(),
+        "default_encoding": sys.getdefaultencoding(),
+        "executable_digest": executable_digest,
+        "executable_size": executable_size,
+        "filesystem_encoding": sys.getfilesystemencoding(),
+        "flags": flags,
+        "implementation_cache_tag": sys.implementation.cache_tag,
+        "implementation_version": tuple(implementation_version),
+        "libc": platform.libc_ver(),
+        "machine": platform.machine(),
+        "multiarch": sysconfig.get_config_var("MULTIARCH"),
+        "platform_release": platform.release(),
+        "platform_system": platform.system(),
+        "python_build": platform.python_build(),
+        "python_compiler": platform.python_compiler(),
+        "soabi": sysconfig.get_config_var("SOABI"),
+        "switch_interval": str(sys.getswitchinterval()),
+        "version": sys.version,
+    }
+    return _toolchain_payload_digest(payload)
+
+
+def _runtime_environment_digest() -> str:
+    selected = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _RUNTIME_ENVIRONMENT_KEYS
+        or any(key.startswith(prefix) for prefix in _RUNTIME_ENVIRONMENT_PREFIXES)
+    }
+    payload: dict[str, object] = {
+        "environment": selected,
+        "loader_files": _loader_file_identities(),
+        "locale": locale.setlocale(locale.LC_ALL, None),
+    }
+    return _toolchain_payload_digest(payload)
+
+
+def _loader_file_identities() -> tuple[tuple[int, str], ...]:
+    identities: list[tuple[int, str]] = []
+    for key in ("LD_AUDIT", "LD_PRELOAD"):
+        raw_value = os.environ.get(key, "")
+        for token in re.split(r"[\s:]+", raw_value):
+            if not token:
+                continue
+            path = Path(token)
+            if path.is_absolute():
+                identities.append(_stable_content_identity(path))
+    return tuple(sorted(identities))
+
+
+@dataclass(frozen=True, slots=True)
+class _MappedNativeFile:
+    path: Path
+    device_major: int
+    device_minor: int
+    inode: int
+
+    @classmethod
+    def from_path(cls, path: Path) -> _MappedNativeFile:
+        resolved = path.resolve(strict=True)
+        file_stat = resolved.stat()
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError("native runtime unavailable")
+        return cls(
+            path=resolved,
+            device_major=os.major(file_stat.st_dev),
+            device_minor=os.minor(file_stat.st_dev),
+            inode=file_stat.st_ino,
+        )
+
+
+_PROC_MAP_PATH_ESCAPE = re.compile(r"\\(?P<value>[0-7]{3})")
+_ALLOWED_SPECIAL_EXECUTABLE_MAPPINGS = frozenset({"[vdso]", "[vsyscall]"})
+
+
+def _decode_proc_map_path(raw_path: str) -> str:
+    if "\\012" in raw_path:
+        raise RuntimeError("native runtime unavailable")
+    return _PROC_MAP_PATH_ESCAPE.sub(
+        lambda match: chr(int(match.group("value"), 8)),
+        raw_path,
+    )
+
+
+def _mapped_native_files() -> tuple[_MappedNativeFile, ...]:
+    mappings: dict[tuple[int, int, int], _MappedNativeFile] = {}
+    try:
+        maps_content = Path("/proc/self/maps").read_text(encoding="utf-8")
+        for line in maps_content.splitlines():
+            fields = line.split(maxsplit=5)
+            if len(fields) < 5:
+                raise RuntimeError("native runtime unavailable")
+            _address_range, permissions, _offset, raw_device, raw_inode = fields[:5]
+            if "x" not in permissions:
+                continue
+            if len(fields) != 6:
+                raise RuntimeError("native runtime unavailable")
+            raw_path = fields[5]
+            if raw_path in _ALLOWED_SPECIAL_EXECUTABLE_MAPPINGS:
+                continue
+            if raw_path.startswith("[") or raw_path.endswith(" (deleted)"):
+                raise RuntimeError("native runtime unavailable")
+            decoded_path = _decode_proc_map_path(raw_path)
+            path = Path(decoded_path)
+            if not path.is_absolute():
+                raise RuntimeError("native runtime unavailable")
+            device_parts = raw_device.split(":")
+            if len(device_parts) != 2:
+                raise RuntimeError("native runtime unavailable")
+            device_major, device_minor = (int(part, 16) for part in device_parts)
+            inode = int(raw_inode)
+            if inode <= 0:
+                raise RuntimeError("native runtime unavailable")
+            identity = (device_major, device_minor, inode)
+            mapping = _MappedNativeFile(
+                path=path,
+                device_major=device_major,
+                device_minor=device_minor,
+                inode=inode,
+            )
+            existing = mappings.get(identity)
+            if existing is not None and existing.path != mapping.path:
+                raise RuntimeError("native runtime unavailable")
+            mappings[identity] = mapping
+    except RuntimeError:
+        raise
+    except Exception:
+        raise RuntimeError("native runtime unavailable") from None
+    if not mappings:
+        raise RuntimeError("native runtime unavailable")
+    return tuple(
+        sorted(
+            mappings.values(),
+            key=lambda mapping: (
+                mapping.device_major,
+                mapping.device_minor,
+                mapping.inode,
+                str(mapping.path),
+            ),
+        )
+    )
+
+
+def _mapped_native_content_identity(mapping: _MappedNativeFile) -> tuple[int, str]:
+    resolved = mapping.path.resolve(strict=True)
+    file_descriptor = os.open(
+        resolved,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        before = os.fstat(file_descriptor)
+        observed_identity = (
+            os.major(before.st_dev),
+            os.minor(before.st_dev),
+            before.st_ino,
+        )
+        expected_identity = (
+            mapping.device_major,
+            mapping.device_minor,
+            mapping.inode,
+        )
+        if not stat.S_ISREG(before.st_mode) or observed_identity != expected_identity:
+            raise RuntimeError("native runtime changed")
+        digest = sha256()
+        size = 0
+        while content := os.read(file_descriptor, 1024 * 1024):
+            digest.update(content)
+            size += len(content)
+        after = os.fstat(file_descriptor)
+        if _stable_file_identity(before) != _stable_file_identity(after) or size != before.st_size:
+            raise RuntimeError("native runtime changed")
+        return size, digest.hexdigest()
+    finally:
+        os.close(file_descriptor)
+
+
+def _validate_native_distribution_origins(
+    mappings: tuple[_MappedNativeFile, ...],
+    snapshots: tuple[_RuntimeDistributionSnapshot, ...],
+) -> None:
+    approved_artifacts = frozenset(
+        path for snapshot in snapshots for path in snapshot.artifact_paths
+    )
+    installation_roots = tuple(snapshot.installation_root for snapshot in snapshots)
+    for mapping in mappings:
+        if any(mapping.path.is_relative_to(root) for root in installation_roots) and (
+            mapping.path not in approved_artifacts
+        ):
+            raise RuntimeError("native dependency origin unavailable")
+
+
+def _native_runtime_identity(
+    mappings: tuple[_MappedNativeFile, ...] | None = None,
+    *,
+    distributions: tuple[_RuntimeDistributionSnapshot, ...] = (),
+) -> RuntimeArtifactIdentity:
+    if mappings is None:
+        try:
+            system_preload = Path("/etc/ld.so.preload")
+            if system_preload.exists() and system_preload.read_bytes().strip():
+                raise RuntimeError("native runtime unavailable")
+        except RuntimeError:
+            raise
+        except Exception:
+            raise RuntimeError("native runtime unavailable") from None
+    observed_mappings = _mapped_native_files() if mappings is None else mappings
+    _validate_native_distribution_origins(observed_mappings, distributions)
+    records = tuple(
+        sorted(_mapped_native_content_identity(mapping) for mapping in observed_mappings)
+    )
+    if not records:
+        raise RuntimeError("native runtime unavailable")
+    if mappings is None and _mapped_native_files() != observed_mappings:
+        raise RuntimeError("native runtime changed")
+    return RuntimeArtifactIdentity(
+        file_count=len(records),
+        size_bytes=sum(size for size, _digest in records),
+        digest=_toolchain_payload_digest({"files": records}),
+    )
+
+
+def _resolved_executable(commands: tuple[tuple[str, ...], ...]) -> Path:
+    resolved: set[Path] = set()
+    for command in commands:
+        if not command:
+            raise RuntimeError("Tesseract command unavailable")
+        executable = shutil.which(command[0])
+        if executable is None:
+            raise RuntimeError("Tesseract command unavailable")
+        resolved.add(Path(executable).resolve(strict=True))
+    if len(resolved) != 1:
+        raise RuntimeError("Tesseract commands use different executables")
+    return next(iter(resolved))
+
+
+def _required_ocr_languages(commands: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    languages: set[str] = set()
+    for command in commands:
+        for index, argument in enumerate(command[:-1]):
+            if argument == "-l":
+                languages.update(command[index + 1].split("+"))
+    result = tuple(sorted(language for language in languages if language))
+    if result != ("eng", "heb"):
+        raise RuntimeError("OCR language policy unavailable")
+    return result
+
+
+def _validate_tesseract_staging(
+    tessdata_fd: int,
+    configs_fd: int,
+    *,
+    tsv_config: _SealedCapability,
+    eng_traineddata: _SealedCapability,
+    heb_traineddata: _SealedCapability,
+) -> None:
+    tessdata = os.fstat(tessdata_fd)
+    configs = os.fstat(configs_fd)
+    named_configs = os.stat("configs", dir_fd=tessdata_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(tessdata.st_mode)
+        or not stat.S_ISDIR(configs.st_mode)
+        or tessdata.st_uid != os.geteuid()
+        or configs.st_uid != os.geteuid()
+        or stat.S_IMODE(tessdata.st_mode) != 0o500
+        or stat.S_IMODE(configs.st_mode) != 0o500
+        or _stable_file_identity(named_configs) != _stable_file_identity(configs)
+        or tuple(sorted(os.listdir(tessdata_fd)))
+        != ("configs", "eng.traineddata", "heb.traineddata")
+        or tuple(os.listdir(configs_fd)) != ("tsv",)
+    ):
+        raise RuntimeError("external runtime unavailable")
+    for directory_fd, name, capability in (
+        (configs_fd, "tsv", tsv_config),
+        (tessdata_fd, "eng.traineddata", eng_traineddata),
+        (tessdata_fd, "heb.traineddata", heb_traineddata),
+    ):
+        link = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        target = os.stat(name, dir_fd=directory_fd, follow_symlinks=True)
+        expected = os.fstat(capability.file_descriptor)
+        if (
+            not stat.S_ISLNK(link.st_mode)
+            or link.st_uid != os.geteuid()
+            or os.readlink(name, dir_fd=directory_fd) != capability.descriptor_path
+            or _stable_file_identity(target) != _stable_file_identity(expected)
+        ):
+            raise RuntimeError("external runtime unavailable")
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedTesseractRuntime:
+    runtime: TesseractExecutionRuntime
+    _directory_fds: tuple[int, ...]
+
+    def close(self) -> None:
+        _close_descriptors_no_throw(reversed(self._directory_fds))
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundTesseract:
+    execution_runtime: _BoundDynamicExecutable
+    executable: _SealedCapability
+    tsv_config: _SealedCapability
+    eng_traineddata: _SealedCapability
+    heb_traineddata: _SealedCapability
+    version: str
+    version_output_digest: str
+    environment: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def bind(
+        cls,
+        commands: tuple[tuple[str, ...], ...],
+        *,
+        environment: tuple[tuple[str, str], ...],
+        staging_parent: Path,
+    ) -> _BoundTesseract:
+        executable_path = _resolved_executable(commands)
+        capabilities: list[_SealedCapability] = []
+        execution_runtime: _BoundDynamicExecutable | None = None
+        try:
+            execution_runtime = _BoundDynamicExecutable.bind_path(
+                executable_path,
+                staging_parent=staging_parent,
+            )
+            executable = execution_runtime.executable
+            version_completed = execution_runtime.run(
+                ("--version",),
+                cwd=Path.cwd(),
+                environment=environment,
+                timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                stderr_to_stdout=True,
+            )
+            if version_completed.returncode != 0:
+                raise RuntimeError("Tesseract version unavailable")
+            version_output = version_completed.stdout
+            version_lines = version_output.decode(
+                "utf-8",
+                errors="replace",
+            ).splitlines()
+            if not version_lines or not version_lines[0].strip():
+                raise RuntimeError("Tesseract version unavailable")
+            language_completed = execution_runtime.run(
+                ("--list-langs",),
+                cwd=Path.cwd(),
+                environment=environment,
+                timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                stderr_to_stdout=True,
+            )
+            if language_completed.returncode != 0:
+                raise RuntimeError("Tesseract language data unavailable")
+            language_output = language_completed.stdout.decode("utf-8", errors="strict")
+            language_lines = language_output.splitlines()
+            if not language_lines:
+                raise RuntimeError("Tesseract language data unavailable")
+            header = _TESSDATA_HEADER.fullmatch(language_lines[0])
+            if header is None:
+                raise RuntimeError("Tesseract language data unavailable")
+            tessdata_directory = Path(header.group("directory")).resolve(strict=True)
+            available_languages = frozenset(
+                line.strip() for line in language_lines[1:] if line.strip()
+            )
+            required_languages = _required_ocr_languages(commands)
+            if not set(required_languages).issubset(available_languages):
+                raise RuntimeError("Tesseract language data unavailable")
+            tsv_config = _SealedCapability.bind_path(
+                tessdata_directory / "configs" / "tsv",
+                executable=False,
+            )
+            capabilities.append(tsv_config)
+            eng_traineddata = _SealedCapability.bind_path(
+                tessdata_directory / "eng.traineddata",
+                executable=False,
+            )
+            capabilities.append(eng_traineddata)
+            heb_traineddata = _SealedCapability.bind_path(
+                tessdata_directory / "heb.traineddata",
+                executable=False,
+            )
+            capabilities.append(heb_traineddata)
+            result = cls(
+                execution_runtime=execution_runtime,
+                executable=executable,
+                tsv_config=tsv_config,
+                eng_traineddata=eng_traineddata,
+                heb_traineddata=heb_traineddata,
+                version=version_lines[0].strip(),
+                version_output_digest=sha256(version_output).hexdigest(),
+                environment=environment,
+            )
+            capabilities.clear()
+            execution_runtime = None
+            return result
+        finally:
+            for capability in reversed(capabilities):
+                capability.close()
+            if execution_runtime is not None:
+                execution_runtime.close()
+
+    def metadata(self) -> tuple[str, str, tuple[ToolchainAsset, ...]]:
+        assets = (
+            self.tsv_config.asset("config:tsv"),
+            self.executable.asset("tesseract-executable"),
+            self.eng_traineddata.asset("traineddata:eng"),
+            self.heb_traineddata.asset("traineddata:heb"),
+        )
+        return self.version, self.version_output_digest, assets
+
+    @staticmethod
+    def _symlink_capability(
+        parent_fd: int,
+        name: str,
+        capability: _SealedCapability,
+    ) -> None:
+        os.symlink(capability.descriptor_path, name, dir_fd=parent_fd)
+
+    def stage(self, work_fd: int) -> _StagedTesseractRuntime:
+        directory_fds: list[int] = []
+        try:
+            tessdata_fd = _create_bound_child_directory(work_fd, "tessdata-runtime")
+            directory_fds.append(tessdata_fd)
+            configs_fd = _create_bound_child_directory(tessdata_fd, "configs")
+            directory_fds.append(configs_fd)
+            self._symlink_capability(configs_fd, "tsv", self.tsv_config)
+            self._symlink_capability(tessdata_fd, "eng.traineddata", self.eng_traineddata)
+            self._symlink_capability(tessdata_fd, "heb.traineddata", self.heb_traineddata)
+            os.fchmod(configs_fd, 0o500)
+            os.fchmod(tessdata_fd, 0o500)
+            descriptor_fds = (
+                *self.execution_runtime.pass_fds,
+                self.tsv_config.file_descriptor,
+                self.eng_traineddata.file_descriptor,
+                self.heb_traineddata.file_descriptor,
+                tessdata_fd,
+            )
+
+            def validate_staging() -> None:
+                self.execution_runtime._validate_staging()
+                _validate_tesseract_staging(
+                    tessdata_fd,
+                    configs_fd,
+                    tsv_config=self.tsv_config,
+                    eng_traineddata=self.eng_traineddata,
+                    heb_traineddata=self.heb_traineddata,
+                )
+
+            runtime = TesseractExecutionRuntime(
+                executable_path=self.executable.descriptor_path,
+                tessdata_directory=f"/proc/self/fd/{tessdata_fd}",
+                pass_fds=descriptor_fds,
+                environment=self.environment,
+                command_prefix=self.execution_runtime.command((), argv0="tesseract"),
+                allowed_file_descriptors=self.execution_runtime.executable_file_descriptors,
+                staging_validator=validate_staging,
+            )
+            result = _StagedTesseractRuntime(
+                runtime=runtime,
+                _directory_fds=tuple(directory_fds),
+            )
+            directory_fds.clear()
+            return result
+        finally:
+            _close_descriptors_no_throw(reversed(directory_fds))
+
+    def close(self) -> None:
+        for capability in (
+            self.heb_traineddata,
+            self.eng_traineddata,
+            self.tsv_config,
+        ):
+            capability.close()
+        self.execution_runtime.close()
+
+
+def _tesseract_metadata(
+    commands: tuple[tuple[str, ...], ...],
+) -> tuple[str, str, tuple[ToolchainAsset, ...]]:
+    bound = _BoundTesseract.bind(
+        commands,
+        environment=tuple(sorted(_sanitized_child_environment().items())),
+        staging_parent=_active_git_directory(Path.cwd()),
+    )
+    try:
+        return bound.metadata()
+    finally:
+        bound.close()
+
+
 class LocalToolchainInspector:
-    """Fingerprint every local version and OCR command affecting parser output."""
+    """Fingerprint the complete local parser, interpreter, and OCR environment."""
+
+    def __init__(
+        self,
+        *,
+        runtime_capabilities: _GateRuntimeCapabilities | None = None,
+    ) -> None:
+        self._runtime_capabilities = runtime_capabilities or _GateRuntimeCapabilities.bind()
+        self._owns_runtime_capabilities = runtime_capabilities is None
+
+    def close(self) -> None:
+        if self._owns_runtime_capabilities:
+            self._runtime_capabilities.close()
 
     def fingerprint(self) -> ToolchainFingerprint:
         commands = (
@@ -528,16 +2685,6 @@ class LocalToolchainInspector:
             numeric_tesseract_command(),
             currency_tesseract_command(),
         )
-        completed = subprocess.run(
-            (commands[0][0], "--version"),
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
-        )
-        version_lines = completed.stdout.decode("utf-8", errors="replace").splitlines()
-        if not version_lines or not version_lines[0].strip():
-            raise RuntimeError("Tesseract version unavailable")
         cache_versions = tuple(
             sorted(
                 (
@@ -548,29 +2695,59 @@ class LocalToolchainInspector:
                 )
             )
         )
-        command_digest = _digest_json(commands)
-        python_version = platform.python_version()
-        package_version = metadata.version("ccparser")
-        pymupdf_version = str(fitz.VersionBind)
-        tesseract_version = version_lines[0].strip()
+        command_digest = _digest_json(
+            {
+                "git_environment": self._runtime_capabilities.git_environment,
+                "commands": commands,
+                "recognition_timeout_seconds": TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                "tesseract_environment": self._runtime_capabilities.tesseract_environment,
+                "version_timeout_seconds": TESSERACT_VERSION_TIMEOUT_SECONDS,
+            }
+        )
+        tesseract_version, version_output_digest, tesseract_assets = (
+            self._runtime_capabilities.tesseract_metadata(commands)
+        )
+        standard_library = _snapshot_standard_library()
+        distribution_snapshots = _runtime_dependency_snapshots()
+        _validate_loaded_distribution_origins(
+            distribution_snapshots,
+            standard_library=standard_library,
+        )
+        dependencies = tuple(snapshot.dependency for snapshot in distribution_snapshots)
+        native_runtime = _native_runtime_identity(
+            distributions=distribution_snapshots,
+        )
         fingerprint_payload: dict[str, object] = {
-            "python_version": python_version,
-            "package_version": package_version,
-            "pymupdf_version": pymupdf_version,
+            "version": 6,
+            "python_version": platform.python_version(),
+            "python_implementation": platform.python_implementation(),
+            "python_runtime_digest": _python_runtime_digest(),
+            "standard_library": standard_library.identity.model_dump(mode="json"),
+            "runtime_environment_digest": _runtime_environment_digest(),
+            "dependencies": tuple(
+                dependency.model_dump(mode="json") for dependency in dependencies
+            ),
+            "git_executable": self._runtime_capabilities.git.asset("git-executable").model_dump(
+                mode="json"
+            ),
+            "git_native_closure": self._runtime_capabilities.git_runtime.native_closure.model_dump(
+                mode="json"
+            ),
+            "native_runtime": native_runtime.model_dump(mode="json"),
+            "pymupdf_binding_version": str(fitz.VersionBind),
+            "pymupdf_engine_version": str(fitz.mupdf_version),
             "tesseract_version": tesseract_version,
+            "tesseract_version_output_digest": version_output_digest,
+            "tesseract_assets": tuple(asset.model_dump(mode="json") for asset in tesseract_assets),
+            "tesseract_native_closure": (
+                self._runtime_capabilities.tesseract_native_closure.model_dump(mode="json")
+            ),
             "ocr_pipeline_version": OCR_PIPELINE_VERSION,
             "ocr_cache_versions": cache_versions,
             "command_digest": command_digest,
         }
-        return ToolchainFingerprint(
-            python_version=python_version,
-            package_version=package_version,
-            pymupdf_version=pymupdf_version,
-            tesseract_version=tesseract_version,
-            ocr_pipeline_version=OCR_PIPELINE_VERSION,
-            ocr_cache_versions=cache_versions,
-            command_digest=command_digest,
-            digest=_digest_json(fingerprint_payload),
+        return ToolchainFingerprint.model_validate(
+            {**fingerprint_payload, "digest": _toolchain_payload_digest(fingerprint_payload)}
         )
 
 
@@ -870,23 +3047,29 @@ def compare_with_baseline(
             failed.update(compare_independent_runs(accepted_run, candidate_run))
 
     matching_runtime_context = (
-        baseline.toolchain.digest == candidate.toolchain.digest and baseline.jobs == candidate.jobs
+        baseline.toolchain == candidate.toolchain and baseline.jobs == candidate.jobs
     )
-    runtime_limit = baseline.retained.worst_elapsed_seconds * (
-        Decimal(1) + baseline.runtime_tolerance_ratio
-    )
-    if matching_runtime_context and candidate.retained.worst_elapsed_seconds > runtime_limit:
-        failed.add(CorpusGateReason.RUNTIME_REGRESSION)
+    if not matching_runtime_context:
+        failed.add(CorpusGateReason.RUNTIME_CONTEXT_DRIFT)
+    else:
+        runtime_limit = baseline.retained.worst_elapsed_seconds * (
+            Decimal(1) + baseline.runtime_tolerance_ratio
+        )
+        if candidate.retained.worst_elapsed_seconds > runtime_limit:
+            failed.add(CorpusGateReason.RUNTIME_REGRESSION)
 
     return tuple(reason for reason in CorpusGateReason if reason in failed)
 
 
 @dataclass(frozen=True, slots=True)
 class _ResolvedGateConfig:
+    expected_commit_sha: str
     retained_dir: Path
     quarantine_dir: Path
     membership_inventory_path: Path
+    membership_inventory_sha256: str
     baseline_path: Path
+    baseline_sha256: str | None
     work_dir: Path
     jobs: int
     runtime_tolerance_ratio: Decimal | None
@@ -972,9 +3155,12 @@ def _load_inventory(
     repository_fd: int,
     repository_root: Path,
     path: Path,
+    expected_sha256: str,
 ) -> CorpusMembershipInventory:
     try:
         content = _read_stable_regular_file(repository_fd, repository_root, path)
+        if sha256(content).hexdigest() != expected_sha256:
+            raise CorpusGateInputError((CorpusGateReason.INVENTORY_INVALID,))
         return CorpusMembershipInventory.model_validate_json(content)
     except CorpusGateError:
         raise
@@ -986,6 +3172,7 @@ def _load_baseline(
     repository_fd: int,
     repository_root: Path,
     path: Path,
+    expected_sha256: str,
 ) -> CorpusBaseline:
     try:
         content = _read_stable_regular_file(repository_fd, repository_root, path)
@@ -996,7 +3183,11 @@ def _load_baseline(
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
     try:
+        if sha256(content).hexdigest() != expected_sha256:
+            raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
         return CorpusBaseline.model_validate_json(content)
+    except CorpusGateError:
+        raise
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
 
@@ -1004,10 +3195,13 @@ def _load_baseline(
 def _resolve_config(config: CorpusGateConfig) -> _ResolvedGateConfig:
     try:
         return _ResolvedGateConfig(
+            expected_commit_sha=config.expected_commit_sha,
             retained_dir=config.retained_dir.resolve(strict=True),
             quarantine_dir=config.quarantine_dir.resolve(strict=True),
             membership_inventory_path=config.membership_inventory_path.resolve(strict=False),
+            membership_inventory_sha256=config.membership_inventory_sha256,
             baseline_path=config.baseline_path.resolve(strict=False),
+            baseline_sha256=config.baseline_sha256,
             work_dir=config.work_dir.resolve(strict=False),
             jobs=config.jobs,
             runtime_tolerance_ratio=config.runtime_tolerance_ratio,
@@ -1150,6 +3344,8 @@ def _prepare_gate(
     dependencies: CorpusGateDependencies,
 ) -> _PreparedGate:
     repository_state = _inspect_initial_state(dependencies)
+    if repository_state.commit_sha != config.expected_commit_sha:
+        raise CorpusGateInputError((CorpusGateReason.REPOSITORY_CHANGED,))
     toolchain = _inspect_initial_toolchain(dependencies)
     resolved = _resolve_config(config)
     try:
@@ -1203,12 +3399,12 @@ def _prepare_gate(
     run_paths = _validated_run_paths(resolved, repository_root)
 
     if mode is CorpusGateMode.RECORD:
-        if resolved.runtime_tolerance_ratio is None:
+        if resolved.runtime_tolerance_ratio is None or resolved.baseline_sha256 is not None:
             raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
-        if resolved.baseline_path.exists() and not resolved.baseline_path.is_file():
-            raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
+        if resolved.baseline_path.exists() or resolved.baseline_path.is_symlink():
+            raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
     else:
-        if resolved.runtime_tolerance_ratio is not None:
+        if resolved.runtime_tolerance_ratio is not None or resolved.baseline_sha256 is None:
             raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
 
     try:
@@ -1220,6 +3416,7 @@ def _prepare_gate(
             repository_fd,
             repository_root,
             resolved.membership_inventory_path,
+            resolved.membership_inventory_sha256,
         )
         if mode is CorpusGateMode.RECORD:
             runtime_tolerance_ratio = resolved.runtime_tolerance_ratio
@@ -1227,10 +3424,14 @@ def _prepare_gate(
                 raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
             accepted_baseline = None
         else:
+            baseline_sha256 = resolved.baseline_sha256
+            if baseline_sha256 is None:
+                raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
             accepted_baseline = _load_baseline(
                 repository_fd,
                 repository_root,
                 resolved.baseline_path,
+                baseline_sha256,
             )
             runtime_tolerance_ratio = accepted_baseline.runtime_tolerance_ratio
     finally:
@@ -1397,7 +3598,7 @@ def _read_stable_regular_file_at(parent_fd: int, name: str) -> bytes:
                 os.close(file_fd)
 
 
-def _load_locked_baseline(parent_fd: int, name: str) -> CorpusBaseline:
+def _load_locked_baseline(parent_fd: int, name: str, expected_sha256: str) -> CorpusBaseline:
     try:
         content = _read_stable_regular_file_at(parent_fd, name)
     except FileNotFoundError:
@@ -1407,7 +3608,11 @@ def _load_locked_baseline(parent_fd: int, name: str) -> CorpusBaseline:
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
     try:
+        if sha256(content).hexdigest() != expected_sha256:
+            raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
         return CorpusBaseline.model_validate_json(content)
+    except CorpusGateError:
+        raise
     except Exception:
         raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
 
@@ -1497,6 +3702,18 @@ def _validate_baseline_destination(parent_fd: int, name: str) -> None:
         raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
 
 
+def _validate_baseline_absent(parent_fd: int, name: str) -> None:
+    if not name or name in {".", ".."} or "/" in name:
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+    try:
+        destination = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(destination.st_mode):
+        raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
+    raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
+
+
 def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
     repository_root = prepared.repository_state.root
     file_descriptors: list[int] = []
@@ -1520,16 +3737,25 @@ def _bind_execution_paths(prepared: _PreparedGate) -> _BoundExecutionPaths:
         except OSError:
             raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)) from None
         if prepared.accepted_baseline is not None:
+            baseline_sha256 = prepared.config.baseline_sha256
+            if baseline_sha256 is None:
+                raise CorpusGateInputError((CorpusGateReason.INVALID_CONFIGURATION,))
             locked_baseline = _load_locked_baseline(
                 baseline_parent_fd,
                 prepared.config.baseline_path.name,
+                baseline_sha256,
             )
             if locked_baseline != prepared.accepted_baseline:
                 raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,))
-        _validate_baseline_destination(
-            baseline_parent_fd,
-            prepared.config.baseline_path.name,
-        )
+            _validate_baseline_destination(
+                baseline_parent_fd,
+                prepared.config.baseline_path.name,
+            )
+        else:
+            _validate_baseline_absent(
+                baseline_parent_fd,
+                prepared.config.baseline_path.name,
+            )
 
         work_fd = _open_directory_beneath(
             root_fd,
@@ -1814,10 +4040,16 @@ def _validate_final_state(
 
 
 def _default_dependencies() -> CorpusGateDependencies:
+    runtime_capabilities = _GateRuntimeCapabilities.bind()
     return CorpusGateDependencies(
         runner=LocalCorpusRunner(),
-        repository=GitRepositoryInspector(),
-        toolchain=LocalToolchainInspector(),
+        repository=GitRepositoryInspector(
+            executable=runtime_capabilities.git,
+            execution_runtime=runtime_capabilities.git_runtime,
+            environment=runtime_capabilities.git_environment,
+        ),
+        toolchain=LocalToolchainInspector(runtime_capabilities=runtime_capabilities),
+        runtime_capabilities=runtime_capabilities,
     )
 
 
@@ -1840,6 +4072,8 @@ def _publish_json_secure(
     parent_fd: int,
     name: str,
     result: BaseModel,
+    *,
+    replace_existing: bool = True,
 ) -> None:
     content = canonical_json_bytes(result)
     temporary_name = f".{name}.{secrets.token_hex(16)}.tmp"
@@ -1848,7 +4082,10 @@ def _publish_json_secure(
     committed = False
     try:
         _validate_trusted_directory(os.fstat(parent_fd))
-        _validate_baseline_destination(parent_fd, name)
+        if replace_existing:
+            _validate_baseline_destination(parent_fd, name)
+        else:
+            _validate_baseline_absent(parent_fd, name)
         temporary_fd = os.open(
             temporary_name,
             _FILE_WRITE_FLAGS,
@@ -1867,23 +4104,50 @@ def _publish_json_secure(
         os.fsync(temporary_fd)
         if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
             raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
-        _validate_baseline_destination(parent_fd, name)
+        if replace_existing:
+            _validate_baseline_destination(parent_fd, name)
+        else:
+            _validate_baseline_absent(parent_fd, name)
         os.fsync(parent_fd)
         if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
             raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
-        try:
-            os.replace(
-                temporary_name,
-                name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-        except BaseException:
-            if _name_matches_inode(parent_fd, name, temporary_identity):
-                committed = True
-                return
-            raise
-        committed = True
+        if replace_existing:
+            try:
+                os.replace(
+                    temporary_name,
+                    name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+            except BaseException:
+                if _name_matches_inode(parent_fd, name, temporary_identity):
+                    committed = True
+                    with suppress(OSError):
+                        os.unlink(temporary_name, dir_fd=parent_fd)
+                    return
+                raise
+            committed = True
+        else:
+            try:
+                os.link(
+                    temporary_name,
+                    name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
+            except BaseException:
+                if _name_matches_inode(parent_fd, name, temporary_identity):
+                    committed = True
+                    with suppress(OSError):
+                        os.unlink(temporary_name, dir_fd=parent_fd)
+                    return
+                raise
+            committed = True
+            with suppress(OSError):
+                os.unlink(temporary_name, dir_fd=parent_fd)
     finally:
         if temporary_fd is not None:
             file_descriptor = temporary_fd
@@ -1903,7 +4167,170 @@ def _publish_json_secure(
                 os.unlink(temporary_name, dir_fd=parent_fd)
 
 
-def run_corpus_gate(
+_ISOLATED_BOOTSTRAP = (
+    "import json,sys;"
+    "sys.dont_write_bytecode=True;"
+    "paths=json.loads(sys.stdin.readline());"
+    "sys.path.extend(paths);"
+    "from ccparser.corpus_gate import _isolated_worker_main;"
+    "raise SystemExit(_isolated_worker_main())"
+)
+
+_LOADER_INJECTION_ENVIRONMENT_PREFIXES = ("DYLD_", "LD_", "PYTHON")
+_LOADER_INJECTION_ENVIRONMENT_KEYS = frozenset({"GLIBC_TUNABLES"})
+
+
+def _isolated_worker_environment() -> dict[str, str]:
+    environment = _sanitized_child_environment()
+    environment["PATH"] = os.defpath
+    return environment
+
+
+def _loader_injection_environment_present() -> bool:
+    return any(
+        key in _LOADER_INJECTION_ENVIRONMENT_KEYS
+        or any(key.startswith(prefix) for prefix in _LOADER_INJECTION_ENVIRONMENT_PREFIXES)
+        for key in os.environ
+    )
+
+
+def _isolated_search_paths() -> tuple[Path, ...]:
+    candidate_source = Path(__file__).resolve(strict=True).parents[1]
+    roots: list[Path] = []
+    try:
+        for distribution_name in ("ccparser", "pydantic", "pymupdf", "typer"):
+            distribution_root = metadata.distribution(distribution_name).locate_file("")
+            root = Path(str(distribution_root)).resolve(strict=True)
+            if root != candidate_source and root not in roots:
+                roots.append(root)
+    except Exception:
+        raise CorpusGateRuntimeError((CorpusGateReason.TOOLCHAIN_UNAVAILABLE,)) from None
+    roots.append(candidate_source)
+    return tuple(roots)
+
+
+def _isolated_request(config: CorpusGateConfig, mode: CorpusGateMode) -> bytes:
+    search_paths = json.dumps(
+        tuple(str(path) for path in _isolated_search_paths()),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    payload = json.dumps(
+        {
+            "config": json.loads(config.model_dump_json()),
+            "mode": mode.value,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"{search_paths}\n{payload}\n".encode()
+
+
+def _worker_error_response(error: CorpusGateError) -> dict[str, object]:
+    if isinstance(error, CorpusGateAcceptanceError):
+        category = "acceptance"
+    elif isinstance(error, CorpusGateInputError):
+        category = "input"
+    else:
+        category = "runtime"
+    return {
+        "category": category,
+        "kind": "error",
+        "reason_codes": tuple(reason.value for reason in error.reasons),
+    }
+
+
+def _isolated_worker_main() -> int:
+    try:
+        if (
+            not (
+                sys.flags.dont_write_bytecode
+                and sys.flags.ignore_environment
+                and sys.flags.isolated
+                and sys.flags.no_site
+            )
+            or _loader_injection_environment_present()
+        ):
+            raise RuntimeError("isolated interpreter required")
+        raw_request = json.loads(sys.stdin.readline())
+        if not isinstance(raw_request, dict) or set(raw_request) != {"config", "mode"}:
+            raise ValueError
+        config = CorpusGateConfig.model_validate(raw_request["config"])
+        mode = CorpusGateMode(raw_request["mode"])
+        attestation = _run_corpus_gate_in_process(config, mode)
+        response: dict[str, object] = {
+            "attestation": json.loads(attestation.model_dump_json()),
+            "kind": "success",
+        }
+    except CorpusGateError as error:
+        response = _worker_error_response(error)
+    except Exception:
+        response = _worker_error_response(
+            CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,))
+        )
+    serialized = json.dumps(
+        response,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    sys.stdout.write(f"{serialized}\n")
+    sys.stdout.flush()
+    return 0
+
+
+def _raise_worker_error(response: Mapping[str, object]) -> None:
+    if set(response) != {"category", "kind", "reason_codes"} or response.get("kind") != "error":
+        raise ValueError
+    raw_reasons = response["reason_codes"]
+    if not isinstance(raw_reasons, list) or not raw_reasons:
+        raise ValueError
+    reasons = tuple(CorpusGateReason(value) for value in raw_reasons if isinstance(value, str))
+    if len(reasons) != len(raw_reasons):
+        raise ValueError
+    category = response["category"]
+    if category == "acceptance":
+        raise CorpusGateAcceptanceError(reasons)
+    if category == "input":
+        raise CorpusGateInputError(reasons)
+    if category == "runtime":
+        raise CorpusGateRuntimeError(reasons)
+    raise ValueError
+
+
+def _run_corpus_gate_isolated(
+    config: CorpusGateConfig,
+    mode: CorpusGateMode,
+) -> CorpusGateAttestation:
+    command = (sys.executable, "-I", "-B", "-S", "-c", _ISOLATED_BOOTSTRAP)
+    try:
+        completed = subprocess.run(
+            command,
+            input=_isolated_request(config, mode),
+            cwd=Path.cwd(),
+            check=False,
+            capture_output=True,
+            env=_isolated_worker_environment(),
+            timeout=None,
+        )
+        if completed.returncode != 0:
+            raise ValueError
+        response = json.loads(completed.stdout)
+        if not isinstance(response, dict):
+            raise ValueError
+        if response.get("kind") == "error":
+            _raise_worker_error(response)
+        if set(response) != {"attestation", "kind"} or response.get("kind") != "success":
+            raise ValueError
+        return CorpusGateAttestation.model_validate(response["attestation"])
+    except CorpusGateError:
+        raise
+    except Exception:
+        raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
+
+
+def _run_corpus_gate_in_process(
     config: CorpusGateConfig,
     mode: CorpusGateMode,
     *,
@@ -1911,102 +4338,130 @@ def run_corpus_gate(
 ) -> CorpusGateAttestation:
     """Run four isolated corpus parses and accept or reject them atomically."""
 
+    owns_dependencies = dependencies is None
     active_dependencies = dependencies or _default_dependencies()
-    prepared = _prepare_gate(config, mode, active_dependencies)
-    bound_paths = _bind_execution_paths(prepared)
     try:
-        paths = tuple(
-            tuple(_BoundExecutionPaths.path_for(file_descriptor) for file_descriptor in pair)
-            for pair in bound_paths.run_fds
-        )
-        retained_input = _BoundExecutionPaths.path_for(bound_paths.retained_input_fd)
-        quarantine_input = _BoundExecutionPaths.path_for(bound_paths.quarantine_input_fd)
-        retained_runs = (
-            _execute_bound_run(
-                active_dependencies,
+        prepared = _prepare_gate(config, mode, active_dependencies)
+        bound_paths = _bind_execution_paths(prepared)
+        with ExitStack() as execution_stack:
+            execution_stack.callback(bound_paths.close)
+            runtime_capabilities = active_dependencies.runtime_capabilities
+            if runtime_capabilities is not None:
+                staged_runtime = runtime_capabilities.stage_tesseract(bound_paths.work_fd)
+                execution_stack.callback(staged_runtime.close)
+                execution_stack.enter_context(bind_tesseract_runtime(staged_runtime.runtime))
+            paths = tuple(
+                tuple(_BoundExecutionPaths.path_for(file_descriptor) for file_descriptor in pair)
+                for pair in bound_paths.run_fds
+            )
+            retained_input = _BoundExecutionPaths.path_for(bound_paths.retained_input_fd)
+            quarantine_input = _BoundExecutionPaths.path_for(bound_paths.quarantine_input_fd)
+            retained_runs = (
+                _execute_bound_run(
+                    active_dependencies,
+                    prepared,
+                    bound_paths,
+                    input_dir=retained_input,
+                    original_input_dir=prepared.config.retained_dir,
+                    output_dir=paths[0][0],
+                    cache_dir=paths[0][1],
+                    strict=True,
+                ),
+                _execute_bound_run(
+                    active_dependencies,
+                    prepared,
+                    bound_paths,
+                    input_dir=retained_input,
+                    original_input_dir=prepared.config.retained_dir,
+                    output_dir=paths[1][0],
+                    cache_dir=paths[1][1],
+                    strict=True,
+                ),
+            )
+            quarantine_runs = (
+                _execute_bound_run(
+                    active_dependencies,
+                    prepared,
+                    bound_paths,
+                    input_dir=quarantine_input,
+                    original_input_dir=prepared.config.quarantine_dir,
+                    output_dir=paths[2][0],
+                    cache_dir=paths[2][1],
+                    strict=False,
+                ),
+                _execute_bound_run(
+                    active_dependencies,
+                    prepared,
+                    bound_paths,
+                    input_dir=quarantine_input,
+                    original_input_dir=prepared.config.quarantine_dir,
+                    output_dir=paths[3][0],
+                    cache_dir=paths[3][1],
+                    strict=False,
+                ),
+            )
+            candidate = _candidate_baseline(prepared, retained_runs, quarantine_runs)
+            reasons = _validate_completed_execution(
                 prepared,
-                bound_paths,
-                input_dir=retained_input,
-                original_input_dir=prepared.config.retained_dir,
-                output_dir=paths[0][0],
-                cache_dir=paths[0][1],
-                strict=True,
-            ),
-            _execute_bound_run(
-                active_dependencies,
-                prepared,
-                bound_paths,
-                input_dir=retained_input,
-                original_input_dir=prepared.config.retained_dir,
-                output_dir=paths[1][0],
-                cache_dir=paths[1][1],
-                strict=True,
-            ),
-        )
-        quarantine_runs = (
-            _execute_bound_run(
-                active_dependencies,
-                prepared,
-                bound_paths,
-                input_dir=quarantine_input,
-                original_input_dir=prepared.config.quarantine_dir,
-                output_dir=paths[2][0],
-                cache_dir=paths[2][1],
-                strict=False,
-            ),
-            _execute_bound_run(
-                active_dependencies,
-                prepared,
-                bound_paths,
-                input_dir=quarantine_input,
-                original_input_dir=prepared.config.quarantine_dir,
-                output_dir=paths[3][0],
-                cache_dir=paths[3][1],
-                strict=False,
-            ),
-        )
-        candidate = _candidate_baseline(prepared, retained_runs, quarantine_runs)
-        reasons = _validate_completed_execution(
-            prepared,
-            candidate,
-            retained_runs,
-            quarantine_runs,
-        )
-        _validate_final_state(prepared, active_dependencies)
-        if reasons:
-            raise CorpusGateAcceptanceError(reasons)
-        elapsed_seconds = sum(
-            (run.completed.manifest.elapsed_seconds for run in (*retained_runs, *quarantine_runs)),
-            Decimal(0),
-        )
-        performance_checked = (
-            prepared.accepted_baseline is not None
-            and prepared.accepted_baseline.toolchain.digest == candidate.toolchain.digest
-            and prepared.accepted_baseline.jobs == candidate.jobs
-        )
-        attestation = CorpusGateAttestation(
-            passed=True,
-            mode=mode,
-            commit_abbreviation=candidate.commit_sha[:12],
-            toolchain_abbreviation=candidate.toolchain.digest[:12],
-            retained_counts=candidate.retained.first.counts,
-            quarantine_counts=candidate.quarantine.first.counts,
-            elapsed_seconds=elapsed_seconds,
-            performance_checked=performance_checked,
-            reason_codes=(),
-        )
-        if mode is CorpusGateMode.RECORD:
-            _validate_bound_reachability(prepared, bound_paths)
-            try:
-                _publish_json_secure(
-                    bound_paths.baseline_parent_fd,
-                    bound_paths.baseline_name,
-                    candidate,
-                )
-            except CorpusGateError:
-                raise
-            except Exception:
-                raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
-        return attestation
+                candidate,
+                retained_runs,
+                quarantine_runs,
+            )
+            _validate_final_state(prepared, active_dependencies)
+            if reasons:
+                raise CorpusGateAcceptanceError(reasons)
+            elapsed_seconds = sum(
+                (
+                    run.completed.manifest.elapsed_seconds
+                    for run in (*retained_runs, *quarantine_runs)
+                ),
+                Decimal(0),
+            )
+            performance_checked = (
+                prepared.accepted_baseline is not None
+                and prepared.accepted_baseline.toolchain == candidate.toolchain
+                and prepared.accepted_baseline.jobs == candidate.jobs
+            )
+            attestation = CorpusGateAttestation(
+                passed=True,
+                mode=mode,
+                commit_abbreviation=candidate.commit_sha[:12],
+                toolchain_abbreviation=candidate.toolchain.digest[:12],
+                retained_counts=candidate.retained.first.counts,
+                quarantine_counts=candidate.quarantine.first.counts,
+                elapsed_seconds=elapsed_seconds,
+                performance_checked=performance_checked,
+                reason_codes=(),
+            )
+            if mode is CorpusGateMode.RECORD:
+                _validate_bound_reachability(prepared, bound_paths)
+                try:
+                    _publish_json_secure(
+                        bound_paths.baseline_parent_fd,
+                        bound_paths.baseline_name,
+                        candidate,
+                        replace_existing=False,
+                    )
+                except CorpusGateError:
+                    raise
+                except Exception:
+                    raise CorpusGateRuntimeError(
+                        (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+                    ) from None
+            return attestation
     finally:
-        bound_paths.close()
+        if owns_dependencies and active_dependencies.runtime_capabilities is not None:
+            active_dependencies.runtime_capabilities.close()
+
+
+def run_corpus_gate(
+    config: CorpusGateConfig,
+    mode: CorpusGateMode,
+    *,
+    dependencies: CorpusGateDependencies | None = None,
+) -> CorpusGateAttestation:
+    """Run the gate in a fresh isolated interpreter unless adapters are injected."""
+
+    if dependencies is None:
+        return _run_corpus_gate_isolated(config, mode)
+    return _run_corpus_gate_in_process(config, mode, dependencies=dependencies)

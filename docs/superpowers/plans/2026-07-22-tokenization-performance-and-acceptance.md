@@ -29,7 +29,12 @@
 - Modify `src/ccparser/discovery.py`: compile fixed discovery marker sets once and reuse tokenized cell text in total-marker signatures.
 - Modify `tests/test_discovery.py`: prove total-marker signatures tokenize each source cell once while preserving compact Hebrew aliases.
 - Use `.superpowers/private/tokenization-benchmark/`: ignored before/after microbenchmark output.
-- Use `artifacts/corpus-membership.json`, `artifacts/pre-refactor-runtime-reference.json`, `artifacts/corpus-baseline.json`, and unique ignored `artifacts/corpus-record.*` / `artifacts/corpus-verify.*` work directories: private final acceptance state.
+- Use `.superpowers/private/corpus-membership.json`, a unique ignored
+  `.superpowers/private/corpus-candidate.*/baseline.json` promotion candidate,
+  and unique ignored `.superpowers/private/corpus-record.*` /
+  `.superpowers/private/corpus-verify.*` work directories for private final
+  acceptance state. Verify the reviewed candidate only with its separately
+  protected `APPROVED_CORPUS_BASELINE_SHA256` pin.
 
 ---
 
@@ -814,11 +819,13 @@ git commit -m "perf: compile discovery marker vocabulary"
 Run:
 
 ```bash
-git status --short
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 git log -4 --oneline
 ```
 
-Expected: `git status --short` prints nothing. The log contains the compiled-token, column-header, and discovery-marker commits plus the immediately preceding recovery commit.
+Expected: the quiet cleanliness assertion exits 0. The log contains the
+compiled-token, column-header, and discovery-marker commits plus the immediately
+preceding recovery commit.
 
 - [ ] **Step 2: Run formatting and static analysis**
 
@@ -847,25 +854,37 @@ Expected: exit 0 with every test passing.
 Run:
 
 ```bash
-git status --short
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 ```
 
-Expected: no output.
+Expected: exit 0 with no output.
 
 ### Task 5: Record and verify final private corpus acceptance
 
 **Files:**
-- Private approved membership inventory: `artifacts/corpus-membership.json`
-- Private approved runtime reference: `artifacts/pre-refactor-runtime-reference.json`
-- Private baseline: `artifacts/corpus-baseline.json`
-- Private record work: unique `artifacts/corpus-record.*` directory.
-- Private verify work: unique `artifacts/corpus-verify.*` directory.
+- Private approved membership inventory: `.superpowers/private/corpus-membership.json`
+- Independently protected inventory-file SHA-256 and reviewed commit SHA:
+  private controller configuration exposed only as
+  `APPROVED_MEMBERSHIP_INVENTORY_SHA256` and `EXPECTED_REVIEWED_SHA`.
+- Private forward promotion candidate: an absent
+  `.superpowers/private/corpus-candidate.*/baseline.json` path. After separate
+  review, that immutable file is the accepted baseline and its SHA-256 is pinned
+  in private controller configuration as `APPROVED_CORPUS_BASELINE_SHA256`.
+- Private record work: unique `.superpowers/private/corpus-record.*` directory.
+- Private verify work: unique `.superpowers/private/corpus-verify.*` directory.
 - Read-only retained input: `/root/creditcard/documents`.
 - Read-only quarantine input: `/root/creditcard/unrelated`.
 
 **Interfaces:**
-- Consumes: `ccparse verify-corpus`, the independently approved membership inventory, the trusted pre-refactor runtime reference, a clean committed Git revision, the retained corpus, the quarantine corpus, `jobs=4`, and `runtime_tolerance=Decimal("0.20")`.
-- Produces: a private accepted baseline and a second independent verification attestation from the same revision/toolchain/worker count.
+- Consumes: `ccparse verify-corpus`, the independently approved membership
+  inventory and its separately pinned full-file SHA-256, the trusted
+  independently pinned full reviewed commit SHA, the independently pinned
+  accepted-baseline SHA-256 for verify, a clean committed Git revision, the
+  retained corpus, the quarantine corpus, `jobs=4`, and
+  `runtime_tolerance=Decimal("0.20")`.
+- Produces: a new no-overwrite promotion candidate, a separately reviewed and
+  pinned private accepted baseline, and a second independent verification
+  attestation from the same revision/toolchain/worker count.
 - Enforces: two distinct empty-cache strict retained runs, two distinct empty-cache non-strict quarantine runs, canonical JSON/CSV parity, structural/evidence/ambiguity parity, 104 reconciled retained documents, quarantine `not_statement` parity, and same-toolchain runtime tolerance.
 
 - [ ] **Step 1: Validate clean revision and private path boundaries**
@@ -873,70 +892,126 @@ Expected: no output.
 Run:
 
 ```bash
-git status --short
-git rev-parse --verify HEAD
-git check-ignore artifacts artifacts/corpus-membership.json artifacts/pre-refactor-runtime-reference.json artifacts/corpus-baseline.json .superpowers/private
-test -f artifacts/corpus-membership.json
-test -f artifacts/pre-refactor-runtime-reference.json
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git check-ignore --quiet .superpowers/private/corpus-membership.json
+git check-ignore --quiet .superpowers/private/corpus-candidate.example/baseline.json
+test -f .superpowers/private/corpus-membership.json
 test -d /root/creditcard/documents
 test -d /root/creditcard/unrelated
+test -n "${EXPECTED_REVIEWED_SHA:-}"
+test -n "${APPROVED_MEMBERSHIP_INVENTORY_SHA256:-}"
+test "$(git rev-parse --verify HEAD)" = "$EXPECTED_REVIEWED_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 ```
 
-Expected: status is empty, a commit ID is printed, all private destinations are reported as ignored, both independent private acceptance inputs exist, and both read-only input directory checks exit 0. The membership inventory must match the source multiset previously proven complete; `record` must not generate or change it.
+Expected: every quiet assertion exits 0. The independently pinned membership
+inventory exists and matches the source multiset previously proven complete;
+`record` must not generate or change it. A baseline pin is deliberately not
+required yet: record is allowed to produce only an untrusted new candidate.
 
-- [ ] **Step 2: Compare repaired runtime with the trusted pre-refactor reference**
+- [ ] **Step 2: Establish the explicit forward-performance boundary**
 
-Use the fresh strict recovery timing from the extraction plan and the ignored runtime reference. First require equal toolchain fingerprint, worker count, and retained membership digest. Then require the repaired worst elapsed time to be no greater than `reference_seconds * (Decimal("1") + Decimal("0.20"))`.
+There is no trustworthy pre-refactor runtime reference produced by the current
+structured-FX schema and the same toolchain, worker count, and approved corpus.
+Do not claim a historical full-corpus runtime comparison. The deterministic
+call-count regressions from Tasks 2-3 and the same-process header microbenchmark
+are the evidence for this optimization. The two fresh retained runs in `record`
+establish the forward runtime baseline; every subsequent `verify` must have the
+same toolchain and worker count and must fail closed if runtime cannot be checked
+or exceeds the recorded tolerance.
 
-Expected: the private comparison exits 0. If the fingerprints or memberships differ, report performance as not comparable and establish an equivalent-toolchain measurement before recording; do not silently skip or loosen the threshold. If the repaired runtime exceeds the threshold, return to Tasks 2-3 and profile the remaining repeated work before any baseline is written.
+Expected: no unsupported historical performance claim is made. The record and
+verify commands below use one exact clean revision, one toolchain fingerprint,
+`jobs=4`, and the protected membership.
 
 - [ ] **Step 3: Record the accepted optimized baseline from fresh private work**
 
-Run as one shell block so the task-specific variable remains scoped to this command:
+Run as one shell block. The unique private directory exists, but the candidate
+file itself must not exist before the gate publishes it:
 
 ```bash
-mkdir -p artifacts
-corpus_record_work="$(mktemp -d -p artifacts corpus-record.XXXXXX)"
-PYTHONPATH=src .venv/bin/ccparse verify-corpus /root/creditcard/documents \
+mkdir -p .superpowers/private
+corpus_record_work="$(mktemp -d -p .superpowers/private corpus-record.XXXXXX)"
+corpus_candidate_dir="$(mktemp -d -p .superpowers/private corpus-candidate.XXXXXX)"
+corpus_baseline_candidate="$corpus_candidate_dir/baseline.json"
+test ! -e "$corpus_baseline_candidate"
+PYTHONPATH="$PWD/src" .venv/bin/ccparse verify-corpus /root/creditcard/documents \
   --quarantine-dir /root/creditcard/unrelated \
-  --membership-inventory artifacts/corpus-membership.json \
-  --baseline artifacts/corpus-baseline.json \
+  --membership-inventory .superpowers/private/corpus-membership.json \
+  --membership-inventory-sha256 "$APPROVED_MEMBERSHIP_INVENTORY_SHA256" \
+  --baseline "$corpus_baseline_candidate" \
   --work-dir "$corpus_record_work" \
   --mode record \
   --jobs 4 \
+  --expected-commit-sha "$EXPECTED_REVIEWED_SHA" \
   --runtime-tolerance 0.20
 ```
 
-Expected: exit 0 with a privacy-safe passed attestation reporting `mode=record`, `retained=104`, and `reconciled=104`. The gate internally completes both retained and both quarantine runs from distinct empty caches before atomically writing the baseline.
+Expected: exit 0 with a privacy-safe passed attestation reporting `mode=record`,
+`retained=104`, `reconciled=104`, and `quarantined=5`. The gate internally
+completes both retained and both quarantine runs from distinct empty caches
+before exclusively publishing the new candidate. It refuses to overwrite any
+existing path.
 
-- [ ] **Step 4: Verify the accepted baseline with a second fresh work tree**
+- [ ] **Step 4: Review and independently pin the promotion candidate**
+
+Review the candidate and its aggregate record attestation through the private
+acceptance process. Store its full-file SHA-256 in protected controller
+configuration, outside the candidate file, and expose it to the verification
+shell only as `APPROVED_CORPUS_BASELINE_SHA256`. Do not derive and trust the pin
+inside the same record invocation.
+
+Run these quiet assertions after the independent pin has been supplied:
+
+```bash
+test -f "$corpus_baseline_candidate"
+test -n "${APPROVED_CORPUS_BASELINE_SHA256:-}"
+test "$(sha256sum -- "$corpus_baseline_candidate" | cut -d ' ' -f 1)" = \
+  "$APPROVED_CORPUS_BASELINE_SHA256"
+```
+
+Expected: all assertions exit 0. From this point, the immutable candidate plus
+the external pin is the accepted baseline.
+
+- [ ] **Step 5: Verify the accepted baseline with a second fresh work tree**
 
 Run:
 
 ```bash
-corpus_verify_work="$(mktemp -d -p artifacts corpus-verify.XXXXXX)"
-PYTHONPATH=src .venv/bin/ccparse verify-corpus /root/creditcard/documents \
+corpus_verify_work="$(mktemp -d -p .superpowers/private corpus-verify.XXXXXX)"
+PYTHONPATH="$PWD/src" .venv/bin/ccparse verify-corpus /root/creditcard/documents \
   --quarantine-dir /root/creditcard/unrelated \
-  --membership-inventory artifacts/corpus-membership.json \
-  --baseline artifacts/corpus-baseline.json \
+  --membership-inventory .superpowers/private/corpus-membership.json \
+  --membership-inventory-sha256 "$APPROVED_MEMBERSHIP_INVENTORY_SHA256" \
+  --baseline "$corpus_baseline_candidate" \
+  --baseline-sha256 "$APPROVED_CORPUS_BASELINE_SHA256" \
   --work-dir "$corpus_verify_work" \
   --mode verify \
-  --jobs 4
+  --jobs 4 \
+  --expected-commit-sha "$EXPECTED_REVIEWED_SHA"
 ```
 
-Expected: exit 0 with `status=passed`, `mode=verify`, `retained=104`, `reconciled=104`, and `performance_checked=true`. Because the Git revision, toolchain fingerprint, and worker count match the recorded baseline, runtime above the accepted tolerance would fail rather than be skipped.
+Expected: exit 0 with `status=passed`, `mode=verify`, `retained=104`,
+`reconciled=104`, `quarantined=5`, and `performance_checked=true`. Because the
+Git revision, toolchain fingerprint, and worker count match the recorded
+baseline, runtime above the accepted tolerance would fail rather than be
+skipped.
 
-- [ ] **Step 5: Confirm quarantine, determinism, and baseline checks were authoritative**
+- [ ] **Step 6: Confirm quarantine, determinism, and baseline checks were authoritative**
 
 Read the aggregate reason/status portion of the two command outputs retained in the terminal. Expected: no reason code for retained status, membership, counts, JSON, CSV, group/transaction structure, field presence, evidence provenance, ambiguity, quarantine status, determinism, or runtime. Do not print or copy per-document private data.
 
-- [ ] **Step 6: Confirm private acceptance created no tracked change**
+- [ ] **Step 7: Confirm private acceptance created no tracked change**
 
 Run:
 
 ```bash
-git status --short
-git check-ignore artifacts/corpus-baseline.json artifacts/corpus-record.* artifacts/corpus-verify.*
+test "$(git rev-parse --verify HEAD)" = "$EXPECTED_REVIEWED_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git check-ignore --quiet "$corpus_baseline_candidate"
+git check-ignore --quiet "$corpus_record_work"
+git check-ignore --quiet "$corpus_verify_work"
 ```
 
-Expected: Git status is empty and every private acceptance path is ignored.
+Expected: every quiet assertion exits 0; the exact reviewed commit remains clean
+and every private acceptance path is ignored.

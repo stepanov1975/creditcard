@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import array
 import fcntl
+import io
+import json
 import os
+import py_compile
+import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from hashlib import sha256
+from importlib.machinery import BuiltinImporter, FrozenImporter, ModuleSpec, SourceFileLoader
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import CodeType, ModuleType
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -39,6 +48,9 @@ from ccparser.corpus_gate import (
     LocalToolchainInspector,
     RepositoryState,
     RunManifest,
+    RuntimeArtifactIdentity,
+    RuntimeDependency,
+    ToolchainAsset,
     ToolchainFingerprint,
     compare_independent_runs,
     compare_with_baseline,
@@ -66,6 +78,65 @@ from ccparser.output import (
     write_batch_outputs,
 )
 from ccparser.paths import DirectoryRootPolicy
+
+
+class _SyntheticSourceLoader:
+    def __init__(self, path: Path, source: bytes) -> None:
+        self._path = path
+        self._source = source
+
+    def get_code(self, fullname: str) -> CodeType:
+        del fullname
+        return compile(
+            self._source,
+            str(self._path),
+            "exec",
+            dont_inherit=True,
+            optimize=sys.flags.optimize,
+        )
+
+
+def _synthetic_runtime_module(
+    path: Path,
+    *,
+    module_name: str = "ccparser.corpus_gate",
+    loaded_source: bytes | None = None,
+) -> ModuleType:
+    source = path.read_bytes() if loaded_source is None else loaded_source
+    loader = _SyntheticSourceLoader(path, source)
+    module = ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__spec__ = ModuleSpec(module_name, loader, origin=str(path))
+    executed_code = loader.get_code(module_name)
+    module.__dict__["_TEST_EXECUTED_TOP_LEVEL_CODE"] = executed_code
+    return module
+
+
+def _install_synthetic_runtime_module(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    *additional_modules: ModuleType,
+) -> None:
+    for module_name in tuple(sys.modules):
+        if module_name == "ccparser" or module_name.startswith("ccparser."):
+            monkeypatch.delitem(sys.modules, module_name)
+    module_file = module.__file__
+    assert isinstance(module_file, str)
+    package_path = Path(module_file).with_name("__init__.py")
+    package = _synthetic_runtime_module(package_path, module_name="ccparser")
+    loaded_modules = (package, module, *additional_modules)
+    executed_codes: dict[str, set[CodeType]] = {}
+    for loaded_module in loaded_modules:
+        loaded_file = loaded_module.__file__
+        executed_code = vars(loaded_module).get("_TEST_EXECUTED_TOP_LEVEL_CODE")
+        assert isinstance(loaded_file, str)
+        assert isinstance(executed_code, CodeType)
+        executed_codes.setdefault(str(Path(loaded_file).resolve(strict=True)), set()).add(
+            executed_code
+        )
+    package.__dict__["_EXECUTED_PACKAGE_CODES"] = executed_codes
+    for loaded_module in loaded_modules:
+        monkeypatch.setitem(sys.modules, loaded_module.__name__, loaded_module)
 
 
 def _evidence(raw_text: str, *, page_number: int = 1, y: float = 10.0) -> EvidenceReference:
@@ -206,15 +277,136 @@ def _run_manifest(
 
 
 def _toolchain(digest_prefix: str = "a") -> ToolchainFingerprint:
-    return ToolchainFingerprint(
-        python_version="3.13.5",
-        package_version="0.1.0",
-        pymupdf_version="1.26.3",
-        tesseract_version="5.3.4",
-        ocr_pipeline_version="1",
-        ocr_cache_versions=("layout-v1", "text-v1"),
-        command_digest="c" * 64,
-        digest=digest_prefix * 64,
+    dependencies = tuple(
+        RuntimeDependency(
+            name=name,
+            version="1.0",
+            file_count=1,
+            size_bytes=1,
+            content_digest="f" * 64,
+        )
+        for name in corpus_gate_module._RUNTIME_DEPENDENCY_NAMES
+    )
+    assets = tuple(
+        ToolchainAsset(role=role, size_bytes=1, sha256="d" * 64)
+        for role in corpus_gate_module._TOOLCHAIN_ASSET_ROLES
+    )
+    git_executable = ToolchainAsset(
+        role="git-executable",
+        size_bytes=1,
+        sha256="e" * 64,
+    )
+    payload: dict[str, object] = {
+        "version": 6,
+        "python_version": "3.13.5",
+        "python_implementation": "CPython",
+        "python_runtime_digest": "a" * 64,
+        "standard_library": RuntimeArtifactIdentity(
+            file_count=1,
+            size_bytes=1,
+            digest="6" * 64,
+        ).model_dump(mode="json"),
+        "runtime_environment_digest": digest_prefix * 64,
+        "dependencies": tuple(dependency.model_dump(mode="json") for dependency in dependencies),
+        "git_executable": git_executable.model_dump(mode="json"),
+        "git_native_closure": RuntimeArtifactIdentity(
+            file_count=1,
+            size_bytes=1,
+            digest="8" * 64,
+        ).model_dump(mode="json"),
+        "native_runtime": RuntimeArtifactIdentity(
+            file_count=1,
+            size_bytes=1,
+            digest="9" * 64,
+        ).model_dump(mode="json"),
+        "pymupdf_binding_version": "1.28.0",
+        "pymupdf_engine_version": "1.29.0",
+        "tesseract_version": "5.3.4",
+        "tesseract_version_output_digest": "b" * 64,
+        "tesseract_assets": tuple(asset.model_dump(mode="json") for asset in assets),
+        "tesseract_native_closure": RuntimeArtifactIdentity(
+            file_count=1,
+            size_bytes=1,
+            digest="7" * 64,
+        ).model_dump(mode="json"),
+        "ocr_pipeline_version": "1",
+        "ocr_cache_versions": ("layout-v1", "text-v1"),
+        "command_digest": "c" * 64,
+    }
+    return ToolchainFingerprint.model_validate(
+        {**payload, "digest": corpus_gate_module._toolchain_payload_digest(payload)}
+    )
+
+
+def _install_synthetic_dynamic_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    class SyntheticDynamicRuntime:
+        def __init__(self, path: Path) -> None:
+            self.executable = corpus_gate_module._SealedCapability.bind_path(
+                path,
+                executable=True,
+            )
+
+        @property
+        def native_closure(self) -> RuntimeArtifactIdentity:
+            return RuntimeArtifactIdentity(
+                file_count=1,
+                size_bytes=self.executable.size_bytes,
+                digest=self.executable.sha256,
+            )
+
+        @property
+        def pass_fds(self) -> tuple[int, ...]:
+            return (self.executable.file_descriptor,)
+
+        @property
+        def executable_file_descriptors(self) -> tuple[int, ...]:
+            return self.pass_fds
+
+        def command(self, arguments: tuple[str, ...], *, argv0: str) -> tuple[str, ...]:
+            del argv0
+            return (self.executable.descriptor_path, *arguments)
+
+        def run(
+            self,
+            arguments: tuple[str, ...],
+            *,
+            cwd: Path,
+            environment: tuple[tuple[str, str], ...],
+            timeout: float,
+            input_bytes: bytes | None = None,
+            stderr_to_stdout: bool = False,
+            allowed_file_descriptors: tuple[int, ...] | None = None,
+        ) -> subprocess.CompletedProcess[bytes]:
+            del cwd, input_bytes, allowed_file_descriptors
+            return runner(
+                (self.executable.descriptor_path, *arguments),
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if stderr_to_stdout else subprocess.PIPE,
+                env=dict(environment),
+                pass_fds=self.pass_fds,
+                timeout=timeout,
+            )
+
+        def close(self) -> None:
+            self.executable.close()
+
+    def bind_path(
+        _cls: type[object],
+        path: Path,
+        *,
+        staging_parent: Path,
+    ) -> SyntheticDynamicRuntime:
+        del staging_parent
+        return SyntheticDynamicRuntime(path)
+
+    monkeypatch.setattr(
+        corpus_gate_module._BoundDynamicExecutable,
+        "bind_path",
+        classmethod(bind_path),
     )
 
 
@@ -401,9 +593,11 @@ def _gate_fixture(
         quarantine=quarantine_membership,
     )
     config = CorpusGateConfig(
+        expected_commit_sha="d" * 40,
         retained_dir=retained_dir,
         quarantine_dir=quarantine_dir,
         membership_inventory_path=inventory_path,
+        membership_inventory_sha256=sha256(inventory_path.read_bytes()).hexdigest(),
         baseline_path=tmp_path / "private" / "baseline.json",
         work_dir=tmp_path / "private" / "run",
         jobs=4,
@@ -429,9 +623,11 @@ def test_orchestration_models_are_strict_frozen_and_validate_numeric_bounds(
     tmp_path: Path,
 ) -> None:
     config = CorpusGateConfig(
+        expected_commit_sha="d" * 40,
         retained_dir=tmp_path / "retained",
         quarantine_dir=tmp_path / "quarantine",
         membership_inventory_path=tmp_path / "membership.json",
+        membership_inventory_sha256="e" * 64,
         baseline_path=tmp_path / "baseline.json",
         work_dir=tmp_path / "work",
         jobs=4,
@@ -448,6 +644,19 @@ def test_orchestration_models_are_strict_frozen_and_validate_numeric_bounds(
         )
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         CorpusGateConfig.model_validate({**config.model_dump(), "private": "value"})
+    for required_field in ("expected_commit_sha", "membership_inventory_sha256"):
+        incomplete = config.model_dump()
+        incomplete.pop(required_field)
+        with pytest.raises(ValidationError, match="Field required"):
+            CorpusGateConfig.model_validate(incomplete)
+    for field_name, malformed_value in (
+        ("expected_commit_sha", "D" * 40),
+        ("expected_commit_sha", "d" * 39),
+        ("membership_inventory_sha256", "E" * 64),
+        ("membership_inventory_sha256", "e" * 63),
+    ):
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            CorpusGateConfig.model_validate({**config.model_dump(), field_name: malformed_value})
 
 
 def test_record_runs_four_isolated_pairs_and_writes_baseline_last(tmp_path: Path) -> None:
@@ -464,7 +673,7 @@ def test_record_runs_four_isolated_pairs_and_writes_baseline_last(tmp_path: Path
     assert attestation.passed is True
     assert attestation.mode is CorpusGateMode.RECORD
     assert attestation.commit_abbreviation == "d" * 12
-    assert attestation.toolchain_abbreviation == "a" * 12
+    assert attestation.toolchain_abbreviation == _toolchain().digest[:12]
     assert attestation.retained_counts.reconciled == 1
     assert attestation.quarantine_counts.not_statement == 1
     assert attestation.elapsed_seconds == Decimal("10")
@@ -481,13 +690,63 @@ def test_record_runs_four_isolated_pairs_and_writes_baseline_last(tmp_path: Path
     assert config.membership_inventory_path.read_bytes() == inventory_content
 
 
+def test_gate_binds_fingerprinted_tesseract_runtime_across_all_parser_runs(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    runtime = ocr_module.TesseractExecutionRuntime(
+        executable_path="/proc/self/fd/1000000",
+        tessdata_directory="/proc/self/fd/1000001",
+        pass_fds=(),
+        environment=(("PATH", "/nonexistent"),),
+    )
+
+    class StagedRuntime:
+        def __init__(self) -> None:
+            self.runtime = runtime
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class RuntimeCapabilities:
+        def __init__(self) -> None:
+            self.work_fds: list[int] = []
+            self.staged = StagedRuntime()
+
+        def stage_tesseract(self, work_fd: int) -> StagedRuntime:
+            self.work_fds.append(work_fd)
+            return self.staged
+
+    runtime_capabilities = RuntimeCapabilities()
+    bound_dependencies = CorpusGateDependencies(
+        runner=dependencies.runner,
+        repository=dependencies.repository,
+        toolchain=dependencies.toolchain,
+        runtime_capabilities=runtime_capabilities,  # type: ignore[arg-type]
+    )
+
+    def assert_bound(_call_index: int, _input_dir: Path) -> None:
+        assert ocr_module._ACTIVE_TESSERACT_RUNTIME is runtime
+
+    runner.on_call = assert_bound
+
+    run_corpus_gate(
+        config,
+        CorpusGateMode.RECORD,
+        dependencies=bound_dependencies,
+    )
+
+    assert len(runtime_capabilities.work_fds) == 1
+    assert runtime_capabilities.staged.closed is True
+    assert ocr_module._ACTIVE_TESSERACT_RUNTIME is None
+
+
 def test_record_failure_never_replaces_baseline(tmp_path: Path) -> None:
     config, dependencies, _runner = _gate_fixture(
         tmp_path,
         retained_status=Status.UNRECONCILED,
     )
-    config.baseline_path.write_bytes(b"accepted")
-
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(
             config,
@@ -497,7 +756,18 @@ def test_record_failure_never_replaces_baseline(tmp_path: Path) -> None:
 
     assert caught.value.reasons == (CorpusGateReason.RETAINED_NOT_RECONCILED,)
     assert str(caught.value) == CorpusGateReason.RETAINED_NOT_RECONCILED.value
-    assert config.baseline_path.read_bytes() == b"accepted"
+    assert not config.baseline_path.exists()
+
+
+def test_record_rejects_an_existing_baseline_before_parser_execution(tmp_path: Path) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.baseline_path.write_bytes(canonical_json_bytes(_baseline()))
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
+    assert runner.input_dirs == []
 
 
 @pytest.mark.parametrize(
@@ -585,6 +855,92 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
         corpus_gate_module.os.close(parent_fd)
 
     assert baseline_path.read_bytes() == accepted_content
+    assert tuple(private_dir.iterdir()) == (baseline_path,)
+
+
+def test_exclusive_candidate_publication_never_overwrites_a_racing_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "candidate.json"
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    original_link = corpus_gate_module.os.link
+    racing_content = b"independently promoted baseline"
+
+    def race_before_link(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        baseline_path.write_bytes(racing_content)
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(corpus_gate_module.os, "link", race_before_link)
+    try:
+        with pytest.raises(CorpusGateInputError) as caught:
+            corpus_gate_module._publish_json_secure(
+                parent_fd,
+                baseline_path.name,
+                _baseline(),
+                replace_existing=False,
+            )
+    finally:
+        os.close(parent_fd)
+
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
+    assert baseline_path.read_bytes() == racing_content
+
+
+def test_exclusive_candidate_publication_recognizes_commit_before_link_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir()
+    baseline_path = private_dir / "candidate.json"
+    parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
+    original_link = corpus_gate_module.os.link
+
+    def commit_then_fail(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+        raise OSError("injected post-commit link failure")
+
+    monkeypatch.setattr(corpus_gate_module.os, "link", commit_then_fail)
+    try:
+        corpus_gate_module._publish_json_secure(
+            parent_fd,
+            baseline_path.name,
+            _baseline(),
+            replace_existing=False,
+        )
+    finally:
+        os.close(parent_fd)
+
+    assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
     assert tuple(private_dir.iterdir()) == (baseline_path,)
 
 
@@ -872,6 +1228,22 @@ def test_record_requires_valid_approved_membership_inventory(
     assert not config.work_dir.exists()
 
 
+def test_record_rejects_semantically_equivalent_inventory_bytes_outside_the_approved_pin(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config.membership_inventory_path.write_bytes(
+        config.membership_inventory_path.read_bytes() + b"\n"
+    )
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.INVENTORY_INVALID,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
 @pytest.mark.parametrize("corpus_name", ("retained", "quarantine"))
 @pytest.mark.parametrize("dimension", ("document_count", "source_multiset_digest"))
 def test_record_rejects_each_approved_membership_dimension_change(
@@ -892,6 +1264,13 @@ def test_record_rejects_each_approved_membership_dimension_change(
         config.membership_inventory_path,
         retained=changed if corpus_name == "retained" else inventory.retained,
         quarantine=changed if corpus_name == "quarantine" else inventory.quarantine,
+    )
+    config = config.model_copy(
+        update={
+            "membership_inventory_sha256": sha256(
+                config.membership_inventory_path.read_bytes()
+            ).hexdigest()
+        }
     )
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
@@ -918,6 +1297,11 @@ def test_verify_rejects_missing_corrupt_and_unknown_baselines(
     config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
     if payload is not None:
         config.baseline_path.write_bytes(payload)
+    config = config.model_copy(
+        update={
+            "baseline_sha256": (sha256(payload).hexdigest() if payload is not None else "f" * 64)
+        }
+    )
 
     with pytest.raises(CorpusGateInputError) as caught:
         run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
@@ -929,6 +1313,7 @@ def test_verify_rejects_missing_corrupt_and_unknown_baselines(
 
 def test_verify_validates_independent_inventory_before_loading_baseline(tmp_path: Path) -> None:
     config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
+    config = config.model_copy(update={"baseline_sha256": "f" * 64})
     config.membership_inventory_path.unlink()
 
     with pytest.raises(CorpusGateInputError) as caught:
@@ -973,14 +1358,14 @@ def test_verify_baseline_name_swap_immediately_before_fd_read_fails_closed(
     config, dependencies, runner = _gate_fixture(tmp_path, runtime_tolerance_ratio=None)
     retained_membership = runner.memberships[config.retained_dir.resolve()]
     quarantine_membership = runner.memberships[config.quarantine_dir.resolve()]
-    config.baseline_path.write_bytes(
-        canonical_json_bytes(
-            _baseline(
-                retained_membership=retained_membership,
-                quarantine_membership=quarantine_membership,
-            )
+    baseline_content = canonical_json_bytes(
+        _baseline(
+            retained_membership=retained_membership,
+            quarantine_membership=quarantine_membership,
         )
     )
+    config.baseline_path.write_bytes(baseline_content)
+    config = config.model_copy(update={"baseline_sha256": sha256(baseline_content).hexdigest()})
     displaced_baseline = config.baseline_path.with_name("displaced-baseline.json")
     outside_baseline = tmp_path / "outside-baseline.json"
     outside_baseline.write_bytes(b"outside substitute")
@@ -1026,6 +1411,7 @@ def test_verify_uses_accepted_tolerance_and_never_rewrites_baseline(tmp_path: Pa
         update={
             "work_dir": tmp_path / "private" / "verify-run",
             "runtime_tolerance_ratio": None,
+            "baseline_sha256": sha256(accepted_content).hexdigest(),
         }
     )
 
@@ -1037,6 +1423,27 @@ def test_verify_uses_accepted_tolerance_and_never_rewrites_baseline(tmp_path: Pa
 
     assert attestation.performance_checked is True
     assert verify_config.baseline_path.read_bytes() == accepted_content
+
+
+def test_verify_rejects_a_schema_valid_baseline_that_does_not_match_protected_pin(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(
+        tmp_path,
+        runtime_tolerance_ratio=None,
+    )
+    baseline = _baseline(
+        retained_membership=runner.memberships[config.retained_dir.resolve()],
+        quarantine_membership=runner.memberships[config.quarantine_dir.resolve()],
+    )
+    config.baseline_path.write_bytes(canonical_json_bytes(baseline))
+    config = config.model_copy(update={"baseline_sha256": "f" * 64})
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.VERIFY, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
+    assert runner.input_dirs == []
 
 
 @pytest.mark.parametrize(
@@ -1081,6 +1488,20 @@ def test_dirty_repository_is_rejected_before_toolchain_or_filesystem_mutation(
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
 
     assert caught.value.reasons == (CorpusGateReason.DIRTY_REPOSITORY,)
+    assert runner.input_dirs == []
+    assert not config.work_dir.exists()
+
+
+def test_initial_repository_commit_must_match_the_expected_reviewed_sha(
+    tmp_path: Path,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    config = config.model_copy(update={"expected_commit_sha": "e" * 40})
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (CorpusGateReason.REPOSITORY_CHANGED,)
     assert runner.input_dirs == []
     assert not config.work_dir.exists()
 
@@ -1504,6 +1925,9 @@ def test_verify_rejects_baseline_replaced_before_parent_lock(
         quarantine_membership=runner.memberships[config.quarantine_dir.resolve()],
     )
     config.baseline_path.write_bytes(canonical_json_bytes(accepted))
+    config = config.model_copy(
+        update={"baseline_sha256": sha256(config.baseline_path.read_bytes()).hexdigest()}
+    )
     replacement = accepted.model_copy(
         update={"runtime_tolerance_ratio": Decimal("0.3")},
     )
@@ -1596,7 +2020,7 @@ def test_existing_baseline_directory_is_rejected_before_runs(tmp_path: Path) -> 
     with pytest.raises(CorpusGateInputError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
 
-    assert caught.value.reasons == (CorpusGateReason.INVALID_CONFIGURATION,)
+    assert caught.value.reasons == (CorpusGateReason.BASELINE_INVALID,)
     assert runner.input_dirs == []
     assert not config.work_dir.exists()
 
@@ -1757,14 +2181,13 @@ def test_independent_output_mismatch_rejects_record_without_replacing_baseline(
     tmp_path: Path,
 ) -> None:
     config, dependencies, runner = _gate_fixture(tmp_path)
-    config.baseline_path.write_bytes(b"accepted")
     runner.manifest_updates[1] = {"json_digest": "f" * 64}
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
 
     assert caught.value.reasons == (CorpusGateReason.JSON_DRIFT,)
-    assert config.baseline_path.read_bytes() == b"accepted"
+    assert not config.baseline_path.exists()
 
 
 def test_verify_compares_both_candidate_runs_with_accepted_baseline(tmp_path: Path) -> None:
@@ -1786,6 +2209,7 @@ def test_verify_compares_both_candidate_runs_with_accepted_baseline(tmp_path: Pa
         update={
             "work_dir": tmp_path / "private" / "verify-run",
             "runtime_tolerance_ratio": None,
+            "baseline_sha256": sha256(accepted_content).hexdigest(),
         }
     )
     verify_dependencies = CorpusGateDependencies(
@@ -1806,7 +2230,7 @@ def test_verify_compares_both_candidate_runs_with_accepted_baseline(tmp_path: Pa
 
 
 @pytest.mark.parametrize("mismatch", ("toolchain", "jobs"))
-def test_baseline_runtime_is_not_compared_across_runtime_contexts(
+def test_verify_rejects_runtime_context_drift(
     tmp_path: Path,
     mismatch: str,
 ) -> None:
@@ -1816,6 +2240,7 @@ def test_baseline_runtime_is_not_compared_across_runtime_contexts(
         CorpusGateMode.RECORD,
         dependencies=record_dependencies,
     )
+    accepted_content = record_config.baseline_path.read_bytes()
     verify_runner = _RecordingRunner(
         memberships=record_runner.memberships,
         elapsed_values=[Decimal("100")] * 4,
@@ -1824,6 +2249,7 @@ def test_baseline_runtime_is_not_compared_across_runtime_contexts(
         update={
             "work_dir": tmp_path / "private" / "verify-run",
             "runtime_tolerance_ratio": None,
+            "baseline_sha256": sha256(accepted_content).hexdigest(),
             "jobs": 2 if mismatch == "jobs" else record_config.jobs,
         }
     )
@@ -1834,13 +2260,14 @@ def test_baseline_runtime_is_not_compared_across_runtime_contexts(
         toolchain=_FakeToolchain(fingerprints=[fingerprint, fingerprint]),
     )
 
-    attestation = run_corpus_gate(
-        verify_config,
-        CorpusGateMode.VERIFY,
-        dependencies=verify_dependencies,
-    )
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(
+            verify_config,
+            CorpusGateMode.VERIFY,
+            dependencies=verify_dependencies,
+        )
 
-    assert attestation.performance_checked is False
+    assert tuple(reason.value for reason in caught.value.reasons) == ("runtime_context_drift",)
 
 
 @pytest.mark.parametrize("final_change", ("dirty", "commit", "root"))
@@ -1911,9 +2338,8 @@ def test_unavailable_toolchain_is_privacy_safe_and_precedes_filesystem_mutation(
     assert not config.work_dir.exists()
 
 
-def test_parser_failure_is_privacy_safe_and_preserves_existing_baseline(tmp_path: Path) -> None:
+def test_parser_failure_is_privacy_safe_and_does_not_publish_candidate(tmp_path: Path) -> None:
     config, _dependencies, _runner = _gate_fixture(tmp_path)
-    config.baseline_path.write_bytes(b"accepted")
 
     class FailingRunner:
         def __call__(
@@ -1940,7 +2366,7 @@ def test_parser_failure_is_privacy_safe_and_preserves_existing_baseline(tmp_path
 
     assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
     assert str(caught.value) == CorpusGateReason.PARSER_RUNTIME_FAILED.value
-    assert config.baseline_path.read_bytes() == b"accepted"
+    assert not config.baseline_path.exists()
 
 
 def test_successful_record_writes_baseline_only_after_final_attestations(
@@ -1968,9 +2394,15 @@ def test_successful_record_writes_baseline_only_after_final_attestations(
 
     original_write = corpus_gate_module._publish_json_secure
 
-    def recording_write(parent_fd: int, name: str, result: CorpusBaseline) -> None:
+    def recording_write(
+        parent_fd: int,
+        name: str,
+        result: CorpusBaseline,
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         events.append("write")
-        original_write(parent_fd, name, result)
+        original_write(parent_fd, name, result, replace_existing=replace_existing)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", recording_write)
     dependencies = CorpusGateDependencies(
@@ -2035,10 +2467,16 @@ def test_private_parent_swap_immediately_before_publication_uses_bound_parent(
     outside_dir.mkdir()
     original_publish = corpus_gate_module._publish_json_secure
 
-    def swap_then_publish(parent_fd: int, name: str, result: CorpusBaseline) -> None:
+    def swap_then_publish(
+        parent_fd: int,
+        name: str,
+        result: CorpusBaseline,
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         private_dir.rename(bound_private_dir)
         private_dir.symlink_to(outside_dir, target_is_directory=True)
-        original_publish(parent_fd, name, result)
+        original_publish(parent_fd, name, result, replace_existing=replace_existing)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", swap_then_publish)
 
@@ -2086,9 +2524,15 @@ def test_baseline_name_symlink_swap_immediately_before_publication_fails_closed(
     outside_baseline.write_bytes(b"outside baseline")
     original_publish = corpus_gate_module._publish_json_secure
 
-    def swap_then_publish(parent_fd: int, name: str, result: CorpusBaseline) -> None:
+    def swap_then_publish(
+        parent_fd: int,
+        name: str,
+        result: CorpusBaseline,
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         (Path(f"/proc/self/fd/{parent_fd}") / name).symlink_to(outside_baseline)
-        original_publish(parent_fd, name, result)
+        original_publish(parent_fd, name, result, replace_existing=replace_existing)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", swap_then_publish)
 
@@ -2343,6 +2787,473 @@ def test_local_runner_requires_exact_canonical_emitted_outputs(
     assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
 
 
+def _runtime_git_repository(tmp_path: Path) -> tuple[Path, Path, Path]:
+    repository_root = tmp_path / "runtime-repository"
+    package_module = repository_root / "src" / "ccparser" / "__init__.py"
+    gate_module = repository_root / "src" / "ccparser" / "corpus_gate.py"
+    parser_module = repository_root / "src" / "ccparser" / "parser.py"
+    gate_module.parent.mkdir(parents=True)
+    package_module.write_text("# synthetic package\n", encoding="utf-8")
+    gate_module.write_text(
+        "def gate_value() -> str:\n    return 'head'\n",
+        encoding="utf-8",
+    )
+    parser_module.write_text(
+        "PARSER_VALUE = 'head'\n"
+        "def parser_value(value: str = PARSER_VALUE) -> str:\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ("git", "init", "-b", "main"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Corpus Gate Test"),
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.email", "corpus-gate@example.invalid"),
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "add", "src/ccparser"),
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "commit", "-m", "runtime source"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    return repository_root, gate_module, parser_module
+
+
+def test_package_runtime_registry_contains_only_executed_package_top_levels() -> None:
+    package = sys.modules["ccparser"]
+    package_file = package.__file__
+    gate_file = corpus_gate_module.__file__
+    assert isinstance(package_file, str)
+    assert isinstance(gate_file, str)
+    package_dir = Path(package_file).resolve(strict=True).parent
+    registry = vars(package).get("_EXECUTED_PACKAGE_CODES")
+    assert isinstance(registry, dict)
+    gate_path = Path(gate_file).resolve(strict=True)
+    gate_codes = registry.get(str(gate_path))
+    assert isinstance(gate_codes, set)
+    expected_gate_code = compile(
+        gate_path.read_bytes(),
+        gate_file,
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    assert expected_gate_code in gate_codes
+    assert all(
+        isinstance(path, str)
+        and Path(path).is_relative_to(package_dir)
+        and isinstance(codes, set)
+        and codes
+        and all(isinstance(code, CodeType) and code.co_name == "<module>" for code in codes)
+        for path, codes in registry.items()
+    )
+
+
+@pytest.mark.parametrize("mask_flag", ("--assume-unchanged", "--skip-worktree"))
+@pytest.mark.parametrize("modify_source", (False, True), ids=("unchanged", "modified"))
+def test_git_repository_inspector_rejects_index_masking_of_runtime_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mask_flag: str,
+    modify_source: bool,
+) -> None:
+    repository_root, gate_module, parser_module = _runtime_git_repository(tmp_path)
+    subprocess.run(
+        ("git", "update-index", mask_flag, "src/ccparser/parser.py"),
+        cwd=repository_root,
+        check=True,
+    )
+    if modify_source:
+        parser_module.write_text("PARSER_VALUE = 'masked'\n", encoding="utf-8")
+    status = subprocess.run(
+        ("git", "status", "--porcelain=v1", "--untracked-files=all"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    assert status.stdout == b""
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(gate_module),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(repository_root) not in str(caught.value)
+
+
+def test_git_repository_inspector_rejects_stale_loaded_bytecode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, _parser_module = _runtime_git_repository(tmp_path)
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(
+            gate_module,
+            loaded_source=b"GATE_VALUE = 'stale bytecode'\n",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(gate_module) not in str(caught.value)
+
+
+def test_git_repository_inspector_rejects_executed_source_restored_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, _parser_module = _runtime_git_repository(tmp_path)
+    approved_source = gate_module.read_bytes()
+    stale_source = b"def gate_value() -> str:\n    return 'stale'\n"
+    gate_module.write_bytes(stale_source)
+    module_name = "ccparser.corpus_gate"
+    loader = SourceFileLoader(module_name, str(gate_module))
+    specification = ModuleSpec(module_name, loader, origin=str(gate_module))
+    loaded_module = module_from_spec(specification)
+    loaded_module.__file__ = str(gate_module)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    loader.exec_module(loaded_module)
+    loaded_module.__dict__["_TEST_EXECUTED_TOP_LEVEL_CODE"] = compile(
+        stale_source,
+        str(gate_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    gate_value = loaded_module.__dict__["gate_value"]
+    assert callable(gate_value)
+    assert gate_value() == "stale"
+    gate_module.write_bytes(approved_source)
+    assert loader.get_code(module_name) == compile(
+        approved_source,
+        str(gate_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(monkeypatch, loaded_module)
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(gate_module) not in str(caught.value)
+
+
+def test_git_repository_inspector_rejects_restored_dependency_with_stale_import_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, parser_module = _runtime_git_repository(tmp_path)
+    approved_source = parser_module.read_bytes()
+    stale_source = approved_source.replace(b"PARSER_VALUE = 'head'", b"PARSER_VALUE = 'stale'")
+    parser_module.write_bytes(stale_source)
+    module_name = "ccparser.parser"
+    loader = SourceFileLoader(module_name, str(parser_module))
+    specification = ModuleSpec(module_name, loader, origin=str(parser_module))
+    loaded_module = module_from_spec(specification)
+    loaded_module.__file__ = str(parser_module)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    loader.exec_module(loaded_module)
+    loaded_module.__dict__["_TEST_EXECUTED_TOP_LEVEL_CODE"] = compile(
+        stale_source,
+        str(parser_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    parser_value = loaded_module.__dict__["parser_value"]
+    assert callable(parser_value)
+    assert parser_value() == "stale"
+    parser_module.write_bytes(approved_source)
+    approved_code = compile(
+        approved_source,
+        str(parser_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    assert loader.get_code(module_name) == approved_code
+    approved_namespace: dict[str, object] = {}
+    exec(approved_code, approved_namespace)
+    approved_parser_value = approved_namespace["parser_value"]
+    assert callable(approved_parser_value)
+    assert parser_value.__code__ == approved_parser_value.__code__
+    assert parser_value.__defaults__ != approved_parser_value.__defaults__
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(gate_module),
+        loaded_module,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(parser_module) not in str(caught.value)
+
+
+def test_git_repository_inspector_rejects_approved_reload_coexisting_with_stale_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, parser_module = _runtime_git_repository(tmp_path)
+    approved_source = parser_module.read_bytes()
+    stale_source = approved_source.replace(b"PARSER_VALUE = 'head'", b"PARSER_VALUE = 'stale'")
+    parser_module.write_bytes(stale_source)
+    module_name = "ccparser.parser"
+    loader = SourceFileLoader(module_name, str(parser_module))
+    specification = ModuleSpec(module_name, loader, origin=str(parser_module))
+    loaded_module = module_from_spec(specification)
+    loaded_module.__file__ = str(parser_module)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    loader.exec_module(loaded_module)
+    stale_code = compile(
+        stale_source,
+        str(parser_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    loaded_module.__dict__["_TEST_EXECUTED_TOP_LEVEL_CODE"] = stale_code
+    stale_parser_value = loaded_module.__dict__["parser_value"]
+    assert callable(stale_parser_value)
+    assert stale_parser_value() == "stale"
+    parser_module.write_bytes(approved_source)
+    approved_code = compile(
+        approved_source,
+        str(parser_module),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(gate_module),
+        loaded_module,
+    )
+    package = sys.modules["ccparser"]
+    registry = vars(package)["_EXECUTED_PACKAGE_CODES"]
+    assert isinstance(registry, dict)
+    registered = registry[str(parser_module.resolve(strict=True))]
+    assert isinstance(registered, set)
+    registered.add(approved_code)
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(parser_module) not in str(caught.value)
+
+
+def test_git_repository_inspector_rejects_replacement_commit_for_pinned_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, parser_module = _runtime_git_repository(tmp_path)
+    approved_commit = (
+        subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
+    gate_module.write_text(
+        "def gate_value() -> str:\n    return 'replacement'\n",
+        encoding="utf-8",
+    )
+    parser_module.write_text("PARSER_VALUE = 'replacement'\n", encoding="utf-8")
+    subprocess.run(("git", "add", "src/ccparser"), cwd=repository_root, check=True)
+    subprocess.run(
+        ("git", "commit", "-m", "replacement runtime"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    replacement_commit = (
+        subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
+    subprocess.run(
+        ("git", "switch", "--detach", approved_commit),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ("git", "replace", approved_commit, replacement_commit),
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "reset", "--hard", "HEAD"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    status = subprocess.run(
+        ("git", "status", "--porcelain=v1", "--untracked-files=all"),
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    assert status.stdout == b""
+    assert (
+        subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("ascii")
+        .strip()
+        == approved_commit
+    )
+    assert gate_module.read_text(encoding="utf-8").endswith("return 'replacement'\n")
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(gate_module),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=repository_root).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert approved_commit not in str(caught.value)
+    assert replacement_commit not in str(caught.value)
+
+
+def test_git_repository_inspector_supports_nested_repository_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root, gate_module, _parser_module = _runtime_git_repository(tmp_path)
+    nested_cwd = repository_root / "nested" / "command"
+    nested_cwd.mkdir(parents=True)
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(gate_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(gate_module),
+    )
+
+    state = GitRepositoryInspector(cwd=nested_cwd).state()
+
+    assert state.root == repository_root
+    assert state.clean is True
+
+
+def test_git_repository_inspector_rejects_state_change_during_runtime_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_root = tmp_path / "active"
+    project_root = tmp_path / "project"
+    active_root.mkdir()
+    project_root.mkdir()
+    inspector = GitRepositoryInspector(cwd=active_root)
+    first_commit = "d" * 40
+    second_commit = "e" * 40
+    observations = iter(((first_commit, b""), (second_commit, b"")))
+    monkeypatch.setattr(
+        inspector,
+        "_validate_active_worktree_package",
+        lambda: active_root,
+    )
+    monkeypatch.setattr(inspector, "_read_project_root", lambda: project_root)
+    monkeypatch.setattr(inspector, "_repository_observation", lambda: next(observations))
+    monkeypatch.setattr(
+        inspector,
+        "_validate_runtime_attribution",
+        lambda _active_root, _commit_sha: None,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        inspector.state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert first_commit not in str(caught.value)
+    assert second_commit not in str(caught.value)
+
+
+@pytest.mark.parametrize("replacement_kind", ("inode", "content"))
+def test_git_repository_inspector_executes_the_bound_executable_after_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    executable = executable_directory / "git"
+    poisoned_environment_marker = tmp_path / "poisoned-environment-observed"
+    approved_content = (
+        "#!/bin/sh\n"
+        f"if [ -n \"${{LD_PRELOAD-}}\" ]; then : > '{poisoned_environment_marker}'; fi\n"
+        "printf 'approved\\n'\n"
+    ).encode()
+    executable.write_bytes(approved_content)
+    executable.chmod(0o700)
+    substitute_marker = tmp_path / "substitute-executed"
+    substitute = executable_directory / "substitute"
+    substitute.write_text(
+        f"#!/bin/sh\nprintf 'substitute\\n'\n: > '{substitute_marker}'\n",
+        encoding="utf-8",
+    )
+    substitute.chmod(0o700)
+    monkeypatch.setenv("PATH", str(executable_directory))
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "untrusted-library.so"))
+
+    inspector = GitRepositoryInspector(cwd=tmp_path)
+    if replacement_kind == "inode":
+        os.replace(substitute, executable)
+    else:
+        executable.write_bytes(substitute.read_bytes())
+        executable.chmod(0o700)
+
+    try:
+        assert inspector._git_output("--version") == b"approved\n"
+        assert inspector.executable_asset.sha256 == sha256(approved_content).hexdigest()
+        assert not substitute_marker.exists()
+        assert not poisoned_environment_marker.exists()
+    finally:
+        inspector.close()
+
+
 def test_git_repository_inspector_uses_common_parent_and_active_worktree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2350,8 +3261,12 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
     project_root = tmp_path / "project"
     common_dir = project_root / ".git"
     active_worktree = project_root / ".worktrees" / "active"
+    active_module = active_worktree / "src" / "ccparser" / "corpus_gate.py"
+    package_module = active_module.with_name("__init__.py")
     common_dir.mkdir(parents=True)
-    active_worktree.mkdir(parents=True)
+    active_module.parent.mkdir(parents=True)
+    package_module.write_text("# synthetic package\n", encoding="utf-8")
+    active_module.write_text("# active gate module\n", encoding="utf-8")
     commands: list[tuple[tuple[str, ...], Path]] = []
 
     def fake_run(
@@ -2362,11 +3277,18 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
         stdout: int | None = None,
         stderr: int | None = None,
         capture_output: bool = False,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
         timeout: float,
     ) -> subprocess.CompletedProcess[bytes]:
         del check, stdout, stderr, capture_output, timeout
+        assert env["PATH"] == "/nonexistent"
+        assert "LD_PRELOAD" not in env
+        assert pass_fds and command[0] == f"/proc/self/fd/{pass_fds[0]}"
         commands.append((command, cwd))
-        arguments = command[1:]
+        arguments = command[2:]
+        if arguments == ("rev-parse", "--show-toplevel"):
+            return subprocess.CompletedProcess(command, 0, f"{active_worktree}\n".encode(), b"")
         if arguments == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
             output = f"{common_dir}\n".encode()
             return subprocess.CompletedProcess(command, 0, output, b"")
@@ -2374,6 +3296,38 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
             return subprocess.CompletedProcess(command, 0, b"d" * 40 + b"\n", b"")
         if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
             return subprocess.CompletedProcess(command, 0, b"", b"")
+        if arguments == (
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            "d" * 40,
+            "--",
+            ":(top,literal)src/ccparser",
+        ):
+            output = (
+                b"100644 blob "
+                + b"a" * 40
+                + b"\tsrc/ccparser/__init__.py\0"
+                + b"100644 blob "
+                + b"b" * 40
+                + b"\tsrc/ccparser/corpus_gate.py\0"
+            )
+            return subprocess.CompletedProcess(command, 0, output, b"")
+        if arguments == (
+            "ls-files",
+            "-v",
+            "-z",
+            "--full-name",
+            "--",
+            ":(top,literal)src/ccparser",
+        ):
+            output = b"H src/ccparser/__init__.py\0H src/ccparser/corpus_gate.py\0"
+            return subprocess.CompletedProcess(command, 0, output, b"")
+        if arguments == ("cat-file", "blob", "a" * 40):
+            return subprocess.CompletedProcess(command, 0, package_module.read_bytes(), b"")
+        if arguments == ("cat-file", "blob", "b" * 40):
+            return subprocess.CompletedProcess(command, 0, active_module.read_bytes(), b"")
         if arguments == ("worktree", "list", "--porcelain", "-z"):
             output = (
                 b"worktree "
@@ -2388,6 +3342,11 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
         raise AssertionError("unexpected Git command")
 
     monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(active_module))
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(active_module),
+    )
     inspector = GitRepositoryInspector(cwd=active_worktree)
 
     state = inspector.state()
@@ -2395,17 +3354,75 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
 
     assert state == RepositoryState(root=project_root, commit_sha="d" * 40, clean=True)
     assert ignored is True
-    state_commands = commands[:3]
-    ignore_commands = commands[3:]
+    normalized_commands = [(("git", *command[1:]), cwd) for command, cwd in commands]
+    state_commands = normalized_commands[:10]
+    ignore_commands = normalized_commands[10:]
     assert all(cwd == active_worktree for _command, cwd in state_commands)
+    assert tuple(command[0] for command in state_commands) == (
+        ("git", "--no-replace-objects", "rev-parse", "--show-toplevel"),
+        (
+            "git",
+            "--no-replace-objects",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ),
+        ("git", "--no-replace-objects", "rev-parse", "--verify", "HEAD"),
+        (
+            "git",
+            "--no-replace-objects",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ),
+        (
+            "git",
+            "--no-replace-objects",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            "d" * 40,
+            "--",
+            ":(top,literal)src/ccparser",
+        ),
+        (
+            "git",
+            "--no-replace-objects",
+            "ls-files",
+            "-v",
+            "-z",
+            "--full-name",
+            "--",
+            ":(top,literal)src/ccparser",
+        ),
+        ("git", "--no-replace-objects", "cat-file", "blob", "a" * 40),
+        ("git", "--no-replace-objects", "cat-file", "blob", "b" * 40),
+        ("git", "--no-replace-objects", "rev-parse", "--verify", "HEAD"),
+        (
+            "git",
+            "--no-replace-objects",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ),
+    )
     assert ignore_commands == [
         (
-            ("git", "worktree", "list", "--porcelain", "-z"),
+            (
+                "git",
+                "--no-replace-objects",
+                "worktree",
+                "list",
+                "--porcelain",
+                "-z",
+            ),
             active_worktree,
         ),
         (
             (
                 "git",
+                "--no-replace-objects",
                 "check-ignore",
                 "--quiet",
                 "--",
@@ -2416,7 +3433,60 @@ def test_git_repository_inspector_uses_common_parent_and_active_worktree(
     ]
 
 
-def test_git_ignore_uses_deepest_linked_worktree_for_target(tmp_path: Path) -> None:
+def test_git_repository_inspector_rejects_package_from_another_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    common_dir = project_root / ".git"
+    active_worktree = project_root / ".worktrees" / "active"
+    active_module = active_worktree / "src" / "ccparser" / "corpus_gate.py"
+    imported_module = project_root / "src" / "ccparser" / "corpus_gate.py"
+    common_dir.mkdir(parents=True)
+    active_module.parent.mkdir(parents=True)
+    imported_module.parent.mkdir(parents=True)
+    active_module.write_text("# active gate module\n", encoding="utf-8")
+    imported_module.write_text("# different imported module\n", encoding="utf-8")
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        check: bool,
+        capture_output: bool,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del cwd, check, capture_output, timeout
+        assert env["PATH"] == "/nonexistent"
+        assert pass_fds and command[0] == f"/proc/self/fd/{pass_fds[0]}"
+        arguments = command[2:]
+        if arguments == ("rev-parse", "--show-toplevel"):
+            return subprocess.CompletedProcess(command, 0, f"{active_worktree}\n".encode(), b"")
+        if arguments == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
+            return subprocess.CompletedProcess(command, 0, f"{common_dir}\n".encode(), b"")
+        if arguments == ("rev-parse", "--verify", "HEAD"):
+            return subprocess.CompletedProcess(command, 0, b"d" * 40 + b"\n", b"")
+        if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        raise AssertionError("unexpected Git command")
+
+    monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(corpus_gate_module, "__file__", str(imported_module))
+
+    with pytest.raises(RuntimeError) as caught:
+        GitRepositoryInspector(cwd=active_worktree).state()
+
+    assert str(caught.value) == "active worktree package unavailable"
+    assert str(active_worktree) not in str(caught.value)
+    assert str(imported_module) not in str(caught.value)
+
+
+def test_git_ignore_uses_deepest_linked_worktree_for_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository_root = tmp_path / "repository"
     linked_worktree = repository_root / ".worktrees" / "linked"
     repository_root.mkdir()
@@ -2441,8 +3511,13 @@ def test_git_ignore_uses_deepest_linked_worktree_for_target(tmp_path: Path) -> N
         encoding="utf-8",
     )
     (repository_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    module_path = repository_root / "src" / "ccparser" / "corpus_gate.py"
+    package_path = module_path.with_name("__init__.py")
+    module_path.parent.mkdir(parents=True)
+    package_path.write_text("# synthetic package\n", encoding="utf-8")
+    module_path.write_text("# synthetic active module\n", encoding="utf-8")
     subprocess.run(
-        ("git", "add", ".gitignore", "tracked.txt"),
+        ("git", "add", ".gitignore", "tracked.txt", "src/ccparser"),
         cwd=repository_root,
         check=True,
     )
@@ -2458,6 +3533,15 @@ def test_git_ignore_uses_deepest_linked_worktree_for_target(tmp_path: Path) -> N
         check=True,
         capture_output=True,
     )
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "__file__",
+        str(linked_worktree / "src" / "ccparser" / "corpus_gate.py"),
+    )
+    _install_synthetic_runtime_module(
+        monkeypatch,
+        _synthetic_runtime_module(linked_worktree / "src" / "ccparser" / "corpus_gate.py"),
+    )
     inspector = GitRepositoryInspector(cwd=linked_worktree)
     inspector.state()
 
@@ -2466,11 +3550,77 @@ def test_git_ignore_uses_deepest_linked_worktree_for_target(tmp_path: Path) -> N
 
 
 def test_local_toolchain_fingerprint_hashes_versions_caches_and_commands(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    executable = tmp_path / "tesseract"
+    executable.write_bytes(b"synthetic tesseract executable")
+    executable.chmod(0o700)
+    tessdata = tmp_path / "tessdata"
+    (tessdata / "configs").mkdir(parents=True)
+    (tessdata / "configs" / "tsv").write_bytes(b"tsv config")
+    (tessdata / "eng.traineddata").write_bytes(b"english data")
+    (tessdata / "heb.traineddata").write_bytes(b"hebrew data")
     monkeypatch.setattr(corpus_gate_module.platform, "python_version", lambda: "3.13.5")
-    monkeypatch.setattr(corpus_gate_module.metadata, "version", lambda _package: "0.1.0")
+    monkeypatch.setattr(
+        corpus_gate_module.platform,
+        "python_implementation",
+        lambda: "CPython",
+    )
+    versions = {
+        name: f"1.0.{index}"
+        for index, name in enumerate(corpus_gate_module._RUNTIME_DEPENDENCY_NAMES)
+    }
+    installed_snapshots = corpus_gate_module._runtime_dependency_snapshots()
+    synthetic_snapshots = tuple(
+        corpus_gate_module._RuntimeDistributionSnapshot(
+            dependency=snapshot.dependency.model_copy(
+                update={"version": versions[snapshot.dependency.name]}
+            ),
+            installation_root=snapshot.installation_root,
+            artifact_paths=snapshot.artifact_paths,
+            source_origins=snapshot.source_origins,
+            bytecode_origins=snapshot.bytecode_origins,
+            native_origins=snapshot.native_origins,
+        )
+        for snapshot in installed_snapshots
+    )
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_runtime_dependency_snapshots",
+        lambda: synthetic_snapshots,
+    )
+    standard_library = corpus_gate_module._StandardLibrarySnapshot(
+        identity=RuntimeArtifactIdentity(
+            file_count=1,
+            size_bytes=1,
+            digest="6" * 64,
+        ),
+        artifact_paths=frozenset(),
+        source_origins=frozenset(),
+        bytecode_origins=frozenset(),
+        native_origins=frozenset(),
+    )
+    origin_checks: list[tuple[object, object]] = []
+    monkeypatch.setattr(corpus_gate_module, "_snapshot_standard_library", lambda: standard_library)
+
+    def validate_origins(
+        snapshots: object,
+        *,
+        standard_library: object,
+    ) -> None:
+        origin_checks.append((snapshots, standard_library))
+
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_validate_loaded_distribution_origins",
+        validate_origins,
+    )
     monkeypatch.setattr(corpus_gate_module.fitz, "VersionBind", "1.28.0")
+    monkeypatch.setattr(corpus_gate_module.fitz, "mupdf_version", "1.29.0")
+    monkeypatch.setattr(corpus_gate_module, "_python_runtime_digest", lambda: "e" * 64)
+    monkeypatch.setattr(corpus_gate_module, "_runtime_environment_digest", lambda: "f" * 64)
+    monkeypatch.setattr(corpus_gate_module.shutil, "which", lambda _command: str(executable))
 
     def fake_run(
         command: tuple[str, ...],
@@ -2478,27 +3628,62 @@ def test_local_toolchain_fingerprint_hashes_versions_caches_and_commands(
         check: bool,
         stdout: int,
         stderr: int,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
         timeout: float,
     ) -> subprocess.CompletedProcess[bytes]:
         del check, stdout, stderr, timeout
-        assert command == ("tesseract", "--version")
-        return subprocess.CompletedProcess(command, 0, b"tesseract 5.7.1\nbuild details\n", b"")
+        assert env["PATH"] == "/nonexistent"
+        assert pass_fds and command[0] == f"/proc/self/fd/{pass_fds[0]}"
+        if command[-1] == "--version":
+            output = b"tesseract 5.7.1\nbuild details\n"
+        elif command[-1] == "--list-langs":
+            output = f'List of available languages in "{tessdata}" (2):\neng\nheb\n'.encode()
+        else:
+            raise AssertionError("unexpected command")
+        return subprocess.CompletedProcess(command, 0, output, b"")
 
-    monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    _install_synthetic_dynamic_runtime(monkeypatch, fake_run)
     inspector = LocalToolchainInspector()
 
-    first = inspector.fingerprint()
-    monkeypatch.setattr(
-        corpus_gate_module,
-        "tesseract_command",
-        lambda: ("tesseract", "stdin", "stdout", "--changed"),
-    )
-    changed = inspector.fingerprint()
+    try:
+        first = inspector.fingerprint()
+        monkeypatch.setattr(
+            corpus_gate_module,
+            "tesseract_command",
+            lambda: (*ocr_module.tesseract_command(), "--changed"),
+        )
+        changed = inspector.fingerprint()
+    finally:
+        inspector.close()
 
+    assert first.version == 6
+    assert first.standard_library == standard_library.identity
+    assert origin_checks == [
+        (synthetic_snapshots, standard_library),
+        (synthetic_snapshots, standard_library),
+    ]
     assert first.python_version == "3.13.5"
-    assert first.package_version == "0.1.0"
-    assert first.pymupdf_version == "1.28.0"
+    assert first.python_implementation == "CPython"
+    assert tuple(dependency.name for dependency in first.dependencies) == (
+        corpus_gate_module._RUNTIME_DEPENDENCY_NAMES
+    )
+    assert tuple(dependency.version for dependency in first.dependencies) == tuple(
+        versions[name] for name in corpus_gate_module._RUNTIME_DEPENDENCY_NAMES
+    )
+    assert first.pymupdf_binding_version == "1.28.0"
+    assert first.pymupdf_engine_version == "1.29.0"
     assert first.tesseract_version == "tesseract 5.7.1"
+    assert (
+        first.tesseract_version_output_digest
+        == sha256(b"tesseract 5.7.1\nbuild details\n").hexdigest()
+    )
+    assert tuple(asset.role for asset in first.tesseract_assets) == (
+        corpus_gate_module._TOOLCHAIN_ASSET_ROLES
+    )
+    serialized = first.model_dump_json()
+    assert str(tmp_path) not in serialized
+    assert "english data" not in serialized
     assert first.ocr_pipeline_version == corpus_gate_module.OCR_PIPELINE_VERSION
     assert first.ocr_cache_versions == tuple(sorted(first.ocr_cache_versions))
     assert (
@@ -2510,12 +3695,1240 @@ def test_local_toolchain_fingerprint_hashes_versions_caches_and_commands(
     assert first.digest != changed.digest
 
 
+def test_standard_library_byte_mutation_changes_aggregate_identity_without_paths(
+    tmp_path: Path,
+) -> None:
+    snapshotter = getattr(corpus_gate_module, "_snapshot_standard_library", None)
+    assert callable(snapshotter), "standard-library inventory is missing"
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    source = standard_library / "synthetic_stdlib.py"
+    source.write_bytes(b"APPROVED = 1\n")
+
+    before = snapshotter((standard_library,))
+    source.write_bytes(b"SUBSTITUTED!\n")
+    after = snapshotter((standard_library,))
+
+    assert before.identity != after.identity
+    serialized = before.identity.model_dump_json()
+    assert str(tmp_path) not in serialized
+    assert "APPROVED" not in serialized
+
+
+def test_standard_library_resource_mutation_changes_aggregate_identity(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    (standard_library / "importable.py").write_bytes(b"VALUE = 1\n")
+    resource = standard_library / "resources" / "defaults.json"
+    resource.parent.mkdir()
+    resource.write_bytes(b'{"mode":"approved"}\n')
+
+    before = corpus_gate_module._snapshot_standard_library((standard_library,))
+    resource.write_bytes(b'{"mode":"changed!"}\n')
+    after = corpus_gate_module._snapshot_standard_library((standard_library,))
+
+    assert before.identity != after.identity
+
+
+def test_standard_library_inventory_excludes_distribution_roots(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    (standard_library / "decimal.py").write_bytes(b"APPROVED = 1\n")
+    installed = standard_library / "site-packages" / "unapproved_runtime.py"
+    installed.parent.mkdir()
+    installed.write_bytes(b"VALUE = 1\n")
+
+    before = corpus_gate_module._snapshot_standard_library((standard_library,))
+    installed.write_bytes(b"SUBSTITUTE!\n")
+    after = corpus_gate_module._snapshot_standard_library((standard_library,))
+
+    assert before.identity == after.identity
+    assert installed.resolve() not in before.artifact_paths
+
+
+def test_standard_library_symlink_retarget_changes_identity(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_bytes(b"SAME = 1\n")
+    second.write_bytes(first.read_bytes())
+    alias = standard_library / "aliased.py"
+    alias.symlink_to(first)
+
+    before = corpus_gate_module._snapshot_standard_library((standard_library,))
+    alias.unlink()
+    alias.symlink_to(second)
+    after = corpus_gate_module._snapshot_standard_library((standard_library,))
+
+    assert before.identity != after.identity
+
+
+def test_loaded_standard_library_origin_and_cache_must_be_inventoried(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    source = standard_library / "synthetic_stdlib.py"
+    source.write_bytes(b"VALUE = 1\n")
+    snapshot = corpus_gate_module._snapshot_standard_library((standard_library,))
+    specification = spec_from_file_location("synthetic_stdlib", source)
+    assert specification is not None
+    module = module_from_spec(specification)
+
+    corpus_gate_module._validate_loaded_distribution_origins(
+        (),
+        standard_library=snapshot,
+        loaded_modules={"synthetic_stdlib": module},
+    )
+
+    substituted_cache = tmp_path / "synthetic_stdlib.pyc"
+    substituted_cache.write_bytes(b"SUBSTITUTE")
+    module.__cached__ = str(substituted_cache)
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            standard_library=snapshot,
+            loaded_modules={"synthetic_stdlib": module},
+        )
+
+
+def test_standard_library_resource_cannot_be_used_as_module_source(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    (standard_library / "importable.py").write_bytes(b"VALUE = 1\n")
+    resource = standard_library / "defaults.json"
+    resource.write_bytes(b"VALUE = 2\n")
+    (standard_library / "defaults_alias.py").symlink_to(resource)
+    snapshot = corpus_gate_module._snapshot_standard_library((standard_library,))
+    loader = SourceFileLoader("defaults", str(resource))
+    specification = ModuleSpec("defaults", loader, origin=str(resource))
+    module = module_from_spec(specification)
+    module.__file__ = str(resource)
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            standard_library=snapshot,
+            loaded_modules={"defaults": module},
+        )
+
+
+def test_standard_library_resource_symlink_cannot_become_a_source_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    resource = standard_library / "payload.json"
+    resource.write_bytes(b"VALUE = 2\n")
+    source_alias = standard_library / "payload_alias.py"
+    source_alias.symlink_to(resource)
+    snapshot = corpus_gate_module._snapshot_standard_library((standard_library,))
+    loader = SourceFileLoader("payload_alias", str(source_alias))
+    specification = ModuleSpec("payload_alias", loader, origin=str(source_alias))
+    module = module_from_spec(specification)
+    module.__file__ = str(source_alias)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            standard_library=snapshot,
+            loaded_modules={"payload_alias": module},
+        )
+
+
+def test_loaded_source_module_requires_its_specification_loader(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    source = standard_library / "approved.py"
+    source.write_bytes(b"VALUE = 1\n")
+    snapshot = corpus_gate_module._snapshot_standard_library((standard_library,))
+    specification = spec_from_file_location("approved", source)
+    assert specification is not None
+    module = module_from_spec(specification)
+    module.__loader__ = object()
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            standard_library=snapshot,
+            loaded_modules={"approved": module},
+        )
+
+
+def test_loaded_source_module_rejects_noncanonical_missing_cache(tmp_path: Path) -> None:
+    standard_library = tmp_path / "stdlib"
+    standard_library.mkdir()
+    source = standard_library / "approved.py"
+    source.write_bytes(b"VALUE = 1\n")
+    snapshot = corpus_gate_module._snapshot_standard_library((standard_library,))
+    specification = spec_from_file_location("approved", source)
+    assert specification is not None
+    module = module_from_spec(specification)
+    module.__cached__ = str(tmp_path / "not-the-canonical-cache.pyc")
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            standard_library=snapshot,
+            loaded_modules={"approved": module},
+        )
+
+
+def test_loaded_origin_without_closed_runtime_owner_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "site-packages" / "unapproved_runtime.py"
+    source.parent.mkdir()
+    source.write_bytes(b"VALUE = 1\n")
+    module = ModuleType("unapproved_runtime")
+    module.__file__ = str(source)
+    module.__spec__ = ModuleSpec(
+        "unapproved_runtime",
+        SourceFileLoader("unapproved_runtime", str(source)),
+        origin=str(source),
+    )
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            loaded_modules={"unapproved_runtime": module},
+        )
+
+
+def test_frozen_standard_library_alias_is_accepted() -> None:
+    module = ModuleType("importlib._bootstrap")
+    module.__loader__ = FrozenImporter
+    module.__spec__ = ModuleSpec(
+        "_frozen_importlib",
+        loader=FrozenImporter,
+        origin="frozen",
+    )
+
+    corpus_gate_module._validate_loaded_distribution_origins(
+        (),
+        loaded_modules={"_frozen_importlib": module},
+    )
+
+
+def test_real_builtin_module_is_accepted() -> None:
+    corpus_gate_module._validate_loaded_distribution_origins(
+        (),
+        loaded_modules={"sys": sys},
+    )
+
+
+@pytest.mark.parametrize(
+    ("origin", "loader"),
+    (("built-in", BuiltinImporter), ("frozen", FrozenImporter)),
+)
+def test_fake_builtin_or_frozen_module_is_rejected(origin: str, loader: object) -> None:
+    module = ModuleType("unapproved_runtime")
+    module.callback = lambda: None
+    module.__loader__ = loader
+    module.__spec__ = ModuleSpec(
+        "unapproved_runtime",
+        loader=loader,
+        origin=origin,
+    )
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            loaded_modules={"unapproved_runtime": module},
+        )
+
+
+def test_originless_native_data_module_is_accepted_but_python_code_is_rejected() -> None:
+    native_data = ModuleType("array")
+    native_data.NativeType = array.array
+
+    corpus_gate_module._validate_loaded_distribution_origins(
+        (),
+        loaded_modules={"array": native_data},
+    )
+
+    python_code = ModuleType("runtime_data")
+    python_code.callback = lambda: None
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (),
+            loaded_modules={"runtime_data": python_code},
+        )
+
+
+def test_toolchain_fingerprint_requires_git_executable_identity() -> None:
+    git_field = ToolchainFingerprint.model_fields.get("git_executable")
+
+    assert git_field is not None
+    assert git_field.is_required()
+
+
+def test_toolchain_fingerprint_requires_standard_library_identity() -> None:
+    standard_library_field = ToolchainFingerprint.model_fields.get("standard_library")
+
+    assert standard_library_field is not None
+    assert standard_library_field.is_required()
+
+
+def test_toolchain_fingerprint_requires_external_native_closure_identities() -> None:
+    git_field = ToolchainFingerprint.model_fields.get("git_native_closure")
+    tesseract_field = ToolchainFingerprint.model_fields.get("tesseract_native_closure")
+
+    assert git_field is not None
+    assert git_field.is_required()
+    assert tesseract_field is not None
+    assert tesseract_field.is_required()
+
+
+def test_bound_dynamic_executable_uses_only_sealed_native_mappings(
+    tmp_path: Path,
+) -> None:
+    executable_path = shutil.which("git")
+    if executable_path is None:
+        pytest.skip("Git is unavailable")
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(executable_path),
+        staging_parent=tmp_path,
+    )
+    try:
+        completed = runtime.run(
+            ("--version",),
+            cwd=tmp_path,
+            environment=tuple(sorted(corpus_gate_module._git_child_environment().items())),
+            timeout=10.0,
+        )
+        required_seals = (
+            fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_WRITE | fcntl.F_SEAL_SEAL
+        )
+        assert all(
+            fcntl.fcntl(file_descriptor, fcntl.F_GET_SEALS) == required_seals
+            for file_descriptor in runtime.executable_file_descriptors
+        )
+    finally:
+        runtime.close()
+
+    assert completed.returncode == 0
+    assert completed.stdout.startswith(b"git version ")
+    assert runtime.native_closure.file_count >= 2
+
+
+def test_script_interpreter_is_part_of_the_native_closure(tmp_path: Path) -> None:
+    script = tmp_path / "wrapper"
+    script.write_text("#!/bin/sh\nprintf script-interpreter-bound\n", encoding="utf-8")
+    script.chmod(0o700)
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        script,
+        staging_parent=tmp_path,
+    )
+    try:
+        unique = {
+            capability.file_descriptor: capability
+            for capability in (
+                runtime.program,
+                runtime.interpreter,
+                *(library.capability for library in runtime.libraries),
+            )
+        }
+        records = tuple(
+            sorted((capability.size_bytes, capability.sha256) for capability in unique.values())
+        )
+        bindings = (
+            ("program", runtime.program.sha256),
+            ("interpreter", runtime.interpreter.sha256),
+            *(sorted((library.alias, library.capability.sha256) for library in runtime.libraries)),
+        )
+        expected = RuntimeArtifactIdentity(
+            file_count=len(records),
+            size_bytes=sum(size for size, _digest in records),
+            digest=corpus_gate_module._toolchain_payload_digest(
+                {"bindings": bindings, "files": records}
+            ),
+        )
+
+        assert runtime.executable.file_descriptor != runtime.program.file_descriptor
+        assert runtime.native_closure == expected
+    finally:
+        runtime.close()
+
+
+def test_traced_dynamic_executable_rejects_an_unapproved_native_mapping(
+    tmp_path: Path,
+) -> None:
+    executable_path = shutil.which("git")
+    if executable_path is None:
+        pytest.skip("Git is unavailable")
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(executable_path),
+        staging_parent=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="external runtime unavailable"):
+            runtime.run(
+                ("--version",),
+                cwd=tmp_path,
+                environment=tuple(sorted(corpus_gate_module._git_child_environment().items())),
+                timeout=10.0,
+                allowed_file_descriptors=runtime.executable_file_descriptors[:-1],
+            )
+    finally:
+        runtime.close()
+
+
+def test_late_tesseract_plugin_mapping_is_rejected_before_execution(
+    tmp_path: Path,
+) -> None:
+    executable_path = shutil.which("tesseract")
+    if executable_path is None:
+        pytest.skip("Tesseract is unavailable")
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(executable_path),
+        staging_parent=tmp_path,
+    )
+    environment = corpus_gate_module._sanitized_child_environment()
+    environment.pop("SASL_PATH")
+    try:
+        with pytest.raises(RuntimeError, match="external runtime unavailable"):
+            runtime.run(
+                ("--version",),
+                cwd=tmp_path,
+                environment=tuple(sorted(environment.items())),
+                timeout=10.0,
+            )
+    finally:
+        runtime.close()
+
+
+def test_traced_runtime_timeout_kills_the_broker_and_tracee(tmp_path: Path) -> None:
+    executable_path = shutil.which("sleep")
+    if executable_path is None:
+        pytest.skip("sleep is unavailable")
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(executable_path),
+        staging_parent=tmp_path,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            runtime.run(
+                ("10",),
+                cwd=tmp_path,
+                environment=tuple(
+                    sorted(corpus_gate_module._sanitized_child_environment().items())
+                ),
+                timeout=0.1,
+            )
+    finally:
+        runtime.close()
+
+
+def test_traced_runtime_rejects_a_second_exec_before_target_code_runs(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "second-exec-returned"
+    script = tmp_path / "wrapper"
+    script.write_text(
+        f"#!/bin/sh\n/bin/true\nprintf returned > '{marker}'\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o700)
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        script,
+        staging_parent=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="external runtime unavailable"):
+            runtime.run(
+                (),
+                cwd=tmp_path,
+                environment=tuple(
+                    sorted(corpus_gate_module._sanitized_child_environment().items())
+                ),
+                timeout=10.0,
+            )
+    finally:
+        runtime.close()
+
+    assert not marker.exists()
+
+
+def test_traced_runtime_supports_multiple_threads_via_legacy_clone_fallback(
+    tmp_path: Path,
+) -> None:
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(sys.executable),
+        staging_parent=tmp_path,
+    )
+    program = """
+import _thread
+
+remaining = [4]
+guard = _thread.allocate_lock()
+done = _thread.allocate_lock()
+done.acquire()
+
+def finish():
+    with guard:
+        remaining[0] -= 1
+        if remaining[0] == 0:
+            done.release()
+
+for _ in range(4):
+    _thread.start_new_thread(finish, ())
+done.acquire()
+print("threads-complete")
+"""
+    try:
+        completed = runtime.run(
+            ("-I", "-S", "-c", program),
+            cwd=tmp_path,
+            environment=tuple(sorted(corpus_gate_module._sanitized_child_environment().items())),
+            timeout=10.0,
+        )
+    finally:
+        runtime.close()
+
+    assert completed.returncode == 0
+    assert completed.stdout == b"threads-complete\n"
+
+
+class _SyntheticRuntimeDistribution:
+    def __init__(self, root: Path, *, version: str = "9.9.9") -> None:
+        self._root = root
+        self.version = version
+        self.files = tuple(
+            path.relative_to(root) for path in sorted(root.rglob("*")) if path.is_file()
+        )
+
+    def locate_file(self, path: object) -> Path:
+        return self._root / str(path)
+
+
+@pytest.mark.parametrize(
+    ("dependency_name", "relative_artifact"),
+    (
+        ("pydantic", "pydantic/__init__.py"),
+        (
+            "pydantic-core",
+            "pydantic_core/_pydantic_core.cpython-313-x86_64-linux-gnu.so",
+        ),
+    ),
+)
+def test_same_version_distribution_byte_mutation_changes_dependency_identity(
+    tmp_path: Path,
+    dependency_name: corpus_gate_module.RuntimeDependencyName,
+    relative_artifact: str,
+) -> None:
+    distribution_root = tmp_path / "site-packages"
+    package_file = distribution_root / relative_artifact
+    package_file.parent.mkdir(parents=True)
+    package_file.write_bytes(b"APPROVED-BYTES")
+    metadata_file = distribution_root / f"{dependency_name}-9.9.9.dist-info" / "METADATA"
+    metadata_file.parent.mkdir()
+    metadata_file.write_text(
+        f"Name: {dependency_name}\nVersion: 9.9.9\n",
+        encoding="utf-8",
+    )
+    distribution = _SyntheticRuntimeDistribution(distribution_root)
+
+    before = corpus_gate_module._snapshot_runtime_distribution(
+        dependency_name,
+        distribution=distribution,
+    )
+    package_file.write_bytes(b"SUBSTITUTE-DATA")
+    after = corpus_gate_module._snapshot_runtime_distribution(
+        dependency_name,
+        distribution=distribution,
+    )
+
+    assert before.dependency.version == after.dependency.version == "9.9.9"
+    assert before.dependency.content_digest != after.dependency.content_digest
+
+
+def test_distribution_resource_symlink_cannot_become_a_source_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distribution_root = tmp_path / "site-packages"
+    resource = distribution_root / "resources" / "payload.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes(b"VALUE = 2\n")
+    source_alias = distribution_root / "pydantic" / "__init__.py"
+    source_alias.parent.mkdir()
+    source_alias.symlink_to(resource)
+    distribution = _SyntheticRuntimeDistribution(distribution_root)
+    distribution.files = (source_alias.relative_to(distribution_root),)
+    snapshot = corpus_gate_module._snapshot_runtime_distribution(
+        "pydantic",
+        distribution=distribution,
+    )
+    specification = spec_from_file_location("pydantic", source_alias)
+    assert specification is not None
+    module = module_from_spec(specification)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    with pytest.raises(RuntimeError, match="loaded runtime origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (snapshot,),
+            loaded_modules={"pydantic": module},
+        )
+
+
+def test_loaded_dependency_origin_must_be_an_inventoried_distribution_file(
+    tmp_path: Path,
+) -> None:
+    distribution_root = tmp_path / "site-packages"
+    approved_origin = distribution_root / "pydantic" / "__init__.py"
+    approved_origin.parent.mkdir(parents=True)
+    approved_origin.write_bytes(b"APPROVED = 1\n")
+    distribution = _SyntheticRuntimeDistribution(distribution_root)
+    snapshot = corpus_gate_module._snapshot_runtime_distribution(
+        "pydantic",
+        distribution=distribution,
+    )
+    substitute_origin = tmp_path / "shadow" / "pydantic" / "__init__.py"
+    substitute_origin.parent.mkdir(parents=True)
+    substitute_origin.write_bytes(approved_origin.read_bytes())
+    substitute = ModuleType("pydantic")
+    substitute.__file__ = str(substitute_origin)
+    substitute.__spec__ = ModuleSpec("pydantic", loader=None, origin=str(substitute_origin))
+
+    with pytest.raises(RuntimeError, match="dependency origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (snapshot,),
+            loaded_modules={"pydantic": substitute},
+        )
+
+
+def test_uninventoried_dependency_bytecode_origin_is_rejected(
+    tmp_path: Path,
+) -> None:
+    distribution_root = tmp_path / "site-packages"
+    source = distribution_root / "pydantic" / "__init__.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"APPROVED = 1\n")
+    distribution = _SyntheticRuntimeDistribution(distribution_root)
+    snapshot = corpus_gate_module._snapshot_runtime_distribution(
+        "pydantic",
+        distribution=distribution,
+    )
+    bytecode = source.parent / "__pycache__" / "__init__.cpython-313.pyc"
+    bytecode.parent.mkdir()
+    py_compile.compile(str(source), cfile=str(bytecode), doraise=True)
+    loaded = ModuleType("pydantic")
+    loaded.__file__ = str(source)
+    loaded.__cached__ = str(bytecode)
+    loaded.__spec__ = ModuleSpec(
+        "pydantic",
+        SourceFileLoader("pydantic", str(source)),
+        origin=str(source),
+    )
+
+    with pytest.raises(RuntimeError, match="dependency origin unavailable"):
+        corpus_gate_module._validate_loaded_distribution_origins(
+            (snapshot,),
+            loaded_modules={"pydantic": loaded},
+        )
+
+
+def test_same_inode_native_library_byte_mutation_changes_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "libsynthetic.so"
+    library.write_bytes(b"approved-native-bytes")
+    mapping = corpus_gate_module._MappedNativeFile.from_path(library)
+    before_inode = library.stat().st_ino
+
+    before = corpus_gate_module._native_runtime_identity((mapping,))
+    library.write_bytes(b"substitute-native-data")
+    after = corpus_gate_module._native_runtime_identity((mapping,))
+
+    assert library.stat().st_ino == before_inode
+    assert before.digest != after.digest
+
+
+def test_native_library_path_inode_replacement_fails_closed(tmp_path: Path) -> None:
+    library = tmp_path / "libsynthetic.so"
+    library.write_bytes(b"approved-native-bytes")
+    mapping = corpus_gate_module._MappedNativeFile.from_path(library)
+    substitute = tmp_path / "substitute.so"
+    substitute.write_bytes(library.read_bytes())
+    os.replace(substitute, library)
+
+    with pytest.raises(RuntimeError, match="native runtime changed"):
+        corpus_gate_module._native_runtime_identity((mapping,))
+
+
+def test_fixed_preload_path_byte_mutation_changes_runtime_environment_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preload = tmp_path / "libpreload.so"
+    preload.write_bytes(b"approved-preload")
+    monkeypatch.setenv("LD_PRELOAD", str(preload))
+
+    before = corpus_gate_module._runtime_environment_digest()
+    preload.write_bytes(b"substitute-preload")
+    after = corpus_gate_module._runtime_environment_digest()
+
+    assert before != after
+
+
+def test_external_child_locale_is_fixed_instead_of_inherited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANG", "attacker_LOCALE")
+    monkeypatch.setenv("LANGUAGE", "attacker")
+    monkeypatch.setenv("LC_ALL", "attacker_LOCALE")
+    monkeypatch.setenv("LC_NUMERIC", "attacker_LOCALE")
+    monkeypatch.setenv("TZ", "attacker/zone")
+
+    environment = corpus_gate_module._sanitized_child_environment()
+
+    assert environment["LANG"] == "C.UTF-8"
+    assert environment["LANGUAGE"] == "C"
+    assert environment["LC_ALL"] == "C.UTF-8"
+    assert environment["TZ"] == "UTC"
+    assert "LC_NUMERIC" not in environment
+
+
+def test_isolated_worker_environment_never_maps_fixed_path_preload_substitutes(
+    tmp_path: Path,
+) -> None:
+    mapped_libraries = corpus_gate_module._mapped_native_files()
+    approved_source = next(
+        mapping.path for mapping in mapped_libraries if mapping.path.name.startswith("libuuid.so")
+    )
+    substitute_source = next(
+        mapping.path for mapping in mapped_libraries if mapping.path.name.startswith("liblzma.so")
+    )
+    fixed_preload = tmp_path / "fixed-preload.so"
+    fixed_preload.write_bytes(approved_source.read_bytes())
+    probe = (
+        "from pathlib import Path;"
+        f"print({str(fixed_preload)!r} in Path('/proc/self/maps').read_text())"
+    )
+    poisoned_environment = dict(os.environ)
+    poisoned_environment["LD_PRELOAD"] = str(fixed_preload)
+
+    control = subprocess.run(
+        (sys.executable, "-I", "-S", "-c", probe),
+        check=True,
+        capture_output=True,
+        env=poisoned_environment,
+        text=True,
+    )
+    approved = subprocess.run(
+        (sys.executable, "-I", "-S", "-c", probe),
+        check=True,
+        capture_output=True,
+        env=corpus_gate_module._isolated_worker_environment(),
+        text=True,
+    )
+    fixed_preload.write_bytes(substitute_source.read_bytes())
+    substituted = subprocess.run(
+        (sys.executable, "-I", "-S", "-c", probe),
+        check=True,
+        capture_output=True,
+        env=corpus_gate_module._isolated_worker_environment(),
+        text=True,
+    )
+
+    assert control.stdout == "True\n"
+    assert approved.stdout == "False\n"
+    assert substituted.stdout == "False\n"
+
+
+def test_runtime_environment_fingerprint_tracks_relevant_but_not_unrelated_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OMP_THREAD_LIMIT", raising=False)
+    monkeypatch.delenv("PRIVATE_UNRELATED_SETTING", raising=False)
+    baseline = corpus_gate_module._runtime_environment_digest()
+
+    monkeypatch.setenv("PRIVATE_UNRELATED_SETTING", "private value")
+    assert corpus_gate_module._runtime_environment_digest() == baseline
+
+    monkeypatch.setenv("OMP_THREAD_LIMIT", "1")
+    assert corpus_gate_module._runtime_environment_digest() != baseline
+
+
+@pytest.mark.parametrize(
+    "relative_asset",
+    ("executable", "configs/tsv", "eng.traineddata", "heb.traineddata"),
+)
+def test_tesseract_fingerprint_tracks_every_executable_and_data_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_asset: str,
+) -> None:
+    executable = tmp_path / "executable"
+    executable.write_bytes(b"executable")
+    executable.chmod(0o700)
+    tessdata = tmp_path / "tessdata"
+    (tessdata / "configs").mkdir(parents=True)
+    for relative_path in ("configs/tsv", "eng.traineddata", "heb.traineddata"):
+        (tessdata / relative_path).write_bytes(relative_path.encode())
+    monkeypatch.setattr(corpus_gate_module.shutil, "which", lambda _command: str(executable))
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        stdout: int,
+        stderr: int,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del check, stdout, stderr, timeout
+        assert env["PATH"] == "/nonexistent"
+        assert pass_fds and command[0] == f"/proc/self/fd/{pass_fds[0]}"
+        output = (
+            b"tesseract 5.7.1\nlinked libraries\n"
+            if command[-1] == "--version"
+            else f'List of available languages in "{tessdata}" (2):\neng\nheb\n'.encode()
+        )
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    _install_synthetic_dynamic_runtime(monkeypatch, fake_run)
+    commands = (
+        ocr_module.tesseract_command(),
+        ocr_module.supplemental_tesseract_command(),
+        ocr_module.numeric_tesseract_command(),
+        ocr_module.currency_tesseract_command(),
+    )
+    before = corpus_gate_module._tesseract_metadata(commands)
+    selected = executable if relative_asset == "executable" else tessdata / relative_asset
+    selected.write_bytes(selected.read_bytes() + b" changed")
+    if selected == executable:
+        selected.chmod(0o700)
+
+    after = corpus_gate_module._tesseract_metadata(commands)
+
+    assert before != after
+
+
+def test_tesseract_execution_uses_fingerprinted_executable_and_assets_after_swaps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    git_executable = executable_directory / "git"
+    git_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    git_executable.chmod(0o700)
+    tessdata = tmp_path / "tessdata"
+    (tessdata / "configs").mkdir(parents=True)
+    original_assets = {
+        "configs/tsv": "approved-config",
+        "eng.traineddata": "approved-eng",
+        "heb.traineddata": "approved-heb",
+    }
+    for relative_path, content in original_assets.items():
+        (tessdata / relative_path).write_text(f"{content}\n", encoding="utf-8")
+    substitute_marker = tmp_path / "substitute-executed"
+    poisoned_environment_marker = tmp_path / "poisoned-environment-observed"
+    executable = executable_directory / "tesseract"
+    executable.write_text(
+        "\n".join(
+            (
+                "#!/bin/sh",
+                (
+                    f'if [ -n "${{LD_PRELOAD-}}" ] || '
+                    f'[ -n "${{TESSDATA_PREFIX-}}" ]; then : > '
+                    f"'{poisoned_environment_marker}'; fi"
+                ),
+                'if [ "${1-}" = "--version" ]; then',
+                "  printf 'tesseract approved\\nbuild approved\\n'",
+                "  exit 0",
+                "fi",
+                'if [ "${1-}" = "--list-langs" ]; then',
+                f"  printf 'List of available languages in \"{tessdata}\" (2):\\neng\\nheb\\n'",
+                "  exit 0",
+                "fi",
+                "tessdata_directory=",
+                'while [ "$#" -gt 0 ]; do',
+                '  if [ "$1" = "--tessdata-dir" ]; then',
+                "    shift",
+                "    tessdata_directory=$1",
+                "  fi",
+                "  shift",
+                "done",
+                'IFS= read -r eng < "$tessdata_directory/eng.traineddata"',
+                'IFS= read -r heb < "$tessdata_directory/heb.traineddata"',
+                'IFS= read -r config < "$tessdata_directory/configs/tsv"',
+                'printf \'%s|%s|%s\\n\' "$eng" "$heb" "$config"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    substitute = executable_directory / "substitute"
+    substitute.write_text(
+        f"#!/bin/sh\n: > '{substitute_marker}'\nprintf 'substitute\\n'\n",
+        encoding="utf-8",
+    )
+    substitute.chmod(0o700)
+    monkeypatch.setenv("PATH", str(executable_directory))
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "untrusted-library.so"))
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path / "untrusted-tessdata"))
+    commands = (
+        ocr_module.tesseract_command(),
+        ocr_module.supplemental_tesseract_command(),
+        ocr_module.numeric_tesseract_command(),
+        ocr_module.currency_tesseract_command(),
+    )
+    capabilities = corpus_gate_module._GateRuntimeCapabilities.bind()
+    work_directory = tmp_path / "work"
+    work_directory.mkdir()
+    work_fd = os.open(work_directory, os.O_RDONLY | os.O_DIRECTORY)
+    staged_runtime = None
+    try:
+        capabilities.tesseract_metadata(commands)
+        os.replace(substitute, executable)
+        for relative_path in original_assets:
+            (tessdata / relative_path).write_text("substitute-data\n", encoding="utf-8")
+        staged_runtime = capabilities.stage_tesseract(work_fd)
+        with ocr_module.bind_tesseract_runtime(staged_runtime.runtime):
+            provider = ocr_module.TesseractOcr(tmp_path / "cache")
+            version = provider._tesseract_version()
+            recognized = provider._recognize(
+                b"synthetic image",
+                ocr_module.tesseract_command(),
+            )
+
+        assert version == "tesseract approved"
+        assert recognized == b"approved-eng|approved-heb|approved-config\n"
+        assert not substitute_marker.exists()
+        assert not poisoned_environment_marker.exists()
+
+        assert capabilities.tesseract is not None
+        tessdata_fd = staged_runtime._directory_fds[0]
+        os.fchmod(tessdata_fd, 0o700)
+        os.unlink("eng.traineddata", dir_fd=tessdata_fd)
+        os.symlink(
+            capabilities.tesseract.heb_traineddata.descriptor_path,
+            "eng.traineddata",
+            dir_fd=tessdata_fd,
+        )
+        os.fchmod(tessdata_fd, 0o500)
+        with (
+            ocr_module.bind_tesseract_runtime(staged_runtime.runtime),
+            pytest.raises(ocr_module.OcrError, match="recognition failed"),
+        ):
+            provider._recognize(
+                b"synthetic image",
+                ocr_module.tesseract_command(),
+            )
+    finally:
+        if staged_runtime is not None:
+            staged_runtime.close()
+        os.close(work_fd)
+        capabilities.close()
+
+
+def test_full_tesseract_version_output_changes_fingerprint_even_when_first_line_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "tesseract"
+    executable.write_bytes(b"executable")
+    executable.chmod(0o700)
+    tessdata = tmp_path / "tessdata"
+    (tessdata / "configs").mkdir(parents=True)
+    for relative_path in ("configs/tsv", "eng.traineddata", "heb.traineddata"):
+        (tessdata / relative_path).write_bytes(relative_path.encode())
+    monkeypatch.setattr(corpus_gate_module.shutil, "which", lambda _command: str(executable))
+    build_details = b"build-a"
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        stdout: int,
+        stderr: int,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del check, stdout, stderr, timeout
+        assert env["PATH"] == "/nonexistent"
+        assert pass_fds and command[0] == f"/proc/self/fd/{pass_fds[0]}"
+        output = (
+            b"tesseract 5.7.1\n" + build_details + b"\n"
+            if command[-1] == "--version"
+            else f'List of available languages in "{tessdata}" (2):\neng\nheb\n'.encode()
+        )
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    _install_synthetic_dynamic_runtime(monkeypatch, fake_run)
+    commands = (
+        ocr_module.tesseract_command(),
+        ocr_module.supplemental_tesseract_command(),
+        ocr_module.numeric_tesseract_command(),
+        ocr_module.currency_tesseract_command(),
+    )
+    before = corpus_gate_module._tesseract_metadata(commands)
+    build_details = b"build-b"
+
+    after = corpus_gate_module._tesseract_metadata(commands)
+
+    assert before[0] == after[0]
+    assert before[1] != after[1]
+
+
 def test_default_dependencies_bind_real_adapters_without_executing_them() -> None:
     dependencies = corpus_gate_module._default_dependencies()
+    try:
+        assert isinstance(dependencies.runner, LocalCorpusRunner)
+        assert isinstance(dependencies.repository, GitRepositoryInspector)
+        assert isinstance(dependencies.toolchain, LocalToolchainInspector)
+        assert dependencies.runtime_capabilities is not None
+        assert dependencies.repository._executable is dependencies.runtime_capabilities.git
+        assert dependencies.toolchain._runtime_capabilities is dependencies.runtime_capabilities
+    finally:
+        assert dependencies.runtime_capabilities is not None
+        dependencies.runtime_capabilities.close()
 
-    assert isinstance(dependencies.runner, LocalCorpusRunner)
-    assert isinstance(dependencies.repository, GitRepositoryInspector)
-    assert isinstance(dependencies.toolchain, LocalToolchainInspector)
+
+def test_default_gate_boundary_delegates_to_isolated_worker_despite_live_default_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _dependencies, _runner = _gate_fixture(tmp_path)
+    expected = CorpusGateAttestation(
+        passed=True,
+        mode=CorpusGateMode.RECORD,
+        commit_abbreviation="d" * 12,
+        toolchain_abbreviation="a" * 12,
+        retained_counts=_counts(),
+        quarantine_counts=_counts(),
+        elapsed_seconds=Decimal("1"),
+        performance_checked=False,
+        reason_codes=(),
+    )
+
+    def untracked_parser(*_args: object, **_kwargs: object) -> BatchResult:
+        raise AssertionError("must not be inherited by isolated worker")
+
+    original_defaults = LocalCorpusRunner.__init__.__kwdefaults__
+    assert original_defaults is not None
+    mutated_defaults = dict(original_defaults)
+    mutated_defaults["parser"] = untracked_parser
+    monkeypatch.setattr(LocalCorpusRunner.__init__, "__kwdefaults__", mutated_defaults)
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_run_corpus_gate_in_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("default boundary must not execute in parent interpreter")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_run_corpus_gate_isolated",
+        lambda actual_config, actual_mode: expected,
+        raising=False,
+    )
+
+    assert run_corpus_gate(config, CorpusGateMode.RECORD) == expected
+
+
+class _SyntheticDistributionRoot:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def locate_file(self, _path: str) -> Path:
+        return self._root
+
+
+def _isolated_import_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    dependency_root = tmp_path / "approved-dependencies"
+    candidate_root = tmp_path / "candidate-src"
+    dependency_root.mkdir()
+    package_root = candidate_root / "ccparser"
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "corpus_gate.py").write_text(
+        """def _isolated_worker_main() -> int:
+    import decimal
+    import fitz
+    import pydantic
+
+    if not hasattr(decimal, "Decimal"):
+        return 71
+    if getattr(pydantic, "APPROVED_ORIGIN", None) != "dependency":
+        return 72
+    if getattr(fitz, "APPROVED_ORIGIN", None) != "dependency":
+        return 73
+    return 0
+""",
+        encoding="utf-8",
+    )
+    for module_name in ("pydantic", "fitz"):
+        (dependency_root / f"{module_name}.py").write_text(
+            'APPROVED_ORIGIN = "dependency"\n',
+            encoding="utf-8",
+        )
+
+    synthetic_distribution = _SyntheticDistributionRoot(dependency_root)
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distribution",
+        lambda _name: synthetic_distribution,
+    )
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "__file__",
+        str(package_root / "corpus_gate.py"),
+    )
+    return dependency_root.resolve(), candidate_root.resolve()
+
+
+def _write_candidate_shadow(
+    candidate_root: Path,
+    module_name: str,
+    artifact_kind: str,
+) -> None:
+    source = candidate_root / f"{module_name}.py"
+    source.write_text('raise RuntimeError("candidate shadow executed")\n', encoding="utf-8")
+    if artifact_kind == "bytecode":
+        py_compile.compile(
+            str(source),
+            cfile=str(candidate_root / f"{module_name}.pyc"),
+            doraise=True,
+        )
+        source.unlink()
+
+
+def test_isolated_search_paths_put_approved_dependencies_before_candidate_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency_root, candidate_root = _isolated_import_roots(tmp_path, monkeypatch)
+
+    assert corpus_gate_module._isolated_search_paths() == (
+        dependency_root,
+        candidate_root,
+    )
+
+
+@pytest.mark.parametrize("module_name", ("decimal", "pydantic", "fitz"))
+@pytest.mark.parametrize("artifact_kind", ("source", "bytecode"))
+def test_isolated_worker_rejects_candidate_stdlib_and_dependency_shadows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    artifact_kind: str,
+) -> None:
+    _dependency_root, candidate_root = _isolated_import_roots(tmp_path, monkeypatch)
+    _write_candidate_shadow(candidate_root, module_name, artifact_kind)
+    search_paths = tuple(str(path) for path in corpus_gate_module._isolated_search_paths())
+
+    completed = subprocess.run(
+        (sys.executable, "-I", "-B", "-S", "-c", corpus_gate_module._ISOLATED_BOOTSTRAP),
+        input=f"{json.dumps(search_paths)}\n",
+        check=False,
+        capture_output=True,
+        env=corpus_gate_module._isolated_worker_environment(),
+        text=True,
+    )
+
+    assert completed.returncode == 0, "candidate shadow module executed"
+
+
+def test_isolated_gate_worker_uses_no_site_isolated_interpreter_and_private_pipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _dependencies, _runner = _gate_fixture(tmp_path)
+    expected = CorpusGateAttestation(
+        passed=True,
+        mode=CorpusGateMode.RECORD,
+        commit_abbreviation="d" * 12,
+        toolchain_abbreviation="a" * 12,
+        retained_counts=_counts(),
+        quarantine_counts=_counts(),
+        elapsed_seconds=Decimal("1"),
+        performance_checked=False,
+        reason_codes=(),
+    )
+    calls: list[tuple[tuple[str, ...], bytes]] = []
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        input: bytes,
+        cwd: Path,
+        check: bool,
+        capture_output: bool,
+        env: dict[str, str],
+        timeout: float | None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del cwd, check, capture_output, timeout
+        assert env["PATH"] == os.defpath
+        assert "LD_PRELOAD" not in env
+        assert "LD_LIBRARY_PATH" not in env
+        calls.append((command, input))
+        response = json.dumps(
+            {
+                "kind": "success",
+                "attestation": json.loads(expected.model_dump_json()),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return subprocess.CompletedProcess(command, 0, response, b"")
+
+    monkeypatch.setattr(corpus_gate_module.subprocess, "run", fake_run)
+    monkeypatch.setenv("LD_PRELOAD", "/untrusted/fixed/library.so")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/untrusted/library/search")
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_isolated_search_paths",
+        lambda: (Path("/approved/candidate/src"), Path("/approved/site-packages")),
+        raising=False,
+    )
+
+    actual = corpus_gate_module._run_corpus_gate_isolated(config, CorpusGateMode.RECORD)
+
+    assert actual == expected
+    assert len(calls) == 1
+    command, request = calls[0]
+    assert command[:4] == (sys.executable, "-I", "-B", "-S")
+    assert command[4] == "-c"
+    search_paths, payload = request.splitlines()
+    assert json.loads(search_paths) == [
+        "/approved/candidate/src",
+        "/approved/site-packages",
+    ]
+    assert json.loads(payload)["mode"] == "record"
+
+
+def test_isolated_worker_refuses_a_nonisolated_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_input = io.StringIO("not parsed\n")
+    worker_output = io.StringIO()
+    monkeypatch.setattr(corpus_gate_module.sys, "stdin", worker_input)
+    monkeypatch.setattr(corpus_gate_module.sys, "stdout", worker_output)
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "_run_corpus_gate_in_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("nonisolated worker must not run the gate")
+        ),
+    )
+
+    assert corpus_gate_module._isolated_worker_main() == 0
+
+    assert json.loads(worker_output.getvalue()) == {
+        "category": "runtime",
+        "kind": "error",
+        "reason_codes": [CorpusGateReason.PARSER_RUNTIME_FAILED.value],
+    }
 
 
 def test_project_run_tracks_structure_presence_evidence_and_ambiguity() -> None:
@@ -2804,6 +5217,7 @@ def test_gate_reason_vocabulary_and_exit_mapping_are_closed_and_ordered() -> Non
         ("field_presence_drift", 2),
         ("evidence_provenance_drift", 2),
         ("ambiguity_drift", 2),
+        ("runtime_context_drift", 2),
         ("runtime_regression", 2),
     )
 
@@ -2811,10 +5225,38 @@ def test_gate_reason_vocabulary_and_exit_mapping_are_closed_and_ordered() -> Non
     assert tuple(mode.value for mode in CorpusGateMode) == ("verify", "record")
 
 
-@pytest.mark.parametrize("field", ("command_digest", "digest"))
+@pytest.mark.parametrize(
+    "field",
+    (
+        "python_runtime_digest",
+        "runtime_environment_digest",
+        "tesseract_version_output_digest",
+        "command_digest",
+        "digest",
+    ),
+)
 def test_toolchain_fingerprint_rejects_malformed_digests(field: str) -> None:
     values = _toolchain().model_dump()
     values[field] = "invalid"
+
+    with pytest.raises(ValidationError):
+        ToolchainFingerprint.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "standard_library",
+        "git_native_closure",
+        "native_runtime",
+        "tesseract_native_closure",
+    ),
+)
+def test_toolchain_fingerprint_rejects_malformed_runtime_artifact_digests(
+    field: str,
+) -> None:
+    values = _toolchain().model_dump()
+    values[field]["digest"] = "invalid"
 
     with pytest.raises(ValidationError):
         ToolchainFingerprint.model_validate(values)
@@ -2825,6 +5267,36 @@ def test_toolchain_fingerprint_requires_sorted_cache_versions() -> None:
     values["ocr_cache_versions"] = ("text-v1", "layout-v1")
 
     with pytest.raises(ValidationError, match="sorted"):
+        ToolchainFingerprint.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    (
+        ("python_version", "3.14.0"),
+        ("python_implementation", "DifferentPython"),
+        ("pymupdf_binding_version", "future-binding"),
+        ("pymupdf_engine_version", "future-engine"),
+        ("tesseract_version", "future-tesseract"),
+    ),
+)
+def test_toolchain_fingerprint_rejects_fields_inconsistent_with_digest(
+    field: str,
+    changed: str,
+) -> None:
+    values = _toolchain().model_dump()
+    values[field] = changed
+
+    with pytest.raises(ValidationError, match="does not match"):
+        ToolchainFingerprint.model_validate(values)
+
+
+@pytest.mark.parametrize("collection", ("dependencies", "tesseract_assets"))
+def test_toolchain_fingerprint_requires_complete_closed_collections(collection: str) -> None:
+    values = _toolchain().model_dump()
+    values[collection] = tuple(values[collection][:-1])
+
+    with pytest.raises(ValidationError, match="complete"):
         ToolchainFingerprint.model_validate(values)
 
 
@@ -2967,32 +5439,26 @@ def test_baseline_comparison_checks_every_run_dimension(
     assert compare_with_baseline(baseline, candidate) == (reason,)
 
 
-def test_baseline_comparison_ignores_toolchain_digest_change() -> None:
+def test_baseline_comparison_rejects_toolchain_digest_change() -> None:
     baseline = _baseline()
     candidate = baseline.model_copy(update={"toolchain": _toolchain("b")})
 
-    assert compare_with_baseline(baseline, candidate) == ()
+    assert compare_with_baseline(baseline, candidate) == (CorpusGateReason.RUNTIME_CONTEXT_DRIFT,)
 
 
-def test_runtime_is_enforced_only_for_matching_toolchain_and_jobs() -> None:
+def test_runtime_comparison_requires_matching_toolchain_and_jobs() -> None:
     baseline = _baseline(elapsed="10", second_elapsed="9", jobs=4, toolchain="a")
     slower = _baseline(elapsed="11", second_elapsed="13", jobs=4, toolchain="a")
 
     assert compare_with_baseline(baseline, slower) == (CorpusGateReason.RUNTIME_REGRESSION,)
-    assert (
-        compare_with_baseline(
-            baseline,
-            slower.model_copy(update={"toolchain": _toolchain("b")}),
-        )
-        == ()
-    )
-    assert (
-        compare_with_baseline(
-            baseline,
-            slower.model_copy(update={"jobs": 2}),
-        )
-        == ()
-    )
+    assert compare_with_baseline(
+        baseline,
+        slower.model_copy(update={"toolchain": _toolchain("b")}),
+    ) == (CorpusGateReason.RUNTIME_CONTEXT_DRIFT,)
+    assert compare_with_baseline(
+        baseline,
+        slower.model_copy(update={"jobs": 2}),
+    ) == (CorpusGateReason.RUNTIME_CONTEXT_DRIFT,)
 
 
 def test_runtime_uses_strict_threshold_and_baseline_recorded_tolerance() -> None:
@@ -3011,17 +5477,23 @@ def test_runtime_uses_strict_threshold_and_baseline_recorded_tolerance() -> None
     ) == (CorpusGateReason.RUNTIME_REGRESSION,)
 
 
-def test_baseline_comparison_ignores_commit_and_non_digest_toolchain_metadata() -> None:
+def test_baseline_comparison_ignores_only_the_baseline_source_commit() -> None:
     baseline = _baseline()
-    same_fingerprint = baseline.toolchain.model_copy(update={"package_version": "future-version"})
     candidate = baseline.model_copy(
         update={
             "commit_sha": "e" * 40,
-            "toolchain": same_fingerprint,
         }
     )
 
     assert compare_with_baseline(baseline, candidate) == ()
+
+
+def test_baseline_comparison_rejects_inconsistent_non_digest_toolchain_metadata() -> None:
+    baseline = _baseline()
+    inconsistent = baseline.toolchain.model_copy(update={"python_version": "future-version"})
+    candidate = baseline.model_copy(update={"toolchain": inconsistent})
+
+    assert compare_with_baseline(baseline, candidate) == (CorpusGateReason.RUNTIME_CONTEXT_DRIFT,)
 
 
 def test_baseline_reasons_are_deduplicated_in_declaration_order() -> None:

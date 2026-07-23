@@ -8,11 +8,16 @@ import statistics
 import unicodedata
 from calendar import monthrange
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from itertools import pairwise
+from types import MappingProxyType
 
 from ccparser.evidence.models import VectorRule
-from ccparser.geometry import BBox
+from ccparser.geometry import (
+    BBox,
+    horizontal_overlap,
+)
 from ccparser.geometry import (
     bbox_center_x as _center_x,
 )
@@ -26,9 +31,38 @@ from ccparser.geometry import (
     union_bbox as _union_bbox,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
-from ccparser.layout.row_tags import RowTag, has_row_tag
+from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continuation
 from ccparser.money import canonical_currency, is_currency_shaped, is_money_shaped
-from ccparser.text_tokens import normalize_text, phrase_tokens
+from ccparser.text_tokens import (
+    TokenSequence,
+    contains_compiled_token_sequence,
+    normalize_text,
+    phrase_tokens,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenizedHeader:
+    normalized: str
+    tokens: TokenSequence
+    compact: str
+    is_hebrew: bool
+
+
+def _tokenized_header(text: str) -> _TokenizedHeader:
+    tokens = phrase_tokens(text)
+    normalized = " ".join(tokens)
+    return _TokenizedHeader(
+        normalized=normalized,
+        tokens=tokens,
+        compact="".join(tokens),
+        is_hebrew=any("\u0590" <= char <= "\u05ff" for char in normalized),
+    )
+
+
+def _compile_header_terms(terms: Iterable[str]) -> tuple[_TokenizedHeader, ...]:
+    return tuple(_tokenized_header(term) for term in sorted(terms))
+
 
 _THREE_COMPONENT_DATE_PATTERN = re.compile(
     r"(?<!\d)(\d{1,4})\s*([-/\.])\s*(\d{1,2})\s*\2\s*(\d{1,4})(?!\d)"
@@ -61,6 +95,9 @@ _CURRENCY_VALUES = frozenset(
     }
 )
 _OCR_DESCRIPTION_HEADER_ANCHORS = frozenset({"merchant", "בית", "עסק"})
+_MAXIMUM_OCR_SLIVER_HEADER_CONFIDENCE = 0.8
+_MAXIMUM_OCR_SLIVER_HEADER_ASPECT_RATIO = 0.2
+_POLARITY_HEADER_MARKERS = frozenset({"+", "-", "\N{MINUS SIGN}", "\N{PLUS-MINUS SIGN}"})
 
 _HEADER_VOCABULARY: dict[ColumnRole, frozenset[str]] = {
     ColumnRole.DATE: frozenset(
@@ -193,6 +230,17 @@ _CONVERSION_DATE_HEADER_TERMS = tuple(
     (*_HEADER_VOCABULARY[ColumnRole.CONVERSION_DATE], "conversion", "exchange", "המרה")
 )
 
+_COMPILED_HEADER_VOCABULARY: Mapping[ColumnRole, tuple[_TokenizedHeader, ...]] = MappingProxyType(
+    {role: _compile_header_terms(terms) for role, terms in _HEADER_VOCABULARY.items()}
+)
+_COMPILED_DESCRIPTION_NAME_HEADER_TERMS = _compile_header_terms(_DESCRIPTION_NAME_HEADER_TERMS)
+_COMPILED_GENERIC_AMOUNT_HEADER_TERMS = _compile_header_terms(_GENERIC_AMOUNT_HEADER_TERMS)
+_COMPILED_AUXILIARY_AMOUNT_MODIFIERS = _compile_header_terms(_AUXILIARY_AMOUNT_MODIFIERS)
+_COMPILED_BILLING_AMOUNT_MODIFIERS = _compile_header_terms(_BILLING_AMOUNT_MODIFIERS)
+_COMPILED_ORIGINAL_AMOUNT_MODIFIERS = _compile_header_terms(_ORIGINAL_AMOUNT_MODIFIERS)
+_COMPILED_EXCHANGE_RATE_HEADER_TERMS = _compile_header_terms(_EXCHANGE_RATE_HEADER_TERMS)
+_COMPILED_CONVERSION_DATE_HEADER_TERMS = _compile_header_terms(_CONVERSION_DATE_HEADER_TERMS)
+
 
 def cells_in_column(cells: Iterable[Cell], column: ColumnSpec) -> tuple[Cell, ...]:
     """Return cells whose centers lie within the column's inclusive x band."""
@@ -212,6 +260,43 @@ def columns_for_role(schema: TableSchema, role: ColumnRole) -> tuple[ColumnSpec,
     """Return schema columns with the requested semantic role in schema order."""
 
     return tuple(column for column in schema.columns if column.role is role)
+
+
+def has_stable_unknown_profile(region: TableRegion, column: ColumnSpec) -> bool:
+    """Return whether a headed unknown column has a repeated value-shape profile."""
+
+    if column.role is not ColumnRole.UNKNOWN:
+        return False
+    header_text = normalize_text(
+        " ".join(
+            cell.text for cell in source_or_center_cells(region.table_schema.header_cells, column)
+        )
+    )
+    values = tuple(
+        cell
+        for row in region.rows
+        if not is_structural_continuation(row)
+        for cell in cells_in_column(row.cells, column)
+        if any(char.isalnum() for char in cell.text)
+    )
+    if not header_text or not any(char.isalnum() for char in header_text) or len(values) < 2:
+        return False
+    profiles: dict[str, int] = {}
+    for cell in values:
+        text = normalize_text(cell.text)
+        profile = (
+            "money"
+            if is_money_shaped(text)
+            else "date"
+            if isolated_date_token(text) is not None
+            else "numeric"
+            if all(char.isdigit() or char.isspace() for char in text)
+            else "alphabetic"
+            if any(char.isalpha() for char in text) and not any(char.isdigit() for char in text)
+            else "mixed"
+        )
+        profiles[profile] = profiles.get(profile, 0) + 1
+    return max(profiles.values()) * 2 >= len(values)
 
 
 def _horizontal_overlap(first: BBox, second: BBox) -> float:
@@ -366,49 +451,31 @@ def infer_column_bands(
 
 
 def _normalized_header(text: str) -> str:
-    return " ".join(phrase_tokens(text))
-
-
-def _contains_token_phrase(text: str, phrase: str) -> bool:
-    text_tokens = phrase_tokens(text)
-    candidate_tokens = phrase_tokens(phrase)
-    phrase_length = len(candidate_tokens)
-    return any(
-        text_tokens[index : index + phrase_length] == candidate_tokens
-        for index in range(len(text_tokens) - phrase_length + 1)
-    )
+    return _tokenized_header(text).normalized
 
 
 def _same_semantic_family(first: ColumnRole, second: ColumnRole) -> bool:
     return any(first in family and second in family for family in _SEMANTIC_FAMILIES)
 
 
-def _is_hebrew_phrase(text: str) -> bool:
-    return any("\u0590" <= char <= "\u05ff" for char in text)
-
-
-def _header_match_score(text: str, term: str) -> float:
-    if text == term:
+def _header_match_score(text: _TokenizedHeader, term: _TokenizedHeader) -> float:
+    if text.normalized == term.normalized:
         return 1.0
-    if _is_hebrew_phrase(term):
-        compact_text = text.replace(" ", "")
-        compact_term = term.replace(" ", "")
-        if compact_text == compact_term:
+    if term.is_hebrew:
+        if text.compact == term.compact:
             return 1.0
-        if compact_term in compact_text:
+        if term.compact in text.compact:
             return 0.82
-        text_tokens = text.split()
-        term_tokens = term.split()
         if (
-            len(term_tokens) >= 3
-            and len(text_tokens) == len(term_tokens)
-            and text_tokens[:-1] == term_tokens[:-1]
-            and _is_hebrew_phrase(term_tokens[-1])
-            and any(char.isalpha() for char in text_tokens[-1])
-            and not _is_hebrew_phrase(text_tokens[-1])
+            len(term.tokens) >= 3
+            and len(text.tokens) == len(term.tokens)
+            and text.tokens[:-1] == term.tokens[:-1]
+            and any("\u0590" <= char <= "\u05ff" for char in term.tokens[-1])
+            and any(char.isalpha() for char in text.tokens[-1])
+            and not any("\u0590" <= char <= "\u05ff" for char in text.tokens[-1])
         ):
             return 0.82
-    if _contains_token_phrase(text, term):
+    if contains_compiled_token_sequence(text.tokens, (term.tokens,)):
         return 0.82
     return 0.0
 
@@ -439,11 +506,41 @@ def _compatible_profile_alternative(
     )
 
 
-def _contains_header_concept(text: str, terms: Iterable[str]) -> bool:
-    compact_text = text.replace(" ", "")
+def _contains_header_concept(
+    text: _TokenizedHeader,
+    terms: tuple[_TokenizedHeader, ...],
+) -> bool:
     return any(
-        _contains_token_phrase(text, term) or term.replace(" ", "") in compact_text
+        contains_compiled_token_sequence(text.tokens, (term.tokens,))
+        or term.compact in text.compact
         for term in terms
+    )
+
+
+def _has_header_concept(
+    text: str,
+    terms: tuple[_TokenizedHeader, ...],
+) -> bool:
+    return _contains_header_concept(_tokenized_header(text), terms)
+
+
+def _is_explicit_billed_amount_header(text: str) -> bool:
+    header = _tokenized_header(text)
+    return (
+        _contains_header_concept(header, _COMPILED_GENERIC_AMOUNT_HEADER_TERMS)
+        and _contains_header_concept(header, _COMPILED_BILLING_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(header, _COMPILED_AUXILIARY_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(header, _COMPILED_ORIGINAL_AMOUNT_MODIFIERS)
+    )
+
+
+def _is_unqualified_generic_amount_header(text: str) -> bool:
+    header = _tokenized_header(text)
+    return (
+        _contains_header_concept(header, _COMPILED_GENERIC_AMOUNT_HEADER_TERMS)
+        and not _contains_header_concept(header, _COMPILED_BILLING_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(header, _COMPILED_AUXILIARY_AMOUNT_MODIFIERS)
+        and not _contains_header_concept(header, _COMPILED_ORIGINAL_AMOUNT_MODIFIERS)
     )
 
 
@@ -454,39 +551,39 @@ def _header_evidence_texts(cells: Sequence[Cell]) -> tuple[str, ...]:
 def _header_scores(texts: Sequence[str]) -> dict[ColumnRole, float]:
     scores: dict[ColumnRole, float] = {}
     explicit_description_name = False
-    for text in texts:
-        normalized = _normalized_header(text)
+    for raw_text in texts:
+        text = _tokenized_header(raw_text)
         composed_roles: set[ColumnRole] = set()
-        if _contains_header_concept(normalized, _DESCRIPTION_NAME_HEADER_TERMS):
+        if _contains_header_concept(text, _COMPILED_DESCRIPTION_NAME_HEADER_TERMS):
             composed_roles.add(ColumnRole.DESCRIPTION)
             explicit_description_name = True
         if _contains_header_concept(
-            normalized, _GENERIC_AMOUNT_HEADER_TERMS
-        ) and _contains_header_concept(normalized, _ORIGINAL_AMOUNT_MODIFIERS):
+            text, _COMPILED_GENERIC_AMOUNT_HEADER_TERMS
+        ) and _contains_header_concept(text, _COMPILED_ORIGINAL_AMOUNT_MODIFIERS):
             composed_roles.add(ColumnRole.ORIGINAL_AMOUNT)
         if _contains_header_concept(
-            normalized, _GENERIC_AMOUNT_HEADER_TERMS
-        ) and _contains_header_concept(normalized, _AUXILIARY_AMOUNT_MODIFIERS):
+            text, _COMPILED_GENERIC_AMOUNT_HEADER_TERMS
+        ) and _contains_header_concept(text, _COMPILED_AUXILIARY_AMOUNT_MODIFIERS):
             composed_roles.add(ColumnRole.AUXILIARY_AMOUNT)
-        if _contains_header_concept(normalized, _EXCHANGE_RATE_HEADER_TERMS):
+        if _contains_header_concept(text, _COMPILED_EXCHANGE_RATE_HEADER_TERMS):
             composed_roles.add(ColumnRole.EXCHANGE_RATE)
         if _contains_header_concept(
-            normalized, _HEADER_VOCABULARY[ColumnRole.DATE]
-        ) and _contains_header_concept(normalized, _CONVERSION_DATE_HEADER_TERMS):
+            text, _COMPILED_HEADER_VOCABULARY[ColumnRole.DATE]
+        ) and _contains_header_concept(text, _COMPILED_CONVERSION_DATE_HEADER_TERMS):
             composed_roles.add(ColumnRole.CONVERSION_DATE)
         exact_roles = {
             role
-            for role, terms in _HEADER_VOCABULARY.items()
-            if any(_header_match_score(normalized, term) == 1.0 for term in terms)
+            for role, terms in _COMPILED_HEADER_VOCABULARY.items()
+            if any(_header_match_score(text, term) == 1.0 for term in terms)
         } | composed_roles
         exact_specific_role = (
             next(iter(exact_roles))
             if len(exact_roles) == 1 and next(iter(exact_roles)) not in _GENERIC_FAMILY_ROLES
             else None
         )
-        for role, terms in _HEADER_VOCABULARY.items():
+        for role, terms in _COMPILED_HEADER_VOCABULARY.items():
             for term in terms:
-                match_score = _header_match_score(normalized, term)
+                match_score = _header_match_score(text, term)
                 if match_score == 1.0:
                     scores[role] = max(scores.get(role, 0.0), 1.0)
                 elif match_score:
@@ -758,13 +855,7 @@ def explicit_billed_amount_column(
         if column.role is not ColumnRole.AMOUNT:
             continue
         texts = _header_evidence_texts(source_or_center_cells(header_cells, column))
-        if any(
-            _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
-            and _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
-            and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
-            and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
-            for text in texts
-        ):
+        if any(_is_explicit_billed_amount_header(text) for text in texts):
             candidates.append(column)
     return candidates[0] if len(candidates) == 1 else None
 
@@ -843,6 +934,105 @@ def _header_anchored_columns(
     return tuple(columns)
 
 
+def _has_strong_column_evidence(header: Cell, column: ColumnSpec) -> bool:
+    if max(_header_scores(_header_evidence_texts((header,))).values(), default=0.0) >= 0.82:
+        return True
+    profile_scores = sorted(
+        _profile_scores(tuple(cell for cell in column.source_cells if cell is not header)).values(),
+        reverse=True,
+    )
+    return (
+        bool(profile_scores)
+        and profile_scores[0] >= 0.8
+        and (len(profile_scores) == 1 or profile_scores[0] - profile_scores[1] >= 0.13)
+    )
+
+
+def _has_meaningful_symbol_header(text: str) -> bool:
+    normalized = unicodedata.normalize("NFC", text).strip()
+    return (
+        canonical_currency(normalized) is not None
+        or "%" in normalized
+        or normalized in _POLARITY_HEADER_MARKERS
+        or any(unicodedata.category(char) == "Sc" for char in normalized)
+    )
+
+
+def _has_aligned_positioned_sample(header: Cell, column: ColumnSpec) -> bool:
+    return any(
+        bool(cell.words or cell.glyphs)
+        and _height(cell.bbox) > 0.0
+        and abs(_center_x(cell.bbox) - _center_x(header.bbox)) <= _height(cell.bbox) * 0.5
+        for cell in column.source_cells
+        if cell is not header
+    )
+
+
+def _has_neighbor_owned_sample(
+    header: Cell,
+    column: ColumnSpec,
+    preceding: Cell,
+    following: Cell,
+) -> bool:
+    midpoint = (_center_x(preceding.bbox) + _center_x(following.bbox)) / 2
+    return any(
+        _width(sample.bbox) > 0.0
+        and horizontal_overlap(sample.bbox, neighbor.bbox) / _width(sample.bbox) >= 0.75
+        and ((_center_x(sample.bbox) < midpoint) == is_preceding)
+        for sample in column.source_cells
+        if sample is not header
+        for neighbor, is_preceding in ((preceding, True), (following, False))
+    )
+
+
+def _is_discardable_ocr_sliver_header(
+    header: Cell,
+    column: ColumnSpec,
+    preceding: Cell,
+    preceding_column: ColumnSpec,
+    following: Cell,
+    following_column: ColumnSpec,
+) -> bool:
+    return (
+        bool(header.words)
+        and all(word.source == "ocr" for word in header.words)
+        and not header.glyphs
+        and header.confidence < _MAXIMUM_OCR_SLIVER_HEADER_CONFIDENCE
+        and _height(header.bbox) > 0.0
+        and _width(header.bbox) / _height(header.bbox) <= _MAXIMUM_OCR_SLIVER_HEADER_ASPECT_RATIO
+        and not any(char.isalnum() for char in normalize_text(header.text))
+        and not _has_meaningful_symbol_header(header.text)
+        and not _has_aligned_positioned_sample(header, column)
+        and _has_strong_column_evidence(preceding, preceding_column)
+        and _has_strong_column_evidence(following, following_column)
+        and _has_neighbor_owned_sample(header, column, preceding, following)
+    )
+
+
+def _retained_header_cells(
+    header_cells: Sequence[Cell],
+    sample_cells: Sequence[Cell],
+) -> tuple[tuple[Cell, ...], bool]:
+    ordered = tuple(sorted(header_cells, key=lambda cell: _center_x(cell.bbox)))
+    if len(ordered) < 3:
+        return tuple(header_cells), False
+    columns = _header_anchored_columns(ordered, sample_cells)
+    discarded = frozenset(
+        header
+        for index, (header, column) in enumerate(zip(ordered, columns, strict=True))
+        if 0 < index < len(ordered) - 1
+        and _is_discardable_ocr_sliver_header(
+            header,
+            column,
+            ordered[index - 1],
+            columns[index - 1],
+            ordered[index + 1],
+            columns[index + 1],
+        )
+    )
+    return tuple(cell for cell in header_cells if cell not in discarded), bool(discarded)
+
+
 def _disambiguate_qualified_original_amount(
     columns: Sequence[ColumnSpec],
     header_cells: Sequence[Cell],
@@ -855,7 +1045,7 @@ def _disambiguate_qualified_original_amount(
         for column in columns
         if column.role is ColumnRole.AMOUNT
         and any(
-            _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
+            _has_header_concept(text, _COMPILED_BILLING_AMOUNT_MODIFIERS)
             for text in _header_evidence_texts(source_or_center_cells(header_cells, column))
         )
     )
@@ -865,7 +1055,7 @@ def _disambiguate_qualified_original_amount(
         column
         for column in original_columns
         if any(
-            _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
+            _has_header_concept(text, _COMPILED_ORIGINAL_AMOUNT_MODIFIERS)
             for text in _header_evidence_texts(source_or_center_cells(header_cells, column))
         )
     )
@@ -873,13 +1063,7 @@ def _disambiguate_qualified_original_amount(
         return tuple(columns)
     intermediate = next(column for column in original_columns if column is not qualified[0])
     intermediate_texts = _header_evidence_texts(source_or_center_cells(header_cells, intermediate))
-    if not any(
-        _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
-        and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
-        and not _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
-        and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
-        for text in intermediate_texts
-    ):
+    if not any(_is_unqualified_generic_amount_header(text) for text in intermediate_texts):
         return tuple(columns)
     return tuple(
         column.model_copy(
@@ -909,13 +1093,7 @@ def _disambiguate_generic_original_peer(
         return tuple(columns)
     peer = next(column for column in amount_columns if column is not billed)
     peer_texts = _header_evidence_texts(source_or_center_cells(header_cells, peer))
-    if not any(
-        _contains_header_concept(_normalized_header(text), _GENERIC_AMOUNT_HEADER_TERMS)
-        and not _contains_header_concept(_normalized_header(text), _BILLING_AMOUNT_MODIFIERS)
-        and not _contains_header_concept(_normalized_header(text), _AUXILIARY_AMOUNT_MODIFIERS)
-        and not _contains_header_concept(_normalized_header(text), _ORIGINAL_AMOUNT_MODIFIERS)
-        for text in peer_texts
-    ):
+    if not any(_is_unqualified_generic_amount_header(text) for text in peer_texts):
         return tuple(columns)
     return tuple(
         column.model_copy(
@@ -941,11 +1119,15 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
     page_numbers = {cell.page_number for cell in all_cells}
     if len(page_numbers) != 1:
         raise ValueError("semantic inference requires cells from one page")
-    bands = _header_anchored_columns(header_cells, sample_cells)
+    retained_headers, discarded_sliver_header = _retained_header_cells(
+        header_cells,
+        sample_cells,
+    )
+    bands = _header_anchored_columns(retained_headers, sample_cells)
     semantic_columns: list[ColumnSpec] = []
     ambiguous_indexes: list[int] = []
     for column in bands:
-        headers = source_or_center_cells(header_cells, column)
+        headers = source_or_center_cells(retained_headers, column)
         samples = source_or_center_cells(sample_cells, column)
         header_scores = _header_scores(_header_evidence_texts(headers))
         profile_scores = _profile_scores(samples)
@@ -1045,8 +1227,10 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
             )
         )
 
-    semantic_columns = list(_disambiguate_qualified_original_amount(semantic_columns, header_cells))
-    semantic_columns = list(_disambiguate_generic_original_peer(semantic_columns, header_cells))
+    semantic_columns = list(
+        _disambiguate_qualified_original_amount(semantic_columns, retained_headers)
+    )
+    semantic_columns = list(_disambiguate_generic_original_peer(semantic_columns, retained_headers))
 
     bbox = _union_bbox(tuple(cell.bbox for cell in all_cells))
     known_fraction = (
@@ -1055,16 +1239,21 @@ def infer_column_roles(header_cells: Sequence[Cell], sample_cells: Sequence[Cell
         if semantic_columns
         else 0.0
     )
-    schema_diagnostics = (
-        ("ambiguous_columns:" + ",".join(str(index) for index in ambiguous_indexes),)
-        if ambiguous_indexes
-        else ()
+    schema_diagnostics = tuple(
+        (
+            *(
+                ("ambiguous_columns:" + ",".join(str(index) for index in ambiguous_indexes),)
+                if ambiguous_indexes
+                else ()
+            ),
+            *(("discarded_ocr_sliver_header_anchor",) if discarded_sliver_header else ()),
+        )
     )
     return TableSchema(
         page_number=header_cells[0].page_number,
         bbox=bbox,
         columns=tuple(semantic_columns),
-        header_cells=tuple(header_cells),
+        header_cells=retained_headers,
         sample_cells=tuple(sample_cells),
         confidence=known_fraction,
         diagnostics=schema_diagnostics,

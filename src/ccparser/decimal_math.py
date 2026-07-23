@@ -41,6 +41,19 @@ def exact_difference(minuend: Decimal, subtrahend: Decimal) -> Decimal:
     return exact_sum((minuend, subtrahend.copy_negate()))
 
 
+def exact_product(values: Iterable[Decimal]) -> Decimal:
+    parts = tuple((value, *_integer_coefficient(value)) for value in values)
+    coefficient = 1
+    exponent = 0
+    negative = False
+    for source, value_coefficient, value_exponent in parts:
+        coefficient *= value_coefficient
+        exponent += value_exponent
+        negative ^= source.is_signed()
+    product = _from_coefficient(coefficient, exponent)
+    return product.copy_negate() if coefficient == 0 and negative else product
+
+
 def is_exact_multiple(value: Decimal, unit: Decimal) -> bool:
     value_coefficient, value_exponent = _integer_coefficient(value)
     unit_coefficient, unit_exponent = _integer_coefficient(unit)
@@ -62,6 +75,7 @@ def plain_decimal_string(value: Decimal) -> str:
 
 __all__ = [
     "exact_difference",
+    "exact_product",
     "exact_sum",
     "finite_decimal",
     "is_exact_multiple",

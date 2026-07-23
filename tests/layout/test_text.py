@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import pytest
 
+import ccparser.layout.text as layout_text
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
+from ccparser.geometry import BBox
 from ccparser.layout import Cell
 from ccparser.layout.text import (
     cell_has_ocr_evidence,
@@ -106,6 +110,69 @@ def test_logical_text_orders_each_script_run_and_rtl_word_groups_from_geometry()
     )
 
     assert logical_text_for_bbox(page, (0.0, 0.0, 90.0, 30.0)) == "שלום ABC"
+
+
+def test_logical_text_preserves_explicit_whitespace_glyph_token_boundaries() -> None:
+    text = "fee ILS 0.29"
+    glyphs = tuple(_glyph(char, 10.0 + index * 4.0) for index, char in enumerate(text))
+
+    assert logical_text_for_evidence(glyphs, ()) == text
+
+
+def test_logical_text_line_clustering_inspects_bboxes_linearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    glyphs = tuple(_glyph("x", float(index * 4)) for index in range(256))
+    inspected_bbox_count = 0
+    original_union_bbox = layout_text.union_bbox
+
+    def counted_union_bbox(boxes: Iterable[BBox]) -> BBox:
+        nonlocal inspected_bbox_count
+        materialized = tuple(boxes)
+        inspected_bbox_count += len(materialized)
+        return original_union_bbox(materialized)
+
+    monkeypatch.setattr(layout_text, "union_bbox", counted_union_bbox)
+
+    assert logical_text_for_evidence(glyphs, ()) == "x" * len(glyphs)
+    assert inspected_bbox_count <= 4 * len(glyphs)
+
+
+def test_logical_text_partitions_combining_glyphs_without_pairwise_equality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    glyphs = tuple(_glyph("x", float(index * 4)) for index in range(256))
+    equality_count = 0
+    original_eq = Glyph.__eq__
+
+    def counted_eq(self: Glyph, other: object) -> bool:
+        nonlocal equality_count
+        equality_count += 1
+        return original_eq(self, other)
+
+    monkeypatch.setattr(Glyph, "__eq__", counted_eq)
+
+    assert logical_text_for_evidence(glyphs, ()) == "x" * len(glyphs)
+    assert equality_count <= 4 * len(glyphs)
+
+
+def test_logical_text_finds_many_whitespace_boundaries_without_pairwise_scans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = " ".join("x" for _ in range(128))
+    glyphs = tuple(_glyph(char, float(index * 4)) for index, char in enumerate(text))
+    center_x_count = 0
+    original_bbox_center_x = layout_text.bbox_center_x
+
+    def counted_bbox_center_x(bbox: BBox) -> float:
+        nonlocal center_x_count
+        center_x_count += 1
+        return original_bbox_center_x(bbox)
+
+    monkeypatch.setattr(layout_text, "bbox_center_x", counted_bbox_center_x)
+
+    assert logical_text_for_evidence(glyphs, ()) == text
+    assert center_x_count <= 20 * len(glyphs)
 
 
 def test_logical_text_uses_numeric_ltr_run_inside_dominant_hebrew_cell() -> None:

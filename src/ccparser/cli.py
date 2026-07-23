@@ -97,6 +97,15 @@ def _validated_gate_jobs(value: str | None) -> int:
     return jobs
 
 
+def _validated_lowercase_hex(value: str | None, *, length: int) -> str:
+    candidate = _required_gate_value(value)
+    if len(candidate) != length or any(
+        character not in "0123456789abcdef" for character in candidate
+    ):
+        raise _invalid_gate_configuration()
+    return candidate
+
+
 def _validated_runtime_tolerance(
     value: str | None,
     mode: CorpusGateMode,
@@ -114,6 +123,17 @@ def _validated_runtime_tolerance(
     if not tolerance.is_finite() or tolerance < 0:
         raise _invalid_gate_configuration()
     return tolerance
+
+
+def _validated_baseline_sha256(
+    value: str | None,
+    mode: CorpusGateMode,
+) -> str | None:
+    if mode is CorpusGateMode.RECORD:
+        if value is not None:
+            raise _invalid_gate_configuration()
+        return None
+    return _validated_lowercase_hex(value, length=64)
 
 
 def _gate_reason_values(reasons: tuple[CorpusGateReason, ...]) -> str:
@@ -215,6 +235,10 @@ def parse_command(
 @app.command("verify-corpus", cls=_CorpusGateCommand)
 def verify_corpus_command(
     retained_dir: Annotated[str | None, typer.Argument(metavar="RETAINED")] = None,
+    expected_commit_sha: Annotated[
+        str | None,
+        typer.Option("--expected-commit-sha", metavar="SHA"),
+    ] = None,
     quarantine_dir: Annotated[
         str | None,
         typer.Option("--quarantine-dir", metavar="DIR"),
@@ -223,9 +247,17 @@ def verify_corpus_command(
         str | None,
         typer.Option("--membership-inventory", metavar="FILE"),
     ] = None,
+    membership_inventory_sha256: Annotated[
+        str | None,
+        typer.Option("--membership-inventory-sha256", metavar="SHA256"),
+    ] = None,
     baseline: Annotated[
         str | None,
         typer.Option("--baseline", metavar="FILE"),
+    ] = None,
+    baseline_sha256: Annotated[
+        str | None,
+        typer.Option("--baseline-sha256", metavar="SHA256"),
     ] = None,
     work_dir: Annotated[
         str | None,
@@ -249,10 +281,19 @@ def verify_corpus_command(
     try:
         validated_mode = _validated_gate_mode(mode)
         config = CorpusGateConfig(
+            expected_commit_sha=_validated_lowercase_hex(expected_commit_sha, length=40),
             retained_dir=Path(_required_gate_value(retained_dir)),
             quarantine_dir=Path(_required_gate_value(quarantine_dir)),
             membership_inventory_path=Path(_required_gate_value(membership_inventory)),
+            membership_inventory_sha256=_validated_lowercase_hex(
+                membership_inventory_sha256,
+                length=64,
+            ),
             baseline_path=Path(_required_gate_value(baseline)),
+            baseline_sha256=_validated_baseline_sha256(
+                baseline_sha256,
+                validated_mode,
+            ),
             work_dir=Path(_required_gate_value(work_dir)),
             jobs=_validated_gate_jobs(jobs),
             runtime_tolerance_ratio=_validated_runtime_tolerance(
@@ -263,6 +304,8 @@ def verify_corpus_command(
         attestation = run_corpus_gate(config, validated_mode)
         if not attestation.passed:
             raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,))
+        if validated_mode is CorpusGateMode.VERIFY and not attestation.performance_checked:
+            raise CorpusGateAcceptanceError((CorpusGateReason.RUNTIME_CONTEXT_DRIFT,))
     except CorpusGateAcceptanceError as error:
         _print_gate_failure("failed", error.reasons)
         raise typer.Exit(2) from None
