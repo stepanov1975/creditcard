@@ -13,7 +13,8 @@ from ccparser.evidence.models import (
     Word,
 )
 from ccparser.layout.columns import cells_in_column
-from ccparser.layout.models import ColumnRole, ColumnSpec, TableRegion
+from ccparser.layout.marker_bands import is_proven_ocr_marker_cell
+from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, TableRegion
 from ccparser.layout.regions import detect_table_regions
 from ccparser.normalization_dates import (
     DateColumnKind,
@@ -40,10 +41,11 @@ def _word(
     *,
     source: EvidenceSource = "digital",
     confidence: float | None = None,
+    height: float = 10.0,
 ) -> Word:
     return Word(
         text=text,
-        bbox=(x0, y, x1, y + 10.0),
+        bbox=(x0, y, x1, y + height),
         source=source,
         confidence=(0.9 if source == "ocr" else 1.0) if confidence is None else confidence,
     )
@@ -181,12 +183,40 @@ _CONFUSED_OCR_MARKER_CONFIDENCES = (
     0.75,
     0.93,
 )
+_NONCURRENCY_CONFUSED_OCR_MARKER_LABELS = (
+    "II",
+    "8",
+    "7%",
+    "A1",
+    "|",
+    "||",
+) * 2
+_SINGLE_CURRENCY_CONFUSED_OCR_MARKER_LABELS = (
+    "II",
+    "$",
+    "8",
+    "7%",
+    "A1",
+    "|",
+    "JJ",
+    "9",
+    "6%",
+    "B2",
+    "||",
+    "||",
+)
 
 
 def _confused_right_marker_page(
     *,
     high_confidence: bool = False,
+    marker_labels: tuple[str, ...] = _CONFUSED_OCR_MARKER_LABELS,
     overlapping_last_row: bool = True,
+    standalone_confidence: float | None = None,
+    standalone_last_marker: tuple[str, EvidenceSource] | None = None,
+    standalone_width: float = 4.0,
+    standalone_height: float = 10.0,
+    standalone_y_offset: float = 0.0,
 ) -> PageEvidence:
     words = [
         _word("Description", 5.0, 32.0, 10.0),
@@ -195,23 +225,36 @@ def _confused_right_marker_page(
     ]
     for index, (marker, marker_confidence) in enumerate(
         zip(
-            _CONFUSED_OCR_MARKER_LABELS,
+            marker_labels,
             _CONFUSED_OCR_MARKER_CONFIDENCES,
             strict=True,
         )
     ):
         y = 32.0 + index * 14.0
         words.append(_word(f"Item {index + 1}", 5.0, 31.0, y))
-        date_x1 = 82.0 if overlapping_last_row and index == 11 else 76.0
-        words.append(_word(f"{index + 1:02d}/02/2026", 50.0, date_x1, y, source="ocr"))
+        standalone = standalone_last_marker if index == 11 else None
+        if standalone is None:
+            date_x1 = 82.0 if overlapping_last_row and index == 11 else 76.0
+            words.append(_word(f"{index + 1:02d}/02/2026", 50.0, date_x1, y, source="ocr"))
+        marker_text, marker_source = standalone or (marker, "ocr")
+        marker_x0 = 81.0 - standalone_width / 2 if standalone is not None else 79.0
+        marker_x1 = 81.0 + standalone_width / 2 if standalone is not None else 83.0
+        marker_y = y + standalone_y_offset if standalone is not None else y
         words.append(
             _word(
-                marker,
-                79.0,
-                83.0,
-                y,
-                source="ocr",
-                confidence=0.95 if high_confidence else marker_confidence,
+                marker_text,
+                marker_x0,
+                marker_x1,
+                marker_y,
+                source=marker_source,
+                confidence=(
+                    standalone_confidence
+                    if standalone is not None and standalone_confidence is not None
+                    else 0.95
+                    if high_confidence
+                    else marker_confidence
+                ),
+                height=standalone_height if standalone is not None else 10.0,
             )
         )
         words.append(_word(f"{index + 1}0.00", 116.0, 140.0, y))
@@ -522,6 +565,342 @@ def test_high_confidence_cross_profile_values_are_not_promoted_to_marker_band() 
     )
 
     assert _marker_columns(region) == ()
+
+
+def test_cross_profile_ocr_band_includes_aligned_standalone_supported_profile() -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=("$", "ocr")))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    standalone = cells_in_column(row.cells, marker_column)[0]
+
+    assert standalone in marker_column.source_cells
+    assert assignment_diagnostics(row, region, EvidenceLedger.from_rows((row,))) == ()
+    ledger, validation = _validate_row(region, -1)
+    assert (
+        EvidenceClaim(
+            SemanticOwner.ANCILLARY,
+            ledger.atoms_for_cell(standalone),
+        )
+        in validation.claims
+    )
+    assert validation.diagnostics == ()
+
+
+def test_cross_profile_band_accepts_repeated_label_with_proven_band_confidence() -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            standalone_confidence=0.60,
+            standalone_last_marker=("$", "ocr"),
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    standalone = cells_in_column(region.rows[-1].cells, marker_column)[0]
+
+    assert standalone in marker_column.source_cells
+    assert is_proven_ocr_marker_cell(standalone, marker_column)
+
+
+@pytest.mark.parametrize(
+    "standalone_width,standalone_height",
+    ((7.0, 10.0), (4.0, 22.0)),
+    ids=("oversized", "too-tall"),
+)
+def test_cross_profile_band_rejects_standalone_geometry_drift(
+    standalone_width: float,
+    standalone_height: float,
+) -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            standalone_last_marker=("$", "ocr"),
+            standalone_width=standalone_width,
+            standalone_height=standalone_height,
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    standalone = cells_in_column(region.rows[-1].cells, marker_column)[0]
+
+    assert standalone not in marker_column.source_cells
+    assert not is_proven_ocr_marker_cell(standalone, marker_column)
+
+
+@pytest.mark.parametrize("standalone_y_offset", (-5.0, 5.0), ids=("above-row", "below-row"))
+def test_cross_profile_band_rejects_standalone_vertical_drift(
+    standalone_y_offset: float,
+) -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            standalone_last_marker=("$", "ocr"),
+            standalone_y_offset=standalone_y_offset,
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    standalone = cells_in_column(region.rows[-1].cells, marker_column)[0]
+
+    assert standalone not in marker_column.source_cells
+    assert not is_proven_ocr_marker_cell(standalone, marker_column)
+
+
+@pytest.mark.parametrize(
+    "standalone_marker",
+    (("EUR", "ocr"), ("$", "digital"), ("5", "ocr"), ("6%", "ocr")),
+    ids=(
+        "overlong-label",
+        "digital-source",
+        "unseen-numeric-label",
+        "unseen-percentage-label",
+    ),
+)
+def test_cross_profile_band_rejects_unproven_standalone_value(
+    standalone_marker: tuple[str, EvidenceSource],
+) -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=standalone_marker))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    occupant = cells_in_column(row.cells, marker_column)[0]
+
+    assert occupant not in marker_column.source_cells
+    assert not is_proven_ocr_marker_cell(occupant, marker_column)
+    assignment = assignment_diagnostics(row, region, EvidenceLedger.from_rows((row,)))
+    ledger, validation = _validate_row(region, -1)
+    assert (
+        EvidenceClaim(
+            SemanticOwner.ANCILLARY,
+            ledger.atoms_for_cell(occupant),
+        )
+        not in validation.claims
+    )
+    assert assignment or validation.diagnostics
+
+
+def test_cross_profile_band_rejects_standalone_outside_confidence_envelope() -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            standalone_confidence=1.0,
+            standalone_last_marker=("$", "ocr"),
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    occupant = cells_in_column(row.cells, marker_column)[0]
+
+    assert occupant not in marker_column.source_cells
+    diagnostics = assignment_diagnostics(row, region, EvidenceLedger.from_rows((row,)))
+    assert f"column:{marker_column.index}:role_unknown" in diagnostics
+    assert "unresolved_relevant_cell" in diagnostics
+
+
+def test_cross_profile_band_rejects_unrepresented_standalone_profile() -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            marker_labels=_NONCURRENCY_CONFUSED_OCR_MARKER_LABELS,
+            standalone_last_marker=("$", "ocr"),
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    occupant = cells_in_column(row.cells, marker_column)[0]
+
+    assert occupant not in marker_column.source_cells
+    diagnostics = assignment_diagnostics(row, region, EvidenceLedger.from_rows((row,)))
+    assert f"column:{marker_column.index}:role_unknown" in diagnostics
+    assert "unresolved_relevant_cell" in diagnostics
+
+
+def test_cross_profile_band_requires_multiple_standalone_profile_supports() -> None:
+    region = _single_region(
+        _confused_right_marker_page(
+            marker_labels=_SINGLE_CURRENCY_CONFUSED_OCR_MARKER_LABELS,
+            standalone_last_marker=("$", "ocr"),
+        )
+    )
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    occupant = cells_in_column(row.cells, marker_column)[0]
+
+    assert occupant not in marker_column.source_cells
+    diagnostics = assignment_diagnostics(row, region, EvidenceLedger.from_rows((row,)))
+    assert f"column:{marker_column.index}:role_unknown" in diagnostics
+    assert "unresolved_relevant_cell" in diagnostics
+
+
+def test_cached_marker_column_reproves_aligned_standalone_supported_profile() -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=("$", "ocr")))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    standalone = cells_in_column(row.cells, marker_column)[0]
+    cached_marker_column = marker_column.model_copy(
+        update={
+            "source_cells": tuple(
+                cell for cell in marker_column.source_cells if cell is not standalone
+            )
+        }
+    )
+    schema = region.table_schema.model_copy(
+        update={
+            "columns": tuple(
+                cached_marker_column if column is marker_column else column
+                for column in region.table_schema.columns
+            )
+        }
+    )
+    cached_region = region.model_copy(update={"table_schema": schema})
+
+    assert standalone not in cached_marker_column.source_cells
+    assert (
+        assignment_diagnostics(
+            row,
+            cached_region,
+            EvidenceLedger.from_rows((row,)),
+        )
+        == ()
+    )
+    ledger, validation = _validate_row(cached_region, -1)
+    assert (
+        EvidenceClaim(
+            SemanticOwner.ANCILLARY,
+            ledger.atoms_for_cell(standalone),
+        )
+        in validation.claims
+    )
+    assert validation.diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    "width,height",
+    ((7.0, 10.0), (4.0, 22.0)),
+    ids=("oversized", "too-tall"),
+)
+def test_cached_marker_column_rejects_standalone_geometry_drift(
+    width: float,
+    height: float,
+) -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=("$", "ocr")))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    standalone = cells_in_column(row.cells, marker_column)[0]
+    word = standalone.words[0]
+    center_x = (word.bbox[0] + word.bbox[2]) / 2
+    resized_bbox = (
+        center_x - width / 2,
+        word.bbox[1],
+        center_x + width / 2,
+        word.bbox[1] + height,
+    )
+    resized_word = word.model_copy(update={"bbox": resized_bbox})
+    resized = standalone.model_copy(
+        update={
+            "bbox": resized_bbox,
+            "words": (resized_word,),
+        }
+    )
+    cached_marker_column = marker_column.model_copy(
+        update={
+            "source_cells": tuple(
+                cell for cell in marker_column.source_cells if cell is not standalone
+            )
+        }
+    )
+    resized_row = row.model_copy(
+        update={
+            "cells": tuple(resized if cell is standalone else cell for cell in row.cells),
+        }
+    )
+
+    assert not is_proven_ocr_marker_cell(
+        resized,
+        cached_marker_column,
+        row=resized_row,
+    )
+
+
+@pytest.mark.parametrize("y_offset", (5.0, 1000.0), ids=("row-misaligned", "outside-column"))
+def test_cached_marker_column_rejects_standalone_vertical_drift(
+    y_offset: float,
+) -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=("$", "ocr")))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    standalone = cells_in_column(row.cells, marker_column)[0]
+    word = standalone.words[0]
+    shifted_bbox = (
+        word.bbox[0],
+        word.bbox[1] + y_offset,
+        word.bbox[2],
+        word.bbox[3] + y_offset,
+    )
+    shifted = standalone.model_copy(
+        update={
+            "bbox": shifted_bbox,
+            "words": (word.model_copy(update={"bbox": shifted_bbox}),),
+        }
+    )
+    shifted_row = row.model_copy(
+        update={
+            "cells": tuple(shifted if cell is standalone else cell for cell in row.cells),
+        }
+    )
+    cached_marker_column = marker_column.model_copy(
+        update={
+            "source_cells": tuple(
+                cell for cell in marker_column.source_cells if cell is not standalone
+            )
+        }
+    )
+
+    assert not is_proven_ocr_marker_cell(
+        shifted,
+        cached_marker_column,
+        row=shifted_row,
+    )
+
+
+def test_cached_marker_column_rejects_vertically_uncontained_support() -> None:
+    region = _single_region(_confused_right_marker_page(standalone_last_marker=("$", "ocr")))
+    marker_column = _marker_columns(region)[0]
+    row = region.rows[-1]
+    standalone = cells_in_column(row.cells, marker_column)[0]
+
+    def shifted_support(cell: Cell) -> Cell:
+        shifted_words = tuple(
+            word.model_copy(
+                update={
+                    "bbox": (
+                        word.bbox[0],
+                        word.bbox[1] + 1000.0,
+                        word.bbox[2],
+                        word.bbox[3] + 1000.0,
+                    )
+                }
+            )
+            for word in cell.words
+        )
+        return cell.model_copy(
+            update={
+                "bbox": (
+                    cell.bbox[0],
+                    cell.bbox[1] + 1000.0,
+                    cell.bbox[2],
+                    cell.bbox[3] + 1000.0,
+                ),
+                "words": shifted_words,
+            }
+        )
+
+    cached_marker_column = marker_column.model_copy(
+        update={
+            "source_cells": tuple(
+                shifted_support(cell)
+                for cell in marker_column.source_cells
+                if cell is not standalone
+            )
+        }
+    )
+
+    assert not is_proven_ocr_marker_cell(
+        standalone,
+        cached_marker_column,
+        row=row,
+    )
 
 
 def test_cached_unsplit_cross_profile_band_proves_date_and_marker_atoms(

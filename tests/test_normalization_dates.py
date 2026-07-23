@@ -43,11 +43,14 @@ def test_normalization_dates_exports_exact_public_contract() -> None:
         "has_proven_unanchored_short_date",
         "is_date_shaped",
         "is_typed_conversion_source",
+        "matches_positioned_date_description_residual",
         "matching_date_atom_ids",
         "nonmaterial_date_layout_atom_ids",
         "parsed_cross_cell_conversion_evidence",
+        "positioned_date_description_residual_atom_ids",
         "proven_assigned_date_evidence",
         "proven_conversion_rate_residual_atom_ids",
+        "proven_date_description_layout_marker_atom_ids",
         "proven_unanchored_short_date_style",
         "structural_date_column_kinds",
     ]
@@ -173,6 +176,226 @@ def _year_context(style: DateTokenStyle, year: int = 2026) -> DiscoveredDateYear
             ),
         ),
         confidence=1.0,
+    )
+
+
+def test_boundary_date_description_split_accepts_exact_reordered_rtl_word() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(64.7, 30.0, 66.3, 40.0),
+        origin=(64.7, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="6 26/06/26 א ב",
+        glyphs=(*_glyphs("אב", 39.8), *_glyphs("26/06/26", 55.0), marker),
+        words=(
+            _word("בא", 39.8, 41.8),
+            _word("26/06/26", 55.0, 62.8),
+            _word("6", 64.7, 66.3),
+        ),
+        confidence=1.0,
+    )
+    row = _row(_cell("Merchant", 0), date_cell, _cell("4.00", 2))
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (row,),
+    )
+
+    assert normalization_dates.boundary_date_description_splits(
+        row,
+        region,
+        _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+        ledger=EvidenceLedger.from_rows((row,)),
+    ) == ((date_cell, None, "א ב"),)
+
+
+def test_date_extraction_uses_reordered_rtl_boundary_fallback() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(64.7, 30.0, 66.3, 40.0),
+        origin=(64.7, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    date_cell = Cell(
+        page_number=1,
+        bbox=(20.0, 30.0, 70.0, 40.0),
+        text="6 26/06/26 א ב",
+        glyphs=(*_glyphs("אב", 39.8), *_glyphs("26/06/26", 55.0), marker),
+        words=(
+            _word("בא", 39.8, 41.8),
+            _word("26/06/26", 55.0, 62.8),
+            _word("6", 64.7, 66.3),
+        ),
+        confidence=1.0,
+    )
+    row = _row(_cell("Merchant", 0), date_cell, _cell("4.00", 2))
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (row,),
+    )
+
+    extraction = extract_dates(
+        row,
+        region,
+        _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+        {},
+        ledger=EvidenceLedger.from_rows((row,)),
+    )
+
+    assert extraction.transaction_date == date(2026, 6, 26)
+    assert extraction.diagnostics == ()
+
+
+def test_date_extraction_rejects_boundary_date_outside_date_column() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(49.3, 30.0, 50.9, 40.0),
+        origin=(49.3, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    date_cell = Cell(
+        page_number=1,
+        bbox=(20.0, 30.0, 90.0, 40.0),
+        text="6 26/06/26 Fuel",
+        glyphs=(*_glyphs("Fuel", 30.0), *_glyphs("26/06/26", 40.0), marker),
+        words=(
+            _word("Fuel", 30.0, 33.8),
+            _word("26/06/26", 40.0, 47.8),
+            _word("6", 49.3, 50.9),
+        ),
+        confidence=1.0,
+    )
+    row = _row(_cell("Station", 0), date_cell, _cell("4.00", 2))
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (row,),
+    )
+
+    extraction = extract_dates(
+        row,
+        region,
+        _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+        {},
+        ledger=EvidenceLedger.from_rows((row,)),
+    )
+
+    assert extraction.transaction_date is None
+    assert "invalid_transaction_date" in extraction.diagnostics
+
+
+@pytest.mark.parametrize(
+    ("marker_font", "marker_width", "marker_x", "marker_word_text"),
+    (
+        ("Synthetic", 1.6, 64.7, "6"),
+        ("SyntheticIcon", 0.8, 64.7, "6"),
+        ("SyntheticIcon", 1.6, 70.0, "6"),
+        ("SyntheticIcon", 1.6, 64.7, None),
+        ("SyntheticIcon", 1.6, 64.7, "7"),
+    ),
+    ids=("same-font", "ordinary-width", "far-marker", "missing-word", "mismatched-word"),
+)
+def test_boundary_date_description_split_rejects_unproven_separate_marker(
+    marker_font: str,
+    marker_width: float,
+    marker_x: float,
+    marker_word_text: str | None,
+) -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(marker_x, 30.0, marker_x + marker_width, 40.0),
+        origin=(marker_x, 39.0),
+        font=marker_font,
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    words = [
+        _word("Fuel", 39.8, 43.8),
+        _word("26/06/26", 55.0, 62.8),
+    ]
+    if marker_word_text is not None:
+        words.append(_word(marker_word_text, marker_x, marker_x + marker_width))
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="6 26/06/26 Fuel",
+        glyphs=(*_glyphs("Fuel", 39.8), *_glyphs("26/06/26", 55.0), marker),
+        words=tuple(words),
+        confidence=1.0,
+    )
+    row = _row(_cell("Station", 0), date_cell, _cell("4.00", 2))
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (row,),
+    )
+
+    assert (
+        normalization_dates.boundary_date_description_splits(
+            row,
+            region,
+            _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+            ledger=EvidenceLedger.from_rows((row,)),
+        )
+        == ()
+    )
+
+
+def test_boundary_date_description_split_rejects_competing_numeric_residual() -> None:
+    marker_glyphs = tuple(
+        Glyph(
+            char=char,
+            bbox=(x0, 30.0, x1, 40.0),
+            origin=(x0, 39.0),
+            font="SyntheticIcon",
+            size=10.0,
+            source="digital",
+            confidence=1.0,
+        )
+        for char, x0, x1 in (("6", 64.7, 66.3), ("7", 68.0, 69.6))
+    )
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="7 6 26/06/26 Fuel",
+        glyphs=(
+            *_glyphs("Fuel", 39.8),
+            *_glyphs("26/06/26", 55.0),
+            *marker_glyphs,
+        ),
+        words=(
+            _word("Fuel", 39.8, 43.8),
+            _word("26/06/26", 55.0, 62.8),
+            _word("6", 64.7, 66.3),
+            _word("7", 68.0, 69.6),
+        ),
+        confidence=1.0,
+    )
+    row = _row(_cell("Station", 0), date_cell, _cell("4.00", 2))
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (row,),
+    )
+
+    assert (
+        normalization_dates.boundary_date_description_splits(
+            row,
+            region,
+            _year_context(DateTokenStyle.DAY_FIRST_SLASH),
+            ledger=EvidenceLedger.from_rows((row,)),
+        )
+        == ()
     )
 
 

@@ -2281,11 +2281,216 @@ def structural_date_column_kinds(
     }
 
 
+def proven_date_description_layout_marker_atom_ids(
+    *,
+    ledger: EvidenceLedger,
+    cell: Cell,
+    date_column: ColumnSpec,
+    date_atom_ids: frozenset[int],
+    description_atom_ids: frozenset[int],
+    excluded_atom_ids: frozenset[int] = frozenset(),
+) -> frozenset[int]:
+    """Return one strictly proven custom-font digit between date and description."""
+
+    cell_atom_ids = ledger.atoms_for_cell(cell)
+    if (
+        not date_atom_ids
+        or not description_atom_ids
+        or not date_atom_ids <= cell_atom_ids
+        or not description_atom_ids <= cell_atom_ids
+        or date_atom_ids & description_atom_ids
+    ):
+        return frozenset()
+    marker_atom_ids = cell_atom_ids - date_atom_ids - description_atom_ids - excluded_atom_ids
+    if len(marker_atom_ids) != 1:
+        return frozenset()
+    marker_atom = ledger.atoms[next(iter(marker_atom_ids))]
+    date_atoms = tuple(ledger.atoms[atom_id] for atom_id in date_atom_ids)
+    description_atoms = tuple(ledger.atoms[atom_id] for atom_id in description_atom_ids)
+    if (
+        marker_atom.glyph is None
+        or marker_atom.glyph.source != "digital"
+        or marker_atom.glyph.confidence != 1.0
+        or len(marker_atom.glyph.char) != 1
+        or not marker_atom.glyph.char.isdigit()
+        or any(atom.glyph is None or atom.glyph.source != "digital" for atom in date_atoms)
+        or any(atom.glyph is None or atom.glyph.source != "digital" for atom in description_atoms)
+    ):
+        return frozenset()
+    date_glyphs = tuple(atom.glyph for atom in date_atoms if atom.glyph is not None)
+    description_glyphs = tuple(atom.glyph for atom in description_atoms if atom.glyph is not None)
+    if marker_atom.glyph.font in {glyph.font for glyph in (*date_glyphs, *description_glyphs)}:
+        return frozenset()
+    date_digit_widths = tuple(_width(glyph.bbox) for glyph in date_glyphs if glyph.char.isdigit())
+    if (
+        not date_digit_widths
+        or min(date_digit_widths) <= 0.0
+        or _width(marker_atom.bbox) < statistics.median(date_digit_widths) * 1.2
+    ):
+        return frozenset()
+    exact_marker_words = tuple(
+        word
+        for word in cell.words
+        if word.source == "digital"
+        and word.confidence == 1.0
+        and normalize_text(word.text) == marker_atom.glyph.char
+        and ledger.atoms_in_bbox(cell_atom_ids, word.bbox) == marker_atom_ids
+    )
+    if len(exact_marker_words) != 1:
+        return frozenset()
+    date_bbox = union_bbox(atom.bbox for atom in date_atoms)
+    description_bbox = union_bbox(atom.bbox for atom in description_atoms)
+    if description_bbox[2] <= date_bbox[0] and marker_atom.bbox[0] >= date_bbox[2]:
+        date_gap = marker_atom.bbox[0] - date_bbox[2]
+    elif date_bbox[2] <= description_bbox[0] and marker_atom.bbox[2] <= date_bbox[0]:
+        date_gap = date_bbox[0] - marker_atom.bbox[2]
+    else:
+        return frozenset()
+    date_height = min(_height(date_bbox), _height(marker_atom.bbox))
+    description_height = min(
+        _height(description_bbox),
+        _height(marker_atom.bbox),
+    )
+    description_gap = max(
+        description_bbox[0] - marker_atom.bbox[2],
+        marker_atom.bbox[0] - description_bbox[2],
+        0.0,
+    )
+    if (
+        date_height <= 0.0
+        or description_height <= 0.0
+        or not date_height * 0.1 < date_gap <= date_height * 0.25
+        or description_gap <= description_height * 0.1
+        or vertical_overlap(date_bbox, marker_atom.bbox) < 0.8
+        or vertical_overlap(description_bbox, marker_atom.bbox) < 0.8
+        or not date_column.bbox[0] <= _center_x(date_bbox) <= date_column.bbox[2]
+        or not date_column.bbox[0] <= _center_x(marker_atom.bbox) <= date_column.bbox[2]
+    ):
+        return frozenset()
+    return marker_atom_ids
+
+
+def matches_positioned_date_description_residual(
+    *,
+    ledger: EvidenceLedger,
+    cell: Cell,
+    description_atom_ids: frozenset[int],
+    residual: str,
+) -> bool:
+    """Return whether exact positioned text backs one date-boundary description."""
+
+    normalized_residual = normalize_text(residual)
+    rendered_description = normalize_text(ledger.render(description_atom_ids))
+    if rendered_description == normalized_residual:
+        return True
+    compact_residual = "".join(normalized_residual.split())
+    if (
+        not compact_residual
+        or not all(char.isalpha() and "\u0590" <= char <= "\u05ff" for char in compact_residual)
+        or _character_signature(rendered_description) != _character_signature(normalized_residual)
+    ):
+        return False
+    cell_atom_ids = ledger.atoms_for_cell(cell)
+    exact_words = tuple(
+        word
+        for word in cell.words
+        if word.source == "digital"
+        and word.confidence == 1.0
+        and normalize_text(word.text) == rendered_description
+        and ledger.atoms_in_bbox(cell_atom_ids, word.bbox) == description_atom_ids
+    )
+    return len(exact_words) == 1
+
+
+def positioned_date_description_residual_atom_ids(
+    *,
+    ledger: EvidenceLedger,
+    cell: Cell,
+    residual: str,
+) -> frozenset[int]:
+    """Return the exact positioned word band backing a description residual."""
+
+    description_words = tuple(
+        word
+        for word in cell.words
+        if any(char.isalpha() for char in word.text)
+        and not any(char.isdigit() for char in word.text)
+    )
+    if not description_words:
+        return frozenset()
+    description_bbox = union_bbox(word.bbox for word in description_words)
+    atom_ids = ledger.atoms_in_bbox(ledger.atoms_for_cell(cell), description_bbox)
+    if not atom_ids or not matches_positioned_date_description_residual(
+        ledger=ledger,
+        cell=cell,
+        description_atom_ids=atom_ids,
+        residual=residual,
+    ):
+        return frozenset()
+    return atom_ids
+
+
+def _residual_without_separate_date_layout_marker(
+    *,
+    residual: str,
+    matched_date_text: str,
+    cell: Cell,
+    date_column: ColumnSpec,
+    ledger: EvidenceLedger | None,
+) -> str | None:
+    if ledger is None:
+        return None
+    numeric_indexes = tuple(index for index, char in enumerate(residual) if char.isdigit())
+    if len(numeric_indexes) != 1:
+        return None
+    cell_atom_ids = ledger.atoms_for_cell(cell)
+    date_words = tuple(
+        word
+        for word in cell.words
+        if normalize_text(word.text) == normalize_text(matched_date_text)
+    )
+    if len(date_words) != 1:
+        return None
+    date_atom_ids = ledger.atoms_in_bbox(cell_atom_ids, date_words[0].bbox)
+    numeric_index = numeric_indexes[0]
+    stripped = normalize_text(residual[:numeric_index] + residual[numeric_index + 1 :])
+    description_atom_ids = positioned_date_description_residual_atom_ids(
+        ledger=ledger,
+        cell=cell,
+        residual=stripped,
+    )
+    marker_atom_ids = proven_date_description_layout_marker_atom_ids(
+        ledger=ledger,
+        cell=cell,
+        date_column=date_column,
+        date_atom_ids=date_atom_ids,
+        description_atom_ids=description_atom_ids,
+    )
+    if len(marker_atom_ids) != 1:
+        return None
+    marker_atom = ledger.atoms[next(iter(marker_atom_ids))]
+    if marker_atom.glyph is None or residual[numeric_index] != marker_atom.glyph.char:
+        return None
+    if (
+        not stripped
+        or any(char.isdigit() for char in stripped)
+        or not matches_positioned_date_description_residual(
+            ledger=ledger,
+            cell=cell,
+            description_atom_ids=description_atom_ids,
+            residual=stripped,
+        )
+    ):
+        return None
+    return stripped
+
+
 def _boundary_date_description_split(
     cell: Cell,
     date_column: ColumnSpec,
     description_column: ColumnSpec,
     year_context: DiscoveredDateYearContext | None,
+    ledger: EvidenceLedger | None,
 ) -> tuple[date | None, str] | None:
     cell_width = max(0.0, cell.bbox[2] - cell.bbox[0])
     if (
@@ -2306,6 +2511,17 @@ def _boundary_date_description_split(
     match = matches[0]
     parsed_date, _ = _parse_cell_date(cell, year_context)
     residual = normalize_text(normalized[: match.start()] + normalized[match.end() :])
+    if any(char.isdigit() for char in residual):
+        proven_residual = _residual_without_separate_date_layout_marker(
+            residual=residual,
+            matched_date_text=match.group(),
+            cell=cell,
+            date_column=date_column,
+            ledger=ledger,
+        )
+        if proven_residual is None:
+            return None
+        residual = proven_residual
     if (
         not residual
         or not any(char.isalpha() for char in residual)
@@ -2337,6 +2553,8 @@ def boundary_date_description_splits(
     row: Row,
     region: TableRegion,
     year_context: DiscoveredDateYearContext | None,
+    *,
+    ledger: EvidenceLedger | None = None,
 ) -> tuple[tuple[Cell, date | None, str], ...]:
     """Return unique cells that combine a supported date with description text."""
 
@@ -2353,6 +2571,7 @@ def boundary_date_description_splits(
                 date_columns[0],
                 description_columns[0],
                 year_context,
+                ledger,
             )
         )
         for parsed_date, residual in (split,)
@@ -2370,9 +2589,35 @@ def _backed_boundary_date_description_splits(
     year_context: DiscoveredDateYearContext | None,
 ) -> tuple[tuple[Cell, date | None, str], ...]:
     backed_splits: list[tuple[Cell, date | None, str]] = []
-    for cell, value, residual in boundary_date_description_splits(row, region, year_context):
+    date_columns = _role_columns(region, ColumnRole.DATE)
+    for cell, value, residual in boundary_date_description_splits(
+        row,
+        region,
+        year_context,
+        ledger=ledger,
+    ):
         if value is None:
             sources = _positioned_date_sources(ledger, cell)
+            if len(sources) > 1 and len(date_columns) == 1:
+                description_atom_ids = positioned_date_description_residual_atom_ids(
+                    ledger=ledger,
+                    cell=cell,
+                    residual=residual,
+                )
+                if description_atom_ids:
+                    partitioned_sources = tuple(
+                        source
+                        for source in sources
+                        if proven_date_description_layout_marker_atom_ids(
+                            ledger=ledger,
+                            cell=cell,
+                            date_column=date_columns[0],
+                            date_atom_ids=source[1],
+                            description_atom_ids=description_atom_ids,
+                        )
+                    )
+                    if len(partitioned_sources) == 1:
+                        sources = partitioned_sources
             if len(sources) == 1:
                 source_text, source_atom_ids = sources[0]
                 cell_atom_ids = ledger.atoms_for_cell(cell)
@@ -3238,11 +3483,14 @@ __all__ = [
     "has_proven_unanchored_short_date",
     "is_date_shaped",
     "is_typed_conversion_source",
+    "matches_positioned_date_description_residual",
     "matching_date_atom_ids",
     "nonmaterial_date_layout_atom_ids",
     "parsed_cross_cell_conversion_evidence",
+    "positioned_date_description_residual_atom_ids",
     "proven_assigned_date_evidence",
     "proven_conversion_rate_residual_atom_ids",
+    "proven_date_description_layout_marker_atom_ids",
     "proven_unanchored_short_date_style",
     "structural_date_column_kinds",
 ]

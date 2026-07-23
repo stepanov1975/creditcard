@@ -1825,6 +1825,66 @@ def test_repeated_bound_currency_annotation_preserves_variable_table_fee() -> No
     assert extraction.diagnostics == ()
 
 
+def test_repeated_bound_currency_annotation_allows_logical_whitespace() -> None:
+    first_source = _foreign_row()
+    second_source = _foreign_row()
+    first_fee = _positioned_cell("3 ₪ 1.69", "3 ₪ 1.69", 50.0, 30.0)
+    second_fee = _positioned_cell("3 ₪ 0.29", "3 ₪ 0.29", 50.0, 40.0)
+    first_row = _row(first_source.cells[0], first_fee, *first_source.cells[2:])
+    second_row = _row(second_source.cells[0], second_fee, *second_source.cells[2:])
+    region = _region(first_row).model_copy(update={"rows": (first_row, second_row)})
+
+    extraction = extract_foreign_exchange(
+        rows=(first_row,),
+        region=region,
+        ledger=EvidenceLedger.from_rows((first_row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.net_fee is not None
+    assert extraction.details.net_fee.amount == Decimal("1.69")
+    assert extraction.diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    ("first_text", "first_physical", "second_text", "second_physical"),
+    (
+        ("₪ 3 1.69", "₪ 3 1.69", "₪ 3 0.29", "₪ 3 0.29"),
+        ("3 X ₪ 1.69", "3 X ₪ 1.69", "3 X ₪ 0.29", "3 X ₪ 0.29"),
+        ("3 ₪ 1.69", "3 ₪ 1.68", "3 ₪ 0.29", "3 ₪ 0.28"),
+        ("3 ₪ 1.69 2.00", "3 ₪ 1.69 2.00", "3 ₪ 0.29 2.00", "3 ₪ 0.29 2.00"),
+    ),
+    ids=("reordered", "extra-character", "source-mismatch", "competing-decimal"),
+)
+def test_repeated_bound_currency_annotation_rejects_non_whitespace_changes(
+    first_text: str,
+    first_physical: str,
+    second_text: str,
+    second_physical: str,
+) -> None:
+    first_source = _foreign_row()
+    second_source = _foreign_row()
+    first_fee = _positioned_cell(first_text, first_physical, 50.0, 30.0)
+    second_fee = _positioned_cell(second_text, second_physical, 50.0, 40.0)
+    first_row = _row(first_source.cells[0], first_fee, *first_source.cells[2:])
+    second_row = _row(second_source.cells[0], second_fee, *second_source.cells[2:])
+    region = _region(first_row).model_copy(update={"rows": (first_row, second_row)})
+
+    extraction = extract_foreign_exchange(
+        rows=(first_row,),
+        region=region,
+        ledger=EvidenceLedger.from_rows((first_row,)),
+        original_currency="USD",
+        billing_currency="ILS",
+    )
+
+    assert extraction.details is not None
+    assert extraction.details.net_fee is None
+    assert extraction.diagnostics == ("unparsed_foreign_currency_fee_candidate",)
+
+
 def test_repeated_bound_currency_annotation_requires_variable_table_fee() -> None:
     first_source = _foreign_row()
     second_source = _foreign_row()

@@ -1196,6 +1196,10 @@ def _one_money(
     )
 
 
+def _ordered_compact_text(text: str) -> str:
+    return "".join(normalize_text(text).split())
+
+
 def _bound_currency_annotation_fee(
     cell: Cell,
     ledger: EvidenceLedger,
@@ -1247,9 +1251,12 @@ def _bound_currency_annotation_fee(
     expected_text = normalize_text(f"{annotation.text}{currency_atom.text} {candidate.text}")
     source_texts = _cell_source_texts(cell)
     if (
-        normalize_text(cell.text) != expected_text
+        _ordered_compact_text(cell.text) != _ordered_compact_text(expected_text)
         or not source_texts
-        or any("".join(source.split()) != "".join(expected_text.split()) for source in source_texts)
+        or any(
+            _ordered_compact_text(source) != _ordered_compact_text(expected_text)
+            for source in source_texts
+        )
         or not _money_renderings_match(source_texts, value, currency)
     ):
         return None

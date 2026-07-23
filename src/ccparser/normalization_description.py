@@ -30,6 +30,7 @@ from ccparser.money import is_currency_shaped, is_money_shaped
 from ccparser.normalization_dates import (
     adjacent_boundary_date_completion,
     boundary_date_description_splits,
+    positioned_date_description_residual_atom_ids,
 )
 from ccparser.normalization_fields import is_installment_shaped
 from ccparser.semantic_evidence import (
@@ -893,17 +894,20 @@ def extract_description(
                     and atom.glyph == boundary_glyph
                 )
 
-        splits = boundary_date_description_splits(row, region, year_context)
+        splits = boundary_date_description_splits(
+            row,
+            region,
+            year_context,
+            ledger=ledger,
+        )
         if len(splits) == 1:
             split_cell, _, residual_text = splits[0]
             split_ids = ledger.atoms_for_cell(split_cell)
             selected_ids.difference_update(split_ids)
-            residual_ids = frozenset(
-                atom.atom_id
-                for atom in ledger.atoms
-                if atom.atom_id in split_ids
-                and any(char.isalpha() for char in atom.text)
-                and not any(char.isdigit() for char in atom.text)
+            residual_ids = positioned_date_description_residual_atom_ids(
+                ledger=ledger,
+                cell=split_cell,
+                residual=residual_text,
             )
             if residual_ids:
                 selected_ids.update(residual_ids)

@@ -3328,6 +3328,144 @@ def test_normalize_statement_recovers_leading_merchant_word_from_digital_date_ce
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_recovers_description_beside_separate_date_layout_marker() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(64.7, 30.0, 66.3, 40.0),
+        origin=(64.7, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    spilled_description = "Fuel"
+    spilled_glyphs = _glyphs(spilled_description, 39.8, 30.0)
+    date_glyphs = _glyphs("26/06/26", 55.0, 30.0)
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="6 26/06/26 Fuel",
+        glyphs=(*spilled_glyphs, *date_glyphs, marker),
+        words=(
+            _word(spilled_description, 39.8, 43.8, 30.0),
+            _word("26/06/26", 55.0, 62.8, 30.0),
+            _word("6", 64.7, 66.3, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 35.0, 40.0),
+        text="Station",
+        glyphs=_glyphs("Station", 5.0, 30.0),
+        words=(_word("Station", 5.0, 11.8, 30.0),),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.transaction_date == date(2026, 6, 26)
+    assert transaction.description == "Station Fuel"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_preserves_punctuation_in_date_boundary_description() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(64.7, 30.0, 66.3, 40.0),
+        origin=(64.7, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    spilled_description = "Fuel-Market"
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text=f"6 26/06/26 {spilled_description}",
+        glyphs=(
+            *_glyphs(spilled_description, 39.8, 30.0),
+            *_glyphs("26/06/26", 55.0, 30.0),
+            marker,
+        ),
+        words=(
+            _word(spilled_description, 39.8, 50.8, 30.0),
+            _word("26/06/26", 55.0, 62.8, 30.0),
+            _word("6", 64.7, 66.3, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 35.0, 40.0),
+        text="Station",
+        glyphs=_glyphs("Station", 5.0, 30.0),
+        words=(_word("Station", 5.0, 11.8, 30.0),),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.description == "Station Fuel-Market"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_claims_marker_beside_reordered_rtl_spill() -> None:
+    marker = Glyph(
+        char="6",
+        bbox=(64.7, 30.0, 66.3, 40.0),
+        origin=(64.7, 39.0),
+        font="SyntheticIcon",
+        size=10.0,
+        source="digital",
+        confidence=1.0,
+    )
+    date_cell = Cell(
+        page_number=1,
+        bbox=(39.8, 30.0, 90.0, 40.0),
+        text="6 26/06/26 א ב",
+        glyphs=(*_glyphs("אב", 39.8, 30.0), *_glyphs("26/06/26", 55.0, 30.0), marker),
+        words=(
+            _word("בא", 39.8, 41.8, 30.0),
+            _word("26/06/26", 55.0, 62.8, 30.0),
+            _word("6", 64.7, 66.3, 30.0),
+        ),
+        confidence=1.0,
+    )
+    description = Cell(
+        page_number=1,
+        bbox=(0.0, 30.0, 35.0, 40.0),
+        text="Station",
+        glyphs=_glyphs("Station", 5.0, 30.0),
+        words=(_word("Station", 5.0, 11.8, 30.0),),
+        confidence=1.0,
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, ColumnRole.DATE, ColumnRole.AMOUNT),
+        (_row(description, date_cell, _cell("4.00", 2, 30.0)),),
+    )
+
+    result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
+
+    transaction = result.transactions[0]
+    assert transaction.description == "Station בא"
+    assert transaction.ambiguities == ()
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_recovers_adjacent_suffix_without_category_text() -> None:
     category_cell = Cell(
         page_number=1,

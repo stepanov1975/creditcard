@@ -93,10 +93,18 @@ def is_ocr_marker_band_column(column: ColumnSpec) -> bool:
     return column.role is ColumnRole.UNKNOWN and OCR_MARKER_BAND_DIAGNOSTIC in column.diagnostics
 
 
-def is_proven_ocr_marker_cell(cell: Cell, column: ColumnSpec) -> bool:
+def is_proven_ocr_marker_cell(
+    cell: Cell,
+    column: ColumnSpec,
+    *,
+    row: Row | None = None,
+) -> bool:
     """Return whether ``cell`` is an individually proven occupant of a marker band."""
 
-    return is_ocr_marker_band_column(column) and cell in column.source_cells
+    return is_ocr_marker_band_column(column) and (
+        cell in column.source_cells
+        or (row is not None and _matches_existing_cross_profile_marker_column(cell, column, row))
+    )
 
 
 def _is_exact_date_word(word: Word) -> bool:
@@ -179,6 +187,25 @@ def _has_multiple_positioned_dates(cell: Cell) -> bool:
     return sum(_is_exact_date_word(word) for word in cell.words) > 1
 
 
+def _cross_profile_recognition_support_is_proven(
+    labels: Sequence[str],
+    confidences: Sequence[float],
+) -> bool:
+    label_counts = Counter(normalize_text(label) for label in labels)
+    compact_labels = tuple("".join(normalize_text(label).split()) for label in labels)
+    profiles = {_recognition_profile(label) for label in labels}
+    return (
+        len(labels) >= _MINIMUM_CONFUSED_OCR_SUPPORTING_ROWS
+        and len(label_counts) >= _MINIMUM_CONFUSED_OCR_LABELS
+        and max(label_counts.values()) * 2 < len(labels)
+        and len(profiles) >= _MINIMUM_CONFUSED_OCR_PROFILES
+        and all(1 <= len(label) <= _MAXIMUM_CONFUSED_OCR_LABEL_LENGTH for label in compact_labels)
+        and bool(confidences)
+        and min(confidences) <= _MAXIMUM_LOW_OCR_CONFIDENCE
+        and max(confidences) - min(confidences) >= _MINIMUM_OCR_CONFIDENCE_SPREAD
+    )
+
+
 def _recognitions_are_heterogeneous(cells: Sequence[_CellSplit]) -> bool:
     label_counts = Counter(normalize_text(cell.label) for cell in cells)
     count = len(cells)
@@ -187,23 +214,15 @@ def _recognitions_are_heterogeneous(cells: Sequence[_CellSplit]) -> bool:
         return False
     if all(_is_nonmaterial_layout_marker_text(cell.label) for cell in cells):
         return True
-    compact_labels = tuple("".join(normalize_text(cell.label).split()) for cell in cells)
-    profiles = {_recognition_profile(cell.label) for cell in cells}
     confidences = tuple(word.confidence for cell in cells for word in cell.marker_words)
-    return (
-        len(cells) >= _MINIMUM_CONFUSED_OCR_SUPPORTING_ROWS
-        and len(label_counts) >= _MINIMUM_CONFUSED_OCR_LABELS
-        and len(profiles) >= _MINIMUM_CONFUSED_OCR_PROFILES
-        and all(
-            cell.date_word.source == "ocr"
-            and len(cell.marker_words) == 1
-            and cell.marker_words[0].source == "ocr"
-            for cell in cells
-        )
-        and all(1 <= len(label) <= _MAXIMUM_CONFUSED_OCR_LABEL_LENGTH for label in compact_labels)
-        and bool(confidences)
-        and min(confidences) <= _MAXIMUM_LOW_OCR_CONFIDENCE
-        and max(confidences) - min(confidences) >= _MINIMUM_OCR_CONFIDENCE_SPREAD
+    return all(
+        cell.date_word.source == "ocr"
+        and len(cell.marker_words) == 1
+        and cell.marker_words[0].source == "ocr"
+        for cell in cells
+    ) and _cross_profile_recognition_support_is_proven(
+        tuple(cell.label for cell in cells),
+        confidences,
     )
 
 
@@ -520,6 +539,89 @@ def _bbox_is_horizontally_contained(inner: BBox, outer: BBox) -> bool:
     return outer[0] <= inner[0] and inner[2] <= outer[2]
 
 
+def _bbox_is_contained(inner: BBox, outer: BBox) -> bool:
+    return (
+        _bbox_is_horizontally_contained(inner, outer)
+        and outer[1] <= inner[1]
+        and inner[3] <= outer[3]
+    )
+
+
+def _is_vertically_aligned_with_row_peer(
+    cell: Cell,
+    row: Row,
+    marker_interval: BBox,
+) -> bool:
+    positioned: tuple[Word | Glyph, ...] = (*cell.words, *cell.glyphs)
+    return bool(positioned) and any(
+        peer is not cell
+        and not _bbox_is_horizontally_contained(peer.bbox, marker_interval)
+        and vertical_overlap(cell.bbox, peer.bbox) >= _MINIMUM_MARKER_DATE_VERTICAL_OVERLAP
+        and all(
+            vertical_overlap(item.bbox, peer.bbox) >= _MINIMUM_MARKER_DATE_VERTICAL_OVERLAP
+            for item in positioned
+        )
+        for peer in row.cells
+    )
+
+
+def _value_is_within_support(value: float, support: Sequence[float]) -> bool:
+    return bool(support) and min(support) <= value <= max(support)
+
+
+def _bbox_dimensions_match_support(candidate: BBox, support: Sequence[BBox]) -> bool:
+    return _value_is_within_support(
+        _width(candidate),
+        tuple(_width(box) for box in support),
+    ) and _value_is_within_support(
+        _height(candidate),
+        tuple(_height(box) for box in support),
+    )
+
+
+def _bbox_center_matches_support(candidate: BBox, support: Sequence[BBox]) -> bool:
+    if not support:
+        return False
+    typical_height = statistics.median(_height(box) for box in support)
+    center = statistics.median(_center_x(box) for box in support)
+    return (
+        typical_height > 0
+        and max(abs(_center_x(box) - center) for box in (*support, candidate))
+        <= typical_height * _MAXIMUM_CENTER_DEVIATION_HEIGHT_RATIO
+    )
+
+
+def _matches_repeated_cross_profile_recognition(
+    cell: Cell,
+    labels: Sequence[str],
+    confidences: Sequence[float],
+    cell_boxes: Sequence[BBox],
+    word_boxes: Sequence[BBox],
+) -> bool:
+    if not (
+        len(labels) == len(confidences) == len(cell_boxes) == len(word_boxes)
+        and _cross_profile_recognition_support_is_proven(labels, confidences)
+    ):
+        return False
+    compact = "".join(normalize_text(cell.text).split())
+    normalized_label = normalize_text(cell.text)
+    same_label_indexes = tuple(
+        index for index, label in enumerate(labels) if normalize_text(label) == normalized_label
+    )
+    if len(same_label_indexes) < 2:
+        return False
+    same_label_cell_boxes = tuple(cell_boxes[index] for index in same_label_indexes)
+    same_label_word_boxes = tuple(word_boxes[index] for index in same_label_indexes)
+    return (
+        1 <= len(compact) <= _MAXIMUM_CONFUSED_OCR_LABEL_LENGTH
+        and _value_is_within_support(cell.words[0].confidence, confidences)
+        and _bbox_dimensions_match_support(cell.bbox, same_label_cell_boxes)
+        and _bbox_dimensions_match_support(cell.words[0].bbox, same_label_word_boxes)
+        and _bbox_center_matches_support(cell.bbox, cell_boxes)
+        and _bbox_center_matches_support(cell.words[0].bbox, word_boxes)
+    )
+
+
 def _has_composite_financial_evidence(cell: Cell) -> bool:
     if len(cell.words) + len(cell.glyphs) <= 1:
         return False
@@ -537,15 +639,81 @@ def _has_composite_financial_evidence(cell: Cell) -> bool:
     )
 
 
-def _is_independently_proven_marker_source(cell: Cell, interval: BBox) -> bool:
+def _matches_existing_cross_profile_marker_column(
+    cell: Cell,
+    column: ColumnSpec,
+    row: Row,
+) -> bool:
+    if (
+        len(cell.words) != 1
+        or cell.glyphs
+        or cell.words[0].source != "ocr"
+        or normalize_text(cell.text) != normalize_text(cell.words[0].text)
+        or not _bbox_is_contained(cell.bbox, column.bbox)
+        or not _bbox_is_contained(cell.words[0].bbox, column.bbox)
+        or not _is_vertically_aligned_with_row_peer(cell, row, column.bbox)
+        or _has_composite_financial_evidence(cell)
+    ):
+        return False
+    support = column.source_cells
+    if not support or any(
+        len(source.words) != 1
+        or source.glyphs
+        or source.words[0].source != "ocr"
+        or normalize_text(source.text) != normalize_text(source.words[0].text)
+        or not _bbox_is_contained(source.bbox, column.bbox)
+        or not _bbox_is_contained(source.words[0].bbox, column.bbox)
+        for source in support
+    ):
+        return False
+    labels = tuple(source.text for source in support)
+    confidences = tuple(source.words[0].confidence for source in support)
+    return _matches_repeated_cross_profile_recognition(
+        cell,
+        labels,
+        confidences,
+        tuple(source.bbox for source in support),
+        tuple(source.words[0].bbox for source in support),
+    )
+
+
+def _matches_cross_profile_ocr_band(cell: Cell, band: _BandSplit) -> bool:
+    if (
+        not _band_uses_cross_profile_ocr_confusion(band)
+        or len(cell.words) != 1
+        or cell.glyphs
+        or cell.words[0].source != "ocr"
+        or normalize_text(cell.text) != normalize_text(cell.words[0].text)
+        or any(len(candidate.marker_words) != 1 for candidate in band.cells)
+    ):
+        return False
+    return _matches_repeated_cross_profile_recognition(
+        cell,
+        tuple(candidate.label for candidate in band.cells),
+        tuple(candidate.marker_words[0].confidence for candidate in band.cells),
+        tuple(candidate.marker_bbox for candidate in band.cells),
+        tuple(candidate.marker_words[0].bbox for candidate in band.cells),
+    )
+
+
+def _is_independently_proven_marker_source(
+    cell: Cell,
+    interval: BBox,
+    band: _BandSplit,
+    row: Row,
+) -> bool:
     positioned: tuple[Word | Glyph, ...] = (*cell.words, *cell.glyphs)
     return (
         bool(positioned)
-        and _bbox_is_horizontally_contained(cell.bbox, interval)
-        and all(_bbox_is_horizontally_contained(item.bbox, interval) for item in positioned)
+        and _bbox_is_contained(cell.bbox, interval)
+        and all(_bbox_is_contained(item.bbox, interval) for item in positioned)
+        and _is_vertically_aligned_with_row_peer(cell, row, interval)
         and all(item.source == "ocr" for item in positioned)
         and not _has_composite_financial_evidence(cell)
-        and _is_nonmaterial_layout_marker_text(logical_text_for_evidence(cell.glyphs, cell.words))
+        and (
+            _is_nonmaterial_layout_marker_text(logical_text_for_evidence(cell.glyphs, cell.words))
+            or _matches_cross_profile_ocr_band(cell, band)
+        )
     )
 
 
@@ -562,7 +730,7 @@ def _standalone_marker_sources(
         if not is_structural_continuation(row)
         for cell in row.cells
         if cell not in replaced_sources
-        if _is_independently_proven_marker_source(cell, interval)
+        if _is_independently_proven_marker_source(cell, interval, band, row)
     )
 
 

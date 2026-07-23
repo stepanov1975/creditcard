@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import statistics
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -11,13 +10,7 @@ from datetime import date
 
 from ccparser.date_tokens import FULL_DATE_TOKEN_PATTERNS, SHORT_DATE_TOKEN_PATTERNS
 from ccparser.discovery import DiscoveredDateYearContext
-from ccparser.geometry import (
-    bbox_center_x,
-    bbox_height,
-    bbox_width,
-    union_bbox,
-    vertical_overlap,
-)
+from ccparser.geometry import bbox_center_x
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
@@ -46,10 +39,12 @@ from ccparser.normalization_dates import (
     has_proven_unanchored_short_date,
     is_date_shaped,
     is_typed_conversion_source,
+    matches_positioned_date_description_residual,
     matching_date_atom_ids,
     nonmaterial_date_layout_atom_ids,
     parsed_cross_cell_conversion_evidence,
     proven_assigned_date_evidence,
+    proven_date_description_layout_marker_atom_ids,
     proven_unanchored_short_date_style,
 )
 from ccparser.normalization_description import (
@@ -522,7 +517,7 @@ def assignment_diagnostics(
             row, cell
         )
         safe_ancillary_unknown = column.role is ColumnRole.UNKNOWN and (
-            is_proven_ocr_marker_cell(cell, column)
+            is_proven_ocr_marker_cell(cell, column, row=row)
             or explicit_nonfinancial_ancillary
             or column.index in proven_stable_ancillary_unknowns
             or (
@@ -683,7 +678,12 @@ def _date_description_boundary_layout_atom_ids(
 ) -> frozenset[int]:
     splits = tuple(
         split
-        for split in boundary_date_description_splits(row, region, year_context)
+        for split in boundary_date_description_splits(
+            row,
+            region,
+            year_context,
+            ledger=ledger,
+        )
         if split[0] is cell
     )
     if len(splits) != 1 or not proven_date_atom_ids:
@@ -700,83 +700,23 @@ def _date_description_boundary_layout_atom_ids(
         not description_atom_ids
         or not any(char.isalpha() for char in residual_text)
         or any(char.isdigit() for char in residual_text)
-        or normalize_text(ledger.render(description_atom_ids)) != normalize_text(residual_text)
+        or not matches_positioned_date_description_residual(
+            ledger=ledger,
+            cell=cell,
+            description_atom_ids=description_atom_ids,
+            residual=residual_text,
+        )
     ):
         return frozenset()
     already_claimed = frozenset(atom_id for claim in claims for atom_id in claim.atom_ids)
-    cell_atom_ids = ledger.atoms_for_cell(cell)
-    marker_atom_ids = (
-        cell_atom_ids - proven_date_atom_ids - existing_layout_atom_ids - already_claimed
+    return proven_date_description_layout_marker_atom_ids(
+        ledger=ledger,
+        cell=cell,
+        date_column=column,
+        date_atom_ids=proven_date_atom_ids,
+        description_atom_ids=description_atom_ids,
+        excluded_atom_ids=existing_layout_atom_ids | already_claimed,
     )
-    if len(marker_atom_ids) != 1:
-        return frozenset()
-    marker_atom = ledger.atoms[next(iter(marker_atom_ids))]
-    date_atoms = tuple(ledger.atoms[atom_id] for atom_id in proven_date_atom_ids)
-    description_atoms = tuple(ledger.atoms[atom_id] for atom_id in description_atom_ids)
-    if (
-        marker_atom.glyph is None
-        or marker_atom.glyph.source != "digital"
-        or marker_atom.glyph.confidence != 1.0
-        or len(marker_atom.glyph.char) != 1
-        or not marker_atom.glyph.char.isdigit()
-        or not date_atoms
-        or not description_atoms
-        or any(atom.glyph is None or atom.glyph.source != "digital" for atom in date_atoms)
-        or any(atom.glyph is None or atom.glyph.source != "digital" for atom in description_atoms)
-    ):
-        return frozenset()
-    date_glyphs = tuple(atom.glyph for atom in date_atoms if atom.glyph is not None)
-    description_glyphs = tuple(atom.glyph for atom in description_atoms if atom.glyph is not None)
-    if marker_atom.glyph.font in {glyph.font for glyph in (*date_glyphs, *description_glyphs)}:
-        return frozenset()
-    date_digit_widths = tuple(
-        bbox_width(glyph.bbox) for glyph in date_glyphs if glyph.char.isdigit()
-    )
-    if (
-        not date_digit_widths
-        or min(date_digit_widths) <= 0.0
-        or bbox_width(marker_atom.bbox) < statistics.median(date_digit_widths) * 1.2
-    ):
-        return frozenset()
-    exact_marker_words = tuple(
-        word
-        for word in cell.words
-        if word.source == "digital"
-        and word.confidence == 1.0
-        and normalize_text(word.text) == marker_atom.glyph.char
-        and ledger.atoms_in_bbox(cell_atom_ids, word.bbox) == marker_atom_ids
-    )
-    if len(exact_marker_words) != 1:
-        return frozenset()
-    date_bbox = union_bbox(atom.bbox for atom in date_atoms)
-    description_bbox = union_bbox(atom.bbox for atom in description_atoms)
-    if description_bbox[2] <= date_bbox[0] and marker_atom.bbox[0] >= date_bbox[2]:
-        date_gap = marker_atom.bbox[0] - date_bbox[2]
-    elif date_bbox[2] <= description_bbox[0] and marker_atom.bbox[2] <= date_bbox[0]:
-        date_gap = date_bbox[0] - marker_atom.bbox[2]
-    else:
-        return frozenset()
-    date_height = min(bbox_height(date_bbox), bbox_height(marker_atom.bbox))
-    description_height = min(
-        bbox_height(description_bbox),
-        bbox_height(marker_atom.bbox),
-    )
-    description_gap = max(
-        description_bbox[0] - marker_atom.bbox[2],
-        marker_atom.bbox[0] - description_bbox[2],
-        0.0,
-    )
-    if (
-        date_height <= 0.0
-        or description_height <= 0.0
-        or not date_height * 0.1 < date_gap <= date_height * 0.25
-        or description_gap <= description_height * 0.1
-        or vertical_overlap(date_bbox, marker_atom.bbox) < 0.8
-        or vertical_overlap(description_bbox, marker_atom.bbox) < 0.8
-        or not column.bbox[0] <= bbox_center_x(marker_atom.bbox) <= column.bbox[2]
-    ):
-        return frozenset()
-    return marker_atom_ids
 
 
 def validate_transaction_semantics(
@@ -899,7 +839,7 @@ def validate_transaction_semantics(
                         cell=cell,
                         ledger=ledger,
                         claims=claims,
-                        proven_date_atom_ids=proven_date_ids,
+                        proven_date_atom_ids=matched_date_ids | proven_date_ids,
                         existing_layout_atom_ids=layout_noise_ids,
                         year_context=year_context,
                     )
@@ -1044,7 +984,7 @@ def validate_transaction_semantics(
                         cell_ids & accepted_conversion_date_atom_ids,
                     )
                     _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
-                elif is_proven_ocr_marker_cell(cell, column):
+                elif is_proven_ocr_marker_cell(cell, column, row=row):
                     _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
                 elif is_foreign_conversion_evidence:
                     _add_remaining_claim(
