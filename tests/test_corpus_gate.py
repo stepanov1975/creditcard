@@ -4201,6 +4201,113 @@ class _SyntheticRuntimeDistribution:
         return self._root / str(path)
 
 
+class _ChangingRuntimeDistribution:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self.version = "9.9.9"
+        self._files = tuple(
+            path.relative_to(root) for path in sorted(root.rglob("*")) if path.is_file()
+        )
+        self.inventory_reads = 0
+
+    @property
+    def files(self) -> tuple[Path, ...]:
+        self.inventory_reads += 1
+        if self.inventory_reads == 1:
+            return self._files
+        return ()
+
+    def locate_file(self, path: object) -> Path:
+        return self._root / str(path)
+
+
+def test_runtime_distribution_ignores_uninventoried_metadata_shadow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shadow = _SyntheticRuntimeDistribution(tmp_path / "shadow")
+    installed_root = tmp_path / "site-packages"
+    package_file = installed_root / "ccparser" / "__init__.py"
+    package_file.parent.mkdir(parents=True)
+    package_file.write_bytes(b"APPROVED = 1\n")
+    installed = _SyntheticRuntimeDistribution(installed_root)
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distribution",
+        lambda _name: shadow,
+    )
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distributions",
+        lambda **_kwargs: (shadow, installed),
+    )
+
+    snapshot = corpus_gate_module._snapshot_runtime_distribution("ccparser")
+
+    assert snapshot.installation_root == installed_root.resolve()
+    assert snapshot.artifact_paths == frozenset({package_file.resolve()})
+
+
+def test_runtime_distribution_snapshots_the_selected_inventory_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed_root = tmp_path / "site-packages"
+    package_file = installed_root / "ccparser" / "__init__.py"
+    package_file.parent.mkdir(parents=True)
+    package_file.write_bytes(b"APPROVED = 1\n")
+    installed = _ChangingRuntimeDistribution(installed_root)
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distributions",
+        lambda **_kwargs: (installed,),
+    )
+
+    snapshot = corpus_gate_module._snapshot_runtime_distribution("ccparser")
+
+    assert installed.inventory_reads == 1
+    assert snapshot.artifact_paths == frozenset({package_file.resolve()})
+
+
+def test_runtime_distribution_rejects_multiple_inventoried_installations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installations: list[_SyntheticRuntimeDistribution] = []
+    for directory_name in ("first", "second"):
+        installation_root = tmp_path / directory_name
+        package_file = installation_root / "ccparser" / "__init__.py"
+        package_file.parent.mkdir(parents=True)
+        package_file.write_bytes(b"APPROVED = 1\n")
+        installations.append(_SyntheticRuntimeDistribution(installation_root))
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distribution",
+        lambda _name: installations[0],
+    )
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distributions",
+        lambda **_kwargs: tuple(installations),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime distribution inventory unavailable"):
+        corpus_gate_module._snapshot_runtime_distribution("ccparser")
+
+
+def test_runtime_distribution_rejects_missing_inventoried_installation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distributions",
+        lambda **_kwargs: (),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime distribution inventory unavailable"):
+        corpus_gate_module._snapshot_runtime_distribution("ccparser")
+
+
 @pytest.mark.parametrize(
     ("dependency_name", "relative_artifact"),
     (
@@ -4733,14 +4840,6 @@ def test_default_gate_boundary_delegates_to_isolated_worker_despite_live_default
     assert run_corpus_gate(config, CorpusGateMode.RECORD) == expected
 
 
-class _SyntheticDistributionRoot:
-    def __init__(self, root: Path) -> None:
-        self._root = root
-
-    def locate_file(self, _path: str) -> Path:
-        return self._root
-
-
 def _isolated_import_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4773,11 +4872,11 @@ def _isolated_import_roots(
             encoding="utf-8",
         )
 
-    synthetic_distribution = _SyntheticDistributionRoot(dependency_root)
+    synthetic_distribution = _SyntheticRuntimeDistribution(dependency_root)
     monkeypatch.setattr(
         corpus_gate_module.metadata,
-        "distribution",
-        lambda _name: synthetic_distribution,
+        "distributions",
+        lambda **_kwargs: (synthetic_distribution,),
     )
     monkeypatch.setattr(
         corpus_gate_module,
@@ -4808,6 +4907,32 @@ def test_isolated_search_paths_put_approved_dependencies_before_candidate_source
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dependency_root, candidate_root = _isolated_import_roots(tmp_path, monkeypatch)
+
+    assert corpus_gate_module._isolated_search_paths() == (
+        dependency_root,
+        candidate_root,
+    )
+
+
+def test_isolated_search_paths_ignore_uninventoried_metadata_shadow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency_root, candidate_root = _isolated_import_roots(tmp_path, monkeypatch)
+    shadow_root = tmp_path / "metadata-shadow"
+    shadow_root.mkdir()
+    shadow = _SyntheticRuntimeDistribution(shadow_root)
+    installed = _SyntheticRuntimeDistribution(dependency_root)
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distribution",
+        lambda _name: shadow,
+    )
+    monkeypatch.setattr(
+        corpus_gate_module.metadata,
+        "distributions",
+        lambda **_kwargs: (shadow, installed),
+    )
 
     assert corpus_gate_module._isolated_search_paths() == (
         dependency_root,

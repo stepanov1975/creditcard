@@ -1666,6 +1666,12 @@ def _stable_content_identity(path: Path, *, require_executable: bool = False) ->
 
 
 @dataclass(frozen=True, slots=True)
+class _RuntimeDistributionInventory:
+    distribution: metadata.Distribution
+    files: tuple[metadata.PackagePath, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimeDistributionSnapshot:
     dependency: RuntimeDependency
     installation_root: Path
@@ -1843,15 +1849,44 @@ def _module_top_level(relative_path: PurePosixPath) -> str | None:
     raise AssertionError("unreachable extension suffix")
 
 
+def _inventoried_runtime_distribution(
+    name: RuntimeDependencyName,
+) -> _RuntimeDistributionInventory:
+    try:
+        inventoried: list[_RuntimeDistributionInventory] = []
+        for distribution in metadata.distributions(name=name):
+            raw_files = distribution.files
+            if raw_files:
+                inventoried.append(
+                    _RuntimeDistributionInventory(
+                        distribution=distribution,
+                        files=tuple(raw_files),
+                    )
+                )
+    except Exception:
+        raise RuntimeError("runtime distribution inventory unavailable") from None
+    if len(inventoried) != 1:
+        raise RuntimeError("runtime distribution inventory unavailable")
+    return inventoried[0]
+
+
 def _snapshot_runtime_distribution(
     name: RuntimeDependencyName,
     *,
     distribution: metadata.Distribution | None = None,
 ) -> _RuntimeDistributionSnapshot:
-    installed = distribution or metadata.distribution(name)
-    raw_files = installed.files
-    if raw_files is None:
-        raise RuntimeError("runtime distribution inventory unavailable")
+    if distribution is None:
+        inventory = _inventoried_runtime_distribution(name)
+    else:
+        discovered_files = distribution.files
+        if discovered_files is None:
+            raise RuntimeError("runtime distribution inventory unavailable")
+        inventory = _RuntimeDistributionInventory(
+            distribution=distribution,
+            files=tuple(discovered_files),
+        )
+    installed = inventory.distribution
+    raw_files = inventory.files
     records: list[tuple[str, int, str]] = []
     artifact_paths: set[Path] = set()
     source_origins: set[tuple[str, Path]] = set()
@@ -4199,7 +4234,8 @@ def _isolated_search_paths() -> tuple[Path, ...]:
     roots: list[Path] = []
     try:
         for distribution_name in ("ccparser", "pydantic", "pymupdf", "typer"):
-            distribution_root = metadata.distribution(distribution_name).locate_file("")
+            inventory = _inventoried_runtime_distribution(distribution_name)
+            distribution_root = inventory.distribution.locate_file("")
             root = Path(str(distribution_root)).resolve(strict=True)
             if root != candidate_source and root not in roots:
                 roots.append(root)
