@@ -540,13 +540,14 @@ class LocalCorpusRunner:
         jobs: int,
     ) -> CompletedCorpusRun:
         membership_before = _snapshot_membership(input_dir, allow_descriptor_root=True)
-        start_nanoseconds = self._monotonic_ns()
         directory_root_policy = (
             DirectoryRootPolicy.TRUSTED_DESCRIPTOR
             if all(_is_process_fd_path(path) for path in (input_dir, output_dir, cache_dir))
             else DirectoryRootPolicy.RESOLVE
         )
+        membership_snapshot_error: CorpusGateError | None = None
         try:
+            start_nanoseconds = self._monotonic_ns()
             with StatementSpool.create(output_dir) as spool:
                 status_counts: Counter[Status] = Counter()
 
@@ -575,10 +576,14 @@ class LocalCorpusRunner:
                     statements=spool.iter_statements,
                 )
                 end_nanoseconds = self._monotonic_ns()
-                membership_after = _snapshot_membership(
-                    input_dir,
-                    allow_descriptor_root=True,
-                )
+                try:
+                    membership_after = _snapshot_membership(
+                        input_dir,
+                        allow_descriptor_root=True,
+                    )
+                except CorpusGateError as error:
+                    membership_snapshot_error = error
+                    raise
                 elapsed_nanoseconds = end_nanoseconds - start_nanoseconds
                 if elapsed_nanoseconds < 0:
                     raise RuntimeError("monotonic clock moved backwards")
@@ -602,8 +607,10 @@ class LocalCorpusRunner:
                     csv_digest=expected_csv_digest,
                     statements=spool.iter_statements,
                 )
-        except CorpusGateError:
-            raise
+        except CorpusGateError as error:
+            if error is membership_snapshot_error:
+                raise
+            raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
         except Exception:
             raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
         return CompletedCorpusRun(

@@ -2764,6 +2764,81 @@ def test_local_runner_streams_exact_outputs_without_retaining_batch(tmp_path: Pa
     assert all(reference() is None for reference in result_references)
 
 
+def test_local_runner_releases_each_serial_result_before_parsing_the_next_source(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    for source_name in ("a.pdf", "b.pdf", "c.pdf"):
+        (input_dir / source_name).write_bytes(source_name.encode())
+    previous_graph: tuple[weakref.ReferenceType[object], ...] | None = None
+    handoffs_checked = 0
+
+    def parse(
+        path: str | Path,
+        strict: bool = False,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> StatementResult:
+        nonlocal handoffs_checked, previous_graph
+        del strict, cache_dir
+        if previous_graph is not None:
+            gc.collect()
+            assert all(reference() is None for reference in previous_graph)
+            handoffs_checked += 1
+        source = Path(path)
+        content = source.read_bytes()
+        digest = sha256(content).hexdigest()
+        row = RowNormalizationSummary(
+            page_number=1,
+            bbox=(0.0, 0.0, 1.0, 1.0),
+            raw_text="synthetic row",
+            evidence=(
+                EvidenceReference(
+                    page_number=1,
+                    bbox=(0.0, 0.0, 1.0, 1.0),
+                    raw_text="synthetic evidence",
+                ),
+            ),
+            confidence=1.0,
+        )
+        result = StatementResult(
+            status=Status.RECONCILED,
+            transactions=(),
+            groups=(),
+            source_name=source.name,
+            source_sha256=digest,
+            statement_id=digest,
+            row_results=(row,),
+        )
+        previous_graph = (
+            weakref.ref(result),
+            weakref.ref(result.row_results[0]),
+            weakref.ref(result.row_results[0].evidence[0]),
+        )
+        return result
+
+    runner = LocalCorpusRunner(statement_parser=parse)
+
+    completed = runner(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=True,
+        jobs=1,
+    )
+
+    assert handoffs_checked == 2
+    assert completed.batch_status is Status.RECONCILED
+    assert completed.manifest.counts.documents == 3
+    assert previous_graph is not None
+    gc.collect()
+    assert all(reference() is None for reference in previous_graph)
+
+
 def test_local_runner_streams_the_exact_empty_batch(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -2841,6 +2916,47 @@ def test_local_runner_snapshots_membership_immediately_around_streaming(
 
     assert completed.membership_before == digest_membership((sha256(b"before").hexdigest(),))
     assert completed.membership_after == digest_membership((sha256(b"after").hexdigest(),))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_preserves_only_an_intentional_membership_snapshot_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_snapshot = corpus_gate_module._snapshot_membership
+    snapshot_count = 0
+
+    def fail_second_snapshot(
+        path: Path,
+        *,
+        allow_descriptor_root: bool = False,
+    ) -> CorpusMembership:
+        nonlocal snapshot_count
+        snapshot_count += 1
+        if snapshot_count == 2:
+            raise CorpusGateInputError((CorpusGateReason.CORPUS_SYMLINK,))
+        return original_snapshot(path, allow_descriptor_root=allow_descriptor_root)
+
+    monkeypatch.setattr(corpus_gate_module, "_snapshot_membership", fail_second_snapshot)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateInputError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.CORPUS_SYMLINK,)
+    assert snapshot_count == 2
     assert not tuple(output_dir.glob(".statement-spool*"))
 
 
@@ -3163,6 +3279,44 @@ def test_local_runner_rejects_a_negative_elapsed_clock_privately(tmp_path: Path)
 
     assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
     assert "clock moved" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+@pytest.mark.parametrize("failure_kind", ("private_runtime", "gate_error"))
+def test_local_runner_translates_an_initial_clock_failure_privately(
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+
+    def fail_initial_clock() -> int:
+        if failure_kind == "gate_error":
+            raise CorpusGateAcceptanceError((CorpusGateReason.COUNTS_DRIFT,))
+        raise RuntimeError("private initial clock failure")
+
+    runner = LocalCorpusRunner(
+        statement_parser=_reconciled_statement_parser,
+        monotonic_ns=fail_initial_clock,
+    )
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    formatted = "".join(traceback.format_exception(caught.value))
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private initial" not in formatted
+    assert CorpusGateReason.COUNTS_DRIFT.value not in formatted
     assert not tuple(output_dir.glob(".statement-spool*"))
 
 
