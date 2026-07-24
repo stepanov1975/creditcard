@@ -3208,6 +3208,62 @@ def test_local_runner_rejects_unsafe_emitted_output_types_privately(
     assert not tuple(output_dir.glob(".statement-spool*"))
 
 
+def test_local_runner_rejects_a_hard_link_created_before_final_path_stat_privately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    emitted_path = output_dir / "results.json"
+    private_link = tmp_path / "private-late-output-link"
+    original_stat = os.stat
+    destination_was_missing = False
+    late_link_created = False
+
+    def create_link_before_final_path_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes] | int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal destination_was_missing, late_link_created
+        is_emitted_path = path == emitted_path and dir_fd is None and not follow_symlinks
+        if is_emitted_path and destination_was_missing and not late_link_created:
+            os.link(emitted_path, private_link)
+            late_link_created = True
+        try:
+            return original_stat(
+                path,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+        except FileNotFoundError:
+            if is_emitted_path:
+                destination_was_missing = True
+            raise
+
+    monkeypatch.setattr(corpus_run_module.os, "stat", create_link_before_final_path_stat)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert late_link_created
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private-late-output-link" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
 @pytest.mark.parametrize("mutation", ("identity", "metadata"))
 def test_local_runner_rejects_emitted_output_changed_while_hashing_privately(
     tmp_path: Path,

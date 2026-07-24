@@ -101,15 +101,19 @@ def _stable_emitted_file_identity(
     )
 
 
+def _is_safe_emitted_file_stat(file_stat: os.stat_result, /) -> bool:
+    return (
+        stat.S_ISREG(file_stat.st_mode)
+        and file_stat.st_uid == os.geteuid()
+        and file_stat.st_nlink == 1
+    )
+
+
 def _require_file_digest(path: Path, expected_digest: str) -> None:
     file_descriptor = os.open(path, _EMITTED_OUTPUT_READ_FLAGS)
     try:
         before = os.fstat(file_descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.geteuid()
-            or before.st_nlink != 1
-        ):
+        if not _is_safe_emitted_file_stat(before):
             raise RuntimeError("emitted output is unsafe")
         digest = sha256()
         while chunk := os.read(file_descriptor, _EMITTED_OUTPUT_READ_SIZE):
@@ -118,9 +122,8 @@ def _require_file_digest(path: Path, expected_digest: str) -> None:
         named_after = os.stat(path, follow_symlinks=False)
         before_identity = _stable_emitted_file_identity(before)
         if (
-            not stat.S_ISREG(after.st_mode)
-            or after.st_uid != os.geteuid()
-            or after.st_nlink != 1
+            not _is_safe_emitted_file_stat(after)
+            or not _is_safe_emitted_file_stat(named_after)
             or _stable_emitted_file_identity(after) != before_identity
             or _stable_emitted_file_identity(named_after) != before_identity
             or digest.hexdigest() != expected_digest
