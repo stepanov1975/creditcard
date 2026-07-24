@@ -306,6 +306,70 @@ def test_spool_removes_created_record_when_initial_fstat_fails(
     spool.close()
 
 
+def test_spool_tracks_exclusive_record_when_all_descriptor_stats_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spool = StatementSpool.create(tmp_path)
+    record_path = spool.path / "00000000.json"
+    original_fstat = os.fstat
+    original_stat = os.stat
+    original_unlink = os.unlink
+    record_stat_calls: list[tuple[int | None, bool]] = []
+    unlink_attempts = 0
+
+    def fail_record_fstat(file_descriptor: int) -> os.stat_result:
+        file_stat = original_fstat(file_descriptor)
+        if stat.S_ISREG(file_stat.st_mode):
+            raise OSError("private descriptor stat failure")
+        return file_stat
+
+    def record_name_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        if path == "00000000.json":
+            record_stat_calls.append((dir_fd, follow_symlinks))
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    def fail_first_unlink(name: str, *, dir_fd: int | None = None) -> None:
+        nonlocal unlink_attempts
+        unlink_attempts += 1
+        if unlink_attempts == 1:
+            raise OSError("private transient cleanup failure")
+        original_unlink(name, dir_fd=dir_fd)
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(corpus_spool_module.os, "fstat", fail_record_fstat)
+            scoped.setattr(corpus_spool_module.os, "stat", record_name_stat)
+            scoped.setattr(corpus_spool_module.os, "unlink", fail_first_unlink)
+            with pytest.raises(StatementSpoolError) as caught:
+                spool.append(0, _statement("source.pdf"))
+
+        assert str(caught.value) == "statement spool operation failed"
+        assert "private" not in "".join(traceback.format_exception(caught.value))
+        assert record_path.exists()
+        spool.close()
+
+        assert not spool.path.exists()
+        assert record_stat_calls
+        assert all(
+            directory_fd is not None and not follow_symlinks
+            for directory_fd, follow_symlinks in record_stat_calls
+        )
+        assert unlink_attempts == 1
+    finally:
+        with suppress(StatementSpoolError):
+            spool.close()
+        with suppress(FileNotFoundError):
+            record_path.unlink()
+        with suppress(FileNotFoundError):
+            spool.path.rmdir()
+
+
 def test_spool_retries_owned_partial_cleanup_on_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

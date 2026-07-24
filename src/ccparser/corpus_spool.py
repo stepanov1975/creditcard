@@ -181,6 +181,7 @@ class StatementSpool:
         """Append one canonical statement under its unique ordinal."""
 
         file_descriptor: int | None = None
+        directory_fd: int | None = None
         created_identity: tuple[int, int] | None = None
         name: str | None = None
         content: bytes | None = None
@@ -248,6 +249,11 @@ class StatementSpool:
             if file_descriptor is not None:
                 if created_identity is None:
                     created_identity = _owned_regular_identity_no_throw(file_descriptor)
+                    if created_identity is None and name is not None and directory_fd is not None:
+                        created_identity = _owned_exclusive_record_identity_at_no_throw(
+                            directory_fd,
+                            name,
+                        )
                     if name is not None and created_identity is not None:
                         self._owned_files[name] = created_identity
                 owned_file_descriptor = file_descriptor
@@ -475,6 +481,25 @@ def _owned_regular_identity_no_throw(file_descriptor: int) -> tuple[int, int] | 
     except (Exception, KeyboardInterrupt, SystemExit):
         return None
     if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != os.geteuid():
+        return None
+    return _inode_identity(file_stat)
+
+
+def _owned_exclusive_record_identity_at_no_throw(
+    directory_fd: int,
+    name: str,
+) -> tuple[int, int] | None:
+    try:
+        file_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except (Exception, KeyboardInterrupt, SystemExit):
+        return None
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_nlink != 1
+        or file_stat.st_size != 0
+        or stat.S_IMODE(file_stat.st_mode) & ~0o600
+    ):
         return None
     return _inode_identity(file_stat)
 
