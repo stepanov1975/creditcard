@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import gc
 import io
 import json
 import unicodedata
+import weakref
+from collections.abc import Iterator
 from datetime import date
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -59,8 +62,9 @@ def _batch() -> BatchResult:
         reconciliation_group_ids=("group-0001",),
         transaction_date=date(2026, 1, 2),
         conversion_date=date(2026, 1, 3),
-        description='Cafe, "שָׁלוֹם"\nsecond line',
+        description='Café, "שָׁלוֹם"\nsecond line',
         category=TransactionCategory.PURCHASE,
+        ambiguities=("ambiguous_date", "ambiguous_currency", "ambiguous_date"),
         original_amount=Decimal("10.200"),
         original_currency="USD",
         installment_current=2,
@@ -99,6 +103,7 @@ def _batch() -> BatchResult:
             ),
         ),
     )
+    transaction = transaction.model_copy(update={"description": 'Cafe\u0301, "שָׁלוֹם"\nsecond line'})
     group = ReconciliationGroup(
         group_id="group-0001",
         currency="ILS",
@@ -107,6 +112,7 @@ def _batch() -> BatchResult:
         difference=Decimal("0.0000"),
         transaction_ids=(transaction.transaction_id,),
         status=Status.RECONCILED,
+        diagnostics=("group_diagnostic",),
     )
     statement = StatementResult(
         status=Status.RECONCILED,
@@ -122,6 +128,53 @@ def _batch() -> BatchResult:
         statements=(statement,),
         diagnostics=("batch_diagnostic",),
     )
+
+
+def _batch_with_empty_statement() -> BatchResult:
+    batch = _batch()
+    empty_statement = StatementResult(
+        status=Status.UNSUPPORTED,
+        transactions=(),
+        groups=(),
+        diagnostics=("empty_diagnostic",),
+        source_name="empty.pdf",
+        source_sha256="b" * 64,
+        statement_id="b" * 64,
+    )
+    return batch.model_copy(update={"statements": (*batch.statements, empty_statement)})
+
+
+_LOCKED_PRE_STREAMING_CSV_BYTES = (
+    b"\xef\xbb\xbf"
+    + (
+        "source,source_sha256,statement_id,group_id,transaction_id,transaction_date,"
+        "posting_date,conversion_date,description,category,kind,billed_amount,"
+        "billing_currency,original_amount,original_currency,installment_current,"
+        "installment_total,status,ambiguity_codes,diagnostic_codes,source_page,source_bbox,"
+        "exchange_rate,exchange_rate_source_page,exchange_rate_source_bbox,"
+        "foreign_currency_fee_percentage,foreign_currency_fee_percentage_source_page,"
+        "foreign_currency_fee_percentage_source_bbox,gross_foreign_currency_fee,"
+        "gross_foreign_currency_fee_currency,gross_foreign_currency_fee_source_page,"
+        "gross_foreign_currency_fee_source_bbox,foreign_currency_fee_discount,"
+        "foreign_currency_fee_discount_currency,foreign_currency_fee_discount_source_page,"
+        "foreign_currency_fee_discount_source_bbox,net_foreign_currency_fee,"
+        "net_foreign_currency_fee_currency,net_foreign_currency_fee_derivation,"
+        "net_foreign_currency_fee_source_page,net_foreign_currency_fee_source_bbox\r\n"
+        "nested/statement.pdf,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,group-0001,"
+        "group-0001-p001-r0001,2026-01-02,,2026-01-03,"
+        '"Café, ""שָׁלוֹם""\nsecond line",purchase,charge,1234.5,ILS,10.2,USD,2,3,'
+        "reconciled,ambiguous_date|ambiguous_currency,"
+        "batch_diagnostic|statement_diagnostic|group_diagnostic,1,"
+        '"1:10.25,20.5,30.75,40",2.943,1,"1:40,50,70,60",3,1,"1:40,60,70,70",'
+        '0.88,ILS,1,"1:40,60,70,70",0.59,ILS,1,"1:40,70,70,80",0.29,ILS,'
+        'gross_fee_minus_discount,1,"1:40,60,70,70;1:40,70,70,80"\r\n'
+        "empty.pdf,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,"
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,"
+        ",,,,,,,,,,,,,,unsupported,,batch_diagnostic|empty_diagnostic,"
+        ",,,,,,,,,,,,,,,,,,,,\r\n"
+    ).encode()
+)
 
 
 def _all_strings(value: object) -> tuple[str, ...]:
@@ -182,8 +235,77 @@ def test_streaming_json_and_csv_match_complete_batch_bytes(batch: BatchResult) -
     assert csv_stream.getvalue() == transactions_csv_bytes(batch)
 
 
+def test_streaming_csv_matches_locked_pre_streaming_byte_oracle() -> None:
+    batch = _batch_with_empty_statement()
+    stream = io.BytesIO()
+
+    write_transactions_csv_stream(
+        stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+
+    assert stream.getvalue() == _LOCKED_PRE_STREAMING_CSV_BYTES
+    assert transactions_csv_bytes(batch) == _LOCKED_PRE_STREAMING_CSV_BYTES
+
+
+def _statements_requiring_release_before_next() -> Iterator[StatementResult]:
+    transaction = Transaction(
+        transaction_id="transaction-0001",
+        kind=TransactionKind.CHARGE,
+        billed_amount=Decimal("1.00"),
+        billing_currency="ILS",
+        reconciliation_group_ids=("group-0001",),
+    )
+    group = ReconciliationGroup(
+        group_id="group-0001",
+        currency="ILS",
+        printed_total=Decimal("1.00"),
+        calculated_total=Decimal("1.00"),
+        difference=Decimal("0.00"),
+        transaction_ids=(transaction.transaction_id,),
+        status=Status.RECONCILED,
+    )
+    statement = StatementResult(
+        status=Status.RECONCILED,
+        transactions=(transaction,),
+        groups=(group,),
+    )
+    references = {
+        "statement": weakref.ref(statement),
+        "transaction": weakref.ref(transaction),
+        "group": weakref.ref(group),
+    }
+    yield statement
+    del statement, transaction, group
+    gc.collect()
+    retained = tuple(name for name, reference in references.items() if reference() is not None)
+    assert not retained, f"prior statement graph retained while requesting next: {retained}"
+    yield StatementResult(status=Status.RECONCILED, transactions=(), groups=())
+
+
+def test_streaming_json_releases_statement_before_requesting_next() -> None:
+    write_canonical_batch_json_stream(
+        io.BytesIO(),
+        status=Status.RECONCILED,
+        diagnostics=(),
+        statements=_statements_requiring_release_before_next(),
+    )
+
+
+def test_streaming_csv_releases_statement_graph_before_requesting_next() -> None:
+    write_transactions_csv_stream(
+        io.BytesIO(),
+        status=Status.RECONCILED,
+        diagnostics=(),
+        statements=_statements_requiring_release_before_next(),
+    )
+
+
 def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None:
     batch = _batch()
+    input_description = batch.statements[0].transactions[0].description
 
     first = canonical_json_bytes(batch)
     second = canonical_json_bytes(batch)
@@ -193,6 +315,14 @@ def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None
     assert first.endswith(b"\n") and not first.endswith(b"\n\n")
     assert first.decode("utf-8").startswith('{"diagnostics"')
     transaction = payload["statements"][0]["transactions"][0]
+    assert input_description is not None
+    assert not unicodedata.is_normalized("NFC", input_description)
+    assert transaction["description"] == 'Café, "שָׁלוֹם"\nsecond line'
+    assert transaction["ambiguities"] == [
+        "ambiguous_date",
+        "ambiguous_currency",
+        "ambiguous_date",
+    ]
     assert transaction["billed_amount"] == "1234.5"
     assert transaction["original_amount"] == "10.2"
     assert transaction["transaction_date"] == "2026-01-02"
@@ -275,7 +405,8 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["billed_amount"] == "1234.5"
     assert row["original_amount"] == "10.2"
     assert row["conversion_date"] == "2026-01-03"
-    assert row["description"] == 'Cafe, "שָׁלוֹם"\nsecond line'
+    assert row["description"] == 'Café, "שָׁלוֹם"\nsecond line'
+    assert row["ambiguity_codes"] == "ambiguous_date|ambiguous_currency"
     assert row["exchange_rate"] == "2.943"
     assert row["foreign_currency_fee_percentage"] == "3"
     assert row["gross_foreign_currency_fee"] == "0.88"
@@ -287,7 +418,7 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["exchange_rate_source_bbox"] == "1:40,50,70,60"
     assert row["source_page"] == "1"
     assert row["source_bbox"] == "1:10.25,20.5,30.75,40"
-    assert row["diagnostic_codes"] == "batch_diagnostic|statement_diagnostic"
+    assert row["diagnostic_codes"] == "batch_diagnostic|statement_diagnostic|group_diagnostic"
 
 
 def test_transactions_csv_formats_large_and_signed_zero_values_without_rounding() -> None:

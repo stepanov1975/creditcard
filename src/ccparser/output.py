@@ -137,10 +137,16 @@ def write_canonical_batch_json_stream(
     destination.write(_canonical_json_value_content(diagnostics))
     destination.write(b',"statements":[')
     separator = b""
-    for statement in statements:
+    statement_iterator = iter(statements)
+    while True:
+        try:
+            statement = next(statement_iterator)
+        except StopIteration:
+            break
         destination.write(separator)
         destination.write(_canonical_json_value_content(statement.model_dump(mode="json")))
         separator = b","
+        del statement
     destination.write(b'],"status":')
     destination.write(_canonical_json_value_content(status.value))
     destination.write(b"}\n")
@@ -285,6 +291,25 @@ class _Utf8TextWriter:
         return len(content)
 
 
+def _write_statement_csv_rows(
+    writer: csv.DictWriter[str],
+    batch_diagnostics: tuple[str, ...],
+    statement: StatementResult,
+) -> None:
+    groups = {group.group_id: group for group in statement.groups}
+    if statement.transactions:
+        for transaction in statement.transactions:
+            writer.writerow(_transaction_row(batch_diagnostics, statement, transaction, groups))
+    else:
+        writer.writerow(
+            _empty_row(
+                status=statement.status.value,
+                diagnostics=_codes(batch_diagnostics, statement.diagnostics),
+                statement=statement,
+            )
+        )
+
+
 def write_transactions_csv_stream(
     destination: BinaryWriter,
     *,
@@ -300,20 +325,15 @@ def write_transactions_csv_stream(
     )
     writer.writeheader()
     wrote_statement = False
-    for statement in statements:
+    statement_iterator = iter(statements)
+    while True:
+        try:
+            statement = next(statement_iterator)
+        except StopIteration:
+            break
         wrote_statement = True
-        groups = {group.group_id: group for group in statement.groups}
-        if statement.transactions:
-            for transaction in statement.transactions:
-                writer.writerow(_transaction_row(diagnostics, statement, transaction, groups))
-        else:
-            writer.writerow(
-                _empty_row(
-                    status=statement.status.value,
-                    diagnostics=_codes(diagnostics, statement.diagnostics),
-                    statement=statement,
-                )
-            )
+        _write_statement_csv_rows(writer, diagnostics, statement)
+        del statement
     if not wrote_statement:
         writer.writerow(_empty_row(status=status.value, diagnostics=_codes(diagnostics)))
 
