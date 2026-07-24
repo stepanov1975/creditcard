@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +67,7 @@ _CREDIT_MARKERS = (
     "החזר",
 )
 _CHARGE_MARKERS = ("charge", "charged", "debit", "חיוב")
+_LEXICAL_AMOUNT_CACHE_SIZE = 4_096
 
 
 @dataclass(frozen=True)
@@ -220,6 +222,7 @@ def _sign_and_number(text: str) -> tuple[str, bool, bool, str | None]:
     return core, negative, positive, None
 
 
+@lru_cache(maxsize=_LEXICAL_AMOUNT_CACHE_SIZE)
 def _parse_lexical(text: str, currency_hint: str | None) -> _LexicalAmount:
     raw_text = normalize_text(text)
     diagnostics: list[str] = []
