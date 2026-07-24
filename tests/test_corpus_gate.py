@@ -3208,6 +3208,81 @@ def test_local_runner_rejects_unsafe_emitted_output_types_privately(
     assert not tuple(output_dir.glob(".statement-spool*"))
 
 
+def test_local_runner_rejects_an_emitted_fifo_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    emitted_path = output_dir / "results.json"
+    original_write = corpus_run_module.write_streaming_batch_outputs
+    original_open = os.open
+    emitted_open_flags: list[int] = []
+    emitted_descriptors: list[int] = []
+
+    def write_then_substitute_fifo(
+        path: str | Path,
+        *,
+        status: Status,
+        diagnostics: tuple[str, ...],
+        statements: Callable[[], Iterator[StatementResult]],
+    ) -> None:
+        original_write(
+            path,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements,
+        )
+        emitted_path.unlink()
+        os.mkfifo(emitted_path, mode=0o600)
+
+    def guard_emitted_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == emitted_path:
+            emitted_open_flags.append(flags)
+            if not flags & os.O_NONBLOCK:
+                raise AssertionError("confidential fifo blocking-open guard")
+            descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+            emitted_descriptors.append(descriptor)
+            return descriptor
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        corpus_run_module,
+        "write_streaming_batch_outputs",
+        write_then_substitute_fifo,
+    )
+    monkeypatch.setattr(corpus_run_module.os, "open", guard_emitted_open)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert emitted_open_flags and emitted_open_flags[0] & os.O_NONBLOCK
+    assert len(emitted_descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(emitted_descriptors[0])
+    assert "confidential fifo" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+    emitted_path.unlink()
+
+
 def test_local_runner_rejects_a_hard_link_created_before_final_path_stat_privately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

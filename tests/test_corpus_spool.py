@@ -710,6 +710,77 @@ def test_spool_preserves_read_interruption_when_record_close_also_fails(
     spool.close()
 
 
+def test_spool_close_uses_a_generic_error_when_an_owned_record_is_missing(
+    tmp_path: Path,
+) -> None:
+    spool = StatementSpool.create(tmp_path)
+    spool.append(0, _statement("private/source.pdf"))
+    record = next(spool.path.iterdir())
+    record.unlink()
+
+    with pytest.raises(StatementSpoolError) as caught:
+        spool.close()
+
+    assert str(caught.value) == "statement spool operation failed"
+    assert "private" not in "".join(traceback.format_exception(caught.value))
+    assert not spool.path.exists()
+
+
+@pytest.mark.parametrize("mutation", ("mode", "owner", "hardlink"))
+def test_spool_close_rejects_changed_owned_record_security_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    spool = StatementSpool.create(tmp_path)
+    spool.append(0, _statement("private/source.pdf"))
+    record = next(spool.path.iterdir())
+    private_link = tmp_path / "private-late-record-link"
+    original_stat = os.stat
+
+    def report_changed_owner(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes] | int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        file_stat = original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+        if path == record.name and dir_fd is not None and not follow_symlinks:
+            values = list(file_stat)
+            values[stat.ST_UID] = file_stat.st_uid + 1
+            return os.stat_result(values)
+        return file_stat
+
+    if mutation == "mode":
+        record.chmod(0o600)
+    elif mutation == "hardlink":
+        os.link(record, private_link)
+
+    try:
+        with monkeypatch.context() as scoped:
+            if mutation == "owner":
+                scoped.setattr(corpus_spool_module.os, "stat", report_changed_owner)
+            with pytest.raises(StatementSpoolError) as caught:
+                spool.close()
+
+        assert str(caught.value) == "statement spool operation failed"
+        formatted = "".join(traceback.format_exception(caught.value))
+        assert "private" not in formatted
+        if mutation == "mode":
+            assert not spool.path.exists()
+        else:
+            assert record.exists()
+        if mutation == "hardlink":
+            assert private_link.exists()
+    finally:
+        with suppress(FileNotFoundError):
+            private_link.unlink()
+        with suppress(FileNotFoundError):
+            record.unlink()
+        with suppress(FileNotFoundError):
+            spool.path.rmdir()
+
+
 def test_spool_close_continues_cleanup_without_unlinking_unknown_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

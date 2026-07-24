@@ -86,7 +86,7 @@ def _canonical_stream_digests(
     return json_writer.hexdigest(), csv_writer.hexdigest()
 
 
-_EMITTED_OUTPUT_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+_EMITTED_OUTPUT_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _EMITTED_OUTPUT_READ_SIZE = 1024 * 1024
 
 

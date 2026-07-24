@@ -323,10 +323,12 @@ class StatementSpool:
         self._directory_fd = None
         self._parent_fd = None
         if directory_fd is not None:
+            sealed_names = {_record_name(ordinal) for ordinal in self._records}
             for name, identity in sorted(self._owned_files.items()):
                 try:
                     named_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                 except FileNotFoundError:
+                    failed = True
                     continue
                 except BaseException as error:
                     if isinstance(error, Exception):
@@ -334,12 +336,11 @@ class StatementSpool:
                     elif interruption is None:
                         interruption = error
                     continue
-                if (
-                    not stat.S_ISREG(named_stat.st_mode)
-                    or spool_fs.FileIdentity.from_stat(named_stat) != identity
-                ):
+                if not _stat_is_owned_file_for_cleanup(named_stat, identity):
                     failed = True
                     continue
+                if name in sealed_names and stat.S_IMODE(named_stat.st_mode) != 0o400:
+                    failed = True
                 try:
                     os.unlink(name, dir_fd=directory_fd)
                 except BaseException as error:
@@ -459,6 +460,20 @@ def _stat_matches_record(file_stat: os.stat_result, record: SealedStatementRecor
         == spool_fs.FileIdentity(device=record.device, inode=record.inode)
         and file_stat.st_size == record.size_bytes
         and file_stat.st_mtime_ns == record.modified_ns
+    )
+
+
+def _stat_is_owned_file_for_cleanup(
+    file_stat: os.stat_result,
+    identity: spool_fs.FileIdentity,
+) -> bool:
+    file_mode = stat.S_IMODE(file_stat.st_mode)
+    return (
+        stat.S_ISREG(file_stat.st_mode)
+        and file_stat.st_uid == os.geteuid()
+        and (file_mode & ~0o600) == 0
+        and file_stat.st_nlink == 1
+        and spool_fs.FileIdentity.from_stat(file_stat) == identity
     )
 
 

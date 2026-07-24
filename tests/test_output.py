@@ -6,6 +6,7 @@ import io
 import json
 import os
 import stat
+import traceback
 import unicodedata
 import weakref
 from collections.abc import Callable, Iterator
@@ -926,6 +927,88 @@ def test_streaming_pair_render_failure_does_not_mutate_destinations(
     _assert_no_pair_artifacts(output_dir)
 
 
+@pytest.mark.parametrize("prior_state", ("none", "both"))
+@pytest.mark.parametrize("interruption_type", (KeyboardInterrupt, SystemExit))
+def test_streaming_pair_render_interruption_cleans_every_owned_path(
+    tmp_path: Path,
+    prior_state: str,
+    interruption_type: type[BaseException],
+) -> None:
+    output_dir = tmp_path / "output"
+    private_marker = b"private prior output marker"
+    if prior_state == "both":
+        _seed_pair_state(output_dir, prior_state)
+        for filename in ("results.json", "transactions.csv"):
+            (output_dir / filename).write_bytes(private_marker + filename.encode())
+    before = _pair_bytes(output_dir)
+    interruption = interruption_type("render interrupted")
+
+    def interrupt_json_render(stream: BinaryIO) -> None:
+        stream.write(b"private partial stage")
+        raise interruption
+
+    with pytest.raises(interruption_type) as caught:
+        write_output_pair_atomic(
+            output_dir,
+            render_json=interrupt_json_render,
+            render_csv=lambda stream: None,
+        )
+
+    assert caught.value is interruption
+    assert _pair_bytes(output_dir) == before
+    assert private_marker.decode() not in "".join(traceback.format_exception(caught.value))
+    _assert_no_pair_artifacts(output_dir)
+    if prior_state == "none":
+        assert not output_dir.exists()
+
+
+@pytest.mark.parametrize("interruption_type", (KeyboardInterrupt, SystemExit))
+def test_streaming_pair_render_interruption_survives_stage_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption_type: type[BaseException],
+) -> None:
+    output_dir = tmp_path / "output"
+    original_named_temporary_file = output_module.tempfile.NamedTemporaryFile
+    interruption = interruption_type("render interrupted")
+
+    class CloseFailingTemporary:
+        def __init__(self, wrapped: BinaryIO) -> None:
+            self._wrapped = wrapped
+
+        def __enter__(self) -> BinaryIO:
+            return self._wrapped
+
+        def __exit__(self, *args: object) -> None:
+            del args
+            self._wrapped.close()
+            raise OSError("secondary stage close detail")
+
+    def close_failing_temporary(*args: object, **kwargs: object) -> CloseFailingTemporary:
+        temporary = original_named_temporary_file(*args, **kwargs)
+        return CloseFailingTemporary(cast(BinaryIO, temporary))
+
+    def interrupt_json_render(stream: BinaryIO) -> None:
+        stream.write(b"private partial stage")
+        raise interruption
+
+    monkeypatch.setattr(
+        output_module.tempfile,
+        "NamedTemporaryFile",
+        close_failing_temporary,
+    )
+
+    with pytest.raises(interruption_type) as caught:
+        write_output_pair_atomic(
+            output_dir,
+            render_json=interrupt_json_render,
+            render_csv=lambda stream: None,
+        )
+
+    assert caught.value is interruption
+    assert not output_dir.exists()
+
+
 def test_streaming_pair_render_failure_retries_stage_cleanup_and_preserves_primary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1069,6 +1152,96 @@ def test_streaming_pair_first_replace_failure_preserves_prior_state(
         )
 
     assert _pair_bytes(output_dir) == before
+    _assert_no_pair_artifacts(output_dir)
+
+
+@pytest.mark.parametrize("prior_state", ("none", "json", "csv", "both"))
+@pytest.mark.parametrize("failed_destination", ("results.json", "transactions.csv"))
+def test_streaming_pair_replace_then_raise_restores_every_prior_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_state: str,
+    failed_destination: str,
+) -> None:
+    output_dir = tmp_path / "output"
+    private_marker = b"private prior output marker"
+    _seed_pair_state(output_dir, prior_state)
+    for filename in ("results.json", "transactions.csv"):
+        destination = output_dir / filename
+        if destination.exists():
+            destination.write_bytes(private_marker + filename.encode())
+    before = _pair_bytes(output_dir)
+    original_replace = os.replace
+    injected = OSError("publication replacement failed")
+    failed = False
+
+    def replace_then_raise(source: Path, destination: Path) -> None:
+        nonlocal failed
+        original_replace(source, destination)
+        if Path(destination).name == failed_destination and not failed:
+            failed = True
+            raise injected
+
+    monkeypatch.setattr(output_module.os, "replace", replace_then_raise)
+    batch = _batch()
+
+    with pytest.raises(OSError) as caught:
+        write_streaming_batch_outputs(
+            output_dir,
+            status=batch.status,
+            diagnostics=batch.diagnostics,
+            statements=lambda: iter(batch.statements),
+        )
+
+    assert caught.value is injected
+    assert failed
+    assert _pair_bytes(output_dir) == before
+    assert private_marker.decode() not in "".join(traceback.format_exception(caught.value))
+    _assert_no_pair_artifacts(output_dir)
+
+
+@pytest.mark.parametrize("prior_state", ("none", "json", "csv", "both"))
+@pytest.mark.parametrize("interruption_type", (KeyboardInterrupt, SystemExit))
+def test_streaming_pair_between_replacements_interruption_restores_prior_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_state: str,
+    interruption_type: type[BaseException],
+) -> None:
+    output_dir = tmp_path / "output"
+    private_marker = b"private prior output marker"
+    _seed_pair_state(output_dir, prior_state)
+    for filename in ("results.json", "transactions.csv"):
+        destination = output_dir / filename
+        if destination.exists():
+            destination.write_bytes(private_marker + filename.encode())
+    before = _pair_bytes(output_dir)
+    original_replace = os.replace
+    interruption = interruption_type("publication interrupted")
+    interrupted = False
+
+    def interrupt_before_csv_replace(source: Path, destination: Path) -> None:
+        nonlocal interrupted
+        if Path(destination).name == "transactions.csv" and not interrupted:
+            interrupted = True
+            raise interruption
+        original_replace(source, destination)
+
+    monkeypatch.setattr(output_module.os, "replace", interrupt_before_csv_replace)
+    batch = _batch()
+
+    with pytest.raises(interruption_type) as caught:
+        write_streaming_batch_outputs(
+            output_dir,
+            status=batch.status,
+            diagnostics=batch.diagnostics,
+            statements=lambda: iter(batch.statements),
+        )
+
+    assert caught.value is interruption
+    assert interrupted
+    assert _pair_bytes(output_dir) == before
+    assert private_marker.decode() not in "".join(traceback.format_exception(caught.value))
     _assert_no_pair_artifacts(output_dir)
 
 

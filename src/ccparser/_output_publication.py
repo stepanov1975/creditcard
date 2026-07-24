@@ -22,7 +22,7 @@ class _ArtifactPublication:
     stage: Path | None = None
     previous_metadata: os.stat_result | None = None
     backup: Path | None = None
-    published: bool = False
+    replacement_attempted: bool = False
 
 
 @dataclass(slots=True)
@@ -67,7 +67,7 @@ def _owned_paths(publication: _PairPublication) -> Iterator[Path | None]:
 
 
 def _render_output_stage(directory: Path, artifact: _ArtifactPublication) -> None:
-    primary_error: Exception | None = None
+    primary_error: BaseException | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w+b",
@@ -82,10 +82,10 @@ def _render_output_stage(directory: Path, artifact: _ArtifactPublication) -> Non
                 artifact.renderer(cast(BinaryIO, stream))
                 stream.flush()
                 os.fsync(stream.fileno())
-            except Exception as error:
+            except BaseException as error:
                 primary_error = error
                 raise
-    except Exception:
+    except BaseException:
         if primary_error is not None:
             raise primary_error from None
         raise
@@ -131,8 +131,8 @@ def _fsync_directory(directory: Path) -> None:
     directory_descriptor = os.open(directory, directory_flags)
     try:
         os.fsync(directory_descriptor)
-    except Exception:
-        with suppress(Exception):
+    except BaseException:
+        with suppress(BaseException):
             os.close(directory_descriptor)
         raise
     os.close(directory_descriptor)
@@ -146,8 +146,8 @@ def _fsync_directory_at_commit(
     directory_descriptor = os.open(directory, directory_flags)
     try:
         os.fsync(directory_descriptor)
-    except Exception:
-        with suppress(Exception):
+    except BaseException:
+        with suppress(BaseException):
             os.close(directory_descriptor)
         raise
     publication.committed = True
@@ -155,7 +155,7 @@ def _fsync_directory_at_commit(
 
 
 def _restore_published_output(artifact: _ArtifactPublication) -> None:
-    if not artifact.published:
+    if not artifact.replacement_attempted:
         return
     if artifact.previous_metadata is not None:
         if artifact.backup is None:
@@ -168,47 +168,47 @@ def _restore_published_output(artifact: _ArtifactPublication) -> None:
 def _rollback_output_pair(
     directory: Path,
     publication: _PairPublication,
-) -> Exception | None:
-    first_error: Exception | None = None
+) -> BaseException | None:
+    first_error: BaseException | None = None
     for artifact in publication.artifacts:
         try:
             _restore_published_output(artifact)
-        except Exception as error:
+        except BaseException as error:
             if first_error is None:
                 first_error = error
     try:
         _fsync_directory(directory)
-    except Exception as error:
+    except BaseException as error:
         if first_error is None:
             first_error = error
     return first_error
 
 
-def _cleanup_output_paths(paths: Iterable[Path | None]) -> Exception | None:
-    first_error: Exception | None = None
+def _cleanup_output_paths(paths: Iterable[Path | None]) -> BaseException | None:
+    first_error: BaseException | None = None
     retry_paths: list[Path] = []
     for path in paths:
         if path is None:
             continue
         try:
             path.unlink(missing_ok=True)
-        except Exception as error:
+        except BaseException as error:
             retry_paths.append(path)
             if first_error is None:
                 first_error = error
     for path in retry_paths:
-        with suppress(Exception):
+        with suppress(BaseException):
             path.unlink(missing_ok=True)
     return first_error
 
 
 def _record_directory_fsync_error(
     directory: Path,
-    first_error: Exception | None,
-) -> Exception | None:
+    first_error: BaseException | None,
+) -> BaseException | None:
     try:
         _fsync_directory(directory)
-    except Exception as error:
+    except BaseException as error:
         if first_error is None:
             return error
     return first_error
@@ -250,20 +250,20 @@ def write_output_pair_atomic(
 
         _fsync_directory(directory)
         for artifact in publication.artifacts:
+            artifact.replacement_attempted = True
             os.replace(cast(Path, artifact.stage), artifact.destination)
-            artifact.published = True
         _fsync_directory_at_commit(directory, publication)
-    except Exception:
+    except BaseException:
         if publication.committed:
             cleanup_error = _cleanup_output_paths(_owned_paths(publication))
             _record_directory_fsync_error(directory, cleanup_error)
             raise
-        if any(artifact.published for artifact in publication.artifacts):
+        if any(artifact.replacement_attempted for artifact in publication.artifacts):
             _rollback_output_pair(directory, publication)
         cleanup_error = _cleanup_output_paths(_owned_paths(publication))
         _record_directory_fsync_error(directory, cleanup_error)
         if directory_created:
-            with suppress(OSError):
+            with suppress(BaseException):
                 directory.rmdir()
         raise
 
