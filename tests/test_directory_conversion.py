@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 
 import pytest
 
@@ -108,7 +108,7 @@ def test_convert_directory_validates_positive_integer_jobs(
         convert_directory_statements(
             input_dir,
             tmp_path / "output",
-            jobs=jobs,  # type: ignore[arg-type]
+            jobs=cast(int | None, jobs),
             result_sink=lambda ordinal, result: None,
         )
 

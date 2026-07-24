@@ -18,8 +18,6 @@ import sys
 import sysconfig
 import tempfile
 import time
-import unicodedata
-from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
@@ -53,8 +51,9 @@ from typing import Annotated, Literal, Protocol, Self, runtime_checkable
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ccparser._corpus_projection import StructuralProjection, project_statement_stream
+from ccparser._corpus_run import execute_streaming_run
 from ccparser._traced_subprocess import run_traced_subprocess
-from ccparser.corpus_spool import StatementSpool
 from ccparser.evidence.ocr import (
     OCR_CURRENCY_RECOGNITION_CACHE_VERSION,
     OCR_NUMERIC_RECOGNITION_CACHE_VERSION,
@@ -72,26 +71,15 @@ from ccparser.evidence.ocr import (
 )
 from ccparser.models import (
     BatchResult,
-    EvidenceReference,
     StatementResult,
     Status,
-    Transaction,
-    TransactionCategory,
 )
 from ccparser.output import (
     _canonical_json_value_bytes,
     canonical_json_bytes,
     transactions_csv_bytes,
-    write_canonical_batch_json_stream,
-    write_streaming_batch_outputs,
-    write_transactions_csv_stream,
 )
-from ccparser.parser import (
-    BatchDisposition,
-    StatementParser,
-    convert_directory_statements,
-    summarize_batch_statuses,
-)
+from ccparser.parser import StatementParser
 from ccparser.paths import DirectoryRootPolicy, iter_regular_pdf_files, paths_overlap
 
 type Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -113,15 +101,6 @@ type PresentFieldPath = Literal[
     "transaction_date",
 ]
 
-type _GroupProjection = tuple[str, str, str, tuple[str, ...]]
-type _GroupStructure = tuple[tuple[_GroupProjection, ...], ...]
-type _TransactionIdentity = tuple[str, tuple[str, ...]]
-type _TransactionIdentities = tuple[tuple[_TransactionIdentity, ...], ...]
-type _FieldPresence = tuple[tuple[tuple[PresentFieldPath, ...], ...], ...]
-type _EvidenceReferenceProjection = tuple[int, tuple[float, float, float, float], str]
-type _EvidenceSiteProjection = tuple[str, tuple[_EvidenceReferenceProjection, ...]]
-type _EvidenceProvenance = tuple[tuple[tuple[_EvidenceSiteProjection, ...], ...], ...]
-type _AmbiguityProjection = tuple[tuple[tuple[str, ...], ...], ...]
 type StatementResultFactory = Callable[[], Iterator[StatementResult]]
 
 
@@ -545,68 +524,40 @@ class LocalCorpusRunner:
             if all(_is_process_fd_path(path) for path in (input_dir, output_dir, cache_dir))
             else DirectoryRootPolicy.RESOLVE
         )
+        membership_after: CorpusMembership | None = None
         membership_snapshot_error: CorpusGateError | None = None
-        try:
-            start_nanoseconds = self._monotonic_ns()
-            with StatementSpool.create(output_dir) as spool:
-                status_counts: Counter[Status] = Counter()
 
-                def consume(ordinal: int, result: StatementResult, /) -> None:
-                    spool.append(ordinal, result)
-                    status_counts[result.status] += 1
-
-                conversion = convert_directory_statements(
+        def observe_after_publication() -> None:
+            nonlocal membership_after, membership_snapshot_error
+            try:
+                membership_after = _snapshot_membership(
                     input_dir,
-                    output_dir,
-                    strict,
-                    jobs,
-                    cache_dir=cache_dir,
-                    statement_parser=self._statement_parser,
-                    result_sink=consume,
-                    directory_root_policy=directory_root_policy,
+                    allow_descriptor_root=True,
                 )
-                spool.seal(conversion.source_count)
-                disposition = summarize_batch_statuses(status_counts)
-                if disposition.document_count != conversion.source_count:
-                    raise RuntimeError("statement sink count mismatch")
-                write_streaming_batch_outputs(
-                    conversion.resolved_output_dir,
-                    status=disposition.status,
-                    diagnostics=disposition.diagnostics,
-                    statements=spool.iter_statements,
-                )
-                end_nanoseconds = self._monotonic_ns()
-                try:
-                    membership_after = _snapshot_membership(
-                        input_dir,
-                        allow_descriptor_root=True,
-                    )
-                except CorpusGateError as error:
-                    membership_snapshot_error = error
-                    raise
-                elapsed_nanoseconds = end_nanoseconds - start_nanoseconds
-                if elapsed_nanoseconds < 0:
-                    raise RuntimeError("monotonic clock moved backwards")
-                elapsed_seconds = Decimal(elapsed_nanoseconds) / Decimal(1_000_000_000)
-                expected_json_digest, expected_csv_digest = _canonical_stream_digests(
-                    disposition,
-                    spool.iter_statements,
-                )
-                _require_file_digest(
-                    conversion.resolved_output_dir / "results.json",
-                    expected_json_digest,
-                )
-                _require_file_digest(
-                    conversion.resolved_output_dir / "transactions.csv",
-                    expected_csv_digest,
-                )
-                manifest = project_streamed_run(
-                    batch_status=disposition.status,
-                    elapsed_seconds=elapsed_seconds,
-                    json_digest=expected_json_digest,
-                    csv_digest=expected_csv_digest,
-                    statements=spool.iter_statements,
-                )
+            except CorpusGateError as error:
+                membership_snapshot_error = error
+                raise
+
+        try:
+            run_data = execute_streaming_run(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                cache_dir=cache_dir,
+                strict=strict,
+                jobs=jobs,
+                directory_root_policy=directory_root_policy,
+                statement_parser=self._statement_parser,
+                monotonic_ns=self._monotonic_ns,
+                after_publication=observe_after_publication,
+            )
+            if membership_after is None:
+                raise RuntimeError("membership snapshot was not observed")
+            manifest = _manifest_from_projection(
+                run_data.structural_projection,
+                elapsed_seconds=run_data.elapsed_seconds,
+                json_digest=run_data.json_digest,
+                csv_digest=run_data.csv_digest,
+            )
         except CorpusGateError as error:
             if error is membership_snapshot_error:
                 raise
@@ -614,78 +565,11 @@ class LocalCorpusRunner:
         except Exception:
             raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
         return CompletedCorpusRun(
-            batch_status=disposition.status,
+            batch_status=run_data.batch_status,
             manifest=manifest,
             membership_before=membership_before,
             membership_after=membership_after,
         )
-
-
-class _Sha256Writer:
-    """Binary writer that retains only an incremental SHA-256 state."""
-
-    def __init__(self) -> None:
-        self._digest = sha256()
-
-    def write(self, content: bytes, /) -> int:
-        self._digest.update(content)
-        return len(content)
-
-    def hexdigest(self) -> str:
-        return self._digest.hexdigest()
-
-
-def _canonical_stream_digests(
-    disposition: BatchDisposition,
-    statements: StatementResultFactory,
-) -> tuple[str, str]:
-    json_writer = _Sha256Writer()
-    write_canonical_batch_json_stream(
-        json_writer,
-        status=disposition.status,
-        diagnostics=disposition.diagnostics,
-        statements=statements(),
-    )
-    csv_writer = _Sha256Writer()
-    write_transactions_csv_stream(
-        csv_writer,
-        status=disposition.status,
-        diagnostics=disposition.diagnostics,
-        statements=statements(),
-    )
-    return json_writer.hexdigest(), csv_writer.hexdigest()
-
-
-_EMITTED_OUTPUT_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
-_EMITTED_OUTPUT_READ_SIZE = 1024 * 1024
-
-
-def _require_file_digest(path: Path, expected_digest: str) -> None:
-    file_descriptor = os.open(path, _EMITTED_OUTPUT_READ_FLAGS)
-    try:
-        before = os.fstat(file_descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.geteuid()
-            or before.st_nlink != 1
-        ):
-            raise RuntimeError("emitted output is unsafe")
-        digest = sha256()
-        while chunk := os.read(file_descriptor, _EMITTED_OUTPUT_READ_SIZE):
-            digest.update(chunk)
-        after = os.fstat(file_descriptor)
-        named_after = os.stat(path, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(after.st_mode)
-            or after.st_uid != os.geteuid()
-            or after.st_nlink != 1
-            or _stable_file_identity(after) != _stable_file_identity(before)
-            or _stable_file_identity(named_after) != _stable_file_identity(before)
-            or digest.hexdigest() != expected_digest
-        ):
-            raise RuntimeError("emitted output digest mismatch")
-    finally:
-        os.close(file_descriptor)
 
 
 _CHILD_ENVIRONMENT_KEYS = frozenset(
@@ -2885,48 +2769,6 @@ class LocalToolchainInspector:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class _StructuralProjections:
-    counts: CorpusCounts
-    ordered_statuses: tuple[str, tuple[str, ...]]
-    group_structure: _GroupStructure
-    transaction_identities: _TransactionIdentities
-    field_presence: _FieldPresence
-    evidence_provenance: _EvidenceProvenance
-    ambiguities: _AmbiguityProjection
-
-
-@dataclass(frozen=True, slots=True)
-class _StatementStructuralProjection:
-    status: str
-    groups: tuple[_GroupProjection, ...]
-    transaction_identities: tuple[_TransactionIdentity, ...]
-    field_presence: tuple[tuple[PresentFieldPath, ...], ...]
-    evidence_provenance: tuple[tuple[_EvidenceSiteProjection, ...], ...]
-    ambiguities: tuple[tuple[str, ...], ...]
-    row_results: int
-    evidence_references: int
-
-
-class _CanonicalArrayDigest:
-    def __init__(self, prefix: bytes = b"[", suffix: bytes = b"]\n") -> None:
-        self._digest = sha256()
-        self._digest.update(prefix)
-        self._suffix = suffix
-        self._has_value = False
-
-    def append(self, value: object) -> None:
-        if self._has_value:
-            self._digest.update(b",")
-        self._digest.update(_canonical_json_value_bytes(value)[:-1])
-        self._has_value = True
-
-    def hexdigest(self) -> str:
-        completed = self._digest.copy()
-        completed.update(self._suffix)
-        return completed.hexdigest()
-
-
 def _digest_bytes(content: bytes) -> str:
     return sha256(content).hexdigest()
 
@@ -2945,186 +2787,40 @@ def digest_membership(source_hashes: Iterable[str]) -> CorpusMembership:
     )
 
 
-def _transaction_present_fields(transaction: Transaction) -> tuple[PresentFieldPath, ...]:
-    present: list[PresentFieldPath] = []
-    if transaction.category is not TransactionCategory.UNKNOWN:
-        present.append("category")
-    if transaction.conversion_date is not None:
-        present.append("conversion_date")
-    if transaction.description is not None:
-        present.append("description")
-    if transaction.installment_current is not None:
-        present.append("installment_current")
-    if transaction.installment_total is not None:
-        present.append("installment_total")
-    if transaction.original_amount is not None:
-        present.append("original_amount")
-    if transaction.original_currency is not None:
-        present.append("original_currency")
-    if transaction.posting_date is not None:
-        present.append("posting_date")
-    if transaction.transaction_date is not None:
-        present.append("transaction_date")
-
-    details = transaction.foreign_exchange
-    if details is not None:
-        if details.exchange_rate is not None:
-            present.append("foreign_exchange.exchange_rate")
-        if details.fee_discount is not None:
-            present.append("foreign_exchange.fee_discount")
-        if details.fee_percentage is not None:
-            present.append("foreign_exchange.fee_percentage")
-        if details.gross_fee is not None:
-            present.append("foreign_exchange.gross_fee")
-        if details.net_fee is not None:
-            present.append("foreign_exchange.net_fee")
-    return tuple(sorted(present))
-
-
-def _project_evidence_reference(reference: EvidenceReference) -> _EvidenceReferenceProjection:
-    raw_text_digest = _digest_bytes(
-        unicodedata.normalize("NFC", reference.raw_text).encode("utf-8")
-    )
-    return reference.page_number, reference.bbox, raw_text_digest
-
-
-def _project_evidence_site(
-    path: str, references: tuple[EvidenceReference, ...]
-) -> _EvidenceSiteProjection:
-    return path, tuple(_project_evidence_reference(reference) for reference in references)
-
-
-def _transaction_evidence_provenance(
-    transaction: Transaction,
-) -> tuple[_EvidenceSiteProjection, ...]:
-    sites = [_project_evidence_site("evidence", transaction.evidence)]
-    details = transaction.foreign_exchange
-    if details is not None:
-        if details.exchange_rate is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.exchange_rate", details.exchange_rate.evidence
-                )
-            )
-        if details.fee_discount is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.fee_discount", details.fee_discount.evidence
-                )
-            )
-        if details.fee_percentage is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.fee_percentage", details.fee_percentage.evidence
-                )
-            )
-        if details.gross_fee is not None:
-            sites.append(
-                _project_evidence_site("foreign_exchange.gross_fee", details.gross_fee.evidence)
-            )
-        if details.net_fee is not None:
-            sites.append(
-                _project_evidence_site("foreign_exchange.net_fee", details.net_fee.evidence)
-            )
-    return tuple(sorted(sites, key=lambda item: item[0]))
-
-
-def _project_statement_structural_dimensions(
-    statement: StatementResult,
-) -> _StatementStructuralProjection:
-    transaction_identities: list[_TransactionIdentity] = []
-    field_presence: list[tuple[PresentFieldPath, ...]] = []
-    evidence_provenance: list[tuple[_EvidenceSiteProjection, ...]] = []
-    ambiguities: list[tuple[str, ...]] = []
-    evidence_reference_count = 0
-
-    for transaction in statement.transactions:
-        transaction_identities.append(
-            (transaction.transaction_id, transaction.reconciliation_group_ids)
-        )
-        field_presence.append(_transaction_present_fields(transaction))
-        transaction_evidence = _transaction_evidence_provenance(transaction)
-        evidence_provenance.append(transaction_evidence)
-        evidence_reference_count += sum(len(references) for _, references in transaction_evidence)
-        ambiguities.append(transaction.ambiguities)
-
-    return _StatementStructuralProjection(
-        status=statement.status.value,
-        groups=tuple(
-            (group.group_id, group.currency, group.status.value, group.transaction_ids)
-            for group in statement.groups
+def _manifest_from_projection(
+    projection: StructuralProjection,
+    *,
+    elapsed_seconds: Decimal,
+    json_digest: str,
+    csv_digest: str,
+) -> RunManifest:
+    counts = projection.counts
+    return RunManifest(
+        elapsed_seconds=elapsed_seconds,
+        counts=CorpusCounts(
+            documents=counts.documents,
+            reconciled=counts.reconciled,
+            unreconciled=counts.unreconciled,
+            unsupported=counts.unsupported,
+            not_statement=counts.not_statement,
+            groups=counts.groups,
+            row_results=counts.row_results,
+            transactions=counts.transactions,
+            ambiguous_transactions=counts.ambiguous_transactions,
+            ambiguity_occurrences=counts.ambiguity_occurrences,
+            evidence_references=counts.evidence_references,
+            present_fields=tuple(
+                FieldCount(path=path, count=count) for path, count in counts.present_fields
+            ),
         ),
-        transaction_identities=tuple(transaction_identities),
-        field_presence=tuple(field_presence),
-        evidence_provenance=tuple(evidence_provenance),
-        ambiguities=tuple(ambiguities),
-        row_results=len(statement.row_results),
-        evidence_references=evidence_reference_count,
-    )
-
-
-def _project_structural_dimensions(batch: BatchResult) -> _StructuralProjections:
-    statuses: Counter[str] = Counter()
-    present_field_counts: Counter[PresentFieldPath] = Counter()
-    ordered_statuses: list[str] = []
-    group_structure: list[tuple[_GroupProjection, ...]] = []
-    transaction_identities: list[tuple[_TransactionIdentity, ...]] = []
-    field_presence: list[tuple[tuple[PresentFieldPath, ...], ...]] = []
-    evidence_provenance: list[tuple[tuple[_EvidenceSiteProjection, ...], ...]] = []
-    ambiguities: list[tuple[tuple[str, ...], ...]] = []
-    row_result_count = 0
-    evidence_reference_count = 0
-
-    for statement in batch.statements:
-        projection = _project_statement_structural_dimensions(statement)
-        statuses[projection.status] += 1
-        ordered_statuses.append(projection.status)
-        group_structure.append(projection.groups)
-        transaction_identities.append(projection.transaction_identities)
-        field_presence.append(projection.field_presence)
-        evidence_provenance.append(projection.evidence_provenance)
-        ambiguities.append(projection.ambiguities)
-        row_result_count += projection.row_results
-        evidence_reference_count += projection.evidence_references
-        for transaction_fields in projection.field_presence:
-            present_field_counts.update(transaction_fields)
-
-    counts = CorpusCounts(
-        documents=len(batch.statements),
-        reconciled=statuses[Status.RECONCILED.value],
-        unreconciled=statuses[Status.UNRECONCILED.value],
-        unsupported=statuses[Status.UNSUPPORTED.value],
-        not_statement=statuses[Status.NOT_STATEMENT.value],
-        groups=sum(len(groups) for groups in group_structure),
-        row_results=row_result_count,
-        transactions=sum(len(identities) for identities in transaction_identities),
-        ambiguous_transactions=sum(
-            bool(transaction_ambiguities)
-            for statement_ambiguities in ambiguities
-            for transaction_ambiguities in statement_ambiguities
-        ),
-        ambiguity_occurrences=sum(
-            len(transaction_ambiguities)
-            for statement_ambiguities in ambiguities
-            for transaction_ambiguities in statement_ambiguities
-        ),
-        evidence_references=evidence_reference_count,
-        present_fields=tuple(
-            FieldCount(path=path, count=present_field_counts[path])
-            for path in sorted(present_field_counts)
-        ),
-    )
-    return _StructuralProjections(
-        counts=counts,
-        ordered_statuses=(
-            batch.status.value,
-            tuple(ordered_statuses),
-        ),
-        group_structure=tuple(group_structure),
-        transaction_identities=tuple(transaction_identities),
-        field_presence=tuple(field_presence),
-        evidence_provenance=tuple(evidence_provenance),
-        ambiguities=tuple(ambiguities),
+        json_digest=json_digest,
+        csv_digest=csv_digest,
+        ordered_status_digest=projection.ordered_status_digest,
+        group_structure_digest=projection.group_structure_digest,
+        transaction_identity_digest=projection.transaction_identity_digest,
+        field_presence_digest=projection.field_presence_digest,
+        evidence_provenance_digest=projection.evidence_provenance_digest,
+        ambiguity_digest=projection.ambiguity_digest,
     )
 
 
@@ -3133,18 +2829,12 @@ def project_run(batch: BatchResult, *, elapsed_seconds: Decimal) -> RunManifest:
 
     json_content = canonical_json_bytes(batch)
     csv_content = transactions_csv_bytes(batch)
-    projections = _project_structural_dimensions(batch)
-    return RunManifest(
+    projection = project_statement_stream(batch.status, batch.statements)
+    return _manifest_from_projection(
+        projection,
         elapsed_seconds=elapsed_seconds,
-        counts=projections.counts,
         json_digest=_digest_bytes(json_content),
         csv_digest=_digest_bytes(csv_content),
-        ordered_status_digest=_digest_json(projections.ordered_statuses),
-        group_structure_digest=_digest_json(projections.group_structure),
-        transaction_identity_digest=_digest_json(projections.transaction_identities),
-        field_presence_digest=_digest_json(projections.field_presence),
-        evidence_provenance_digest=_digest_json(projections.evidence_provenance),
-        ambiguity_digest=_digest_json(projections.ambiguities),
     )
 
 
@@ -3158,86 +2848,12 @@ def project_streamed_run(
 ) -> RunManifest:
     """Project a source-ordered statement stream into an unchanged run manifest."""
 
-    ordered_status_digest = _CanonicalArrayDigest(
-        prefix=b"[" + _canonical_json_value_bytes(batch_status.value)[:-1] + b",[",
-        suffix=b"]]\n",
-    )
-    group_structure_digest = _CanonicalArrayDigest()
-    transaction_identity_digest = _CanonicalArrayDigest()
-    field_presence_digest = _CanonicalArrayDigest()
-    evidence_provenance_digest = _CanonicalArrayDigest()
-    ambiguity_digest = _CanonicalArrayDigest()
-    present_field_counts: Counter[PresentFieldPath] = Counter()
-    documents = 0
-    reconciled = 0
-    unreconciled = 0
-    unsupported = 0
-    not_statement = 0
-    groups = 0
-    row_results = 0
-    transactions = 0
-    ambiguous_transactions = 0
-    ambiguity_occurrences = 0
-    evidence_references = 0
-
-    for statement in statements():
-        projection = _project_statement_structural_dimensions(statement)
-        del statement
-        documents += 1
-        if projection.status == Status.RECONCILED.value:
-            reconciled += 1
-        elif projection.status == Status.UNRECONCILED.value:
-            unreconciled += 1
-        elif projection.status == Status.UNSUPPORTED.value:
-            unsupported += 1
-        elif projection.status == Status.NOT_STATEMENT.value:
-            not_statement += 1
-        groups += len(projection.groups)
-        row_results += projection.row_results
-        transactions += len(projection.transaction_identities)
-        ambiguous_transactions += sum(bool(value) for value in projection.ambiguities)
-        ambiguity_occurrences += sum(len(value) for value in projection.ambiguities)
-        evidence_references += projection.evidence_references
-        present_field_counts.update(
-            path for transaction_fields in projection.field_presence for path in transaction_fields
-        )
-
-        ordered_status_digest.append(projection.status)
-        group_structure_digest.append(projection.groups)
-        transaction_identity_digest.append(projection.transaction_identities)
-        field_presence_digest.append(projection.field_presence)
-        evidence_provenance_digest.append(projection.evidence_provenance)
-        ambiguity_digest.append(projection.ambiguities)
-        del projection
-
-    counts = CorpusCounts(
-        documents=documents,
-        reconciled=reconciled,
-        unreconciled=unreconciled,
-        unsupported=unsupported,
-        not_statement=not_statement,
-        groups=groups,
-        row_results=row_results,
-        transactions=transactions,
-        ambiguous_transactions=ambiguous_transactions,
-        ambiguity_occurrences=ambiguity_occurrences,
-        evidence_references=evidence_references,
-        present_fields=tuple(
-            FieldCount(path=path, count=present_field_counts[path])
-            for path in sorted(present_field_counts)
-        ),
-    )
-    return RunManifest(
+    projection = project_statement_stream(batch_status, statements())
+    return _manifest_from_projection(
+        projection,
         elapsed_seconds=elapsed_seconds,
-        counts=counts,
         json_digest=json_digest,
         csv_digest=csv_digest,
-        ordered_status_digest=ordered_status_digest.hexdigest(),
-        group_structure_digest=group_structure_digest.hexdigest(),
-        transaction_identity_digest=transaction_identity_digest.hexdigest(),
-        field_presence_digest=field_presence_digest.hexdigest(),
-        evidence_provenance_digest=evidence_provenance_digest.hexdigest(),
-        ambiguity_digest=ambiguity_digest.hexdigest(),
     )
 
 

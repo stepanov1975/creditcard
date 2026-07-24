@@ -6,11 +6,11 @@ import os
 import secrets
 import stat
 from collections.abc import Iterator
-from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from ccparser import _corpus_spool_fs as spool_fs
 from ccparser.models import StatementResult
 from ccparser.output import canonical_json_bytes
 
@@ -41,68 +41,10 @@ def _spool_error() -> StatementSpoolError:
     return StatementSpoolError("statement spool operation failed")
 
 
-def _inode_identity(file_stat: os.stat_result) -> tuple[int, int]:
-    return (file_stat.st_dev, file_stat.st_ino)
-
-
-def _process_fd_number(path: Path) -> int | None:
-    descriptor_name = path.name
-    if (
-        path.parent != Path("/proc/self/fd")
-        or not descriptor_name.isdecimal()
-        or str(int(descriptor_name)) != descriptor_name
-    ):
-        return None
-    return int(descriptor_name)
-
-
-def _open_parent_directory(parent: Path) -> int:
-    descriptor = _process_fd_number(parent)
-    if descriptor is None:
-        return os.open(parent, _DIRECTORY_OPEN_FLAGS)
-
-    descriptor_stat = os.fstat(descriptor)
-    path_stat = os.stat(parent)
-    expected_identity = _inode_identity(descriptor_stat)
-    if (
-        not stat.S_ISDIR(descriptor_stat.st_mode)
-        or descriptor_stat.st_uid != os.geteuid()
-        or not stat.S_ISDIR(path_stat.st_mode)
-        or path_stat.st_uid != os.geteuid()
-        or _inode_identity(path_stat) != expected_identity
-    ):
-        raise _spool_error()
-
-    duplicate = os.dup(descriptor)
-    try:
-        os.set_inheritable(duplicate, False)
-        duplicate_stat = os.fstat(duplicate)
-        if (
-            not stat.S_ISDIR(duplicate_stat.st_mode)
-            or duplicate_stat.st_uid != os.geteuid()
-            or _inode_identity(duplicate_stat) != expected_identity
-            or os.get_inheritable(duplicate)
-        ):
-            raise _spool_error()
-        return duplicate
-    except BaseException:
-        _close_no_throw(duplicate)
-        raise
-
-
 def _record_name(ordinal: int) -> str:
     if type(ordinal) is not int or not 0 <= ordinal <= _MAX_ORDINAL:
         raise _spool_error()
     return f"{ordinal:0{_RECORD_NAME_WIDTH}d}.json"
-
-
-def _write_all(file_descriptor: int, content: bytes) -> None:
-    remaining = memoryview(content)
-    while remaining:
-        written = os.write(file_descriptor, remaining)
-        if written <= 0:
-            raise OSError
-        remaining = remaining[written:]
 
 
 class StatementSpool:
@@ -121,9 +63,9 @@ class StatementSpool:
         self._name = name
         self._parent_fd: int | None = parent_fd
         self._directory_fd: int | None = directory_fd
-        self._directory_identity = directory_identity
+        self._directory_identity = spool_fs.FileIdentity(*directory_identity)
         self._records: dict[int, SealedStatementRecord] = {}
-        self._owned_files: dict[str, tuple[int, int]] = {}
+        self._owned_files: dict[str, spool_fs.FileIdentity] = {}
         self._expected_count: int | None = None
         self._closed = False
 
@@ -135,9 +77,9 @@ class StatementSpool:
         capability_fd: int | None = None
         directory_fd: int | None = None
         name: str | None = None
-        directory_identity: tuple[int, int] | None = None
+        directory_identity: spool_fs.FileIdentity | None = None
         try:
-            parent_fd = _open_parent_directory(parent)
+            parent_fd = spool_fs.open_parent_directory(parent)
             parent_stat = os.fstat(parent_fd)
             if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.geteuid():
                 raise _spool_error()
@@ -153,7 +95,7 @@ class StatementSpool:
             if name is None:
                 raise _spool_error()
             created_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            directory_identity = _inode_identity(created_stat)
+            directory_identity = spool_fs.FileIdentity.from_stat(created_stat)
             if not stat.S_ISDIR(created_stat.st_mode) or created_stat.st_uid != os.geteuid():
                 raise _spool_error()
             capability_fd = os.open(name, _DIRECTORY_CAPABILITY_FLAGS, dir_fd=parent_fd)
@@ -161,14 +103,14 @@ class StatementSpool:
             if (
                 not stat.S_ISDIR(capability_stat.st_mode)
                 or capability_stat.st_uid != os.geteuid()
-                or _inode_identity(capability_stat) != directory_identity
+                or spool_fs.FileIdentity.from_stat(capability_stat) != directory_identity
             ):
                 raise _spool_error()
             os.chmod(f"/proc/self/fd/{capability_fd}", 0o700)
             capability_stat = os.fstat(capability_fd)
             if (
                 stat.S_IMODE(capability_stat.st_mode) != 0o700
-                or _inode_identity(capability_stat) != directory_identity
+                or spool_fs.FileIdentity.from_stat(capability_stat) != directory_identity
             ):
                 raise _spool_error()
             directory_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
@@ -178,13 +120,13 @@ class StatementSpool:
                 not stat.S_ISDIR(directory_stat.st_mode)
                 or directory_stat.st_uid != os.geteuid()
                 or stat.S_IMODE(directory_stat.st_mode) != 0o700
-                or _inode_identity(directory_stat) != directory_identity
+                or spool_fs.FileIdentity.from_stat(directory_stat) != directory_identity
             ):
                 raise _spool_error()
             named_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             if (
                 not stat.S_ISDIR(named_stat.st_mode)
-                or _inode_identity(named_stat) != directory_identity
+                or spool_fs.FileIdentity.from_stat(named_stat) != directory_identity
             ):
                 raise _spool_error()
             owned_capability_fd = capability_fd
@@ -195,25 +137,31 @@ class StatementSpool:
                 name=name,
                 parent_fd=parent_fd,
                 directory_fd=directory_fd,
-                directory_identity=directory_identity,
+                directory_identity=(
+                    directory_identity.device,
+                    directory_identity.inode,
+                ),
             )
         except BaseException as error:
             if directory_fd is not None:
                 owned_directory_fd = directory_fd
                 directory_fd = None
-                _close_no_throw(owned_directory_fd)
+                spool_fs.close_no_throw(owned_directory_fd)
             if capability_fd is not None:
                 owned_capability_fd = capability_fd
                 capability_fd = None
-                _close_no_throw(owned_capability_fd)
+                spool_fs.close_no_throw(owned_capability_fd)
             if parent_fd is not None and name is not None and directory_identity is None:
-                directory_identity = _owned_directory_identity_at_no_throw(parent_fd, name)
+                directory_identity = spool_fs.owned_directory_identity_at_no_throw(
+                    parent_fd,
+                    name,
+                )
             if parent_fd is not None and name is not None and directory_identity is not None:
-                _rmdir_if_owned_no_throw(parent_fd, name, directory_identity)
+                spool_fs.rmdir_if_owned_no_throw(parent_fd, name, directory_identity)
             if parent_fd is not None:
                 owned_parent_fd = parent_fd
                 parent_fd = None
-                _close_no_throw(owned_parent_fd)
+                spool_fs.close_no_throw(owned_parent_fd)
             if isinstance(error, Exception):
                 raise _spool_error() from None
             raise
@@ -227,7 +175,7 @@ class StatementSpool:
 
         file_descriptor: int | None = None
         directory_fd: int | None = None
-        created_identity: tuple[int, int] | None = None
+        created_identity: spool_fs.FileIdentity | None = None
         name: str | None = None
         content: bytes | None = None
         try:
@@ -244,7 +192,7 @@ class StatementSpool:
                 dir_fd=directory_fd,
             )
             opened_stat = os.fstat(file_descriptor)
-            created_identity = _inode_identity(opened_stat)
+            created_identity = spool_fs.FileIdentity.from_stat(opened_stat)
             self._owned_files[name] = created_identity
             if (
                 not stat.S_ISREG(opened_stat.st_mode)
@@ -256,17 +204,17 @@ class StatementSpool:
             os.fchmod(file_descriptor, 0o600)
             writable_stat = os.fstat(file_descriptor)
             if (
-                not _valid_record_stat(writable_stat, mode=0o600)
-                or _inode_identity(writable_stat) != created_identity
+                not spool_fs.valid_record_stat(writable_stat, mode=0o600)
+                or spool_fs.FileIdentity.from_stat(writable_stat) != created_identity
                 or writable_stat.st_size != 0
             ):
                 raise _spool_error()
-            _write_all(file_descriptor, content)
+            spool_fs.write_all(file_descriptor, content)
             os.fsync(file_descriptor)
             written_stat = os.fstat(file_descriptor)
             if (
-                not _valid_record_stat(written_stat, mode=0o600)
-                or _inode_identity(written_stat) != created_identity
+                not spool_fs.valid_record_stat(written_stat, mode=0o600)
+                or spool_fs.FileIdentity.from_stat(written_stat) != created_identity
                 or written_stat.st_size != len(content)
             ):
                 raise _spool_error()
@@ -293,9 +241,9 @@ class StatementSpool:
         except BaseException as error:
             if file_descriptor is not None:
                 if created_identity is None:
-                    created_identity = _owned_regular_identity_no_throw(file_descriptor)
+                    created_identity = spool_fs.owned_regular_identity_no_throw(file_descriptor)
                     if created_identity is None and name is not None and directory_fd is not None:
-                        created_identity = _owned_exclusive_record_identity_at_no_throw(
+                        created_identity = spool_fs.owned_exclusive_record_identity_at_no_throw(
                             file_descriptor,
                             directory_fd,
                             name,
@@ -304,11 +252,11 @@ class StatementSpool:
                         self._owned_files[name] = created_identity
                 owned_file_descriptor = file_descriptor
                 file_descriptor = None
-                _close_no_throw(owned_file_descriptor)
+                spool_fs.close_no_throw(owned_file_descriptor)
             if (
                 name is not None
                 and created_identity is not None
-                and self._unlink_if_owned(name, created_identity)
+                and spool_fs.unlink_if_owned(self._directory_fd, name, created_identity)
             ):
                 self._owned_files.pop(name, None)
             if isinstance(error, Exception):
@@ -386,7 +334,10 @@ class StatementSpool:
                     elif interruption is None:
                         interruption = error
                     continue
-                if not stat.S_ISREG(named_stat.st_mode) or _inode_identity(named_stat) != identity:
+                if (
+                    not stat.S_ISREG(named_stat.st_mode)
+                    or spool_fs.FileIdentity.from_stat(named_stat) != identity
+                ):
                     failed = True
                     continue
                 try:
@@ -398,7 +349,7 @@ class StatementSpool:
                         interruption = error
         if parent_fd is not None:
             try:
-                directory_matches = _named_directory_matches(
+                directory_matches = spool_fs.named_directory_matches(
                     parent_fd,
                     self._name,
                     self._directory_identity,
@@ -458,10 +409,14 @@ class StatementSpool:
             not stat.S_ISDIR(descriptor_stat.st_mode)
             or descriptor_stat.st_uid != os.geteuid()
             or stat.S_IMODE(descriptor_stat.st_mode) != 0o700
-            or _inode_identity(descriptor_stat) != self._directory_identity
+            or spool_fs.FileIdentity.from_stat(descriptor_stat) != self._directory_identity
         ):
             raise _spool_error()
-        if not _named_directory_matches(parent_fd, self._name, self._directory_identity):
+        if not spool_fs.named_directory_matches(
+            parent_fd,
+            self._name,
+            self._directory_identity,
+        ):
             raise _spool_error()
 
     def _read_stable_record(self, record: SealedStatementRecord) -> bytes:
@@ -492,130 +447,19 @@ class StatementSpool:
                 raise _spool_error()
             result = bytes(content)
         except BaseException:
-            _close_no_throw(file_descriptor)
+            spool_fs.close_no_throw(file_descriptor)
             raise
         os.close(file_descriptor)
         return result
 
-    def _unlink_if_owned(self, name: str, identity: tuple[int, int]) -> bool:
-        directory_fd = self._directory_fd
-        if directory_fd is None:
-            return False
-        try:
-            named_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return True
-        except (Exception, KeyboardInterrupt, SystemExit):
-            return False
-        if stat.S_ISREG(named_stat.st_mode) and _inode_identity(named_stat) == identity:
-            try:
-                os.unlink(name, dir_fd=directory_fd)
-            except (Exception, KeyboardInterrupt, SystemExit):
-                return False
-            return True
-        return False
-
-
-def _close_no_throw(file_descriptor: int) -> None:
-    with suppress(Exception, KeyboardInterrupt, SystemExit):
-        os.close(file_descriptor)
-
-
-def _owned_regular_identity_no_throw(file_descriptor: int) -> tuple[int, int] | None:
-    try:
-        file_stat = os.fstat(file_descriptor)
-    except (Exception, KeyboardInterrupt, SystemExit):
-        return None
-    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != os.geteuid():
-        return None
-    return _inode_identity(file_stat)
-
-
-def _owned_exclusive_record_identity_at_no_throw(
-    file_descriptor: int,
-    directory_fd: int,
-    name: str,
-) -> tuple[int, int] | None:
-    try:
-        descriptor_stat = os.stat(
-            f"/proc/self/fd/{file_descriptor}",
-            follow_symlinks=True,
-        )
-        named_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-    except (Exception, KeyboardInterrupt, SystemExit):
-        return None
-    if (
-        not stat.S_ISREG(descriptor_stat.st_mode)
-        or descriptor_stat.st_uid != os.geteuid()
-        or descriptor_stat.st_nlink != 1
-        or descriptor_stat.st_size != 0
-        or stat.S_IMODE(descriptor_stat.st_mode) & ~0o600
-        or not stat.S_ISREG(named_stat.st_mode)
-        or named_stat.st_uid != os.geteuid()
-        or named_stat.st_nlink != 1
-        or named_stat.st_size != 0
-        or stat.S_IMODE(named_stat.st_mode) & ~0o600
-        or _inode_identity(named_stat) != _inode_identity(descriptor_stat)
-    ):
-        return None
-    return _inode_identity(descriptor_stat)
-
-
-def _owned_directory_identity_at_no_throw(parent_fd: int, name: str) -> tuple[int, int] | None:
-    try:
-        directory_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except (Exception, KeyboardInterrupt, SystemExit):
-        return None
-    if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.geteuid():
-        return None
-    return _inode_identity(directory_stat)
-
-
-def _rmdir_if_owned_no_throw(
-    parent_fd: int,
-    name: str,
-    identity: tuple[int, int],
-) -> None:
-    try:
-        if _named_directory_matches(parent_fd, name, identity):
-            os.rmdir(name, dir_fd=parent_fd)
-    except (Exception, KeyboardInterrupt, SystemExit):
-        pass
-
-
-def _valid_record_stat(file_stat: os.stat_result, *, mode: int) -> bool:
-    return (
-        stat.S_ISREG(file_stat.st_mode)
-        and file_stat.st_uid == os.geteuid()
-        and stat.S_IMODE(file_stat.st_mode) == mode
-        and file_stat.st_nlink == 1
-    )
-
 
 def _stat_matches_record(file_stat: os.stat_result, record: SealedStatementRecord) -> bool:
-    return _valid_record_stat(file_stat, mode=0o400) and (
-        file_stat.st_dev,
-        file_stat.st_ino,
-        file_stat.st_size,
-        file_stat.st_mtime_ns,
-    ) == (
-        record.device,
-        record.inode,
-        record.size_bytes,
-        record.modified_ns,
+    return spool_fs.valid_record_stat(file_stat, mode=0o400) and (
+        spool_fs.FileIdentity.from_stat(file_stat)
+        == spool_fs.FileIdentity(device=record.device, inode=record.inode)
+        and file_stat.st_size == record.size_bytes
+        and file_stat.st_mtime_ns == record.modified_ns
     )
-
-
-def _named_directory_matches(
-    parent_fd: int,
-    name: str,
-    identity: tuple[int, int],
-) -> bool:
-    try:
-        named_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
-        return False
-    return stat.S_ISDIR(named_stat.st_mode) and _inode_identity(named_stat) == identity
 
 
 __all__ = ["SealedStatementRecord", "StatementSpool", "StatementSpoolError"]

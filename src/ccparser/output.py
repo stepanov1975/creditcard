@@ -7,21 +7,24 @@ import csv
 import io
 import json
 import math
-import os
-import secrets
-import stat
-import tempfile
+import os as os
+import tempfile as tempfile
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import suppress
-from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import BinaryIO, Protocol, cast
+from typing import Protocol
 
 from pydantic import BaseModel
 
+from ccparser._output_publication import (
+    BinaryRenderer,
+    write_output_pair_atomic,
+)
+from ccparser._output_publication import (
+    write_bytes_atomic as _write_atomic,
+)
 from ccparser.decimal_math import plain_decimal_string
 from ccparser.models import (
     BatchResult,
@@ -36,7 +39,6 @@ from ccparser.models import (
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-type BinaryRenderer = Callable[[BinaryIO], None]
 type StatementResultFactory = Callable[[], Iterator[StatementResult]]
 
 _BASE_CSV_COLUMNS = (
@@ -357,34 +359,6 @@ def transactions_csv_bytes(batch: BatchResult) -> bytes:
     return stream.getvalue()
 
 
-def _write_atomic(path: str | Path, content: bytes) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary.write(content)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, destination)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        directory_descriptor = os.open(destination.parent, directory_flags)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
 def write_json_atomic(path: str | Path, result: BaseModel) -> None:
     """Atomically replace a canonical JSON destination."""
 
@@ -395,273 +369,6 @@ def write_csv_atomic(path: str | Path, batch: BatchResult) -> None:
     """Atomically replace a canonical flat CSV destination."""
 
     _write_atomic(path, transactions_csv_bytes(batch))
-
-
-@dataclass(slots=True)
-class _PairPublication:
-    json_had_previous: bool = False
-    csv_had_previous: bool = False
-    json_published: bool = False
-    csv_published: bool = False
-    committed: bool = False
-
-
-def _render_output_stage(
-    directory: Path,
-    destination_name: str,
-    renderer: BinaryRenderer,
-    artifacts: list[Path],
-) -> Path:
-    temporary_path: Path | None = None
-    primary_error: Exception | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w+b",
-            dir=directory,
-            prefix=f".{destination_name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as stream:
-            temporary_path = Path(stream.name)
-            artifacts.append(temporary_path)
-            try:
-                os.fchmod(stream.fileno(), 0o600)
-                renderer(cast(BinaryIO, stream))
-                stream.flush()
-                os.fsync(stream.fileno())
-            except Exception as error:
-                primary_error = error
-                raise
-    except Exception:
-        if primary_error is not None:
-            raise primary_error from None
-        raise
-    if temporary_path is None:
-        raise RuntimeError("output stage was not created")
-    return temporary_path
-
-
-def _classify_output_destination(path: Path) -> os.stat_result | None:
-    try:
-        metadata = path.stat(follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(metadata.st_mode):
-        raise OSError(f"output destination must be a regular file: {path.name}")
-    return metadata
-
-
-def _hard_link_backup(
-    path: Path,
-    metadata: os.stat_result,
-    artifacts: list[Path],
-) -> Path:
-    for _ in range(100):
-        backup_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.backup")
-        try:
-            os.link(path, backup_path, follow_symlinks=False)
-        except FileExistsError:
-            continue
-        artifacts.append(backup_path)
-        backup_metadata = backup_path.stat(follow_symlinks=False)
-        if (
-            not stat.S_ISREG(backup_metadata.st_mode)
-            or backup_metadata.st_dev != metadata.st_dev
-            or backup_metadata.st_ino != metadata.st_ino
-        ):
-            raise OSError(f"output destination changed during publication: {path.name}")
-        return backup_path
-    raise FileExistsError(f"unable to reserve output backup: {path.name}")
-
-
-def _fsync_directory(directory: Path) -> None:
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    directory_descriptor = os.open(directory, directory_flags)
-    try:
-        os.fsync(directory_descriptor)
-    except Exception:
-        with suppress(Exception):
-            os.close(directory_descriptor)
-        raise
-    os.close(directory_descriptor)
-
-
-def _fsync_directory_at_commit(
-    directory: Path,
-    publication: _PairPublication,
-) -> None:
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    directory_descriptor = os.open(directory, directory_flags)
-    try:
-        os.fsync(directory_descriptor)
-    except Exception:
-        with suppress(Exception):
-            os.close(directory_descriptor)
-        raise
-    publication.committed = True
-    os.close(directory_descriptor)
-
-
-def _restore_published_output(
-    destination: Path,
-    backup: Path | None,
-    *,
-    had_previous: bool,
-    published: bool,
-) -> None:
-    if not published:
-        return
-    if had_previous:
-        if backup is None:
-            raise RuntimeError("missing output backup during rollback")
-        os.replace(backup, destination)
-    else:
-        destination.unlink(missing_ok=True)
-
-
-def _rollback_output_pair(
-    directory: Path,
-    *,
-    json_path: Path,
-    csv_path: Path,
-    json_backup: Path | None,
-    csv_backup: Path | None,
-    publication: _PairPublication,
-) -> Exception | None:
-    first_error: Exception | None = None
-    restorations = (
-        (
-            json_path,
-            json_backup,
-            publication.json_had_previous,
-            publication.json_published,
-        ),
-        (
-            csv_path,
-            csv_backup,
-            publication.csv_had_previous,
-            publication.csv_published,
-        ),
-    )
-    for destination, backup, had_previous, published in restorations:
-        try:
-            _restore_published_output(
-                destination,
-                backup,
-                had_previous=had_previous,
-                published=published,
-            )
-        except Exception as error:
-            if first_error is None:
-                first_error = error
-    try:
-        _fsync_directory(directory)
-    except Exception as error:
-        if first_error is None:
-            first_error = error
-    return first_error
-
-
-def _cleanup_output_paths(paths: Iterable[Path | None]) -> Exception | None:
-    first_error: Exception | None = None
-    retry_paths: list[Path] = []
-    for path in paths:
-        if path is None:
-            continue
-        try:
-            path.unlink(missing_ok=True)
-        except Exception as error:
-            retry_paths.append(path)
-            if first_error is None:
-                first_error = error
-    for path in retry_paths:
-        with suppress(Exception):
-            path.unlink(missing_ok=True)
-    return first_error
-
-
-def _record_directory_fsync_error(
-    directory: Path,
-    first_error: Exception | None,
-) -> Exception | None:
-    try:
-        _fsync_directory(directory)
-    except Exception as error:
-        if first_error is None:
-            return error
-    return first_error
-
-
-def write_output_pair_atomic(
-    output_dir: str | Path,
-    *,
-    render_json: BinaryRenderer,
-    render_csv: BinaryRenderer,
-) -> None:
-    """Publish a rendered JSON/CSV pair with handled-error rollback."""
-
-    directory = Path(output_dir)
-    directory_created = False
-    try:
-        directory.mkdir(parents=True)
-        directory_created = True
-    except FileExistsError:
-        if not directory.is_dir():
-            raise
-
-    json_path = directory / "results.json"
-    csv_path = directory / "transactions.csv"
-    json_stage: Path | None = None
-    csv_stage: Path | None = None
-    json_backup: Path | None = None
-    csv_backup: Path | None = None
-    publication = _PairPublication()
-    artifacts: list[Path] = []
-
-    try:
-        json_stage = _render_output_stage(directory, json_path.name, render_json, artifacts)
-        csv_stage = _render_output_stage(directory, csv_path.name, render_csv, artifacts)
-
-        json_metadata = _classify_output_destination(json_path)
-        csv_metadata = _classify_output_destination(csv_path)
-        publication.json_had_previous = json_metadata is not None
-        publication.csv_had_previous = csv_metadata is not None
-        if json_metadata is not None:
-            json_backup = _hard_link_backup(json_path, json_metadata, artifacts)
-        if csv_metadata is not None:
-            csv_backup = _hard_link_backup(csv_path, csv_metadata, artifacts)
-
-        _fsync_directory(directory)
-        os.replace(json_stage, json_path)
-        publication.json_published = True
-        os.replace(csv_stage, csv_path)
-        publication.csv_published = True
-        _fsync_directory_at_commit(directory, publication)
-    except Exception:
-        if publication.committed:
-            cleanup_error = _cleanup_output_paths(artifacts)
-            _record_directory_fsync_error(directory, cleanup_error)
-            raise
-        if publication.json_published or publication.csv_published:
-            _rollback_output_pair(
-                directory,
-                json_path=json_path,
-                csv_path=csv_path,
-                json_backup=json_backup,
-                csv_backup=csv_backup,
-                publication=publication,
-            )
-        cleanup_error = _cleanup_output_paths(artifacts)
-        _record_directory_fsync_error(directory, cleanup_error)
-        if directory_created:
-            with suppress(OSError):
-                directory.rmdir()
-        raise
-
-    cleanup_error = _cleanup_output_paths(artifacts)
-    cleanup_error = _record_directory_fsync_error(directory, cleanup_error)
-    if cleanup_error is not None:
-        raise cleanup_error
 
 
 def write_streaming_batch_outputs(

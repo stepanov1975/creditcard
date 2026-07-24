@@ -149,6 +149,72 @@ def _batch_with_empty_statement() -> BatchResult:
     return batch.model_copy(update={"statements": (*batch.statements, empty_statement)})
 
 
+def _non_statement_batch() -> BatchResult:
+    return BatchResult(
+        status=Status.NOT_STATEMENT,
+        statements=(
+            StatementResult(
+                status=Status.NOT_STATEMENT,
+                transactions=(),
+                groups=(),
+                diagnostics=("not_a_statement",),
+                source_name="non-statement.pdf",
+                source_sha256="c" * 64,
+                statement_id="c" * 64,
+            ),
+        ),
+        diagnostics=("documents_not_reconciled:1",),
+    )
+
+
+def _multiple_group_carriage_return_batch() -> BatchResult:
+    transactions = (
+        Transaction(
+            transaction_id="transaction-1",
+            kind=TransactionKind.CHARGE,
+            billed_amount=Decimal("1.25"),
+            billing_currency="ILS",
+            reconciliation_group_ids=("group-1",),
+            description="first\rmerchant",
+            category=TransactionCategory.PURCHASE,
+        ),
+        Transaction(
+            transaction_id="transaction-2",
+            kind=TransactionKind.CHARGE,
+            billed_amount=Decimal("2.50"),
+            billing_currency="ILS",
+            reconciliation_group_ids=("group-2",),
+            description="second\r\nmerchant",
+            category=TransactionCategory.PURCHASE,
+        ),
+    )
+    groups = tuple(
+        ReconciliationGroup(
+            group_id=f"group-{index}",
+            currency="ILS",
+            printed_total=transaction.billed_amount,
+            calculated_total=transaction.billed_amount,
+            difference=Decimal("0"),
+            transaction_ids=(transaction.transaction_id,),
+            status=Status.RECONCILED,
+        )
+        for index, transaction in enumerate(transactions, start=1)
+    )
+    statement = StatementResult(
+        status=Status.RECONCILED,
+        transactions=transactions,
+        groups=groups,
+        source_name="multiple.pdf",
+        source_sha256="d" * 64,
+        statement_id="e" * 64,
+    )
+    return BatchResult(
+        status=Status.RECONCILED,
+        statements=(statement,),
+        diagnostics=("batch_diagnostic",),
+    )
+
+
 _LOCKED_PRE_STREAMING_CSV_BYTES = (
     b"\xef\xbb\xbf"
     + (
@@ -181,6 +247,25 @@ _LOCKED_PRE_STREAMING_CSV_BYTES = (
     ).encode()
 )
 
+_LOCKED_CSV_HEADER_BYTES = _LOCKED_PRE_STREAMING_CSV_BYTES.split(b"\r\n", 1)[0] + b"\r\n"
+_LOCKED_NON_STATEMENT_CSV_BYTES = (
+    _LOCKED_CSV_HEADER_BYTES
+    + b"non-statement.pdf,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,"
+    b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,,,,,,,,,,,,,,,"
+    b"not_statement,,documents_not_reconciled:1|not_a_statement,,,,,,,,,,,,,,,,,,,,,\r\n"
+)
+_LOCKED_CARRIAGE_RETURN_CSV_BYTES = (
+    _LOCKED_CSV_HEADER_BYTES
+    + b"multiple.pdf,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,"
+    b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,group-1,"
+    b'transaction-1,,,,"first\rmerchant",purchase,charge,1.25,ILS,,,,,reconciled,,'
+    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,\r\n"
+    b"multiple.pdf,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,"
+    b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,group-2,"
+    b'transaction-2,,,,"second\r\nmerchant",purchase,charge,2.5,ILS,,,,,reconciled,,'
+    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,\r\n"
+)
+
 
 def _all_strings(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
@@ -197,6 +282,7 @@ def _all_strings(value: object) -> tuple[str, ...]:
     (
         _batch(),
         BatchResult(status=Status.UNSUPPORTED, statements=(), diagnostics=("no_pdf_files",)),
+        _non_statement_batch(),
         BatchResult(
             status=Status.UNSUPPORTED,
             statements=(
@@ -217,11 +303,11 @@ def _all_strings(value: object) -> tuple[str, ...]:
             ),
             diagnostics=("documents_not_reconciled:1",),
         ),
+        _multiple_group_carriage_return_batch(),
     ),
 )
-def test_streaming_json_and_csv_match_complete_batch_bytes(batch: BatchResult) -> None:
+def test_streaming_json_matches_complete_batch_bytes(batch: BatchResult) -> None:
     json_stream = io.BytesIO()
-    csv_stream = io.BytesIO()
 
     write_canonical_batch_json_stream(
         json_stream,
@@ -229,15 +315,8 @@ def test_streaming_json_and_csv_match_complete_batch_bytes(batch: BatchResult) -
         diagnostics=batch.diagnostics,
         statements=iter(batch.statements),
     )
-    write_transactions_csv_stream(
-        csv_stream,
-        status=batch.status,
-        diagnostics=batch.diagnostics,
-        statements=iter(batch.statements),
-    )
 
     assert json_stream.getvalue() == canonical_json_bytes(batch)
-    assert csv_stream.getvalue() == transactions_csv_bytes(batch)
 
 
 def test_streaming_csv_matches_locked_pre_streaming_byte_oracle() -> None:
@@ -253,6 +332,34 @@ def test_streaming_csv_matches_locked_pre_streaming_byte_oracle() -> None:
 
     assert stream.getvalue() == _LOCKED_PRE_STREAMING_CSV_BYTES
     assert transactions_csv_bytes(batch) == _LOCKED_PRE_STREAMING_CSV_BYTES
+
+
+def test_streaming_csv_preserves_carriage_returns_against_locked_byte_oracle() -> None:
+    batch = _multiple_group_carriage_return_batch()
+    stream = io.BytesIO()
+
+    write_transactions_csv_stream(
+        stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+
+    assert stream.getvalue() == _LOCKED_CARRIAGE_RETURN_CSV_BYTES
+
+
+def test_streaming_non_statement_csv_matches_locked_byte_oracle() -> None:
+    batch = _non_statement_batch()
+    stream = io.BytesIO()
+
+    write_transactions_csv_stream(
+        stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+
+    assert stream.getvalue() == _LOCKED_NON_STATEMENT_CSV_BYTES
 
 
 def _statements_requiring_release_before_next() -> Iterator[StatementResult]:

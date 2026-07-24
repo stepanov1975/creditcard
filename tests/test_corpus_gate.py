@@ -29,6 +29,7 @@ from types import CodeType, ModuleType
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+import ccparser._corpus_run as corpus_run_module
 import ccparser.corpus_gate as corpus_gate_module
 import ccparser.evidence.ocr as ocr_module
 from ccparser.corpus_gate import (
@@ -235,6 +236,69 @@ def _batch(*, transaction: Transaction | None = None) -> BatchResult:
         source_sha256="a" * 64,
         statement_id="private-statement-id",
         row_results=(row_result,),
+    )
+    return BatchResult(status=Status.RECONCILED, statements=(statement,))
+
+
+def _non_statement_batch() -> BatchResult:
+    return BatchResult(
+        status=Status.NOT_STATEMENT,
+        statements=(
+            StatementResult(
+                status=Status.NOT_STATEMENT,
+                transactions=(),
+                groups=(),
+                diagnostics=("not_a_statement",),
+                source_name="synthetic/non-statement.pdf",
+                source_sha256="b" * 64,
+                statement_id="synthetic-non-statement",
+            ),
+        ),
+        diagnostics=("documents_not_reconciled:1",),
+    )
+
+
+def _multiple_group_transaction_batch() -> BatchResult:
+    first = _transaction(transaction_id="synthetic-transaction-1").model_copy(
+        update={
+            "description": "first\rmerchant",
+            "reconciliation_group_ids": ("synthetic-group-1",),
+        }
+    )
+    second = _transaction(transaction_id="synthetic-transaction-2").model_copy(
+        update={
+            "billed_amount": Decimal("50.00"),
+            "description": "second\r\nmerchant",
+            "reconciliation_group_ids": ("synthetic-group-2",),
+        }
+    )
+    groups = (
+        ReconciliationGroup(
+            group_id="synthetic-group-1",
+            currency="ILS",
+            printed_total=Decimal("123.45"),
+            calculated_total=Decimal("123.45"),
+            difference=Decimal("0"),
+            transaction_ids=(first.transaction_id,),
+            status=Status.RECONCILED,
+        ),
+        ReconciliationGroup(
+            group_id="synthetic-group-2",
+            currency="ILS",
+            printed_total=Decimal("50.00"),
+            calculated_total=Decimal("50.00"),
+            difference=Decimal("0"),
+            transaction_ids=(second.transaction_id,),
+            status=Status.RECONCILED,
+        ),
+    )
+    statement = StatementResult(
+        status=Status.RECONCILED,
+        transactions=(first, second),
+        groups=groups,
+        source_name="synthetic/multiple.pdf",
+        source_sha256="c" * 64,
+        statement_id="synthetic-multiple",
     )
     return BatchResult(status=Status.RECONCILED, statements=(statement,))
 
@@ -2995,7 +3059,7 @@ def test_local_runner_selects_trusted_policy_for_descriptor_roots(
     )
     proc_paths = tuple(Path(f"/proc/self/fd/{descriptor}") for descriptor in descriptors)
     policies: list[DirectoryRootPolicy] = []
-    original_convert = corpus_gate_module.convert_directory_statements
+    original_convert = corpus_run_module.convert_directory_statements
 
     def record_policy(*args: object, **kwargs: object) -> object:
         policy = kwargs["directory_root_policy"]
@@ -3004,7 +3068,7 @@ def test_local_runner_selects_trusted_policy_for_descriptor_roots(
         return original_convert(*args, **kwargs)
 
     monkeypatch.setattr(
-        corpus_gate_module,
+        corpus_run_module,
         "convert_directory_statements",
         record_policy,
     )
@@ -3044,7 +3108,7 @@ def test_local_runner_rejects_tampered_streamed_outputs(
     output_dir.mkdir()
     cache_dir.mkdir()
     (input_dir / "statement.pdf").write_bytes(b"statement")
-    original_write = corpus_gate_module.write_streaming_batch_outputs
+    original_write = corpus_run_module.write_streaming_batch_outputs
 
     def write_then_tamper(
         path: str | Path,
@@ -3066,7 +3130,7 @@ def test_local_runner_rejects_tampered_streamed_outputs(
             emitted_path.write_bytes(b"private tampered output")
 
     monkeypatch.setattr(
-        corpus_gate_module,
+        corpus_run_module,
         "write_streaming_batch_outputs",
         write_then_tamper,
     )
@@ -3086,6 +3150,115 @@ def test_local_runner_rejects_tampered_streamed_outputs(
     assert not tuple(output_dir.glob(".statement-spool*"))
 
 
+@pytest.mark.parametrize("mutation", ("symlink", "directory", "hardlink"))
+def test_local_runner_rejects_unsafe_emitted_output_types_privately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_write = corpus_run_module.write_streaming_batch_outputs
+
+    def write_then_mutate(
+        path: str | Path,
+        *,
+        status: Status,
+        diagnostics: tuple[str, ...],
+        statements: Callable[[], Iterator[StatementResult]],
+    ) -> None:
+        original_write(
+            path,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements,
+        )
+        emitted_path = Path(path) / "results.json"
+        if mutation == "symlink":
+            outside = tmp_path / "outside-output"
+            outside.write_bytes(emitted_path.read_bytes())
+            emitted_path.unlink()
+            emitted_path.symlink_to(outside)
+        elif mutation == "directory":
+            emitted_path.unlink()
+            emitted_path.mkdir()
+        else:
+            os.link(emitted_path, tmp_path / "additional-output-link")
+
+    monkeypatch.setattr(corpus_run_module, "write_streaming_batch_outputs", write_then_mutate)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "outside-output" not in rendered
+    assert "additional-output-link" not in rendered
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+@pytest.mark.parametrize("mutation", ("identity", "metadata"))
+def test_local_runner_rejects_emitted_output_changed_while_hashing_privately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_read = os.read
+    mutated = False
+
+    def mutate_during_read(file_descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        descriptor_path = Path(f"/proc/self/fd/{file_descriptor}")
+        named_path = descriptor_path.resolve(strict=True)
+        if not mutated and named_path.name == "results.json":
+            mutated = True
+            if mutation == "identity":
+                content = named_path.read_bytes()
+                named_path.unlink()
+                named_path.write_bytes(content)
+            else:
+                metadata = named_path.stat()
+                os.utime(
+                    named_path,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1),
+                )
+        return original_read(file_descriptor, size)
+
+    monkeypatch.setattr(corpus_run_module.os, "read", mutate_during_read)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert mutated
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "results.json" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
 def test_local_runner_rejects_a_corrupt_spool_record_privately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3096,7 +3269,7 @@ def test_local_runner_rejects_a_corrupt_spool_record_privately(
     for directory in (input_dir, output_dir, cache_dir):
         directory.mkdir()
     (input_dir / "statement.pdf").write_bytes(b"statement")
-    original_write = corpus_gate_module.write_streaming_batch_outputs
+    original_write = corpus_run_module.write_streaming_batch_outputs
 
     def write_then_corrupt(
         path: str | Path,
@@ -3117,7 +3290,7 @@ def test_local_runner_rejects_a_corrupt_spool_record_privately(
         record.write_bytes(b"private corrupt spool record")
 
     monkeypatch.setattr(
-        corpus_gate_module,
+        corpus_run_module,
         "write_streaming_batch_outputs",
         write_then_corrupt,
     )
@@ -3202,7 +3375,7 @@ def test_local_runner_cleans_the_spool_after_an_output_writer_failure(
         raise RuntimeError("private output writer failure")
 
     monkeypatch.setattr(
-        corpus_gate_module,
+        corpus_run_module,
         "write_streaming_batch_outputs",
         fail_write,
     )
@@ -5680,6 +5853,7 @@ def test_project_run_hashes_the_exact_canonical_outputs() -> None:
     (
         _batch(),
         BatchResult(status=Status.UNSUPPORTED, statements=(), diagnostics=("no_pdf_files",)),
+        _non_statement_batch(),
         BatchResult(
             status=Status.UNRECONCILED,
             statements=(
@@ -5689,6 +5863,7 @@ def test_project_run_hashes_the_exact_canonical_outputs() -> None:
             diagnostics=("documents_not_reconciled:1",),
         ),
         _batch(transaction=_transaction(with_fx=True, ambiguities=("candidate",))),
+        _multiple_group_transaction_batch(),
     ),
 )
 def test_project_streamed_run_matches_complete_batch(batch: BatchResult) -> None:
