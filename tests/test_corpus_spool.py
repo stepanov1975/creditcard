@@ -45,6 +45,75 @@ def test_spool_round_trips_out_of_order_records_in_ordinal_order(tmp_path: Path)
     assert not spool.path.exists()
 
 
+def test_spool_accepts_an_exact_validated_process_fd_parent(tmp_path: Path) -> None:
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor_path = Path(f"/proc/self/fd/{parent_fd}")
+    try:
+        with StatementSpool.create(descriptor_path) as spool:
+            spool.append(0, _statement("source.pdf"))
+            spool.seal(1)
+            assert tuple(spool.iter_statements()) == (_statement("source.pdf"),)
+    finally:
+        os.close(parent_fd)
+
+    assert not tuple(tmp_path.glob(".statement-spool-*"))
+
+
+def test_spool_rejects_a_mismatched_process_fd_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor_path = Path(f"/proc/self/fd/{parent_fd}")
+    original_stat = os.stat
+
+    def mismatched_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes] | int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        observed = original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+        if not isinstance(path, int) and dir_fd is None and Path(path) == descriptor_path:
+            values = list(observed)
+            values[1] += 1
+            return os.stat_result(values)
+        return observed
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(corpus_spool_module.os, "stat", mismatched_stat)
+            with pytest.raises(StatementSpoolError, match=r"^statement spool operation failed$"):
+                StatementSpool.create(descriptor_path)
+    finally:
+        os.close(parent_fd)
+
+    assert not tuple(tmp_path.glob(".statement-spool-*"))
+
+
+def test_spool_rejects_an_arbitrary_directory_symlink_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(parent, target_is_directory=True)
+
+    with pytest.raises(StatementSpoolError, match=r"^statement spool operation failed$"):
+        StatementSpool.create(alias)
+
+    assert tuple(parent.iterdir()) == ()
+
+
+def test_spool_rejects_a_non_directory_process_fd_parent(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"synthetic")
+    source_fd = os.open(source, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        with pytest.raises(StatementSpoolError, match=r"^statement spool operation failed$"):
+            StatementSpool.create(Path(f"/proc/self/fd/{source_fd}"))
+    finally:
+        os.close(source_fd)
+
+
 def test_spool_enforces_private_modes_under_restrictive_umask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

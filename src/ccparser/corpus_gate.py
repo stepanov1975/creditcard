@@ -54,6 +54,7 @@ import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing m
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ccparser._traced_subprocess import run_traced_subprocess
+from ccparser.corpus_spool import StatementSpool
 from ccparser.evidence.ocr import (
     OCR_CURRENCY_RECOGNITION_CACHE_VERSION,
     OCR_NUMERIC_RECOGNITION_CACHE_VERSION,
@@ -81,8 +82,16 @@ from ccparser.output import (
     _canonical_json_value_bytes,
     canonical_json_bytes,
     transactions_csv_bytes,
+    write_canonical_batch_json_stream,
+    write_streaming_batch_outputs,
+    write_transactions_csv_stream,
 )
-from ccparser.parser import parse_directory
+from ccparser.parser import (
+    BatchDisposition,
+    StatementParser,
+    convert_directory_statements,
+    summarize_batch_statuses,
+)
 from ccparser.paths import DirectoryRootPolicy, iter_regular_pdf_files, paths_overlap
 
 type Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -301,7 +310,7 @@ class RunManifest(_GateModel):
 class CompletedCorpusRun:
     """One parser result with immediately adjacent corpus snapshots."""
 
-    batch: BatchResult
+    batch_status: Status
     manifest: RunManifest
     membership_before: CorpusMembership
     membership_after: CorpusMembership
@@ -504,20 +513,6 @@ class CorpusGateDependencies:
     runtime_capabilities: _GateRuntimeCapabilities | None = None
 
 
-class _DirectoryParser(Protocol):
-    def __call__(
-        self,
-        path: str | Path,
-        output_dir: str | Path,
-        strict: bool = False,
-        jobs: int | None = None,
-        *,
-        cache_dir: str | Path | None = None,
-        directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
-    ) -> BatchResult:
-        raise NotImplementedError
-
-
 class _NanosecondClock(Protocol):
     def __call__(self) -> int:
         raise NotImplementedError
@@ -529,10 +524,10 @@ class LocalCorpusRunner:
     def __init__(
         self,
         *,
-        parser: _DirectoryParser | None = None,
+        statement_parser: StatementParser | None = None,
         monotonic_ns: _NanosecondClock | None = None,
     ) -> None:
-        self._parser = parser or parse_directory
+        self._statement_parser = statement_parser
         self._monotonic_ns = monotonic_ns or time.monotonic_ns
 
     def __call__(
@@ -551,44 +546,139 @@ class LocalCorpusRunner:
             if all(_is_process_fd_path(path) for path in (input_dir, output_dir, cache_dir))
             else DirectoryRootPolicy.RESOLVE
         )
-        batch = self._parser(
-            input_dir,
-            output_dir,
-            strict,
-            jobs,
-            cache_dir=cache_dir,
-            directory_root_policy=directory_root_policy,
-        )
-        end_nanoseconds = self._monotonic_ns()
-        membership_after = _snapshot_membership(input_dir, allow_descriptor_root=True)
-        elapsed_nanoseconds = end_nanoseconds - start_nanoseconds
-        if elapsed_nanoseconds < 0:
-            raise RuntimeError("monotonic clock moved backwards")
-        elapsed_seconds = Decimal(elapsed_nanoseconds) / Decimal(1_000_000_000)
-        manifest = project_run(batch, elapsed_seconds=elapsed_seconds)
         try:
-            json_content = (output_dir / "results.json").read_bytes()
-            csv_content = (output_dir / "transactions.csv").read_bytes()
-            if json_content != canonical_json_bytes(batch) or csv_content != transactions_csv_bytes(
-                batch
-            ):
-                raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,))
+            with StatementSpool.create(output_dir) as spool:
+                status_counts: Counter[Status] = Counter()
+
+                def consume(ordinal: int, result: StatementResult, /) -> None:
+                    spool.append(ordinal, result)
+                    status_counts[result.status] += 1
+
+                conversion = convert_directory_statements(
+                    input_dir,
+                    output_dir,
+                    strict,
+                    jobs,
+                    cache_dir=cache_dir,
+                    statement_parser=self._statement_parser,
+                    result_sink=consume,
+                    directory_root_policy=directory_root_policy,
+                )
+                spool.seal(conversion.source_count)
+                disposition = summarize_batch_statuses(status_counts)
+                if disposition.document_count != conversion.source_count:
+                    raise RuntimeError("statement sink count mismatch")
+                write_streaming_batch_outputs(
+                    conversion.resolved_output_dir,
+                    status=disposition.status,
+                    diagnostics=disposition.diagnostics,
+                    statements=spool.iter_statements,
+                )
+                end_nanoseconds = self._monotonic_ns()
+                membership_after = _snapshot_membership(
+                    input_dir,
+                    allow_descriptor_root=True,
+                )
+                elapsed_nanoseconds = end_nanoseconds - start_nanoseconds
+                if elapsed_nanoseconds < 0:
+                    raise RuntimeError("monotonic clock moved backwards")
+                elapsed_seconds = Decimal(elapsed_nanoseconds) / Decimal(1_000_000_000)
+                expected_json_digest, expected_csv_digest = _canonical_stream_digests(
+                    disposition,
+                    spool.iter_statements,
+                )
+                _require_file_digest(
+                    conversion.resolved_output_dir / "results.json",
+                    expected_json_digest,
+                )
+                _require_file_digest(
+                    conversion.resolved_output_dir / "transactions.csv",
+                    expected_csv_digest,
+                )
+                manifest = project_streamed_run(
+                    batch_status=disposition.status,
+                    elapsed_seconds=elapsed_seconds,
+                    json_digest=expected_json_digest,
+                    csv_digest=expected_csv_digest,
+                    statements=spool.iter_statements,
+                )
         except CorpusGateError:
             raise
         except Exception:
             raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
-        manifest = manifest.model_copy(
-            update={
-                "json_digest": _digest_bytes(json_content),
-                "csv_digest": _digest_bytes(csv_content),
-            }
-        )
         return CompletedCorpusRun(
-            batch=batch,
+            batch_status=disposition.status,
             manifest=manifest,
             membership_before=membership_before,
             membership_after=membership_after,
         )
+
+
+class _Sha256Writer:
+    """Binary writer that retains only an incremental SHA-256 state."""
+
+    def __init__(self) -> None:
+        self._digest = sha256()
+
+    def write(self, content: bytes, /) -> int:
+        self._digest.update(content)
+        return len(content)
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
+def _canonical_stream_digests(
+    disposition: BatchDisposition,
+    statements: StatementResultFactory,
+) -> tuple[str, str]:
+    json_writer = _Sha256Writer()
+    write_canonical_batch_json_stream(
+        json_writer,
+        status=disposition.status,
+        diagnostics=disposition.diagnostics,
+        statements=statements(),
+    )
+    csv_writer = _Sha256Writer()
+    write_transactions_csv_stream(
+        csv_writer,
+        status=disposition.status,
+        diagnostics=disposition.diagnostics,
+        statements=statements(),
+    )
+    return json_writer.hexdigest(), csv_writer.hexdigest()
+
+
+_EMITTED_OUTPUT_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+_EMITTED_OUTPUT_READ_SIZE = 1024 * 1024
+
+
+def _require_file_digest(path: Path, expected_digest: str) -> None:
+    file_descriptor = os.open(path, _EMITTED_OUTPUT_READ_FLAGS)
+    try:
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+        ):
+            raise RuntimeError("emitted output is unsafe")
+        digest = sha256()
+        while chunk := os.read(file_descriptor, _EMITTED_OUTPUT_READ_SIZE):
+            digest.update(chunk)
+        after = os.fstat(file_descriptor)
+        named_after = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_uid != os.geteuid()
+            or after.st_nlink != 1
+            or _stable_file_identity(after) != _stable_file_identity(before)
+            or _stable_file_identity(named_after) != _stable_file_identity(before)
+            or digest.hexdigest() != expected_digest
+        ):
+            raise RuntimeError("emitted output digest mismatch")
+    finally:
+        os.close(file_descriptor)
 
 
 _CHILD_ENVIRONMENT_KEYS = frozenset(
@@ -4128,20 +4218,14 @@ def _validate_completed_execution(
 ) -> tuple[CorpusGateReason, ...]:
     reasons: list[CorpusGateReason] = []
     if any(
-        run.completed.batch.status is not Status.RECONCILED
-        or any(
-            statement.status is not Status.RECONCILED
-            for statement in run.completed.batch.statements
-        )
+        run.completed.batch_status is not Status.RECONCILED
+        or run.completed.manifest.counts.reconciled != run.completed.manifest.counts.documents
         for run in retained_runs
     ):
         reasons.append(CorpusGateReason.RETAINED_NOT_RECONCILED)
     if any(
-        run.completed.batch.status is not Status.NOT_STATEMENT
-        or any(
-            statement.status is not Status.NOT_STATEMENT
-            for statement in run.completed.batch.statements
-        )
+        run.completed.batch_status is not Status.NOT_STATEMENT
+        or run.completed.manifest.counts.not_statement != run.completed.manifest.counts.documents
         for run in quarantine_runs
     ):
         reasons.append(CorpusGateReason.QUARANTINE_MISCLASSIFIED)
@@ -4156,10 +4240,7 @@ def _validate_completed_execution(
             or run.original_membership_after != expected
         ):
             reasons.append(CorpusGateReason.MEMBERSHIP_DRIFT)
-        if (
-            run.completed.manifest.counts.documents != expected.document_count
-            or len(run.completed.batch.statements) != expected.document_count
-        ):
+        if run.completed.manifest.counts.documents != expected.document_count:
             reasons.append(CorpusGateReason.COUNTS_DRIFT)
     if _snapshot_membership(prepared.config.retained_dir) != prepared.inventory.retained:
         reasons.append(CorpusGateReason.MEMBERSHIP_DRIFT)

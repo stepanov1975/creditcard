@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import array
+import dataclasses
 import fcntl
+import gc
 import inspect
 import io
 import json
@@ -10,6 +12,9 @@ import py_compile
 import shutil
 import subprocess
 import sys
+import threading
+import traceback
+import weakref
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -60,6 +65,7 @@ from ccparser.corpus_gate import (
     project_streamed_run,
     run_corpus_gate,
 )
+from ccparser.corpus_spool import StatementSpool
 from ccparser.models import (
     BatchResult,
     EvidenceReference,
@@ -77,7 +83,6 @@ from ccparser.models import (
 from ccparser.output import (
     canonical_json_bytes,
     transactions_csv_bytes,
-    write_batch_outputs,
 )
 from ccparser.paths import DirectoryRootPolicy
 
@@ -520,8 +525,8 @@ class _RecordingRunner:
     membership_pairs: dict[int, tuple[CorpusMembership, CorpusMembership]] = field(
         default_factory=dict
     )
-    manifest_updates: dict[int, dict[str, object]] = field(default_factory=dict)
-    batch_overrides: dict[int, BatchResult] = field(default_factory=dict)
+    batch_status_overrides: dict[int, Status] = field(default_factory=dict)
+    manifest_overrides: dict[int, RunManifest] = field(default_factory=dict)
     input_dirs: list[Path] = field(default_factory=list)
     output_dirs: list[Path] = field(default_factory=list)
     cache_dirs: list[Path] = field(default_factory=list)
@@ -560,17 +565,18 @@ class _RecordingRunner:
             (membership, membership),
         )
         status = self.retained_status if strict else self.quarantine_status
-        batch = self.batch_overrides.get(call_index, _status_batch(status))
+        batch_status = self.batch_status_overrides.get(call_index, status)
         elapsed = (
             self.elapsed_values[call_index]
             if call_index < len(self.elapsed_values)
             else Decimal(call_index + 1)
         )
-        manifest = project_run(batch, elapsed_seconds=elapsed).model_copy(
-            update=self.manifest_updates.get(call_index, {}),
+        manifest = self.manifest_overrides.get(
+            call_index,
+            project_run(_status_batch(status), elapsed_seconds=elapsed),
         )
         return CompletedCorpusRun(
-            batch=batch,
+            batch_status=batch_status,
             manifest=manifest,
             membership_before=membership_before,
             membership_after=membership_after,
@@ -638,6 +644,7 @@ def test_orchestration_models_are_strict_frozen_and_validate_numeric_bounds(
 
     with pytest.raises(ValidationError, match="frozen"):
         config.jobs = 2
+
     with pytest.raises(ValidationError):
         CorpusGateConfig.model_validate({**config.model_dump(), "jobs": 0})
     with pytest.raises(ValidationError):
@@ -659,6 +666,16 @@ def test_orchestration_models_are_strict_frozen_and_validate_numeric_bounds(
     ):
         with pytest.raises(ValidationError, match="String should match pattern"):
             CorpusGateConfig.model_validate({**config.model_dump(), field_name: malformed_value})
+
+
+def test_completed_corpus_run_cannot_retain_a_batch() -> None:
+    fields = {field.name for field in dataclasses.fields(CompletedCorpusRun)}
+    assert fields == {
+        "batch_status",
+        "manifest",
+        "membership_before",
+        "membership_after",
+    }
 
 
 def test_record_runs_four_isolated_pairs_and_writes_baseline_last(tmp_path: Path) -> None:
@@ -2102,7 +2119,10 @@ def test_each_run_must_process_the_approved_document_count(
     status = Status.RECONCILED if corpus_name == "retained" else Status.NOT_STATEMENT
     empty_batch = BatchResult(status=status, statements=())
     for call_index in call_indexes:
-        runner.batch_overrides[call_index] = empty_batch
+        runner.manifest_overrides[call_index] = project_run(
+            empty_batch,
+            elapsed_seconds=Decimal(call_index + 1),
+        )
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
@@ -2148,13 +2168,8 @@ def test_completed_runs_enforce_corpus_status_policy(
 
 def test_retained_batch_status_must_be_reconciled(tmp_path: Path) -> None:
     config, dependencies, runner = _gate_fixture(tmp_path)
-    reconciled_statement = _status_batch(Status.RECONCILED).statements
-    unreconciled_batch = BatchResult(
-        status=Status.UNRECONCILED,
-        statements=reconciled_statement,
-    )
-    runner.batch_overrides[0] = unreconciled_batch
-    runner.batch_overrides[1] = unreconciled_batch
+    runner.batch_status_overrides[0] = Status.UNRECONCILED
+    runner.batch_status_overrides[1] = Status.UNRECONCILED
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
@@ -2165,13 +2180,8 @@ def test_retained_batch_status_must_be_reconciled(tmp_path: Path) -> None:
 
 def test_quarantine_batch_status_must_be_not_statement(tmp_path: Path) -> None:
     config, dependencies, runner = _gate_fixture(tmp_path)
-    not_statement_results = _status_batch(Status.NOT_STATEMENT).statements
-    unsupported_batch = BatchResult(
-        status=Status.UNSUPPORTED,
-        statements=not_statement_results,
-    )
-    runner.batch_overrides[2] = unsupported_batch
-    runner.batch_overrides[3] = unsupported_batch
+    runner.batch_status_overrides[2] = Status.UNSUPPORTED
+    runner.batch_status_overrides[3] = Status.UNSUPPORTED
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
@@ -2180,11 +2190,50 @@ def test_quarantine_batch_status_must_be_not_statement(tmp_path: Path) -> None:
     assert not config.baseline_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("corpus_name", "manifest_status", "reason"),
+    (
+        (
+            "retained",
+            Status.UNRECONCILED,
+            CorpusGateReason.RETAINED_NOT_RECONCILED,
+        ),
+        (
+            "quarantine",
+            Status.UNSUPPORTED,
+            CorpusGateReason.QUARANTINE_MISCLASSIFIED,
+        ),
+    ),
+)
+def test_corpus_status_policy_uses_manifest_status_counts(
+    tmp_path: Path,
+    corpus_name: str,
+    manifest_status: Status,
+    reason: CorpusGateReason,
+) -> None:
+    config, dependencies, runner = _gate_fixture(tmp_path)
+    call_indexes = (0, 1) if corpus_name == "retained" else (2, 3)
+    for call_index in call_indexes:
+        runner.manifest_overrides[call_index] = project_run(
+            _status_batch(manifest_status),
+            elapsed_seconds=Decimal(call_index + 1),
+        )
+
+    with pytest.raises(CorpusGateAcceptanceError) as caught:
+        run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
+
+    assert caught.value.reasons == (reason,)
+    assert not config.baseline_path.exists()
+
+
 def test_independent_output_mismatch_rejects_record_without_replacing_baseline(
     tmp_path: Path,
 ) -> None:
     config, dependencies, runner = _gate_fixture(tmp_path)
-    runner.manifest_updates[1] = {"json_digest": "f" * 64}
+    runner.manifest_overrides[1] = project_run(
+        _status_batch(Status.RECONCILED),
+        elapsed_seconds=Decimal(2),
+    ).model_copy(update={"json_digest": "f" * 64})
 
     with pytest.raises(CorpusGateAcceptanceError) as caught:
         run_corpus_gate(config, CorpusGateMode.RECORD, dependencies=dependencies)
@@ -2203,9 +2252,12 @@ def test_verify_compares_both_candidate_runs_with_accepted_baseline(tmp_path: Pa
     accepted_content = record_config.baseline_path.read_bytes()
     verify_runner = _RecordingRunner(
         memberships=record_runner.memberships,
-        manifest_updates={
-            0: {"json_digest": "f" * 64},
-            1: {"json_digest": "f" * 64},
+        manifest_overrides={
+            call_index: project_run(
+                _status_batch(Status.RECONCILED),
+                elapsed_seconds=Decimal(call_index + 1),
+            ).model_copy(update={"json_digest": "f" * 64})
+            for call_index in (0, 1)
         },
     )
     verify_config = record_config.model_copy(
@@ -2604,7 +2656,7 @@ def test_original_swap_and_restore_cannot_change_staged_parser_bytes(tmp_path: P
             status = Status.RECONCILED if strict else Status.NOT_STATEMENT
             batch = _status_batch(status)
             completed = CompletedCorpusRun(
-                batch=batch,
+                batch_status=batch.status,
                 manifest=project_run(batch, elapsed_seconds=Decimal(1)),
                 membership_before=membership,
                 membership_after=membership,
@@ -2623,73 +2675,198 @@ def test_original_swap_and_restore_cannot_change_staged_parser_bytes(tmp_path: P
     assert seen_inputs == [b"retained", b"retained", b"quarantine", b"quarantine"]
 
 
-def test_local_runner_uses_adjacent_membership_snapshots_and_emitted_outputs(
-    tmp_path: Path,
-) -> None:
+def test_local_runner_streams_exact_outputs_without_retaining_batch(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     cache_dir = tmp_path / "cache"
-    input_dir.mkdir()
-    output_dir.mkdir()
-    cache_dir.mkdir()
-    source = input_dir / "statement.pdf"
-    source.write_bytes(b"before")
-    expected_before = digest_membership((sha256(b"before").hexdigest(),))
-    expected_after = digest_membership((sha256(b"after").hexdigest(),))
-    batch = _status_batch(Status.RECONCILED)
-    calls: list[tuple[Path, Path, bool, int | None, Path]] = []
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    source_contents = {
+        "a.pdf": b"a",
+        "b.pdf": b"b",
+        "c.pdf": b"c",
+    }
+    for source_name, content in source_contents.items():
+        (input_dir / source_name).write_bytes(content)
+    statements = tuple(
+        StatementResult(
+            status=Status.RECONCILED,
+            transactions=(),
+            groups=(),
+            source_name=source_name,
+            source_sha256=sha256(content).hexdigest(),
+            statement_id=sha256(content).hexdigest(),
+        )
+        for source_name, content in source_contents.items()
+    )
+    expected_batch = BatchResult(status=Status.RECONCILED, statements=statements)
+    c_completed = threading.Event()
+    b_completed = threading.Event()
+    completion_order: list[str] = []
+    result_references: list[weakref.ReferenceType[StatementResult]] = []
 
-    def fake_parser(
+    def parse(
         path: str | Path,
-        selected_output_dir: str | Path,
         strict: bool = False,
-        jobs: int | None = None,
         *,
         cache_dir: str | Path | None = None,
-        directory_root_policy: DirectoryRootPolicy,
-    ) -> BatchResult:
-        assert cache_dir is not None
-        assert directory_root_policy is DirectoryRootPolicy.RESOLVE
-        calls.append(
-            (
-                Path(path),
-                Path(selected_output_dir),
-                strict,
-                jobs,
-                Path(cache_dir),
-            )
+    ) -> StatementResult:
+        del strict, cache_dir
+        source = Path(path)
+        content = source.read_bytes()
+        result = StatementResult(
+            status=Status.RECONCILED,
+            transactions=(),
+            groups=(),
+            source_name=source.name,
+            source_sha256=sha256(content).hexdigest(),
+            statement_id=sha256(content).hexdigest(),
         )
-        source.write_bytes(b"after")
-        write_batch_outputs(selected_output_dir, batch)
-        return batch
+        result_references.append(weakref.ref(result))
+        if source.name == "a.pdf":
+            assert b_completed.wait(timeout=5)
+        elif source.name == "b.pdf":
+            assert c_completed.wait(timeout=5)
+        completion_order.append(source.name)
+        if source.name == "c.pdf":
+            c_completed.set()
+        elif source.name == "b.pdf":
+            b_completed.set()
+        return result
 
     clock_values = iter((1_000_000_000, 2_250_000_000))
-    runner = LocalCorpusRunner(parser=fake_parser, monotonic_ns=lambda: next(clock_values))
+    runner = LocalCorpusRunner(
+        statement_parser=parse,
+        monotonic_ns=lambda: next(clock_values),
+    )
 
     completed = runner(
         input_dir=input_dir,
         output_dir=output_dir,
         cache_dir=cache_dir,
         strict=True,
-        jobs=4,
+        jobs=3,
     )
 
-    assert calls == [(input_dir, output_dir, True, 4, cache_dir)]
-    assert completed.batch == batch
-    assert completed.membership_before == expected_before
-    assert completed.membership_after == expected_after
-    assert completed.manifest.elapsed_seconds == Decimal("1.25")
-    assert (
-        completed.manifest.json_digest
-        == sha256((output_dir / "results.json").read_bytes()).hexdigest()
+    expected = project_run(expected_batch, elapsed_seconds=Decimal("1.25"))
+    expected_membership = digest_membership(
+        sha256(content).hexdigest() for content in source_contents.values()
     )
-    assert (
-        completed.manifest.csv_digest
-        == sha256((output_dir / "transactions.csv").read_bytes()).hexdigest()
+    assert completion_order == ["c.pdf", "b.pdf", "a.pdf"]
+    assert completed.batch_status is expected_batch.status
+    assert completed.manifest == expected
+    assert completed.membership_before == expected_membership
+    assert completed.membership_after == expected_membership
+    assert (output_dir / "results.json").read_bytes() == canonical_json_bytes(expected_batch)
+    assert (output_dir / "transactions.csv").read_bytes() == transactions_csv_bytes(expected_batch)
+    assert not tuple(output_dir.glob(".statement-spool*"))
+    gc.collect()
+    assert all(reference() is None for reference in result_references)
+
+
+def test_local_runner_streams_the_exact_empty_batch(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    clock_values = iter((1_000_000_000, 1_500_000_000))
+    runner = LocalCorpusRunner(monotonic_ns=lambda: next(clock_values))
+
+    completed = runner(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=True,
+        jobs=1,
+    )
+
+    expected_batch = BatchResult(
+        status=Status.UNSUPPORTED,
+        statements=(),
+        diagnostics=("no_pdf_files",),
+    )
+    assert completed.batch_status is Status.UNSUPPORTED
+    assert completed.manifest == project_run(
+        expected_batch,
+        elapsed_seconds=Decimal("0.5"),
+    )
+    assert completed.membership_before == digest_membership(())
+    assert completed.membership_after == digest_membership(())
+    assert (output_dir / "results.json").read_bytes() == canonical_json_bytes(expected_batch)
+    assert (output_dir / "transactions.csv").read_bytes() == transactions_csv_bytes(expected_batch)
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_snapshots_membership_immediately_around_streaming(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    source = input_dir / "statement.pdf"
+    source.write_bytes(b"before")
+
+    def parse_then_mutate(
+        path: str | Path,
+        strict: bool = False,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> StatementResult:
+        del strict, cache_dir
+        selected = Path(path)
+        content = selected.read_bytes()
+        digest = sha256(content).hexdigest()
+        selected.write_bytes(b"after")
+        return StatementResult(
+            status=Status.RECONCILED,
+            transactions=(),
+            groups=(),
+            source_name=selected.name,
+            source_sha256=digest,
+            statement_id=digest,
+        )
+
+    runner = LocalCorpusRunner(statement_parser=parse_then_mutate)
+
+    completed = runner(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=True,
+        jobs=1,
+    )
+
+    assert completed.membership_before == digest_membership((sha256(b"before").hexdigest(),))
+    assert completed.membership_after == digest_membership((sha256(b"after").hexdigest(),))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def _reconciled_statement_parser(
+    path: str | Path,
+    strict: bool = False,
+    *,
+    cache_dir: str | Path | None = None,
+) -> StatementResult:
+    del strict, cache_dir
+    source = Path(path)
+    digest = sha256(source.read_bytes()).hexdigest()
+    return StatementResult(
+        status=Status.RECONCILED,
+        transactions=(),
+        groups=(),
+        source_name=source.name,
+        source_sha256=digest,
+        statement_id=digest,
     )
 
 
-def test_local_runner_selects_trusted_policy_for_descriptor_roots(tmp_path: Path) -> None:
+def test_local_runner_selects_trusted_policy_for_descriptor_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     cache_dir = tmp_path / "cache"
@@ -2702,24 +2879,25 @@ def test_local_runner_selects_trusted_policy_for_descriptor_roots(tmp_path: Path
     )
     proc_paths = tuple(Path(f"/proc/self/fd/{descriptor}") for descriptor in descriptors)
     policies: list[DirectoryRootPolicy] = []
-    batch = _status_batch(Status.RECONCILED)
+    original_convert = corpus_gate_module.convert_directory_statements
 
-    def fake_parser(
-        path: str | Path,
-        selected_output_dir: str | Path,
-        strict: bool = False,
-        jobs: int | None = None,
-        *,
-        cache_dir: str | Path | None = None,
-        directory_root_policy: DirectoryRootPolicy,
-    ) -> BatchResult:
-        del path, strict, jobs, cache_dir
-        policies.append(directory_root_policy)
-        write_batch_outputs(selected_output_dir, batch)
-        return batch
+    def record_policy(*args: object, **kwargs: object) -> object:
+        policy = kwargs["directory_root_policy"]
+        assert isinstance(policy, DirectoryRootPolicy)
+        policies.append(policy)
+        return original_convert(*args, **kwargs)
+
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "convert_directory_statements",
+        record_policy,
+    )
 
     clock_values = iter((1_000_000_000, 2_000_000_000))
-    runner = LocalCorpusRunner(parser=fake_parser, monotonic_ns=lambda: next(clock_values))
+    runner = LocalCorpusRunner(
+        statement_parser=_reconciled_statement_parser,
+        monotonic_ns=lambda: next(clock_values),
+    )
     try:
         runner(
             input_dir=proc_paths[0],
@@ -2737,8 +2915,9 @@ def test_local_runner_selects_trusted_policy_for_descriptor_roots(tmp_path: Path
 
 @pytest.mark.parametrize("filename", ("results.json", "transactions.csv"))
 @pytest.mark.parametrize("failure", ("missing", "mismatch"))
-def test_local_runner_requires_exact_canonical_emitted_outputs(
+def test_local_runner_rejects_tampered_streamed_outputs(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     filename: str,
     failure: str,
 ) -> None:
@@ -2749,28 +2928,33 @@ def test_local_runner_requires_exact_canonical_emitted_outputs(
     output_dir.mkdir()
     cache_dir.mkdir()
     (input_dir / "statement.pdf").write_bytes(b"statement")
-    batch = _status_batch(Status.RECONCILED)
+    original_write = corpus_gate_module.write_streaming_batch_outputs
 
-    def fake_parser(
+    def write_then_tamper(
         path: str | Path,
-        selected_output_dir: str | Path,
-        strict: bool = False,
-        jobs: int | None = None,
         *,
-        cache_dir: str | Path | None = None,
-        directory_root_policy: DirectoryRootPolicy,
-    ) -> BatchResult:
-        del path, strict, jobs, cache_dir, directory_root_policy
-        write_batch_outputs(selected_output_dir, batch)
-        emitted_path = Path(selected_output_dir) / filename
+        status: Status,
+        diagnostics: tuple[str, ...],
+        statements: Callable[[], Iterator[StatementResult]],
+    ) -> None:
+        original_write(
+            path,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements,
+        )
+        emitted_path = Path(path) / filename
         if failure == "missing":
             emitted_path.unlink()
         else:
-            emitted_path.write_bytes(b"not canonical")
-        return batch
+            emitted_path.write_bytes(b"private tampered output")
 
-    clock_values = iter((1_000_000_000, 2_000_000_000))
-    runner = LocalCorpusRunner(parser=fake_parser, monotonic_ns=lambda: next(clock_values))
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "write_streaming_batch_outputs",
+        write_then_tamper,
+    )
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
 
     with pytest.raises(CorpusGateRuntimeError) as caught:
         runner(
@@ -2782,6 +2966,237 @@ def test_local_runner_requires_exact_canonical_emitted_outputs(
         )
 
     assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private tampered" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_rejects_a_corrupt_spool_record_privately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_write = corpus_gate_module.write_streaming_batch_outputs
+
+    def write_then_corrupt(
+        path: str | Path,
+        *,
+        status: Status,
+        diagnostics: tuple[str, ...],
+        statements: Callable[[], Iterator[StatementResult]],
+    ) -> None:
+        original_write(
+            path,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements,
+        )
+        spool_directory = next(Path(path).glob(".statement-spool-*"))
+        record = next(spool_directory.iterdir())
+        record.chmod(0o600)
+        record.write_bytes(b"private corrupt spool record")
+
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "write_streaming_batch_outputs",
+        write_then_corrupt,
+    )
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private corrupt" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_cleans_the_spool_after_a_late_parser_failure(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    for source_name in ("a.pdf", "b.pdf", "c.pdf"):
+        (input_dir / source_name).write_bytes(source_name.encode())
+    parsed = 0
+
+    def fail_second(
+        path: str | Path,
+        strict: bool = False,
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> StatementResult:
+        nonlocal parsed
+        parsed += 1
+        if parsed == 2:
+            raise RuntimeError("private parser failure at document two")
+        return _reconciled_statement_parser(path, strict, cache_dir=cache_dir)
+
+    runner = LocalCorpusRunner(statement_parser=fail_second)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert parsed == 2
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private parser" not in "".join(traceback.format_exception(caught.value))
+    assert not (output_dir / "results.json").exists()
+    assert not (output_dir / "transactions.csv").exists()
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_cleans_the_spool_after_an_output_writer_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+
+    def fail_write(
+        path: str | Path,
+        *,
+        status: Status,
+        diagnostics: tuple[str, ...],
+        statements: Callable[[], Iterator[StatementResult]],
+    ) -> None:
+        del path, status, diagnostics, statements
+        raise RuntimeError("private output writer failure")
+
+    monkeypatch.setattr(
+        corpus_gate_module,
+        "write_streaming_batch_outputs",
+        fail_write,
+    )
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private output" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_translates_a_spool_close_failure_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_close = StatementSpool.close
+
+    def close_then_fail(spool: StatementSpool) -> None:
+        original_close(spool)
+        raise RuntimeError("private spool close failure")
+
+    monkeypatch.setattr(StatementSpool, "close", close_then_fail)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "private spool" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_rejects_a_negative_elapsed_clock_privately(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    clock_values = iter((2_000_000_000, 1_000_000_000))
+    runner = LocalCorpusRunner(
+        statement_parser=_reconciled_statement_parser,
+        monotonic_ns=lambda: next(clock_values),
+    )
+
+    with pytest.raises(CorpusGateRuntimeError) as caught:
+        runner(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            strict=True,
+            jobs=1,
+        )
+
+    assert caught.value.reasons == (CorpusGateReason.PARSER_RUNTIME_FAILED,)
+    assert "clock moved" not in "".join(traceback.format_exception(caught.value))
+    assert not tuple(output_dir.glob(".statement-spool*"))
+
+
+def test_local_runner_hashes_emitted_outputs_without_path_read_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    cache_dir = tmp_path / "cache"
+    for directory in (input_dir, output_dir, cache_dir):
+        directory.mkdir()
+    (input_dir / "statement.pdf").write_bytes(b"statement")
+    original_read_bytes = Path.read_bytes
+
+    def reject_output_read_bytes(path: Path) -> bytes:
+        if path.name in {"results.json", "transactions.csv"}:
+            raise AssertionError("emitted outputs must be hashed incrementally")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_output_read_bytes)
+    runner = LocalCorpusRunner(statement_parser=_reconciled_statement_parser)
+
+    completed = runner(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        strict=True,
+        jobs=1,
+    )
+
+    assert completed.batch_status is Status.RECONCILED
+    assert completed.manifest.counts.documents == 1
+    assert not tuple(output_dir.glob(".statement-spool*"))
 
 
 def _runtime_git_repository(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -4811,13 +5226,13 @@ def test_default_gate_boundary_delegates_to_isolated_worker_despite_live_default
         reason_codes=(),
     )
 
-    def untracked_parser(*_args: object, **_kwargs: object) -> BatchResult:
+    def untracked_statement_parser(*_args: object, **_kwargs: object) -> StatementResult:
         raise AssertionError("must not be inherited by isolated worker")
 
     original_defaults = LocalCorpusRunner.__init__.__kwdefaults__
     assert original_defaults is not None
     mutated_defaults = dict(original_defaults)
-    mutated_defaults["parser"] = untracked_parser
+    mutated_defaults["statement_parser"] = untracked_statement_parser
     monkeypatch.setattr(LocalCorpusRunner.__init__, "__kwdefaults__", mutated_defaults)
     monkeypatch.setattr(
         corpus_gate_module,

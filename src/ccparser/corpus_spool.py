@@ -45,6 +45,51 @@ def _inode_identity(file_stat: os.stat_result) -> tuple[int, int]:
     return (file_stat.st_dev, file_stat.st_ino)
 
 
+def _process_fd_number(path: Path) -> int | None:
+    descriptor_name = path.name
+    if (
+        path.parent != Path("/proc/self/fd")
+        or not descriptor_name.isdecimal()
+        or str(int(descriptor_name)) != descriptor_name
+    ):
+        return None
+    return int(descriptor_name)
+
+
+def _open_parent_directory(parent: Path) -> int:
+    descriptor = _process_fd_number(parent)
+    if descriptor is None:
+        return os.open(parent, _DIRECTORY_OPEN_FLAGS)
+
+    descriptor_stat = os.fstat(descriptor)
+    path_stat = os.stat(parent)
+    expected_identity = _inode_identity(descriptor_stat)
+    if (
+        not stat.S_ISDIR(descriptor_stat.st_mode)
+        or descriptor_stat.st_uid != os.geteuid()
+        or not stat.S_ISDIR(path_stat.st_mode)
+        or path_stat.st_uid != os.geteuid()
+        or _inode_identity(path_stat) != expected_identity
+    ):
+        raise _spool_error()
+
+    duplicate = os.dup(descriptor)
+    try:
+        os.set_inheritable(duplicate, False)
+        duplicate_stat = os.fstat(duplicate)
+        if (
+            not stat.S_ISDIR(duplicate_stat.st_mode)
+            or duplicate_stat.st_uid != os.geteuid()
+            or _inode_identity(duplicate_stat) != expected_identity
+            or os.get_inheritable(duplicate)
+        ):
+            raise _spool_error()
+        return duplicate
+    except BaseException:
+        _close_no_throw(duplicate)
+        raise
+
+
 def _record_name(ordinal: int) -> str:
     if type(ordinal) is not int or not 0 <= ordinal <= _MAX_ORDINAL:
         raise _spool_error()
@@ -92,7 +137,7 @@ class StatementSpool:
         name: str | None = None
         directory_identity: tuple[int, int] | None = None
         try:
-            parent_fd = os.open(parent, _DIRECTORY_OPEN_FLAGS)
+            parent_fd = _open_parent_directory(parent)
             parent_stat = os.fstat(parent_fd)
             if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.geteuid():
                 raise _spool_error()
