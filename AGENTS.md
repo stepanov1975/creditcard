@@ -69,3 +69,17 @@ JSON/CSV output.
 - Keep the corpus, inventory, baseline, outputs, caches, and derived private data
   in ignored local paths. Do not add them or their sensitive values to Git,
   tracked fixtures, commit messages, or public logs.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked as GitHub issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context domain documentation layout. See `docs/agents/domain.md`.
