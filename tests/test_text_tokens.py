@@ -68,6 +68,34 @@ def test_acronym_quote_policy_is_explicit() -> None:
     assert phrase_tokens('סה"כ') == ("סה", "כ")
 
 
+def test_phrase_tokens_reuses_each_policy_specific_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = 'Memoized A"B 90210'
+    calls: list[str] = []
+    original = text_tokens_module.normalize_text
+
+    def counting_normalize_text(text: str) -> str:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(text_tokens_module, "normalize_text", counting_normalize_text)
+
+    assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+    assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+    assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+        "memoized",
+        "ab",
+        "90210",
+    )
+    assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+        "memoized",
+        "ab",
+        "90210",
+    )
+    assert calls == [source, source]
+
+
 def test_hebrew_clitic_prefix_is_an_explicit_first_token_policy() -> None:
     assert contains_token_sequence(
         "בשער המרה",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Iterable
+from functools import lru_cache
 
 ACRONYM_QUOTES = frozenset({'"', "'", "\u2018", "\u2019", "\u201c", "\u201d", "\u05f3", "\u05f4"})
 HEBREW_CLITIC_PREFIXES = frozenset("ובכלמהש")
@@ -31,6 +32,8 @@ TOKEN_JOIN_CONTROLS = frozenset({"\u200c", "\u200d"})
 type TokenSequence = tuple[str, ...]
 type CompiledTokenPhrases = tuple[TokenSequence, ...]
 
+_PHRASE_TOKEN_CACHE_SIZE = 8_192
+
 
 def normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFC", text)
@@ -41,10 +44,10 @@ def normalize_text(text: str) -> str:
     return " ".join(normalized_controls.split())
 
 
-def phrase_tokens(
+@lru_cache(maxsize=_PHRASE_TOKEN_CACHE_SIZE)
+def _cached_phrase_tokens(
     text: str,
-    *,
-    ignore_acronym_quotes: bool = False,
+    ignore_acronym_quotes: bool,
 ) -> TokenSequence:
     normalized = normalize_text(text).casefold()
     canonical: list[str] = []
@@ -60,6 +63,14 @@ def phrase_tokens(
             continue
         canonical.append(char if char.isalnum() else " ")
     return tuple("".join(canonical).split())
+
+
+def phrase_tokens(
+    text: str,
+    *,
+    ignore_acronym_quotes: bool = False,
+) -> TokenSequence:
+    return _cached_phrase_tokens(text, ignore_acronym_quotes)
 
 
 def compile_token_phrases(
