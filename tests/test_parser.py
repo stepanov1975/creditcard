@@ -1443,8 +1443,8 @@ def test_parse_directory_wraps_executor_failures_without_private_causes(
         def __exit__(self, *args: object) -> None:
             del args
 
-        def map(self, function: object, values: object) -> tuple[object, ...]:
-            del function, values
+        def submit(self, function: object, value: object) -> object:
+            del function, value
             raise RuntimeError("private executor execution detail")
 
     monkeypatch.setattr(parser_module, "ThreadPoolExecutor", FailingExecutor)
