@@ -10,7 +10,7 @@ import py_compile
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
@@ -57,6 +57,7 @@ from ccparser.corpus_gate import (
     compare_with_baseline,
     digest_membership,
     project_run,
+    project_streamed_run,
     run_corpus_gate,
 )
 from ccparser.models import (
@@ -5103,6 +5104,69 @@ def test_project_run_hashes_the_exact_canonical_outputs() -> None:
 
     assert manifest.json_digest == sha256(canonical_json_bytes(batch)).hexdigest()
     assert manifest.csv_digest == sha256(transactions_csv_bytes(batch)).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "batch",
+    (
+        _batch(),
+        BatchResult(status=Status.UNSUPPORTED, statements=(), diagnostics=("no_pdf_files",)),
+        BatchResult(
+            status=Status.UNRECONCILED,
+            statements=(
+                _status_batch(Status.RECONCILED).statements[0],
+                _status_batch(Status.UNRECONCILED).statements[0],
+            ),
+            diagnostics=("documents_not_reconciled:1",),
+        ),
+        _batch(transaction=_transaction(with_fx=True, ambiguities=("candidate",))),
+    ),
+)
+def test_project_streamed_run_matches_complete_batch(batch: BatchResult) -> None:
+    expected = project_run(batch, elapsed_seconds=Decimal("1.25"))
+
+    actual = project_streamed_run(
+        batch_status=batch.status,
+        elapsed_seconds=Decimal("1.25"),
+        json_digest=expected.json_digest,
+        csv_digest=expected.csv_digest,
+        statements=lambda: iter(batch.statements),
+    )
+
+    assert actual == expected
+
+
+def test_project_streamed_run_traverses_statements_once() -> None:
+    batch = _batch()
+    expected = project_run(batch, elapsed_seconds=Decimal("1.25"))
+    factory_calls = 0
+    yielded_statements = 0
+
+    def statements() -> Iterator[StatementResult]:
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls > 1:
+            raise AssertionError("statement iterator factory reused")
+
+        def values() -> Iterator[StatementResult]:
+            nonlocal yielded_statements
+            for statement in batch.statements:
+                yielded_statements += 1
+                yield statement
+
+        return values()
+
+    actual = project_streamed_run(
+        batch_status=batch.status,
+        elapsed_seconds=Decimal("1.25"),
+        json_digest=expected.json_digest,
+        csv_digest=expected.csv_digest,
+        statements=statements,
+    )
+
+    assert actual == expected
+    assert factory_calls == 1
+    assert yielded_statements == len(batch.statements)
 
 
 def test_each_structural_projection_affects_its_corresponding_digest() -> None:

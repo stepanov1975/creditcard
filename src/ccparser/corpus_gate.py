@@ -20,7 +20,7 @@ import tempfile
 import time
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from decimal import Decimal
@@ -72,6 +72,7 @@ from ccparser.evidence.ocr import (
 from ccparser.models import (
     BatchResult,
     EvidenceReference,
+    StatementResult,
     Status,
     Transaction,
     TransactionCategory,
@@ -112,6 +113,7 @@ type _EvidenceReferenceProjection = tuple[int, tuple[float, float, float, float]
 type _EvidenceSiteProjection = tuple[str, tuple[_EvidenceReferenceProjection, ...]]
 type _EvidenceProvenance = tuple[tuple[tuple[_EvidenceSiteProjection, ...], ...], ...]
 type _AmbiguityProjection = tuple[tuple[tuple[str, ...], ...], ...]
+type StatementResultFactory = Callable[[], Iterator[StatementResult]]
 
 
 class CorpusGateMode(StrEnum):
@@ -2797,6 +2799,37 @@ class _StructuralProjections:
     ambiguities: _AmbiguityProjection
 
 
+@dataclass(frozen=True, slots=True)
+class _StatementStructuralProjection:
+    status: str
+    groups: tuple[_GroupProjection, ...]
+    transaction_identities: tuple[_TransactionIdentity, ...]
+    field_presence: tuple[tuple[PresentFieldPath, ...], ...]
+    evidence_provenance: tuple[tuple[_EvidenceSiteProjection, ...], ...]
+    ambiguities: tuple[tuple[str, ...], ...]
+    row_results: int
+    evidence_references: int
+
+
+class _CanonicalArrayDigest:
+    def __init__(self, prefix: bytes = b"[", suffix: bytes = b"]\n") -> None:
+        self._digest = sha256()
+        self._digest.update(prefix)
+        self._suffix = suffix
+        self._has_value = False
+
+    def append(self, value: object) -> None:
+        if self._has_value:
+            self._digest.update(b",")
+        self._digest.update(_canonical_json_value_bytes(value)[:-1])
+        self._has_value = True
+
+    def hexdigest(self) -> str:
+        completed = self._digest.copy()
+        completed.update(self._suffix)
+        return completed.hexdigest()
+
+
 def _digest_bytes(content: bytes) -> str:
     return sha256(content).hexdigest()
 
@@ -2899,47 +2932,84 @@ def _transaction_evidence_provenance(
     return tuple(sorted(sites, key=lambda item: item[0]))
 
 
+def _project_statement_structural_dimensions(
+    statement: StatementResult,
+) -> _StatementStructuralProjection:
+    transaction_identities: list[_TransactionIdentity] = []
+    field_presence: list[tuple[PresentFieldPath, ...]] = []
+    evidence_provenance: list[tuple[_EvidenceSiteProjection, ...]] = []
+    ambiguities: list[tuple[str, ...]] = []
+    evidence_reference_count = 0
+
+    for transaction in statement.transactions:
+        transaction_identities.append(
+            (transaction.transaction_id, transaction.reconciliation_group_ids)
+        )
+        field_presence.append(_transaction_present_fields(transaction))
+        transaction_evidence = _transaction_evidence_provenance(transaction)
+        evidence_provenance.append(transaction_evidence)
+        evidence_reference_count += sum(len(references) for _, references in transaction_evidence)
+        ambiguities.append(transaction.ambiguities)
+
+    return _StatementStructuralProjection(
+        status=statement.status.value,
+        groups=tuple(
+            (group.group_id, group.currency, group.status.value, group.transaction_ids)
+            for group in statement.groups
+        ),
+        transaction_identities=tuple(transaction_identities),
+        field_presence=tuple(field_presence),
+        evidence_provenance=tuple(evidence_provenance),
+        ambiguities=tuple(ambiguities),
+        row_results=len(statement.row_results),
+        evidence_references=evidence_reference_count,
+    )
+
+
 def _project_structural_dimensions(batch: BatchResult) -> _StructuralProjections:
-    statuses = Counter(statement.status for statement in batch.statements)
+    statuses: Counter[str] = Counter()
     present_field_counts: Counter[PresentFieldPath] = Counter()
+    ordered_statuses: list[str] = []
+    group_structure: list[tuple[_GroupProjection, ...]] = []
+    transaction_identities: list[tuple[_TransactionIdentity, ...]] = []
     field_presence: list[tuple[tuple[PresentFieldPath, ...], ...]] = []
     evidence_provenance: list[tuple[tuple[_EvidenceSiteProjection, ...], ...]] = []
+    ambiguities: list[tuple[tuple[str, ...], ...]] = []
+    row_result_count = 0
     evidence_reference_count = 0
 
     for statement in batch.statements:
-        statement_fields: list[tuple[PresentFieldPath, ...]] = []
-        statement_evidence: list[tuple[_EvidenceSiteProjection, ...]] = []
-        for transaction in statement.transactions:
-            transaction_fields = _transaction_present_fields(transaction)
+        projection = _project_statement_structural_dimensions(statement)
+        statuses[projection.status] += 1
+        ordered_statuses.append(projection.status)
+        group_structure.append(projection.groups)
+        transaction_identities.append(projection.transaction_identities)
+        field_presence.append(projection.field_presence)
+        evidence_provenance.append(projection.evidence_provenance)
+        ambiguities.append(projection.ambiguities)
+        row_result_count += projection.row_results
+        evidence_reference_count += projection.evidence_references
+        for transaction_fields in projection.field_presence:
             present_field_counts.update(transaction_fields)
-            statement_fields.append(transaction_fields)
-
-            transaction_evidence = _transaction_evidence_provenance(transaction)
-            statement_evidence.append(transaction_evidence)
-            evidence_reference_count += sum(
-                len(references) for _, references in transaction_evidence
-            )
-        field_presence.append(tuple(statement_fields))
-        evidence_provenance.append(tuple(statement_evidence))
 
     counts = CorpusCounts(
         documents=len(batch.statements),
-        reconciled=statuses[Status.RECONCILED],
-        unreconciled=statuses[Status.UNRECONCILED],
-        unsupported=statuses[Status.UNSUPPORTED],
-        not_statement=statuses[Status.NOT_STATEMENT],
-        groups=sum(len(statement.groups) for statement in batch.statements),
-        row_results=sum(len(statement.row_results) for statement in batch.statements),
-        transactions=sum(len(statement.transactions) for statement in batch.statements),
+        reconciled=statuses[Status.RECONCILED.value],
+        unreconciled=statuses[Status.UNRECONCILED.value],
+        unsupported=statuses[Status.UNSUPPORTED.value],
+        not_statement=statuses[Status.NOT_STATEMENT.value],
+        groups=sum(len(groups) for groups in group_structure),
+        row_results=row_result_count,
+        transactions=sum(len(identities) for identities in transaction_identities),
         ambiguous_transactions=sum(
-            bool(transaction.ambiguities)
-            for statement in batch.statements
-            for transaction in statement.transactions
+            bool(transaction_ambiguities)
+            for statement_ambiguities in ambiguities
+            for transaction_ambiguities in statement_ambiguities
         ),
         ambiguity_occurrences=sum(
-            len(transaction.ambiguities)
-            for statement in batch.statements
-            for transaction in statement.transactions
+            len(transaction_ambiguities)
+            for statement_ambiguities in ambiguities
+            for transaction_ambiguities in statement_ambiguities
         ),
         evidence_references=evidence_reference_count,
         present_fields=tuple(
@@ -2951,28 +3021,13 @@ def _project_structural_dimensions(batch: BatchResult) -> _StructuralProjections
         counts=counts,
         ordered_statuses=(
             batch.status.value,
-            tuple(statement.status.value for statement in batch.statements),
+            tuple(ordered_statuses),
         ),
-        group_structure=tuple(
-            tuple(
-                (group.group_id, group.currency, group.status.value, group.transaction_ids)
-                for group in statement.groups
-            )
-            for statement in batch.statements
-        ),
-        transaction_identities=tuple(
-            tuple(
-                (transaction.transaction_id, transaction.reconciliation_group_ids)
-                for transaction in statement.transactions
-            )
-            for statement in batch.statements
-        ),
+        group_structure=tuple(group_structure),
+        transaction_identities=tuple(transaction_identities),
         field_presence=tuple(field_presence),
         evidence_provenance=tuple(evidence_provenance),
-        ambiguities=tuple(
-            tuple(transaction.ambiguities for transaction in statement.transactions)
-            for statement in batch.statements
-        ),
+        ambiguities=tuple(ambiguities),
     )
 
 
@@ -2993,6 +3048,99 @@ def project_run(batch: BatchResult, *, elapsed_seconds: Decimal) -> RunManifest:
         field_presence_digest=_digest_json(projections.field_presence),
         evidence_provenance_digest=_digest_json(projections.evidence_provenance),
         ambiguity_digest=_digest_json(projections.ambiguities),
+    )
+
+
+def project_streamed_run(
+    *,
+    batch_status: Status,
+    elapsed_seconds: Decimal,
+    json_digest: str,
+    csv_digest: str,
+    statements: StatementResultFactory,
+) -> RunManifest:
+    """Project a source-ordered statement stream into an unchanged run manifest."""
+
+    ordered_status_digest = _CanonicalArrayDigest(
+        prefix=b"[" + _canonical_json_value_bytes(batch_status.value)[:-1] + b",[",
+        suffix=b"]]\n",
+    )
+    group_structure_digest = _CanonicalArrayDigest()
+    transaction_identity_digest = _CanonicalArrayDigest()
+    field_presence_digest = _CanonicalArrayDigest()
+    evidence_provenance_digest = _CanonicalArrayDigest()
+    ambiguity_digest = _CanonicalArrayDigest()
+    present_field_counts: Counter[PresentFieldPath] = Counter()
+    documents = 0
+    reconciled = 0
+    unreconciled = 0
+    unsupported = 0
+    not_statement = 0
+    groups = 0
+    row_results = 0
+    transactions = 0
+    ambiguous_transactions = 0
+    ambiguity_occurrences = 0
+    evidence_references = 0
+
+    for statement in statements():
+        projection = _project_statement_structural_dimensions(statement)
+        del statement
+        documents += 1
+        if projection.status == Status.RECONCILED.value:
+            reconciled += 1
+        elif projection.status == Status.UNRECONCILED.value:
+            unreconciled += 1
+        elif projection.status == Status.UNSUPPORTED.value:
+            unsupported += 1
+        elif projection.status == Status.NOT_STATEMENT.value:
+            not_statement += 1
+        groups += len(projection.groups)
+        row_results += projection.row_results
+        transactions += len(projection.transaction_identities)
+        ambiguous_transactions += sum(bool(value) for value in projection.ambiguities)
+        ambiguity_occurrences += sum(len(value) for value in projection.ambiguities)
+        evidence_references += projection.evidence_references
+        present_field_counts.update(
+            path for transaction_fields in projection.field_presence for path in transaction_fields
+        )
+
+        ordered_status_digest.append(projection.status)
+        group_structure_digest.append(projection.groups)
+        transaction_identity_digest.append(projection.transaction_identities)
+        field_presence_digest.append(projection.field_presence)
+        evidence_provenance_digest.append(projection.evidence_provenance)
+        ambiguity_digest.append(projection.ambiguities)
+        del projection
+
+    counts = CorpusCounts(
+        documents=documents,
+        reconciled=reconciled,
+        unreconciled=unreconciled,
+        unsupported=unsupported,
+        not_statement=not_statement,
+        groups=groups,
+        row_results=row_results,
+        transactions=transactions,
+        ambiguous_transactions=ambiguous_transactions,
+        ambiguity_occurrences=ambiguity_occurrences,
+        evidence_references=evidence_references,
+        present_fields=tuple(
+            FieldCount(path=path, count=present_field_counts[path])
+            for path in sorted(present_field_counts)
+        ),
+    )
+    return RunManifest(
+        elapsed_seconds=elapsed_seconds,
+        counts=counts,
+        json_digest=json_digest,
+        csv_digest=csv_digest,
+        ordered_status_digest=ordered_status_digest.hexdigest(),
+        group_structure_digest=group_structure_digest.hexdigest(),
+        transaction_identity_digest=transaction_identity_digest.hexdigest(),
+        field_presence_digest=field_presence_digest.hexdigest(),
+        evidence_provenance_digest=evidence_provenance_digest.hexdigest(),
+        ambiguity_digest=ambiguity_digest.hexdigest(),
     )
 
 
