@@ -370,6 +370,88 @@ def test_spool_tracks_exclusive_record_when_all_descriptor_stats_fail(
             spool.path.rmdir()
 
 
+def test_spool_never_adopts_substituted_ordinal_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spool = StatementSpool.create(tmp_path)
+    record_path = spool.path / "00000000.json"
+    original_close = os.close
+    original_fstat = os.fstat
+    original_open = os.open
+    original_stat = os.stat
+    original_unlink = os.unlink
+    descriptor_stat_paths: list[str] = []
+    replacement_identity: tuple[int, int] | None = None
+    substituted = False
+
+    def fail_record_fstat(file_descriptor: int) -> os.stat_result:
+        file_stat = original_fstat(file_descriptor)
+        if stat.S_ISREG(file_stat.st_mode):
+            raise OSError("private descriptor stat failure")
+        return file_stat
+
+    def substitute_before_named_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal replacement_identity, substituted
+        if isinstance(path, str) and path.startswith("/proc/self/fd/"):
+            descriptor_stat_paths.append(path)
+        if path == "00000000.json" and not substituted:
+            assert dir_fd is not None
+            substituted = True
+            original_unlink(path, dir_fd=dir_fd)
+            replacement_fd = original_open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                mode=0o600,
+                dir_fd=dir_fd,
+            )
+            try:
+                os.fchmod(replacement_fd, 0o600)
+                replacement_stat = original_fstat(replacement_fd)
+                replacement_identity = (replacement_stat.st_dev, replacement_stat.st_ino)
+                assert replacement_stat.st_uid == os.geteuid()
+                assert replacement_stat.st_nlink == 1
+                assert replacement_stat.st_size == 0
+                assert stat.S_IMODE(replacement_stat.st_mode) == 0o600
+            finally:
+                original_close(replacement_fd)
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(corpus_spool_module.os, "fstat", fail_record_fstat)
+            scoped.setattr(corpus_spool_module.os, "stat", substitute_before_named_stat)
+            with pytest.raises(StatementSpoolError) as caught:
+                spool.append(0, _statement("source.pdf"))
+
+        assert str(caught.value) == "statement spool operation failed"
+        assert "private" not in "".join(traceback.format_exception(caught.value))
+        assert replacement_identity is not None
+        named_stat = record_path.stat()
+        assert (named_stat.st_dev, named_stat.st_ino) == replacement_identity
+        assert descriptor_stat_paths
+
+        with pytest.raises(StatementSpoolError) as close_caught:
+            spool.close()
+
+        assert str(close_caught.value) == "statement spool operation failed"
+        assert "private" not in "".join(traceback.format_exception(close_caught.value))
+        named_stat = record_path.stat()
+        assert (named_stat.st_dev, named_stat.st_ino) == replacement_identity
+    finally:
+        with suppress(StatementSpoolError):
+            spool.close()
+        with suppress(FileNotFoundError):
+            record_path.unlink()
+        with suppress(FileNotFoundError):
+            spool.path.rmdir()
+
+
 def test_spool_retries_owned_partial_cleanup_on_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
