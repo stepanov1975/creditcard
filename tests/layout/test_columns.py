@@ -220,6 +220,32 @@ def _billed_selection_region(rows: tuple[Row, ...]) -> TableRegion:
     )
 
 
+def test_billed_amount_column_candidate_prefers_unique_explicit_header() -> None:
+    region = _billed_selection_region(())
+
+    assert (
+        columns_module.billed_amount_column_candidate(region.table_schema)
+        is region.table_schema.columns[0]
+    )
+
+
+def test_billed_amount_column_candidate_falls_back_to_sole_amount_column() -> None:
+    region = _billed_selection_region(())
+    schema = region.table_schema.model_copy(update={"columns": (region.table_schema.columns[1],)})
+
+    assert columns_module.billed_amount_column_candidate(schema) is schema.columns[0]
+
+
+def test_billed_amount_column_candidate_preserves_ambiguous_generic_columns() -> None:
+    region = _billed_selection_region(())
+    generic_headers = tuple(
+        header.model_copy(update={"text": "Amount"}) for header in region.table_schema.header_cells
+    )
+    schema = region.table_schema.model_copy(update={"header_cells": generic_headers})
+
+    assert columns_module.billed_amount_column_candidate(schema) is None
+
+
 def test_proven_region_billed_amount_column_selects_ordinary_explicit_band() -> None:
     ordinary = _row(30.0, (_cell("10.00", (0.0, 30.0, 40.0, 40.0)),))
     region = _billed_selection_region((ordinary,))

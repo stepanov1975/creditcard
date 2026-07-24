@@ -860,6 +860,16 @@ def explicit_billed_amount_column(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def billed_amount_column_candidate(schema: TableSchema) -> ColumnSpec | None:
+    """Select the explicit billed column, or the sole generic amount column."""
+
+    explicit_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
+    if explicit_column is not None:
+        return explicit_column
+    amount_columns = columns_for_role(schema, ColumnRole.AMOUNT)
+    return amount_columns[0] if len(amount_columns) == 1 else None
+
+
 def proven_billed_amount_column(
     schema: TableSchema,
     rows: Sequence[Row],

@@ -29,6 +29,33 @@ class DetailContinuationPolicy(StrEnum):
     DISALLOW = "disallow"
 
 
+_ROW_TAGS_BY_KIND: dict[ContinuationKind, frozenset[RowTag]] = {
+    ContinuationKind.DESCRIPTION: frozenset({RowTag.DESCRIPTION_CONTINUATION}),
+    ContinuationKind.LEADING_DETAIL: frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
+    ContinuationKind.CARD_IDENTIFIER_BLOCK: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.CARD_IDENTIFIER_DETAIL,
+        }
+    ),
+    ContinuationKind.CARD_IDENTIFIER_TAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
+    ContinuationKind.FOREIGN_CONVERSION_BLOCK: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.FOREIGN_CONVERSION_DETAIL,
+        }
+    ),
+    ContinuationKind.HEBREW_NOTE: frozenset(
+        {
+            RowTag.SUBORDINATE_DETAIL,
+            RowTag.HEBREW_NOTE_DETAIL,
+        }
+    ),
+    ContinuationKind.AUXILIARY_FRAGMENT: frozenset({RowTag.AUXILIARY_CONTINUATION}),
+    ContinuationKind.MARKED_DETAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class ContinuationMatch:
     """A nonempty continuation match and its exact scanner effects."""
@@ -36,7 +63,6 @@ class ContinuationMatch:
     rows: tuple[Row, ...]
     consumed_through: int
     kind: ContinuationKind
-    row_tags: frozenset[RowTag]
     detail_policy: DetailContinuationPolicy
     skipped_outside_rows: int = 0
     start_index: InitVar[int] = field(kw_only=True)
@@ -51,13 +77,18 @@ class ContinuationMatch:
         if self.consumed_through < start_index:
             raise ValueError("continuation match cannot consume before its start index")
 
+    @property
+    def row_tags(self) -> frozenset[RowTag]:
+        """Return the exact compatibility tags implied by the continuation kind."""
+
+        return _ROW_TAGS_BY_KIND[self.kind]
+
 
 def single_row_match(
     row: Row,
     *,
     start_index: int,
     kind: ContinuationKind,
-    row_tags: frozenset[RowTag],
     detail_policy: DetailContinuationPolicy,
 ) -> ContinuationMatch:
     """Build a match that consumes exactly one source row."""
@@ -66,7 +97,6 @@ def single_row_match(
         rows=(row,),
         consumed_through=start_index,
         kind=kind,
-        row_tags=row_tags,
         detail_policy=detail_policy,
         start_index=start_index,
     )

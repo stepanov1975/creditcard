@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import re
+from dataclasses import FrozenInstanceError, fields
+
 import pytest
 
+import ccparser.semantic_evidence as semantic_evidence
 from ccparser.evidence import Glyph, Word
 from ccparser.layout import Cell, Row
 from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOwner
@@ -56,6 +60,69 @@ def _row(*cells: Cell) -> Row:
         ),
         cells=cells,
         confidence=1.0,
+    )
+
+
+def test_word_date_policy_delegates_numeric_run_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+
+    def reject_numeric_run(text: str, start: int, end: int) -> bool:
+        calls.append((text, start, end))
+        return False
+
+    monkeypatch.setattr(
+        semantic_evidence,
+        "has_date_numeric_run_boundaries",
+        reject_numeric_run,
+    )
+    pattern = re.compile(r"\d{2}/\d{2}/\d{2}")
+
+    assert semantic_evidence._wrapped_word_date("(25/06/26)", pattern) is None
+    assert calls == [("(25/06/26)", 1, 9)]
+
+
+def test_word_match_span_owns_cardinality_and_hard_boundary_clipping() -> None:
+    pattern = re.compile(r"\d{2}/\d{2}/\d{2}")
+
+    isolated = semantic_evidence._word_match_span(
+        "label:(25/06/26),tail",
+        pattern,
+    )
+
+    assert isolated is not None
+    match, prefix, suffix = isolated
+    assert (match.group(0), match.span(), prefix, suffix) == (
+        "25/06/26",
+        (7, 15),
+        "(",
+        ")",
+    )
+    assert semantic_evidence._word_match_span("25/06/26 26/06/26", pattern) is None
+
+
+def test_touching_word_span_text_reconstructs_prefix_candidate_and_suffix_once() -> None:
+    cell = _cell(
+        "ref25/06/26x",
+        (10.0, 20.0, 40.0, 30.0),
+        words=(
+            _word("ref", 10.0, 13.2),
+            _word("25/06/26", 13.0, 30.0),
+            _word("x", 29.8, 31.0),
+        ),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+    word_atoms = tuple(atom for atom in ledger.atoms if atom.word is not None)
+    candidate = next(atom for atom in word_atoms if atom.text == "25/06/26")
+
+    assert (
+        semantic_evidence._touching_word_span_text(
+            candidate,
+            word_atoms,
+            logical_texts=(cell.text,),
+        )
+        == cell.text
     )
 
 
@@ -364,6 +431,177 @@ def _fragmented_decimal_cell(
     )
 
 
+def test_positioned_number_orchestrator_preserves_backing_order_and_exact_atom_ids() -> None:
+    word_only = _cell(
+        "1.10",
+        (10.0, 20.0, 25.0, 30.0),
+        words=(_word("1.10", 10.0, 25.0),),
+    )
+    glyph_only = _cell(
+        "2.20",
+        (40.0, 20.0, 55.0, 30.0),
+        glyphs=tuple(_glyph(char, 40.0 + index) for index, char in enumerate("2.20")),
+    )
+    overlapping_word = _cell(
+        "3.30",
+        (70.0, 20.0, 85.0, 30.0),
+        words=(_word("3.30", 70.0, 85.0),),
+    )
+    overlapping_glyph = _cell(
+        "3.30",
+        (70.0, 20.0, 85.0, 30.0),
+        glyphs=tuple(_glyph(char, 70.0 + index) for index, char in enumerate("3.30")),
+    )
+    ledger = EvidenceLedger.from_rows(
+        (_row(word_only, glyph_only, overlapping_word, overlapping_glyph),)
+    )
+    selected_ids = frozenset(atom.atom_id for atom in ledger.atoms)
+
+    candidates = ledger.positioned_decimal_candidates(selected_ids)
+
+    assert tuple((candidate.text, candidate.atom_ids) for candidate in candidates) == (
+        ("1.10", ledger.atoms_for_cell(word_only)),
+        ("2.20", ledger.atoms_for_cell(glyph_only)),
+        (
+            "3.30",
+            ledger.atoms_for_cell(overlapping_word) | ledger.atoms_for_cell(overlapping_glyph),
+        ),
+    )
+
+
+def test_positioned_number_orchestrator_delegates_word_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell = _cell(
+        "2.9430",
+        (10.0, 20.0, 30.0, 30.0),
+        words=(_word("2.9430", 10.0, 30.0),),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+    selected_ids = ledger.atoms_for_cell(cell)
+    calls: list[tuple[frozenset[int], str]] = []
+
+    def collect(
+        self: EvidenceLedger,
+        atom_ids: frozenset[int],
+        *,
+        pattern: re.Pattern[str],
+    ) -> tuple[semantic_evidence.PositionedNumberCandidate, ...]:
+        calls.append((atom_ids, pattern.pattern))
+        return ()
+
+    monkeypatch.setattr(
+        EvidenceLedger,
+        "_collect_validated_word_number_candidates",
+        collect,
+    )
+
+    assert ledger.positioned_decimal_candidates(selected_ids) == ()
+    assert calls == [(selected_ids, r"\d+[.,]\d{1,6}")]
+
+
+def test_positioned_number_glyph_view_is_immutable_and_preserves_whitespace() -> None:
+    text = "1 2.30"
+    cell = _cell(
+        text,
+        (10.0, 20.0, 30.0, 30.0),
+        glyphs=tuple(_glyph(char, 10.0 + index) for index, char in enumerate(text)),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    view = ledger._positioned_number_glyph_view(ledger.atoms_for_cell(cell))
+
+    assert tuple(field.name for field in fields(view)) == (
+        "selected_atoms",
+        "whitespace_glyphs",
+    )
+    assert tuple(atom.text for atom in view.selected_atoms) == ("1", "2", ".", "3", "0")
+    assert tuple((page, glyph.char) for page, glyph in view.whitespace_glyphs) == ((1, " "),)
+    with pytest.raises(FrozenInstanceError):
+        view.selected_atoms = ()
+
+
+def test_positioned_number_orchestrator_delegates_glyph_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "2.9430"
+    cell = _cell(
+        text,
+        (10.0, 20.0, 30.0, 30.0),
+        glyphs=tuple(_glyph(char, 10.0 + index) for index, char in enumerate(text)),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+    selected_ids = ledger.atoms_for_cell(cell)
+    calls: list[tuple[frozenset[int], str, tuple[int, ...]]] = []
+
+    def collect(
+        self: EvidenceLedger,
+        atom_ids: frozenset[int],
+        *,
+        pattern: re.Pattern[str],
+        view: semantic_evidence._PositionedNumberGlyphView,
+    ) -> tuple[semantic_evidence.PositionedNumberCandidate, ...]:
+        calls.append(
+            (
+                atom_ids,
+                pattern.pattern,
+                tuple(atom.atom_id for atom in view.selected_atoms),
+            )
+        )
+        return ()
+
+    monkeypatch.setattr(
+        EvidenceLedger,
+        "_collect_validated_glyph_number_candidates",
+        collect,
+    )
+
+    assert ledger.positioned_decimal_candidates(selected_ids) == ()
+    assert calls == [(selected_ids, r"\d+[.,]\d{1,6}", tuple(sorted(selected_ids)))]
+
+
+def test_positioned_number_orchestrator_delegates_stable_coalescing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell = _cell(
+        "2.9430",
+        (10.0, 20.0, 30.0, 30.0),
+        words=(_word("2.9430", 10.0, 30.0),),
+    )
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+    selected_ids = ledger.atoms_for_cell(cell)
+    calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    def coalesce(
+        self: EvidenceLedger,
+        atom_ids: frozenset[int],
+        word_candidates: tuple[semantic_evidence.PositionedNumberCandidate, ...],
+        glyph_candidates: tuple[semantic_evidence.PositionedNumberCandidate, ...],
+        *,
+        glyph_view: semantic_evidence._PositionedNumberGlyphView,
+    ) -> tuple[semantic_evidence.PositionedNumberCandidate, ...]:
+        assert atom_ids == selected_ids
+        assert glyph_view.selected_atoms == ()
+        calls.append(
+            (
+                tuple(candidate.text for candidate in word_candidates),
+                tuple(candidate.text for candidate in glyph_candidates),
+            )
+        )
+        return (semantic_evidence.PositionedNumberCandidate("9.99", frozenset()),)
+
+    monkeypatch.setattr(
+        EvidenceLedger,
+        "_coalesce_positioned_number_candidates",
+        coalesce,
+    )
+
+    assert tuple(
+        candidate.text for candidate in ledger.positioned_decimal_candidates(selected_ids)
+    ) == ("9.99",)
+    assert calls == [(("2.9430",), ())]
+
+
 def test_positioned_decimal_candidates_join_only_small_numeric_gaps() -> None:
     cell = _fragmented_decimal_cell(
         "rate 2.94 30",
@@ -562,6 +800,17 @@ def test_word_backed_date_accepts_semantic_wrappers_and_hard_boundaries(text: st
     assert tuple(candidate.text for candidate in ledger.fragmented_date_candidates(cell)) == (
         "25/06/26",
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ("1/25/06/26", "25/06/26/1", "1.25/06/26", "25/06/26-1"),
+)
+def test_word_backed_date_rejects_joined_numeric_runs(text: str) -> None:
+    cell = _cell(text, (10.0, 20.0, 40.0, 30.0), words=(_word(text, 10.0, 40.0),))
+    ledger = EvidenceLedger.from_rows((_row(cell),))
+
+    assert ledger.fragmented_date_candidates(cell) == ()
 
 
 def test_word_backed_decimal_rejects_touching_alphanumeric_neighbors() -> None:

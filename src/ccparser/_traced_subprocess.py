@@ -86,6 +86,7 @@ class _ArchitecturePolicy:
     clone_syscalls: frozenset[int]
     clone3_syscall: int
     prctl_syscall: int
+    seccomp_syscall: int
     concurrency_syscalls: frozenset[int]
     forbidden_syscalls: frozenset[int]
 
@@ -97,6 +98,7 @@ class _ArchitecturePolicy:
                 self.shared_memory_syscall,
                 self.clone3_syscall,
                 self.prctl_syscall,
+                self.seccomp_syscall,
                 *self.mprotect_syscalls,
                 *self.concurrency_syscalls,
                 *self.forbidden_syscalls,
@@ -113,6 +115,7 @@ _ARCHITECTURE_POLICIES: Final = {
         clone_syscalls=frozenset({56}),
         clone3_syscall=435,
         prctl_syscall=157,
+        seccomp_syscall=317,
         concurrency_syscalls=frozenset({56, 57, 58}),
         forbidden_syscalls=frozenset(
             {
@@ -120,7 +123,6 @@ _ARCHITECTURE_POLICIES: Final = {
                 134,  # uselib
                 135,  # personality
                 311,  # process_vm_writev
-                317,  # seccomp
                 323,  # userfaultfd
                 425,  # io_uring_setup
                 438,  # pidfd_getfd
@@ -135,13 +137,13 @@ _ARCHITECTURE_POLICIES: Final = {
         clone_syscalls=frozenset({220}),
         clone3_syscall=435,
         prctl_syscall=167,
+        seccomp_syscall=277,
         concurrency_syscalls=frozenset({220}),
         forbidden_syscalls=frozenset(
             {
                 92,  # personality
                 117,  # ptrace
                 271,  # process_vm_writev
-                277,  # seccomp
                 282,  # userfaultfd
                 425,  # io_uring_setup
                 438,  # pidfd_getfd
@@ -301,15 +303,6 @@ class _SocketFilterProgram(ctypes.Structure):
     _fields_ = (("length", ctypes.c_ushort), ("filters", ctypes.POINTER(_SocketFilter)))
 
 
-def _seccomp_syscall_number() -> int:
-    machine = platform.machine().lower()
-    numbers = {"aarch64": 277, "x86_64": 317}
-    try:
-        return numbers[machine]
-    except KeyError:
-        raise RuntimeError from None
-
-
 def _install_selective_trace_filter() -> None:
     architecture = _MACHINE_AUDIT_ARCHITECTURES.get(platform.machine().lower())
     if architecture is None:
@@ -324,7 +317,7 @@ def _install_selective_trace_filter() -> None:
         raise OSError(ctypes.get_errno(), "no_new_privs unavailable")
     result = int(
         _LIBC.syscall(
-            _seccomp_syscall_number(),
+            policy.seccomp_syscall,
             _SECCOMP_SET_MODE_FILTER,
             0,
             ctypes.byref(program),
@@ -477,7 +470,7 @@ def _approved_mapping_request(
         return False
     number = int(info.data.entry.number)
     arguments = info.data.entry.arguments
-    if number in policy.forbidden_syscalls:
+    if number == policy.seccomp_syscall or number in policy.forbidden_syscalls:
         return False
     if number == policy.prctl_syscall:
         return int(arguments[0]) != _PR_SET_SECCOMP
@@ -529,7 +522,7 @@ def _request_adds_execute(info: _SyscallInfo) -> bool:
         return bool(int(arguments[2]) & _PROT_EXEC)
     if number == policy.shared_memory_syscall:
         return bool(int(arguments[2]) & _SHM_EXEC)
-    return number in policy.forbidden_syscalls
+    return number == policy.seccomp_syscall or number in policy.forbidden_syscalls
 
 
 def _request_starts_concurrency(info: _SyscallInfo) -> bool:

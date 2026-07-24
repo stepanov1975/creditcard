@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import io
 from datetime import date
 from decimal import Decimal
@@ -40,6 +41,14 @@ from ccparser.normalize import (
 )
 from ccparser.output import transactions_csv_bytes
 from ccparser.semantic_evidence import EvidenceLedger
+
+
+def test_normalize_row_assembles_diagnostic_phases_without_retroactive_insertion() -> None:
+    source = inspect.getsource(_normalize_row)
+
+    assert "assignment_diagnostic_index" not in source
+    assert "conversion_resolution_diagnostics" in source
+    assert "diagnostics[" not in source
 
 
 def _cell(

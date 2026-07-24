@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from datetime import date
 
 import pytest
 
+import ccparser.layout.marker_bands as marker_bands
 import ccparser.layout.regions as layout_regions
 from ccparser.evidence.models import (
     EvidenceSource,
@@ -31,6 +33,36 @@ from ccparser.semantic_evidence import EvidenceClaim, EvidenceLedger, SemanticOw
 
 _OCR_MARKER_BAND_DIAGNOSTIC = "stable_headerless_ocr_marker_band"
 _MARKER_LABELS = ("|", "\uff5c", "||", "\uff5c\uff5c")
+
+
+@pytest.mark.parametrize(
+    ("visible_run", "expected"),
+    (
+        ("|", True),
+        ("\uff5c", True),
+        ("||", True),
+        ("\uff5c\uff5c", True),
+        ("|\uff5c", False),
+        ("|||", False),
+        ("\u2225", False),
+        ("\u22ee", False),
+    ),
+)
+def test_visible_vertical_layout_marker_classifier(
+    visible_run: str,
+    expected: bool,
+) -> None:
+    assert marker_bands.is_visible_vertical_layout_marker(visible_run) is expected
+
+
+def test_marker_date_cell_evidence_parsing_has_one_owner() -> None:
+    module_source = inspect.getsource(marker_bands)
+    strict_source = inspect.getsource(marker_bands._cell_split)
+    fallback_source = inspect.getsource(marker_bands._band_occupant_split)
+
+    assert module_source.count("date_words = tuple(") == 1
+    assert "_marker_date_cell_evidence(row, cell)" in strict_source
+    assert "_marker_date_cell_evidence(row, cell)" in fallback_source
 
 
 def _word(

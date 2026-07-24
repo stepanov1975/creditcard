@@ -36,6 +36,7 @@ from ccparser.geometry import (
 from ccparser.layout.columns import (
     _header_evidence_texts,
     _header_scores,
+    billed_amount_column_candidate,
     cells_in_column,
     contains_date_token,
     explicit_billed_amount_column,
@@ -52,8 +53,7 @@ from ccparser.layout.continuations import (
 )
 from ccparser.layout.marker_bands import separate_repeated_ocr_marker_band
 from ccparser.layout.models import Cell, ColumnRole, Row, TableRegion, TableSchema
-from ccparser.layout.row_tags import RowTag
-from ccparser.layout.rows import cluster_rows
+from ccparser.layout.rows import _ordered_cells_from_stored_direction, cluster_rows
 from ccparser.layout.text import (
     canonical_words_for_layout,
     logical_text_for_evidence,
@@ -356,19 +356,7 @@ def _split_compound_header_row(row: Row) -> Row:
     )
     if cells == row.cells:
         return row
-    direction = next(
-        (
-            diagnostic.removeprefix("dominant_direction:")
-            for diagnostic in row.diagnostics
-            if diagnostic.startswith("dominant_direction:")
-        ),
-        "ltr",
-    )
-    return row.model_copy(
-        update={
-            "cells": tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
-        }
-    )
+    return row.model_copy(update={"cells": _ordered_cells_from_stored_direction(row, cells)})
 
 
 def _merge_adjacent_description_header_cells(row: Row) -> Row:
@@ -445,15 +433,7 @@ def _merge_header_rows(header: Row, fragments: Sequence[Row]) -> Row:
         _merged_header_cell(cell, assignments[index]) for index, cell in enumerate(header.cells)
     ]
     cells.extend(unmatched)
-    direction = next(
-        (
-            diagnostic.removeprefix("dominant_direction:")
-            for diagnostic in header.diagnostics
-            if diagnostic.startswith("dominant_direction:")
-        ),
-        "ltr",
-    )
-    ordered_cells = tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
+    ordered_cells = _ordered_cells_from_stored_direction(header, cells)
     sources = (header, *fragments)
     return header.model_copy(
         update={
@@ -758,12 +738,7 @@ def _has_strong_single_row_evidence(
         schema.columns,
         schema.header_cells,
     )
-    amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    billed_column = (
-        explicit_billed_column
-        if explicit_billed_column is not None
-        else (amount_columns[0] if len(amount_columns) == 1 else None)
-    )
+    billed_column = billed_amount_column_candidate(schema)
     original_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.ORIGINAL_AMOUNT
     )
@@ -830,7 +805,6 @@ def _is_digit_free_currency_header_spill(row: Row) -> bool:
 
 
 def _bounded_leading_detail_before_transaction(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -849,12 +823,7 @@ def _bounded_leading_detail_before_transaction(
         return None
     projected = _project_row_to_header_bands(source, header)
     following = _project_row_to_header_bands(following_source, header)
-    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
-    if billed_column is None:
-        amount_columns = tuple(
-            column for column in schema.columns if column.role is ColumnRole.AMOUNT
-        )
-        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    billed_column = billed_amount_column_candidate(schema)
     if billed_column is None:
         return None
     billed_cells = cells_in_column(projected.cells, billed_column)
@@ -902,7 +871,6 @@ def _bounded_leading_detail_before_transaction(
         marked,
         start_index=start_index,
         kind=ContinuationKind.LEADING_DETAIL,
-        row_tags=frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
     )
 
@@ -1159,15 +1127,7 @@ def _project_row_to_header_bands(
                 )
             )
         )
-    direction = next(
-        (
-            diagnostic.removeprefix("dominant_direction:")
-            for diagnostic in row.diagnostics
-            if diagnostic.startswith("dominant_direction:")
-        ),
-        "ltr",
-    )
-    ordered_cells = tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
+    ordered_cells = _ordered_cells_from_stored_direction(row, cells)
     return row.model_copy(
         update={
             "cells": ordered_cells,
@@ -1188,7 +1148,6 @@ def _project_row_to_header_bands(
 
 
 def _preview_rows(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     header_index: int,
 ) -> tuple[Row, ...]:
@@ -1323,18 +1282,13 @@ def _marked_detail_match(row: Row, *, start_index: int) -> ContinuationMatch:
         marked,
         start_index=start_index,
         kind=ContinuationKind.MARKED_DETAIL,
-        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
     )
 
 
 def _has_valid_billed_amount(row: Row, schema: TableSchema) -> bool:
     amount_columns = tuple(column for column in schema.columns if column.role is ColumnRole.AMOUNT)
-    amount_column = (
-        amount_columns[0]
-        if len(amount_columns) == 1
-        else explicit_billed_amount_column(schema.columns, schema.header_cells)
-    )
+    amount_column = billed_amount_column_candidate(schema)
     if amount_column is None:
         return False
     amount_cells = cells_in_column(row.cells, amount_column)
@@ -1485,6 +1439,16 @@ def _has_canonical_card_identifier_lead(row: Row) -> bool:
     )
 
 
+def _bounded_card_identifier_token(row: Row) -> str | None:
+    identifiers = set(
+        re.findall(
+            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
+            " ".join(cell.text for cell in row.cells),
+        )
+    )
+    return next(iter(identifiers)) if len(identifiers) == 1 else None
+
+
 def _has_canonical_card_identifier_tail(row: Row) -> bool:
     tokens = _normalized_marker(" ".join(cell.text for cell in row.cells)).split()
     has_card_marker = (
@@ -1492,23 +1456,11 @@ def _has_canonical_card_identifier_tail(row: Row) -> bool:
         or "internet" in tokens
         or any(token.startswith(("אינטרנט", "כרטיס")) for token in tokens)
     )
-    identifiers = set(
-        re.findall(
-            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
-            " ".join(cell.text for cell in row.cells),
-        )
-    )
-    return has_card_marker and len(identifiers) == 1
+    return has_card_marker and _bounded_card_identifier_token(row) is not None
 
 
 def _has_unique_card_identifier_value(row: Row) -> bool:
-    identifiers = set(
-        re.findall(
-            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
-            " ".join(cell.text for cell in row.cells),
-        )
-    )
-    return len(identifiers) == 1
+    return _bounded_card_identifier_token(row) is not None
 
 
 def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) -> bool:
@@ -1537,7 +1489,6 @@ def _has_distinct_original_and_billed_currencies(row: Row, schema: TableSchema) 
 
 
 def _foreign_conversion_detail_block(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -1601,12 +1552,6 @@ def _foreign_conversion_detail_block(
                     rows=tuple(details),
                     consumed_through=index - 1,
                     kind=ContinuationKind.FOREIGN_CONVERSION_BLOCK,
-                    row_tags=frozenset(
-                        {
-                            RowTag.SUBORDINATE_DETAIL,
-                            RowTag.FOREIGN_CONVERSION_DETAIL,
-                        }
-                    ),
                     detail_policy=DetailContinuationPolicy.DISALLOW,
                     skipped_outside_rows=skipped_outside_rows,
                     start_index=start_index,
@@ -1717,7 +1662,6 @@ def _foreign_conversion_detail_block(
 
 
 def _bounded_auxiliary_fragment(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -1820,7 +1764,6 @@ def _bounded_auxiliary_fragment(
         marked,
         start_index=start_index,
         kind=ContinuationKind.AUXILIARY_FRAGMENT,
-        row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
     )
 
@@ -1862,7 +1805,6 @@ def _has_canonical_internet_card_identifier_lead(row: Row) -> bool:
 
 
 def _bounded_card_identifier_detail_block(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -1936,19 +1878,12 @@ def _bounded_card_identifier_detail_block(
         rows=(marked_details[0], marked_details[1]),
         consumed_through=start_index + 1,
         kind=ContinuationKind.CARD_IDENTIFIER_BLOCK,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.CARD_IDENTIFIER_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         start_index=start_index,
     )
 
 
 def _bounded_card_identifier_tail(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -1982,12 +1917,6 @@ def _bounded_card_identifier_tail(
         header,
         schema,
     )
-    identifiers = set(
-        re.findall(
-            rf"(?<!\d)\d{{{CARD_IDENTIFIER_MIN_DIGITS},{CARD_IDENTIFIER_MAX_DIGITS}}}(?!\d)",
-            " ".join(cell.text for cell in source.cells),
-        )
-    )
     matching_columns = tuple(
         tuple(
             column
@@ -1999,7 +1928,7 @@ def _bounded_card_identifier_tail(
     if (
         not 1 <= len(projected.cells) <= 2
         or excluded_count is None
-        or len(identifiers) != 1
+        or _bounded_card_identifier_token(source) is None
         or any(contains_date_token(cell.text) for cell in projected.cells)
         or _transaction_shape_count(projected) > 1
         or _has_valid_billed_amount(projected, schema)
@@ -2041,13 +1970,11 @@ def _bounded_card_identifier_tail(
         marked,
         start_index=start_index,
         kind=ContinuationKind.CARD_IDENTIFIER_TAIL,
-        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
     )
 
 
 def _bounded_hebrew_note_detail(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -2131,12 +2058,6 @@ def _bounded_hebrew_note_detail(
         rows=(marked,),
         consumed_through=following_index - 1,
         kind=ContinuationKind.HEBREW_NOTE,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.HEBREW_NOTE_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=skipped_outside_rows,
         start_index=start_index,
@@ -2144,7 +2065,6 @@ def _bounded_hebrew_note_detail(
 
 
 def _bounded_overlaid_ocr_amount_artifact(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -2223,7 +2143,6 @@ def _trailing_overlaid_ocr_amount_artifact(
 
 
 def _bounded_complementary_transaction_rows(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -2277,7 +2196,6 @@ def _bounded_complementary_transaction_rows(
 
 
 def _spilled_currency_fragment_before_transaction(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -2295,12 +2213,7 @@ def _spilled_currency_fragment_before_transaction(
         or _vertical_overlap_ratio(source.bbox, following_source.bbox) < 0.5
     ):
         return False
-    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
-    if billed_column is None:
-        amount_columns = tuple(
-            column for column in schema.columns if column.role is ColumnRole.AMOUNT
-        )
-        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    billed_column = billed_amount_column_candidate(schema)
     if billed_column is None:
         return False
     following = _project_row_to_header_bands(following_source, header)
@@ -2361,12 +2274,7 @@ def _spilled_currency_fragment_before_transaction(
 
 
 def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
-    billed_column = explicit_billed_amount_column(schema.columns, schema.header_cells)
-    if billed_column is None:
-        amount_columns = tuple(
-            column for column in schema.columns if column.role is ColumnRole.AMOUNT
-        )
-        billed_column = amount_columns[0] if len(amount_columns) == 1 else None
+    billed_column = billed_amount_column_candidate(schema)
     if billed_column is None:
         return False
     billed_cells = cells_in_column(row.cells, billed_column)
@@ -2385,7 +2293,6 @@ def _ambiguous_billed_amount_row(row: Row, schema: TableSchema) -> bool:
 
 
 def _leading_ambiguity_is_proven_by_repetition(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     start_index: int,
     header: Row,
@@ -2511,32 +2418,6 @@ type _IgnoredScanCounter = Literal[
     "spilled_currency",
 ]
 
-_EXPECTED_CONTINUATION_ROW_TAGS: dict[ContinuationKind, frozenset[RowTag]] = {
-    ContinuationKind.DESCRIPTION: frozenset({RowTag.DESCRIPTION_CONTINUATION}),
-    ContinuationKind.LEADING_DETAIL: frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
-    ContinuationKind.CARD_IDENTIFIER_BLOCK: frozenset(
-        {
-            RowTag.SUBORDINATE_DETAIL,
-            RowTag.CARD_IDENTIFIER_DETAIL,
-        }
-    ),
-    ContinuationKind.CARD_IDENTIFIER_TAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
-    ContinuationKind.FOREIGN_CONVERSION_BLOCK: frozenset(
-        {
-            RowTag.SUBORDINATE_DETAIL,
-            RowTag.FOREIGN_CONVERSION_DETAIL,
-        }
-    ),
-    ContinuationKind.HEBREW_NOTE: frozenset(
-        {
-            RowTag.SUBORDINATE_DETAIL,
-            RowTag.HEBREW_NOTE_DETAIL,
-        }
-    ),
-    ContinuationKind.AUXILIARY_FRAGMENT: frozenset({RowTag.AUXILIARY_CONTINUATION}),
-    ContinuationKind.MARKED_DETAIL: frozenset({RowTag.SUBORDINATE_DETAIL}),
-}
-
 
 @dataclass(slots=True)
 class _RegionScanState:
@@ -2591,10 +2472,6 @@ class _RegionScanState:
         self.counters = self.counters.increment_ambiguous_leading()
 
     def _apply_continuation_match(self, match: ContinuationMatch) -> None:
-        expected_tags = _EXPECTED_CONTINUATION_ROW_TAGS.get(match.kind)
-        if expected_tags is None or match.row_tags != expected_tags:
-            raise ValueError("continuation match row tags do not match its kind")
-
         matched_row_count = len(match.rows)
         self.accepted.extend(match.rows)
         self.previous = match.rows[-1]
@@ -2678,7 +2555,6 @@ def _inherited_region_after_total(
                 projected,
                 start_index=index,
                 kind=ContinuationKind.DESCRIPTION,
-                row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
                 detail_policy=DetailContinuationPolicy.PRESERVE,
             )
             state.accept_description(description_match)
@@ -2697,7 +2573,6 @@ def _inherited_region_after_total(
         if not _has_valid_billed_amount(
             projected, schema
         ) and _spilled_currency_fragment_before_transaction(
-            page_evidence,
             rows,
             index,
             header,
@@ -2712,7 +2587,6 @@ def _inherited_region_after_total(
             or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
         ):
             complementary = _bounded_complementary_transaction_rows(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2790,23 +2664,21 @@ def _inherited_region_after_total(
 
 
 def _candidate_schema(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     header_index: int,
 ) -> TableSchema:
     header = rows[header_index]
-    preview = _preview_rows(page_evidence, rows, header_index)
+    preview = _preview_rows(rows, header_index)
     samples = tuple(cell for row in preview for cell in row.cells)
     return infer_column_roles(header.cells, samples)
 
 
 def _detect_from_header(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     header_index: int,
 ) -> tuple[TableRegion | None, int]:
     header = rows[header_index]
-    schema = _candidate_schema(page_evidence, rows, header_index)
+    schema = _candidate_schema(rows, header_index)
     if not _plausible_header(schema):
         return None, header_index + 1
 
@@ -2843,7 +2715,6 @@ def _detect_from_header(
             continue
         if not _has_valid_billed_amount(projected, schema):
             overlaid_through = _bounded_overlaid_ocr_amount_artifact(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2866,7 +2737,6 @@ def _detect_from_header(
             continue
         if not state.regular_rows:
             leading_detail = _bounded_leading_detail_before_transaction(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2877,7 +2747,6 @@ def _detect_from_header(
                 continue
         if state.detail_continuation_allowed:
             card_identifier_block = _bounded_card_identifier_detail_block(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2889,7 +2758,6 @@ def _detect_from_header(
                 continue
         if state.detail_continuation_allowed:
             card_identifier_tail = _bounded_card_identifier_tail(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2901,7 +2769,6 @@ def _detect_from_header(
                 continue
         if state.detail_continuation_allowed:
             detail_block = _foreign_conversion_detail_block(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2914,7 +2781,6 @@ def _detect_from_header(
                 continue
         if state.detail_continuation_allowed:
             note_detail = _bounded_hebrew_note_detail(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2933,7 +2799,6 @@ def _detect_from_header(
             break
         if state.detail_continuation_allowed:
             auxiliary_fragment = _bounded_auxiliary_fragment(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2948,7 +2813,6 @@ def _detect_from_header(
                 projected,
                 start_index=index,
                 kind=ContinuationKind.DESCRIPTION,
-                row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
                 detail_policy=DetailContinuationPolicy.PRESERVE,
             )
             state.accept_description(description_match)
@@ -2965,7 +2829,6 @@ def _detect_from_header(
         if not _has_valid_billed_amount(
             projected, schema
         ) and _spilled_currency_fragment_before_transaction(
-            page_evidence,
             rows,
             index,
             header,
@@ -2980,7 +2843,6 @@ def _detect_from_header(
             or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
         ):
             complementary = _bounded_complementary_transaction_rows(
-                page_evidence,
                 rows,
                 index,
                 header,
@@ -2994,7 +2856,6 @@ def _detect_from_header(
                 )
                 continue
         if not state.regular_rows and _leading_ambiguity_is_proven_by_repetition(
-            page_evidence,
             rows,
             index,
             header,
@@ -3165,7 +3026,7 @@ def _detect_table_regions_from_rows(
     regions: list[TableRegion] = []
     index = 0
     while index < len(rows):
-        region, next_index = _detect_from_header(page_evidence, rows, index)
+        region, next_index = _detect_from_header(rows, index)
         if region is None:
             index = max(next_index, index + 1)
             continue
@@ -3206,7 +3067,6 @@ def detect_table_regions(page_evidence: PageEvidence) -> tuple[TableRegion, ...]
 
 
 def _singleton_transaction_candidates(
-    page_evidence: PageEvidence,
     rows: Sequence[Row],
     existing_regions: Sequence[TableRegion],
 ) -> tuple[TableRegion, ...]:
@@ -3214,7 +3074,7 @@ def _singleton_transaction_candidates(
     candidates: list[TableRegion] = []
     observed_bboxes: set[BBox] = set()
     for header_index, header in enumerate(rows):
-        schema = _candidate_schema(page_evidence, rows, header_index)
+        schema = _candidate_schema(rows, header_index)
         if not _plausible_header(schema):
             continue
         consumed_through = header_index
@@ -3236,7 +3096,6 @@ def _singleton_transaction_candidates(
                 or _row_alignment(projected, schema) < _minimum_row_alignment(schema)
             ):
                 complementary = _bounded_complementary_transaction_rows(
-                    page_evidence,
                     rows,
                     index,
                     header,

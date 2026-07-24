@@ -97,10 +97,10 @@ def _normalized_json(value: object) -> JsonValue:
     raise TypeError("unsupported canonical JSON value")
 
 
-def canonical_json_bytes(result: BaseModel) -> bytes:
-    """Return stable canonical UTF-8 JSON with logical NFC text and one newline."""
+def _canonical_json_value_bytes(value: object) -> bytes:
+    """Encode one value from the package's closed canonical JSON grammar."""
 
-    normalized = _normalized_json(result.model_dump(mode="json"))
+    normalized = _normalized_json(value)
     return (
         json.dumps(
             normalized,
@@ -111,6 +111,12 @@ def canonical_json_bytes(result: BaseModel) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+def canonical_json_bytes(result: BaseModel) -> bytes:
+    """Return stable canonical UTF-8 JSON with logical NFC text and one newline."""
+
+    return _canonical_json_value_bytes(result.model_dump(mode="json"))
 
 
 def _optional_decimal_string(value: Decimal | None) -> str:

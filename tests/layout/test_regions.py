@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 
 import pytest
 
+import ccparser.layout.regions as regions_module
 from ccparser.evidence import ExtractionQuality, Glyph, PageEvidence, Word
 from ccparser.layout.columns import infer_column_roles
 from ccparser.layout.continuations import (
@@ -16,6 +18,7 @@ from ccparser.layout.regions import (
     _bounded_auxiliary_fragment,
     _bounded_card_identifier_detail_block,
     _bounded_card_identifier_tail,
+    _bounded_card_identifier_token,
     _bounded_complementary_transaction_rows,
     _bounded_hebrew_note_detail,
     _bounded_leading_detail_before_transaction,
@@ -39,8 +42,54 @@ from ccparser.layout.regions import (
     detect_table_regions,
     logical_rows,
 )
-from ccparser.layout.row_tags import RowTag
 from ccparser.layout.text import logical_text_for_evidence
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    (
+        "_bounded_leading_detail_before_transaction",
+        "_preview_rows",
+        "_foreign_conversion_detail_block",
+        "_bounded_auxiliary_fragment",
+        "_bounded_card_identifier_detail_block",
+        "_bounded_card_identifier_tail",
+        "_bounded_hebrew_note_detail",
+        "_bounded_overlaid_ocr_amount_artifact",
+        "_bounded_complementary_transaction_rows",
+        "_spilled_currency_fragment_before_transaction",
+        "_leading_ambiguity_is_proven_by_repetition",
+        "_candidate_schema",
+        "_detect_from_header",
+        "_singleton_transaction_candidates",
+    ),
+)
+def test_row_only_region_helpers_do_not_accept_or_reference_page_evidence(
+    function_name: str,
+) -> None:
+    function = getattr(regions_module, function_name)
+
+    assert "page_evidence" not in inspect.signature(function).parameters
+    assert "page_evidence" not in inspect.getsource(function)
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    (
+        "logical_rows",
+        "detect_table_regions",
+        "_detect_table_regions_from_rows",
+        "_inherited_region_after_total",
+    ),
+)
+def test_page_aware_region_boundaries_retain_page_evidence(function_name: str) -> None:
+    function = getattr(regions_module, function_name)
+
+    assert "page_evidence" in inspect.signature(function).parameters
+
+
+def test_inherited_region_keeps_page_height_proof() -> None:
+    assert "page_evidence.height" in inspect.getsource(regions_module._inherited_region_after_total)
 
 
 def _word(text: str, x0: float, x1: float, y: float, *, height: float = 10.0) -> Word:
@@ -314,17 +363,14 @@ def test_spilled_currency_fragment_is_proven_by_adjacent_following_amount() -> N
         diagnostics=("dominant_direction:ltr",),
     )
     schema = infer_column_roles(header.cells, following.cells)
-    page = _page((*header_words, fragment, currency, billed, merchant, transaction_date))
 
     assert _spilled_currency_fragment_before_transaction(
-        page,
         (header, source, following),
         1,
         header,
         schema,
     )
     assert not _spilled_currency_fragment_before_transaction(
-        page,
         (header, source, following.model_copy(update={"bbox": (6.0, 60.0, 129.0, 70.0)})),
         1,
         header,
@@ -396,10 +442,8 @@ def test_bounded_complementary_rows_merge_overlapping_transaction_cells() -> Non
     description_word = _word("Cafe", 35.0, 72.0, 60.0)
     source = logical_rows(_page((date_word, artifact_word)))[0]
     following = logical_rows(_page((description_word, amount_word)))[0]
-    page = _page((*header_words, date_word, artifact_word, description_word, amount_word))
 
     merged = _bounded_complementary_transaction_rows(
-        page,
         (header, source, following),
         1,
         header,
@@ -427,10 +471,8 @@ def test_bounded_complementary_rows_merge_amount_before_overlapping_date() -> No
     date_word = _word("02/02/2026", 0.0, 22.0, 60.0)
     source = logical_rows(_page((description_word, amount_word)))[0]
     following = logical_rows(_page((date_word,)))[0]
-    page = _page((*header_words, description_word, amount_word, date_word))
 
     merged = _bounded_complementary_transaction_rows(
-        page,
         (header, source, following),
         1,
         header,
@@ -889,7 +931,7 @@ def _continuation_detector_context(
 ) -> tuple[tuple[Row, ...], Row, TableSchema]:
     rows = logical_rows(page)
     header = rows[0]
-    return rows, header, _candidate_schema(page, rows, 0)
+    return rows, header, _candidate_schema(rows, 0)
 
 
 def _with_diagnostics(row: Row, *diagnostics: str) -> Row:
@@ -947,7 +989,7 @@ def test_region_scan_snapshot_preserves_ordinary_rows_and_total_stop() -> None:
     )
     rows = logical_rows(page)
 
-    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+    snapshot = _region_scan_snapshot(*_detect_from_header(rows, 0))
 
     assert snapshot[-1] == 3
     assert (
@@ -1117,7 +1159,7 @@ def test_region_scan_snapshot_preserves_continuation_handlers(
 ) -> None:
     rows = logical_rows(page)
 
-    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+    snapshot = _region_scan_snapshot(*_detect_from_header(rows, 0))
 
     assert snapshot[-1] == expected_stop_index
     assert _region_scan_fingerprint(snapshot) == expected_fingerprint
@@ -1261,7 +1303,7 @@ def test_region_scan_snapshot_preserves_ignores_merges_and_boundaries(
 ) -> None:
     rows = logical_rows(page)
 
-    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+    snapshot = _region_scan_snapshot(*_detect_from_header(rows, 0))
 
     assert snapshot[-1] == expected_stop_index
     assert _region_scan_fingerprint(snapshot) == expected_fingerprint
@@ -1379,31 +1421,17 @@ def test_region_scan_snapshot_preserves_spilled_currency_ignore() -> None:
         confidence=1.0,
         diagnostics=("dominant_direction:ltr",),
     )
-    page = _page(
-        (
-            *header_words,
-            *first_words,
-            fragment,
-            currency,
-            billed,
-            merchant,
-            transaction_date,
-            *total_words,
-        )
-    )
-
     rows = (header, first, source, following, total)
-    schema = _candidate_schema(page, rows, 0)
+    schema = _candidate_schema(rows, 0)
 
     assert _spilled_currency_fragment_before_transaction(
-        page,
         rows,
         2,
         header,
         schema,
     )
 
-    snapshot = _region_scan_snapshot(*_detect_from_header(page, rows, 0))
+    snapshot = _region_scan_snapshot(*_detect_from_header(rows, 0))
 
     assert snapshot[-1] == 4
     assert (
@@ -1418,7 +1446,7 @@ def _inherited_scan_result(
     include_total_overlay: bool,
 ) -> tuple[TableRegion | None, int]:
     rows = logical_rows(page)
-    source_region, total_index = _detect_from_header(page, rows, 0)
+    source_region, total_index = _detect_from_header(rows, 0)
     assert source_region is not None
     if not include_total_overlay:
         return _inherited_region_after_total(
@@ -1593,7 +1621,6 @@ def test_continuation_match_leading_detail_preserves_exact_boundary_result() -> 
     )
 
     match = _bounded_leading_detail_before_transaction(
-        page,
         rows,
         1,
         header,
@@ -1604,7 +1631,6 @@ def test_continuation_match_leading_detail_preserves_exact_boundary_result() -> 
         rows=(expected,),
         consumed_through=1,
         kind=ContinuationKind.LEADING_DETAIL,
-        row_tags=frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         start_index=1,
     )
@@ -1634,7 +1660,6 @@ def test_continuation_match_card_identifier_block_preserves_exact_boundary_resul
     )
 
     match = _bounded_card_identifier_detail_block(
-        page,
         rows,
         3,
         header,
@@ -1646,12 +1671,6 @@ def test_continuation_match_card_identifier_block_preserves_exact_boundary_resul
         rows=expected,
         consumed_through=4,
         kind=ContinuationKind.CARD_IDENTIFIER_BLOCK,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.CARD_IDENTIFIER_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         start_index=3,
     )
@@ -1683,7 +1702,6 @@ def test_continuation_match_card_identifier_tail_preserves_exact_boundary_result
     )
 
     match = _bounded_card_identifier_tail(
-        page,
         rows,
         3,
         header,
@@ -1695,7 +1713,6 @@ def test_continuation_match_card_identifier_tail_preserves_exact_boundary_result
         rows=(expected,),
         consumed_through=3,
         kind=ContinuationKind.CARD_IDENTIFIER_TAIL,
-        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         start_index=3,
     )
@@ -1728,7 +1745,6 @@ def test_continuation_match_foreign_block_preserves_rows_index_and_skipped_count
     )
 
     match = _foreign_conversion_detail_block(
-        page,
         rows,
         3,
         header,
@@ -1741,12 +1757,6 @@ def test_continuation_match_foreign_block_preserves_rows_index_and_skipped_count
         rows=expected,
         consumed_through=7,
         kind=ContinuationKind.FOREIGN_CONVERSION_BLOCK,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.FOREIGN_CONVERSION_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=1,
         start_index=3,
@@ -1773,7 +1783,6 @@ def test_continuation_match_hebrew_note_preserves_row_index_and_skipped_count() 
     )
 
     match = _bounded_hebrew_note_detail(
-        page,
         rows,
         2,
         header,
@@ -1785,12 +1794,6 @@ def test_continuation_match_hebrew_note_preserves_row_index_and_skipped_count() 
         rows=(expected,),
         consumed_through=3,
         kind=ContinuationKind.HEBREW_NOTE,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.HEBREW_NOTE_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=1,
         start_index=2,
@@ -1815,7 +1818,6 @@ def test_continuation_match_auxiliary_fragment_preserves_exact_boundary_result()
     )
 
     match = _bounded_auxiliary_fragment(
-        page,
         rows,
         3,
         header,
@@ -1827,7 +1829,6 @@ def test_continuation_match_auxiliary_fragment_preserves_exact_boundary_result()
         rows=(expected,),
         consumed_through=3,
         kind=ContinuationKind.AUXILIARY_FRAGMENT,
-        row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         start_index=3,
     )
@@ -1862,7 +1863,6 @@ def test_continuation_match_marked_detail_preserves_exact_boundary_result() -> N
         rows=(expected,),
         consumed_through=2,
         kind=ContinuationKind.MARKED_DETAIL,
-        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=0,
         start_index=2,
@@ -1885,7 +1885,6 @@ def test_foreign_detail_boundary_rejects_excessive_gap() -> None:
 
     assert (
         _foreign_conversion_detail_block(
-            page,
             rows,
             3,
             header,
@@ -1913,7 +1912,6 @@ def test_foreign_detail_boundary_rejects_currency_mismatch_without_issuer_proof(
 
     assert (
         _foreign_conversion_detail_block(
-            page,
             rows,
             3,
             header,
@@ -1941,7 +1939,6 @@ def test_foreign_detail_boundary_rejects_extra_date_shape() -> None:
 
     assert (
         _foreign_conversion_detail_block(
-            page,
             rows,
             3,
             header,
@@ -1986,7 +1983,6 @@ def test_card_identifier_block_boundary_rejects_invalid_identifier() -> None:
 
     assert (
         _bounded_card_identifier_detail_block(
-            page,
             rows,
             3,
             header,
@@ -1995,6 +1991,29 @@ def test_card_identifier_block_boundary_rejects_invalid_identifier() -> None:
         )
         is None
     )
+
+
+def test_bounded_card_identifier_token_extracts_one_unique_row_candidate() -> None:
+    def row_with_texts(*texts: str) -> Row:
+        return Row(
+            page_number=1,
+            bbox=(0.0, 0.0, 100.0, 10.0),
+            cells=tuple(
+                Cell(
+                    page_number=1,
+                    bbox=(float(index * 20), 0.0, float(index * 20 + 18), 10.0),
+                    text=text,
+                    confidence=1.0,
+                )
+                for index, text in enumerate(texts)
+            ),
+            confidence=1.0,
+        )
+
+    assert _bounded_card_identifier_token(row_with_texts("card 8614")) == "8614"
+    assert _bounded_card_identifier_token(row_with_texts("8614", "ending 8614")) == "8614"
+    assert _bounded_card_identifier_token(row_with_texts("8614", "7312")) is None
+    assert _bounded_card_identifier_token(row_with_texts("123", "12345678901")) is None
 
 
 def test_auxiliary_fragment_boundary_rejects_lookahead_beyond_limit() -> None:
@@ -2015,7 +2034,6 @@ def test_auxiliary_fragment_boundary_rejects_lookahead_beyond_limit() -> None:
 
     assert (
         _bounded_auxiliary_fragment(
-            page,
             rows,
             3,
             header,

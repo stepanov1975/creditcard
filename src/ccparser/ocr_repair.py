@@ -22,9 +22,9 @@ from ccparser.geometry import (
     bbox_height as _height,
 )
 from ccparser.layout.columns import (
+    billed_amount_column_candidate,
     cells_in_column,
     columns_for_role,
-    explicit_billed_amount_column,
     is_date_shaped,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableSchema
@@ -51,14 +51,6 @@ def _clip_key(clip: BBox) -> BBox:
         round(clip[2], 6),
         round(clip[3], 6),
     )
-
-
-def _sole_billed_column(schema: TableSchema) -> ColumnSpec | None:
-    explicit = explicit_billed_amount_column(schema.columns, schema.header_cells)
-    if explicit is not None:
-        return explicit
-    amount_columns = columns_for_role(schema, ColumnRole.AMOUNT)
-    return amount_columns[0] if len(amount_columns) == 1 else None
 
 
 def _header_cell_for_column(header: Row, column: ColumnSpec) -> Cell | None:
@@ -279,10 +271,10 @@ def _repair_page(
     words = page.words
     repaired_keys: set[tuple[float, float, float, float]] = set()
     for header_index, header in enumerate(rows):
-        schema = _candidate_schema(page.model_copy(update={"words": words}), rows, header_index)
+        schema = _candidate_schema(rows, header_index)
         if not _plausible_header(schema):
             continue
-        billed_column = _sole_billed_column(schema)
+        billed_column = billed_amount_column_candidate(schema)
         if billed_column is None:
             continue
         amount_header = _header_cell_for_column(header, billed_column)

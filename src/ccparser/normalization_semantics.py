@@ -557,45 +557,26 @@ def assignment_diagnostics(
             )
         )
         has_alternative = bool(unresolved_role_diagnostics)
-        if (
-            relevant
-            and column.role is ColumnRole.UNKNOWN
-            and not safe_card_identifier
-            and not safe_ancillary_unknown
-            and not deferred_semantic_candidate
-            and not safe_edge_artifact
-        ):
+        common_safe = (
+            safe_card_identifier
+            or safe_ancillary_unknown
+            or deferred_semantic_candidate
+            or safe_edge_artifact
+        )
+        unresolved_unknown = relevant and column.role is ColumnRole.UNKNOWN and not common_safe
+        unresolved_alternative = relevant and has_alternative and not common_safe
+        unresolved_location = (
+            relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier
+        )
+        if unresolved_unknown:
             diagnostics.append(f"column:{column.index}:role_unknown")
-        if relevant and column.role is ColumnRole.LOCATION and not safe_location_identifier:
+        if unresolved_location:
             diagnostics.append(f"column:{column.index}:unexpected_location_value")
-        if (
-            relevant
-            and has_alternative
-            and not safe_card_identifier
-            and not safe_ancillary_unknown
-            and not deferred_semantic_candidate
-            and not safe_edge_artifact
-        ):
+        if unresolved_alternative:
             diagnostics.extend(
                 f"column:{column.index}:{value}" for value in unresolved_role_diagnostics
             )
-        if relevant and (
-            (
-                column.role is ColumnRole.UNKNOWN
-                and not safe_card_identifier
-                and not safe_ancillary_unknown
-                and not deferred_semantic_candidate
-                and not safe_edge_artifact
-            )
-            or (
-                has_alternative
-                and not safe_card_identifier
-                and not safe_ancillary_unknown
-                and not deferred_semantic_candidate
-                and not safe_edge_artifact
-            )
-            or (column.role is ColumnRole.LOCATION and not safe_location_identifier)
-        ):
+        if unresolved_unknown or unresolved_alternative or unresolved_location:
             diagnostics.append("unresolved_relevant_cell")
     return tuple(dict.fromkeys(diagnostics))
 
@@ -635,15 +616,30 @@ def role_contract_diagnostics(region: TableRegion) -> tuple[str, ...]:
     return tuple(diagnostics)
 
 
-def _add_remaining_claim(
-    claims: list[EvidenceClaim],
-    owner: SemanticOwner,
-    atom_ids: Iterable[int],
-) -> None:
-    already_claimed = frozenset(atom_id for claim in claims for atom_id in claim.atom_ids)
-    remaining = frozenset(atom_ids) - already_claimed
-    if remaining:
-        claims.append(EvidenceClaim(owner, remaining))
+class _SemanticClaimAccumulator:
+    __slots__ = ("_claimed_atom_ids", "_claims")
+
+    def __init__(self, initial_claims: Sequence[EvidenceClaim]) -> None:
+        self._claims = list(initial_claims)
+        self._claimed_atom_ids = {atom_id for claim in self._claims for atom_id in claim.atom_ids}
+
+    @property
+    def claims(self) -> tuple[EvidenceClaim, ...]:
+        return tuple(self._claims)
+
+    @property
+    def claimed_atom_ids(self) -> frozenset[int]:
+        return frozenset(self._claimed_atom_ids)
+
+    def append_remaining(
+        self,
+        owner: SemanticOwner,
+        atom_ids: Iterable[int],
+    ) -> None:
+        remaining = frozenset(atom_ids) - self._claimed_atom_ids
+        if remaining:
+            self._claims.append(EvidenceClaim(owner, remaining))
+            self._claimed_atom_ids.update(remaining)
 
 
 def _financial_atom_ids(
@@ -672,6 +668,7 @@ def _date_description_boundary_layout_atom_ids(
     cell: Cell,
     ledger: EvidenceLedger,
     claims: Sequence[EvidenceClaim],
+    claimed_atom_ids: frozenset[int],
     proven_date_atom_ids: frozenset[int],
     existing_layout_atom_ids: frozenset[int],
     year_context: DiscoveredDateYearContext | None,
@@ -708,14 +705,13 @@ def _date_description_boundary_layout_atom_ids(
         )
     ):
         return frozenset()
-    already_claimed = frozenset(atom_id for claim in claims for atom_id in claim.atom_ids)
     return proven_date_description_layout_marker_atom_ids(
         ledger=ledger,
         cell=cell,
         date_column=column,
         date_atom_ids=proven_date_atom_ids,
         description_atom_ids=description_atom_ids,
-        excluded_atom_ids=existing_layout_atom_ids | already_claimed,
+        excluded_atom_ids=existing_layout_atom_ids | claimed_atom_ids,
     )
 
 
@@ -738,9 +734,8 @@ def validate_transaction_semantics(
 ) -> SemanticValidation:
     """Complete transaction evidence ownership and return ordered diagnostics."""
 
-    claims = list(initial_claims)
-    _add_remaining_claim(
-        claims,
+    claim_accumulator = _SemanticClaimAccumulator(initial_claims)
+    claim_accumulator.append_remaining(
         SemanticOwner.BILLED_VALUE,
         ledger.atoms_for_cell(amount_cell),
     )
@@ -794,15 +789,14 @@ def validate_transaction_semantics(
             column = columns[0]
             cell_ids = ledger.atoms_for_cell(cell)
             if is_detail_continuation:
-                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 continue
             if cross_cell_date_ids := cell_ids & cross_cell_conversion_atom_ids:
-                _add_remaining_claim(
-                    claims,
+                claim_accumulator.append_remaining(
                     SemanticOwner.CONVERSION_DATE,
                     cross_cell_date_ids,
                 )
-                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 continue
             if column.role is ColumnRole.DATE:
                 kind = date_column_header_kind(column) or date_column_kinds.get(column.index)
@@ -838,18 +832,17 @@ def validate_transaction_semantics(
                         column=column,
                         cell=cell,
                         ledger=ledger,
-                        claims=claims,
+                        claims=claim_accumulator.claims,
+                        claimed_atom_ids=claim_accumulator.claimed_atom_ids,
                         proven_date_atom_ids=matched_date_ids | proven_date_ids,
                         existing_layout_atom_ids=layout_noise_ids,
                         year_context=year_context,
                     )
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         owner,
                         (matched_date_ids | proven_date_ids) - layout_noise_ids,
                     )
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.LAYOUT_NOISE,
                         layout_noise_ids,
                     )
@@ -858,33 +851,31 @@ def validate_transaction_semantics(
                     and (style := proven_unanchored_short_date_style(region, column)) is not None
                     and has_proven_unanchored_short_date(cell, style)
                 ):
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 boundary_atom_ids.update(
                     atom_id
                     for atom_id in cell_ids
                     if any(char.isalpha() for char in ledger.atoms[atom_id].text)
                 )
             elif column.role is ColumnRole.CONVERSION_DATE:
-                _add_remaining_claim(
-                    claims,
+                claim_accumulator.append_remaining(
                     SemanticOwner.CONVERSION_DATE,
                     matching_date_atom_ids(ledger, cell, conversion_date, year_context),
                 )
-                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
             elif column.role in {
                 ColumnRole.AMOUNT,
                 ColumnRole.BILLING_CURRENCY,
                 ColumnRole.CURRENCY,
             }:
-                _add_remaining_claim(claims, SemanticOwner.BILLED_VALUE, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.BILLED_VALUE, cell_ids)
             elif column.role in {
                 ColumnRole.ORIGINAL_AMOUNT,
                 ColumnRole.ORIGINAL_CURRENCY,
             }:
                 if description is not None:
                     description_phrase = " ".join(phrase_tokens(description))
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.DESCRIPTION,
                         (
                             atom_id
@@ -897,8 +888,7 @@ def validate_transaction_semantics(
                             )
                         ),
                     )
-                _add_remaining_claim(
-                    claims,
+                claim_accumulator.append_remaining(
                     SemanticOwner.ORIGINAL_VALUE,
                     _financial_atom_ids(
                         ledger,
@@ -907,8 +897,7 @@ def validate_transaction_semantics(
                     ),
                 )
                 if description_index is not None and abs(column.index - description_index) == 1:
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.LAYOUT_NOISE,
                         (
                             atom_id
@@ -923,7 +912,7 @@ def validate_transaction_semantics(
                         if any(char.isalpha() for char in ledger.atoms[atom_id].text)
                     )
             elif column.role is ColumnRole.INSTALLMENT:
-                _add_remaining_claim(claims, SemanticOwner.INSTALLMENT, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.INSTALLMENT, cell_ids)
             elif column.role is ColumnRole.LOCATION:
                 safe_location = (
                     not _is_relevant_cell(cell)
@@ -931,12 +920,12 @@ def validate_transaction_semantics(
                     or original_currency_spilled_into_location(cell, region) is not None
                 )
                 if safe_location:
-                    _add_remaining_claim(claims, SemanticOwner.LOCATION, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.LOCATION, cell_ids)
             elif column.role in {
                 ColumnRole.AUXILIARY_AMOUNT,
                 ColumnRole.EXCHANGE_RATE,
             }:
-                _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
             elif column.role is ColumnRole.UNKNOWN:
                 conversion_candidates = ledger.fragmented_date_candidates(cell)
                 accepted_contextual_conversion = bool(conversion_candidates) and any(
@@ -970,25 +959,22 @@ def validate_transaction_semantics(
                     and bool(valid_conversion_candidates)
                 )
                 if cell in adjacent_unknown_processor_references:
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.PROCESSOR_REFERENCE,
                         cell_ids,
                     )
                 elif explicit_nonfinancial_ancillary:
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif accepted_contextual_conversion:
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.CONVERSION_DATE,
                         cell_ids & accepted_conversion_date_atom_ids,
                     )
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif is_proven_ocr_marker_cell(cell, column, row=row):
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif is_foreign_conversion_evidence:
-                    _add_remaining_claim(
-                        claims,
+                    claim_accumulator.append_remaining(
                         SemanticOwner.CONVERSION_DATE,
                         matching_date_atom_ids(
                             ledger,
@@ -997,19 +983,19 @@ def validate_transaction_semantics(
                             year_context,
                         ),
                     )
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif conversion_candidates and not invalid_untyped_ancillary_date:
                     continue
                 elif _is_isolated_ocr_edge_artifact_cell(cell, column, region):
-                    _add_remaining_claim(claims, SemanticOwner.LAYOUT_NOISE, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.LAYOUT_NOISE, cell_ids)
                 elif column.index in stable_unknowns or row_has_safe_card_identifier:
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif column.index in explicit_category_unknowns and not _is_relevant_cell(cell):
-                    _add_remaining_claim(claims, SemanticOwner.CATEGORY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.CATEGORY, cell_ids)
                 elif column.index in explicit_ancillary_unknowns and (
                     invalid_untyped_ancillary_date or not _is_relevant_cell(cell)
                 ):
-                    _add_remaining_claim(claims, SemanticOwner.ANCILLARY, cell_ids)
+                    claim_accumulator.append_remaining(SemanticOwner.ANCILLARY, cell_ids)
                 elif description_index is not None and abs(column.index - description_index) == 1:
                     boundary_atom_ids.update(
                         atom_id
@@ -1024,8 +1010,7 @@ def validate_transaction_semantics(
                         date_columns[0],
                     )
                     if unanchored_style is not None:
-                        _add_remaining_claim(
-                            claims,
+                        claim_accumulator.append_remaining(
                             SemanticOwner.ANCILLARY,
                             (
                                 atom_id
@@ -1037,6 +1022,7 @@ def validate_transaction_semantics(
                             ),
                         )
 
+    claims = claim_accumulator.claims
     validation = ledger.validate_claims(claims)
     diagnostics = list(validation.diagnostics)
     unresolved = frozenset(
@@ -1049,7 +1035,7 @@ def validate_transaction_semantics(
     if unresolved - boundary_atom_ids:
         diagnostics.append("unconsumed_transaction_semantic_text")
     return SemanticValidation(
-        claims=tuple(claims),
+        claims=claims,
         diagnostics=tuple(dict.fromkeys(diagnostics)),
     )
 

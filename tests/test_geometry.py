@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from ccparser.evidence.models import BBox as EvidenceBBox
@@ -133,3 +136,37 @@ def test_union_bbox_is_independent_of_input_order() -> None:
 def test_union_bbox_rejects_empty_input() -> None:
     with pytest.raises(ValueError):
         union_bbox(())
+
+
+@pytest.mark.parametrize("module_name", ("semantic_evidence.py", "fx.py"))
+def test_evidence_and_fx_use_canonical_horizontal_bbox_centers(module_name: str) -> None:
+    source_path = Path(__file__).parents[1] / "src" / "ccparser" / module_name
+    source = source_path.read_text()
+    tree = ast.parse(source)
+
+    midpoint_lines = tuple(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Div)
+        and isinstance(node.right, ast.Constant)
+        and node.right.value == 2
+        and isinstance(node.left, ast.BinOp)
+        and isinstance(node.left.op, ast.Add)
+        and ast.unparse(node.left.left).endswith("bbox[0]")
+        and ast.unparse(node.left.right).endswith("bbox[2]")
+    )
+
+    assert midpoint_lines == ()
+
+
+def test_semantic_marker_dedup_uses_ordered_canonical_containment() -> None:
+    source_path = Path(__file__).parents[1] / "src" / "ccparser" / "semantic_evidence.py"
+    source = "".join(source_path.read_text().split())
+
+    right_inside_left = source.find("_inside_bbox(right.bbox,left.bbox)")
+    left_inside_right = source.find("_inside_bbox(left.bbox,right.bbox)")
+
+    assert right_inside_left >= 0
+    assert left_inside_right >= 0
+    assert right_inside_left < left_inside_right

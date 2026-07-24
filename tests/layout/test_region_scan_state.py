@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from ccparser.layout.continuations import (
     ContinuationKind,
     ContinuationMatch,
@@ -10,7 +8,6 @@ from ccparser.layout.continuations import (
 )
 from ccparser.layout.models import Row
 from ccparser.layout.regions import _RegionScanCounters, _RegionScanState
-from ccparser.layout.row_tags import RowTag
 
 
 def _row(index: int) -> Row:
@@ -31,42 +28,6 @@ def _state() -> _RegionScanState:
     )
 
 
-def test_accept_description_rejects_inconsistent_row_tags_without_mutation() -> None:
-    state = _state()
-    initial = _state()
-    match = single_row_match(
-        _row(1),
-        start_index=1,
-        kind=ContinuationKind.DESCRIPTION,
-        row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
-        detail_policy=DetailContinuationPolicy.PRESERVE,
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        state.accept_description(match)
-
-    assert str(exc_info.value) == "continuation match row tags do not match its kind"
-    assert state == initial
-
-
-def test_accept_continuation_rejects_inconsistent_row_tags_without_mutation() -> None:
-    state = _state()
-    initial = _state()
-    match = single_row_match(
-        _row(1),
-        start_index=1,
-        kind=ContinuationKind.MARKED_DETAIL,
-        row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
-        detail_policy=DetailContinuationPolicy.DISALLOW,
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        state.accept_continuation(match)
-
-    assert str(exc_info.value) == "continuation match row tags do not match its kind"
-    assert state == initial
-
-
 def test_accept_description_preserves_eligibility_and_applies_skipped_rows() -> None:
     state = _state()
     description = _row(1)
@@ -74,7 +35,6 @@ def test_accept_description_preserves_eligibility_and_applies_skipped_rows() -> 
         rows=(description,),
         consumed_through=3,
         kind=ContinuationKind.DESCRIPTION,
-        row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
         detail_policy=DetailContinuationPolicy.PRESERVE,
         skipped_outside_rows=2,
         start_index=1,
@@ -123,7 +83,6 @@ def test_accept_regular_updates_both_row_sets_and_allows_one_detail() -> None:
             detail,
             start_index=2,
             kind=ContinuationKind.MARKED_DETAIL,
-            row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
             detail_policy=DetailContinuationPolicy.DISALLOW,
         )
     )
@@ -141,12 +100,6 @@ def test_accept_detail_consumes_through_match_and_uses_its_last_row_as_previous(
         rows=(first_detail, last_detail),
         consumed_through=4,
         kind=ContinuationKind.CARD_IDENTIFIER_BLOCK,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.CARD_IDENTIFIER_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=1,
         start_index=2,
@@ -184,7 +137,6 @@ def test_counter_diagnostics_keep_fixed_order_across_transition_order() -> None:
             _row(1),
             start_index=1,
             kind=ContinuationKind.DESCRIPTION,
-            row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
             detail_policy=DetailContinuationPolicy.PRESERVE,
         )
     )
@@ -197,7 +149,6 @@ def test_counter_diagnostics_keep_fixed_order_across_transition_order() -> None:
             _row(4),
             start_index=4,
             kind=ContinuationKind.AUXILIARY_FRAGMENT,
-            row_tags=frozenset({RowTag.AUXILIARY_CONTINUATION}),
             detail_policy=DetailContinuationPolicy.DISALLOW,
         )
     )
@@ -206,12 +157,6 @@ def test_counter_diagnostics_keep_fixed_order_across_transition_order() -> None:
             rows=(_row(5), _row(6)),
             consumed_through=6,
             kind=ContinuationKind.CARD_IDENTIFIER_BLOCK,
-            row_tags=frozenset(
-                {
-                    RowTag.SUBORDINATE_DETAIL,
-                    RowTag.CARD_IDENTIFIER_DETAIL,
-                }
-            ),
             detail_policy=DetailContinuationPolicy.DISALLOW,
             start_index=5,
         )

@@ -8,6 +8,7 @@ from decimal import Decimal, localcontext
 import pytest
 
 import ccparser.normalize as normalize_module
+import ccparser.original_amount as original_amount_module
 from ccparser.discovery import (
     DiscoveredDateYearContext,
     DiscoveredPrintedTotal,
@@ -98,6 +99,29 @@ def _row(*cells: Cell, diagnostics: tuple[str, ...] = ()) -> Row:
         cells=cells,
         confidence=1.0,
         diagnostics=diagnostics,
+    )
+
+
+def test_unique_row_money_pair_requires_one_distinct_amount_and_currency() -> None:
+    row = _row(
+        _cell(
+            "USD 30.00",
+            1,
+            words=(
+                _word("USD", 52.0, 62.0),
+                _word("30.00", 64.0, 78.0),
+            ),
+        ),
+        _cell(
+            "30.00",
+            2,
+            words=(_word("30.00", 102.0, 116.0),),
+        ),
+    )
+
+    assert original_amount_module._unique_row_money_pair(row) == (
+        Decimal("30.00"),
+        "USD",
     )
 
 

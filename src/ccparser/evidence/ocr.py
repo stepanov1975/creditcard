@@ -140,6 +140,64 @@ def _bound_tesseract_invocation(
     return (*prefix, *arguments), runtime
 
 
+def _launch_tesseract(
+    command: tuple[str, ...],
+    *,
+    include_tessdata: bool,
+    input_bytes: bytes | None,
+    timeout: float,
+    stderr_to_stdout: bool,
+) -> subprocess.CompletedProcess[bytes]:
+    """Launch Tesseract through the active descriptor-capability route."""
+
+    execution_command, runtime = _bound_tesseract_invocation(
+        command,
+        include_tessdata=include_tessdata,
+    )
+    if runtime is not None and runtime.allowed_file_descriptors:
+        return runtime.run(
+            execution_command,
+            input_bytes=input_bytes,
+            timeout=timeout,
+            stderr_to_stdout=stderr_to_stdout,
+        )
+    if stderr_to_stdout:
+        if runtime is None:
+            return subprocess.run(
+                execution_command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+            )
+        return subprocess.run(
+            execution_command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=runtime.child_environment(),
+            pass_fds=runtime.pass_fds,
+            timeout=timeout,
+        )
+    if runtime is None:
+        return subprocess.run(
+            execution_command,
+            input=input_bytes,
+            check=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    return subprocess.run(
+        execution_command,
+        input=input_bytes,
+        check=True,
+        capture_output=True,
+        env=runtime.child_environment(),
+        pass_fds=runtime.pass_fds,
+        timeout=timeout,
+    )
+
+
 def tesseract_command() -> tuple[str, ...]:
     """Return the fixed local OCR command without shell interpretation."""
 
@@ -373,36 +431,13 @@ class TesseractOcr:
     def _tesseract_version(self) -> str:
         if self._version is None:
             try:
-                command, runtime = _bound_tesseract_invocation(
+                completed = _launch_tesseract(
                     (self._command[0], "--version"),
                     include_tessdata=False,
+                    input_bytes=None,
+                    timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
+                    stderr_to_stdout=True,
                 )
-                if runtime is None:
-                    completed = subprocess.run(
-                        command,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
-                    )
-                else:
-                    if runtime.allowed_file_descriptors:
-                        completed = runtime.run(
-                            command,
-                            input_bytes=None,
-                            timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
-                            stderr_to_stdout=True,
-                        )
-                    else:
-                        completed = subprocess.run(
-                            command,
-                            check=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            env=runtime.child_environment(),
-                            pass_fds=runtime.pass_fds,
-                            timeout=TESSERACT_VERSION_TIMEOUT_SECONDS,
-                        )
             except (
                 subprocess.TimeoutExpired,
                 subprocess.CalledProcessError,
@@ -464,36 +499,13 @@ class TesseractOcr:
 
     def _recognize(self, image: bytes, command: tuple[str, ...]) -> bytes:
         try:
-            execution_command, runtime = _bound_tesseract_invocation(
+            completed = _launch_tesseract(
                 command,
                 include_tessdata=True,
+                input_bytes=image,
+                timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
+                stderr_to_stdout=False,
             )
-            if runtime is None:
-                completed = subprocess.run(
-                    execution_command,
-                    input=image,
-                    check=True,
-                    capture_output=True,
-                    timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
-                )
-            else:
-                if runtime.allowed_file_descriptors:
-                    completed = runtime.run(
-                        execution_command,
-                        input_bytes=image,
-                        timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
-                        stderr_to_stdout=False,
-                    )
-                else:
-                    completed = subprocess.run(
-                        execution_command,
-                        input=image,
-                        check=True,
-                        capture_output=True,
-                        env=runtime.child_environment(),
-                        pass_fds=runtime.pass_fds,
-                        timeout=TESSERACT_RECOGNITION_TIMEOUT_SECONDS,
-                    )
         except (
             subprocess.TimeoutExpired,
             subprocess.CalledProcessError,

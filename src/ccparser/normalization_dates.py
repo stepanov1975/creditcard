@@ -40,7 +40,10 @@ from ccparser.layout.columns import (
     proven_billed_amount_column,
     source_or_center_cells,
 )
-from ccparser.layout.marker_bands import proven_ocr_marker_word_partition
+from ccparser.layout.marker_bands import (
+    is_visible_vertical_layout_marker,
+    proven_ocr_marker_word_partition,
+)
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.row_tags import RowTag, has_row_tag
 from ccparser.layout.text import cell_has_ocr_evidence, logical_text_for_evidence
@@ -828,18 +831,6 @@ def _bounded_logical_date_residual(cell: Cell) -> str | None:
     return residual or None
 
 
-_VERTICAL_LAYOUT_MARKER_NAME = re.compile(r"(?:FULLWIDTH )?VERTICAL (?:LINE|BAR)")
-_SEMANTIC_VERTICAL_MARKER_NAME_PARTS = frozenset(
-    {
-        "COMPARISON",
-        "DIVIDES",
-        "DIVISIBILITY",
-        "EQUALITY",
-        "OPERATOR",
-        "PARALLEL",
-        "RELATION",
-    }
-)
 _BIDI_FORMAT_CONTROL_CLASSES = frozenset(
     {
         "AL",
@@ -880,18 +871,10 @@ def _approved_bidi_format_signature(text: str) -> tuple[str, ...] | None:
 def _is_nonmaterial_layout_marker_text(text: str) -> bool:
     if _approved_bidi_format_signature(text) is None:
         return False
-    compact = "".join(
+    visible_run = "".join(
         char for char in _compact_source_text(text) if unicodedata.category(char) != "Cf"
     )
-    if not 1 <= len(compact) <= 2 or len(set(compact)) != 1:
-        return False
-    char = compact[0]
-    name = unicodedata.name(char, "")
-    return (
-        unicodedata.category(char) == "Sm"
-        and _VERTICAL_LAYOUT_MARKER_NAME.fullmatch(name) is not None
-        and not any(part in name for part in _SEMANTIC_VERTICAL_MARKER_NAME_PARTS)
-    )
+    return is_visible_vertical_layout_marker(visible_run)
 
 
 def _same_line_x_order_atoms(

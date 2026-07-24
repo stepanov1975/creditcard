@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from inspect import signature
 
 import pytest
 
@@ -50,12 +51,6 @@ def test_continuation_match_stores_only_the_common_return_contract() -> None:
         rows=rows,
         consumed_through=8,
         kind=ContinuationKind.FOREIGN_CONVERSION_BLOCK,
-        row_tags=frozenset(
-            {
-                RowTag.SUBORDINATE_DETAIL,
-                RowTag.FOREIGN_CONVERSION_DETAIL,
-            }
-        ),
         detail_policy=DetailContinuationPolicy.DISALLOW,
         skipped_outside_rows=2,
         start_index=5,
@@ -65,10 +60,10 @@ def test_continuation_match_stores_only_the_common_return_contract() -> None:
         "rows",
         "consumed_through",
         "kind",
-        "row_tags",
         "detail_policy",
         "skipped_outside_rows",
     )
+    assert "row_tags" not in signature(ContinuationMatch).parameters
     assert match.rows == rows
     assert match.consumed_through == 8
     assert match.kind is ContinuationKind.FOREIGN_CONVERSION_BLOCK
@@ -101,7 +96,6 @@ def test_continuation_match_rejects_invalid_construction(
             rows=rows,
             consumed_through=consumed_through,
             kind=ContinuationKind.MARKED_DETAIL,
-            row_tags=frozenset({RowTag.SUBORDINATE_DETAIL}),
             detail_policy=DetailContinuationPolicy.DISALLOW,
             skipped_outside_rows=skipped_outside_rows,
             start_index=start_index,
@@ -115,7 +109,6 @@ def test_single_row_match_builds_description_continuation() -> None:
         row,
         start_index=7,
         kind=ContinuationKind.DESCRIPTION,
-        row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
         detail_policy=DetailContinuationPolicy.PRESERVE,
     )
 
@@ -123,7 +116,6 @@ def test_single_row_match_builds_description_continuation() -> None:
         rows=(row,),
         consumed_through=7,
         kind=ContinuationKind.DESCRIPTION,
-        row_tags=frozenset({RowTag.DESCRIPTION_CONTINUATION}),
         detail_policy=DetailContinuationPolicy.PRESERVE,
         start_index=7,
     )
@@ -132,6 +124,10 @@ def test_single_row_match_builds_description_continuation() -> None:
 @pytest.mark.parametrize(
     ("kind", "row_tags"),
     (
+        (
+            ContinuationKind.DESCRIPTION,
+            frozenset({RowTag.DESCRIPTION_CONTINUATION}),
+        ),
         (
             ContinuationKind.LEADING_DETAIL,
             frozenset({RowTag.LEADING_SUBORDINATE_DETAIL}),
@@ -177,7 +173,7 @@ def test_single_row_match_builds_description_continuation() -> None:
         ),
     ),
 )
-def test_bounded_detail_match_carries_exact_tags_and_disallows_more_detail(
+def test_continuation_match_derives_exact_tags_from_kind(
     kind: ContinuationKind,
     row_tags: frozenset[RowTag],
 ) -> None:
@@ -185,9 +181,10 @@ def test_bounded_detail_match_carries_exact_tags_and_disallows_more_detail(
         _row(),
         start_index=3,
         kind=kind,
-        row_tags=row_tags,
         detail_policy=DetailContinuationPolicy.DISALLOW,
     )
 
     assert match.row_tags == row_tags
     assert match.detail_policy is DetailContinuationPolicy.DISALLOW
+    assert isinstance(ContinuationMatch.row_tags, property)
+    assert ContinuationMatch.row_tags.fset is None

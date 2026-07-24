@@ -26,6 +26,7 @@ from ccparser.layout.columns import (
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.row_tags import RowTag, has_row_tag, is_structural_continuation
+from ccparser.layout.text import _dominant_direction
 from ccparser.money import is_currency_shaped, is_money_shaped
 from ccparser.normalization_dates import (
     adjacent_boundary_date_completion,
@@ -202,12 +203,6 @@ def is_description_continuation(row: Row, previous: Row, region: TableRegion) ->
     return gap <= typical_height * 1.5
 
 
-def _text_direction(text: str) -> str:
-    rtl = sum(unicodedata.bidirectional(char) in {"R", "AL"} for char in text)
-    ltr = sum(unicodedata.bidirectional(char) == "L" for char in text)
-    return "rtl" if rtl > ltr else "ltr"
-
-
 def _cluster_lines(clusters: Sequence[EvidenceCluster]) -> tuple[tuple[EvidenceCluster, ...], ...]:
     lines: list[list[EvidenceCluster]] = []
     for cluster in sorted(clusters, key=lambda item: (item.bbox[1], item.bbox[0])):
@@ -231,7 +226,7 @@ def _cluster_lines(clusters: Sequence[EvidenceCluster]) -> tuple[tuple[EvidenceC
 def _primary_description_cluster(
     clusters: Sequence[EvidenceCluster],
 ) -> EvidenceCluster:
-    direction = _text_direction(" ".join(cluster.text for cluster in clusters))
+    direction = _dominant_direction((" ".join(cluster.text for cluster in clusters),))
     return (
         max(clusters, key=lambda cluster: cluster.bbox[2])
         if direction == "rtl"
@@ -261,6 +256,30 @@ type _NumericProcessorOccurrenceKey = tuple[int, BBox, BBox, BBox, str]
 
 
 @dataclass(frozen=True, slots=True)
+class _ProcessorOccurrence:
+    row_index: int
+    key: _NumericProcessorOccurrenceKey
+    signature: str
+    center: float
+    height: float
+    side: int
+
+
+def _processor_occurrences_corroborate(
+    first: _ProcessorOccurrence,
+    second: _ProcessorOccurrence,
+    *,
+    require_signature_match: bool,
+) -> bool:
+    return (
+        first.row_index != second.row_index
+        and (not require_signature_match or first.signature == second.signature)
+        and first.side == second.side
+        and abs(first.center - second.center) <= min(first.height, second.height) * 0.5
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _ProcessorReferenceProof:
     external_signatures: frozenset[str]
     numeric_occurrences: frozenset[_NumericProcessorOccurrenceKey]
@@ -283,10 +302,8 @@ def _numeric_processor_occurrence_key(
 
 def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorReferenceProof:
     counts: dict[str, int] = {}
-    numeric_samples: list[tuple[int, _NumericProcessorOccurrenceKey, str, float, float, int]] = []
-    positioned_anchor_samples: list[
-        tuple[int, _NumericProcessorOccurrenceKey, float, float, int]
-    ] = []
+    numeric_samples: list[_ProcessorOccurrence] = []
+    positioned_anchor_samples: list[_ProcessorOccurrence] = []
     for row_index, row in enumerate(region.rows):
         row_ledger = EvidenceLedger.from_rows((row,))
         description_cells = frozenset(_role_cells(row, region, ColumnRole.DESCRIPTION))
@@ -299,12 +316,8 @@ def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorRe
             for signature in _alphabetic_span_signatures(word.text)
         )
         row_signatures: set[str] = set()
-        row_numeric_samples: list[
-            tuple[_NumericProcessorOccurrenceKey, str, float, float, int]
-        ] = []
-        row_positioned_anchor_samples: list[
-            tuple[_NumericProcessorOccurrenceKey, float, float, int]
-        ] = []
+        row_numeric_samples: list[_ProcessorOccurrence] = []
+        row_positioned_anchor_samples: list[_ProcessorOccurrence] = []
         for cell in description_cells:
             for line in _cluster_lines(row_ledger.clusters_for_cell(cell)):
                 if len(line) < 2:
@@ -324,6 +337,7 @@ def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorRe
                         continue
                     if (
                         sample := _numeric_processor_occurrence_sample(
+                            row_index,
                             row_ledger,
                             cell,
                             line,
@@ -334,6 +348,7 @@ def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorRe
                         row_numeric_samples.append(sample)
                     if (
                         anchor_sample := _positioned_processor_anchor_sample(
+                            row_index,
                             row_ledger,
                             cell,
                             line,
@@ -346,43 +361,27 @@ def _corroborated_processor_reference_proof(region: TableRegion) -> _ProcessorRe
         for signature in row_signatures:
             counts[signature] = counts.get(signature, 0) + 1
         if len(row_numeric_samples) == 1:
-            numeric_samples.append((row_index, *row_numeric_samples[0]))
+            numeric_samples.append(row_numeric_samples[0])
         if len(row_positioned_anchor_samples) == 1:
-            positioned_anchor_samples.append((row_index, *row_positioned_anchor_samples[0]))
+            positioned_anchor_samples.append(row_positioned_anchor_samples[0])
     corroborated_occurrences: set[_NumericProcessorOccurrenceKey] = set()
     corroborated_anchor_occurrences: set[_NumericProcessorOccurrenceKey] = set()
     for index, first in enumerate(numeric_samples):
-        first_row, first_key, first_signature, first_center, first_height, first_side = first
         for second in numeric_samples[index + 1 :]:
-            (
-                second_row,
-                second_key,
-                second_signature,
-                second_center,
-                second_height,
-                second_side,
-            ) = second
-            if (
-                first_row != second_row
-                and first_signature == second_signature
-                and first_side == second_side
-                and abs(first_center - second_center) <= min(first_height, second_height) * 0.5
+            if _processor_occurrences_corroborate(
+                first,
+                second,
+                require_signature_match=True,
             ):
-                corroborated_occurrences.update((first_key, second_key))
-        for (
-            anchor_row,
-            anchor_key,
-            anchor_center,
-            anchor_height,
-            anchor_side,
-        ) in positioned_anchor_samples:
-            if (
-                first_row != anchor_row
-                and first_side == anchor_side
-                and abs(first_center - anchor_center) <= min(first_height, anchor_height) * 0.5
+                corroborated_occurrences.update((first.key, second.key))
+        for anchor in positioned_anchor_samples:
+            if _processor_occurrences_corroborate(
+                first,
+                anchor,
+                require_signature_match=False,
             ):
-                corroborated_occurrences.add(first_key)
-                corroborated_anchor_occurrences.add(anchor_key)
+                corroborated_occurrences.add(first.key)
+                corroborated_anchor_occurrences.add(anchor.key)
     return _ProcessorReferenceProof(
         external_signatures=frozenset(
             signature for signature, count in counts.items() if count >= 2
@@ -482,20 +481,20 @@ def _has_digital_positioned_backing(
     )
 
 
-def _numeric_processor_occurrence_sample(
+def _processor_occurrence(
+    row_index: int,
     ledger: EvidenceLedger,
     cell: Cell,
     line: Sequence[EvidenceCluster],
     primary: EvidenceCluster,
     cluster: EvidenceCluster,
-) -> tuple[_NumericProcessorOccurrenceKey, str, float, float, int] | None:
+) -> _ProcessorOccurrence | None:
     primary_text = normalize_text(primary.text)
     if (
         len(line) != 2
         or not any(char.isalpha() for char in primary_text)
         or any(char.isdigit() for char in primary_text)
         or _is_typed_non_description_text(primary_text)
-        or not _is_uncorroborated_whole_unit_numeric_text(cluster.text)
         or not _has_digital_positioned_backing(ledger, cluster)
         or not has_processor_reference_alignment(cluster.bbox, primary.bbox)
     ):
@@ -511,55 +510,47 @@ def _numeric_processor_occurrence_sample(
     typical_height = min(bbox_height(primary.bbox), bbox_height(cluster.bbox))
     if typical_height <= 0.0 or gap <= typical_height * 0.5:
         return None
-    return (
-        _numeric_processor_occurrence_key(cell, primary, cluster),
-        _cluster_signature(cluster),
-        bbox_center_x(cluster.bbox),
-        bbox_height(cluster.bbox),
-        side,
+    return _ProcessorOccurrence(
+        row_index=row_index,
+        key=_numeric_processor_occurrence_key(cell, primary, cluster),
+        signature=_cluster_signature(cluster),
+        center=bbox_center_x(cluster.bbox),
+        height=bbox_height(cluster.bbox),
+        side=side,
     )
 
 
+def _numeric_processor_occurrence_sample(
+    row_index: int,
+    ledger: EvidenceLedger,
+    cell: Cell,
+    line: Sequence[EvidenceCluster],
+    primary: EvidenceCluster,
+    cluster: EvidenceCluster,
+) -> _ProcessorOccurrence | None:
+    if not _is_uncorroborated_whole_unit_numeric_text(cluster.text):
+        return None
+    return _processor_occurrence(row_index, ledger, cell, line, primary, cluster)
+
+
 def _positioned_processor_anchor_sample(
+    row_index: int,
     ledger: EvidenceLedger,
     cell: Cell,
     line: Sequence[EvidenceCluster],
     primary: EvidenceCluster,
     cluster: EvidenceCluster,
     external_signatures: frozenset[str],
-) -> tuple[_NumericProcessorOccurrenceKey, float, float, int] | None:
-    primary_text = normalize_text(primary.text)
+) -> _ProcessorOccurrence | None:
     anchor_text = normalize_text(cluster.text)
     if (
-        len(line) != 2
-        or not any(char.isalpha() for char in primary_text)
-        or any(char.isdigit() for char in primary_text)
-        or _is_typed_non_description_text(primary_text)
-        or not anchor_text.startswith((".", "@"))
+        not anchor_text.startswith((".", "@"))
         or not any(char.isalpha() for char in anchor_text)
         or any(char.isdigit() for char in anchor_text)
         or _cluster_signature(cluster) not in external_signatures
-        or not _has_digital_positioned_backing(ledger, cluster)
-        or not has_processor_reference_alignment(cluster.bbox, primary.bbox)
     ):
         return None
-    if cluster.bbox[0] >= primary.bbox[2]:
-        gap = cluster.bbox[0] - primary.bbox[2]
-        side = 1
-    elif primary.bbox[0] >= cluster.bbox[2]:
-        gap = primary.bbox[0] - cluster.bbox[2]
-        side = -1
-    else:
-        return None
-    typical_height = min(bbox_height(primary.bbox), bbox_height(cluster.bbox))
-    if typical_height <= 0.0 or gap <= typical_height * 0.5:
-        return None
-    return (
-        _numeric_processor_occurrence_key(cell, primary, cluster),
-        bbox_center_x(cluster.bbox),
-        bbox_height(cluster.bbox),
-        side,
-    )
+    return _processor_occurrence(row_index, ledger, cell, line, primary, cluster)
 
 
 def _is_numeric_processor_cluster(cluster: EvidenceCluster) -> bool:
@@ -600,6 +591,7 @@ def _selected_description_cell_atoms(
             is_repeated_numeric = (
                 allow_repeated_numeric
                 and _numeric_processor_occurrence_sample(
+                    -1,
                     ledger,
                     cell,
                     line,

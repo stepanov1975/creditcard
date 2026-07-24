@@ -141,25 +141,32 @@ def _proven_implicit_original_currency(
     return canonical_currency(billing_currency) if proven_row_count >= minimum_proven_rows else None
 
 
+def _unique_row_money_pair(row: Row) -> tuple[Decimal, str] | None:
+    words = tuple(word for cell in row.cells for word in cell.words)
+    currencies = {
+        currency for word in words if (currency := canonical_currency(word.text)) is not None
+    }
+    if len(currencies) != 1:
+        return None
+    currency = next(iter(currencies))
+    amounts = {
+        parsed.amount
+        for word in words
+        if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
+    }
+    if len(amounts) != 1:
+        return None
+    return next(iter(amounts)), currency
+
+
 def _bounded_note_original_amounts(rows: Sequence[Row]) -> frozenset[tuple[Decimal, str]]:
     corroborated: set[tuple[Decimal, str]] = set()
     for row in rows:
         if not has_row_tag(row, RowTag.HEBREW_NOTE_DETAIL):
             continue
-        words = tuple(word for cell in row.cells for word in cell.words)
-        currencies = {
-            currency for word in words if (currency := canonical_currency(word.text)) is not None
-        }
-        if len(currencies) != 1:
-            continue
-        currency = next(iter(currencies))
-        amounts = {
-            parsed.amount
-            for word in words
-            if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
-        }
-        if len(amounts) == 1:
-            corroborated.add((next(iter(amounts)), currency))
+        pair = _unique_row_money_pair(row)
+        if pair is not None:
+            corroborated.add(pair)
     return frozenset(corroborated)
 
 
@@ -210,21 +217,12 @@ def _original_amount_from_subordinate_detail(
     for row in continuation_rows:
         if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL):
             continue
-        words = tuple(word for cell in row.cells for word in cell.words)
-        currencies = {
-            currency for word in words if (currency := canonical_currency(word.text)) is not None
-        }
-        if len(currencies) != 1:
-            continue
-        currency = next(iter(currencies))
-        amounts = {
-            parsed.amount
-            for word in words
-            if (parsed := parse_amount(word.text, currency_hint=currency)).amount is not None
-        }
-        if len(amounts) == 1:
-            pairs.add((next(iter(amounts)), currency))
-            supporting_confidences.extend(word.confidence for word in words)
+        pair = _unique_row_money_pair(row)
+        if pair is not None:
+            pairs.add(pair)
+            supporting_confidences.extend(
+                word.confidence for cell in row.cells for word in cell.words
+            )
     if len(pairs) != 1:
         return None
     amount, currency = next(iter(pairs))

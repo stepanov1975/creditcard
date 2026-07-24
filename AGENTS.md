@@ -70,6 +70,34 @@ JSON/CSV output.
   in ignored local paths. Do not add them or their sensitive values to Git,
   tracked fixtures, commit messages, or public logs.
 
+### Full-corpus run lessons
+
+- Treat a direct `ccparse parse` run as a diagnostic preflight, not corpus
+  acceptance. A strict retained run should report exactly 104 documents and 104
+  reconciled results, and the quarantine run should report exactly 5
+  `not_statement` results, but those counts alone do not prove baseline parity,
+  determinism, membership, toolchain identity, or performance.
+- Capture parser output privately because the normal CLI output includes source
+  names. Report only the privacy-safe aggregate line; never copy per-document
+  names, diagnostics, transactions, or financial values into public logs.
+- Give a cold-cache full-corpus run a realistic execution bound and treat an
+  interrupted or timed-out run as no verdict. Reusing OCR artifacts produced by
+  the same candidate is acceptable only to resume a diagnostic preflight. The
+  formal gate must still perform its required independent empty-cache runs.
+- Compare large canonical outputs with constant-memory SHA-256 checks after
+  validating the accepted baseline's independent pin. Avoid loading an entire
+  corpus `results.json` into an additional in-memory model merely to compare it;
+  the retained corpus can exceed the worker's memory limit. Require both JSON
+  and CSV bytes to match both accepted baseline runs.
+- Make corpus-controller shell checks fail closed with `set -euo pipefail`,
+  explicitly require every external command before use, and test every captured
+  value before reporting success. A missing command inside a substitution must
+  never fall through to a printed pass.
+- Even exact diagnostic JSON/CSV parity is not a formal `verify` attestation.
+  Before merging, still require the clean independently pinned commit, protected
+  membership and baseline pins, repeated deterministic runs, matching toolchain
+  and worker count, and `performance_checked=true`.
+
 ## Agent skills
 
 ### Issue tracker

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from decimal import Decimal, localcontext
 
 import pytest
@@ -3681,6 +3682,71 @@ def test_cross_field_arithmetic_proves_one_coherent_positioned_fx_layer() -> Non
     assert extraction.details.net_fee is not None
     assert extraction.details.net_fee.amount == Decimal("0.69")
     assert extraction.diagnostics == ()
+
+
+def test_positioned_fx_proof_finalizer_owns_values_and_ordered_claims() -> None:
+    import ccparser.fx as fx_module
+
+    rate_evidence = (EvidenceReference(page_number=1, bbox=(0, 10, 10, 20), raw_text="rate"),)
+    percentage_evidence = (
+        EvidenceReference(page_number=1, bbox=(0, 20, 10, 30), raw_text="percentage"),
+    )
+    gross_evidence = (EvidenceReference(page_number=1, bbox=(0, 30, 10, 40), raw_text="gross"),)
+    discount_evidence = (
+        EvidenceReference(page_number=1, bbox=(0, 40, 10, 50), raw_text="discount"),
+    )
+    proof = fx_module._PositionedFxProof(
+        exchange_rate=fx_module._PositionedDecimalProof(
+            value=Decimal("2.9720"),
+            evidence=rate_evidence,
+            atom_ids=frozenset((1,)),
+        ),
+        fee_percentage=fx_module._PositionedDecimalProof(
+            value=Decimal("3.00"),
+            evidence=percentage_evidence,
+            atom_ids=frozenset((2,)),
+        ),
+        gross_fee=fx_module._PositionedMoneyProof(
+            amount=Decimal("0.89"),
+            currency="ILS",
+            evidence=gross_evidence,
+            atom_ids=frozenset((3,)),
+        ),
+        fee_discount=fx_module._PositionedMoneyProof(
+            amount=Decimal("0.20"),
+            currency="ILS",
+            evidence=discount_evidence,
+            atom_ids=frozenset((4,)),
+        ),
+        discount_percentage_atom_ids=frozenset((5,)),
+        ancillary_claim=EvidenceClaim(SemanticOwner.ANCILLARY, frozenset((6,))),
+    )
+
+    values = fx_module._finalize_positioned_fx_proof(
+        proof,
+        original_amount=Decimal("10.00"),
+        billed_amount=Decimal("29.72"),
+    )
+
+    assert values is not None
+    assert values.exchange_rate is not None
+    assert values.exchange_rate.value == Decimal("2.9720")
+    assert values.fee_percentage is not None
+    assert values.fee_percentage.value == Decimal("3.00")
+    assert values.gross_fee is not None
+    assert values.fee_discount is not None
+    assert values.net_fee is not None
+    assert values.net_fee.amount == Decimal("0.69")
+    assert values.net_fee.evidence == (*gross_evidence, *discount_evidence)
+    assert values.claims == (
+        EvidenceClaim(SemanticOwner.EXCHANGE_RATE, frozenset((1,))),
+        EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, frozenset((2,))),
+        EvidenceClaim(SemanticOwner.GROSS_FX_FEE, frozenset((3,))),
+        EvidenceClaim(SemanticOwner.FX_FEE_DISCOUNT, frozenset((4, 5))),
+        EvidenceClaim(SemanticOwner.ANCILLARY, frozenset((6,))),
+    )
+    with pytest.raises(FrozenInstanceError):
+        proof.ancillary_claim = None
 
 
 def test_cross_field_arithmetic_proves_compact_positioned_fx_layer() -> None:

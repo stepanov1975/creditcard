@@ -518,11 +518,10 @@ def _is_future_billing_total(
     original_values: set[tuple[Decimal, str]] = set()
     for row in section_rows:
         for cell in row.cells:
-            center = _center_x(cell.bbox)
             values = (cell.text, *(word.text for word in cell.words))
-            if billed_column.bbox[0] <= center <= billed_column.bbox[2]:
+            if cells_in_column((cell,), billed_column):
                 billed_cells.append(cell)
-            elif original_columns[0].bbox[0] <= center <= original_columns[0].bbox[2]:
+            elif cells_in_column((cell,), original_columns[0]):
                 original_values.update(parsed_values(values))
     candidate_values = parsed_values(
         (*[cell.text for cell in candidate.cells], *[word.text for word in candidate.words])
@@ -570,13 +569,7 @@ def _is_future_billing_total(
     section_date_columns = tuple(
         column for column in schema.columns if column.role is ColumnRole.DATE
     )
-    section_date_cells = tuple(
-        cell
-        for cell in section_rows[0].cells
-        if section_date_columns[0].bbox[0]
-        <= _center_x(cell.bbox)
-        <= section_date_columns[0].bbox[2]
-    )
+    section_date_cells = cells_in_column(section_rows[0].cells, section_date_columns[0])
     preceding_current_regions = tuple(
         region
         for region in current_regions
@@ -1164,9 +1157,7 @@ def _amount_cells_in_nearest_billed_band(
     if billed_column is None:
         return ()
     return tuple(
-        candidate
-        for candidate in amount_cells
-        if billed_column.bbox[0] <= _center_x(candidate[0].bbox) <= billed_column.bbox[2]
+        candidate for candidate in amount_cells if cells_in_column((candidate[0],), billed_column)
     )
 
 
@@ -1332,23 +1323,6 @@ def _metadata_field(rows: Sequence[Row], field_name: str) -> DiscoveredField | N
     return None
 
 
-def _complete_date_year(match: re.Match[str]) -> int | None:
-    first, _, second, third = match.groups()
-    if len(first) == 4 and len(third) != 4:
-        year, month, day = int(first), int(second), int(third)
-    elif len(third) == 4 and len(first) != 4:
-        day, month, year = int(first), int(second), int(third)
-    else:
-        return None
-    if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
-        return None
-    try:
-        date(year, month, day)
-    except ValueError:
-        return None
-    return year
-
-
 def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
     cells: list[Cell] = []
     for region in regions:
@@ -1413,6 +1387,154 @@ def _pdf_date_metadata_anchor(
     return creation_date.year, selected
 
 
+type _DateYearCandidate = tuple[
+    DateTokenStyle,
+    tuple[tuple[int, int], ...],
+    tuple[Cell, ...],
+    tuple[tuple[str, str], ...],
+]
+
+
+def _table_date_year_candidates(
+    cells: Sequence[Cell],
+    table_date_cells: Sequence[Cell],
+    table_short_years_by_style: Mapping[DateTokenStyle, set[int]],
+    table_short_months_by_style: Mapping[DateTokenStyle, Mapping[int, set[int]]],
+    metadata: Sequence[tuple[str, str]],
+) -> tuple[_DateYearCandidate, ...]:
+    cross_style_anchors = _cross_style_year_anchors(cells)
+    pdf_date_metadata = _pdf_date_metadata_anchor(metadata)
+    metadata_year = pdf_date_metadata[0] if pdf_date_metadata is not None else None
+    candidates: list[_DateYearCandidate] = []
+    for style in FULL_DATE_TOKEN_PATTERNS:
+        short_pattern = SHORT_DATE_TOKEN_PATTERNS[style]
+        full_years = set(cross_style_anchors)
+        if metadata_year is not None:
+            full_years.add(metadata_year)
+        supporting_cells_by_year = {
+            year: list(values) for year, values in cross_style_anchors.items()
+        }
+        table_short_years = table_short_years_by_style[style]
+        if not table_short_years:
+            continue
+        year_by_suffix: list[tuple[int, int]] = []
+        context_supporting_cells: list[Cell] = []
+        used_evidence_years: set[int] = set()
+        for short_year in sorted(table_short_years):
+            matching_years = tuple(sorted(year for year in full_years if year % 100 == short_year))
+            candidate_evidence_years = {year: {year} for year in matching_years}
+            for bracketed_year in range(MIN_CONTEXT_YEAR, MAX_CONTEXT_YEAR + 1):
+                if (
+                    bracketed_year % 100 == short_year
+                    and bracketed_year - 1 in full_years
+                    and bracketed_year + 1 in full_years
+                ):
+                    candidate_evidence_years.setdefault(bracketed_year, set()).update(
+                        (bracketed_year - 1, bracketed_year + 1)
+                    )
+            if not candidate_evidence_years and len(table_short_years) == 2:
+                months_by_year = table_short_months_by_style[style]
+                for anchor_year in full_years:
+                    anchor_suffix = anchor_year % 100
+                    if anchor_suffix not in table_short_years or anchor_suffix == short_year:
+                        continue
+                    inferred_year: int | None = None
+                    if short_year == (anchor_suffix - 1) % 100:
+                        inferred_year = anchor_year - 1
+                    elif short_year == (anchor_suffix + 1) % 100:
+                        inferred_year = anchor_year + 1
+                    if inferred_year is None or not (
+                        MIN_CONTEXT_YEAR <= inferred_year <= MAX_CONTEXT_YEAR
+                    ):
+                        continue
+                    earlier_suffix, later_suffix = (
+                        (short_year, anchor_suffix)
+                        if inferred_year < anchor_year
+                        else (anchor_suffix, short_year)
+                    )
+                    earlier_months = months_by_year.get(earlier_suffix, set())
+                    later_months = months_by_year.get(later_suffix, set())
+                    if (
+                        earlier_months
+                        and later_months
+                        and all(month >= 10 for month in earlier_months)
+                        and all(month <= 3 for month in later_months)
+                    ):
+                        candidate_evidence_years.setdefault(inferred_year, set()).add(anchor_year)
+            if len(candidate_evidence_years) != 1:
+                break
+            selected_suffix_year, evidence_years = next(iter(candidate_evidence_years.items()))
+            year_by_suffix.append((short_year, selected_suffix_year))
+            used_evidence_years.update(evidence_years)
+            for evidence_year in evidence_years:
+                for cell in supporting_cells_by_year.get(evidence_year, ()):
+                    if not any(existing is cell for existing in context_supporting_cells):
+                        context_supporting_cells.append(cell)
+        if len(year_by_suffix) != len(table_short_years):
+            continue
+        if metadata_year is not None and not any(
+            abs(resolved_year - metadata_year) <= 1 for _, resolved_year in year_by_suffix
+        ):
+            continue
+        ordered_supporting_cells = tuple(
+            cell
+            for cell in cells
+            if any(cell is supporting for supporting in context_supporting_cells)
+        )
+        if not ordered_supporting_cells:
+            selected_suffixes = {suffix for suffix, _ in year_by_suffix}
+            ordered_supporting_cells = tuple(
+                cell
+                for cell in table_date_cells
+                if any(
+                    int(match.group("year")) in selected_suffixes
+                    for match in short_pattern.finditer(cell.text)
+                )
+            )
+        selected_metadata = (
+            pdf_date_metadata[1]
+            if pdf_date_metadata is not None and metadata_year in used_evidence_years
+            else ()
+        )
+        candidates.append(
+            (style, tuple(year_by_suffix), ordered_supporting_cells, selected_metadata)
+        )
+    return tuple(candidates)
+
+
+def _document_date_year_candidates(cells: Sequence[Cell]) -> tuple[_DateYearCandidate, ...]:
+    candidates: list[_DateYearCandidate] = []
+    for style, full_pattern in FULL_DATE_TOKEN_PATTERNS.items():
+        short_pattern = SHORT_DATE_TOKEN_PATTERNS[style]
+        full_years: set[int] = set()
+        supporting_cells_by_year: dict[int, list[Cell]] = {}
+        short_years: set[int] = set()
+        for cell in cells:
+            for match in full_pattern.finditer(cell.text):
+                year = int(match.group("year"))
+                if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
+                    continue
+                try:
+                    date(year, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                full_years.add(year)
+                supporting_cells_by_year.setdefault(year, []).append(cell)
+            for match in short_pattern.finditer(cell.text):
+                try:
+                    date(2000, int(match.group("month")), int(match.group("day")))
+                except ValueError:
+                    continue
+                short_years.add(int(match.group("year")))
+        if len(full_years) == 1:
+            year = next(iter(full_years))
+            if short_years == {year % 100}:
+                candidates.append(
+                    (style, ((year % 100, year),), tuple(supporting_cells_by_year[year]), ())
+                )
+    return tuple(candidates)
+
+
 def _date_year_context(
     rows: Sequence[Row],
     regions: Sequence[TableRegion],
@@ -1436,144 +1558,17 @@ def _date_year_context(
                 months_by_year.setdefault(short_year, set()).add(int(match.group("month")))
         table_short_years_by_style[style] = years
         table_short_months_by_style[style] = months_by_year
-    has_table_short_dates = any(table_short_years_by_style.values())
-    cross_style_anchors = _cross_style_year_anchors(cells)
-    pdf_date_metadata = _pdf_date_metadata_anchor(metadata)
-    metadata_year = pdf_date_metadata[0] if pdf_date_metadata is not None else None
-    candidates: list[
-        tuple[
-            DateTokenStyle,
-            tuple[tuple[int, int], ...],
-            tuple[Cell, ...],
-            tuple[tuple[str, str], ...],
-        ]
-    ] = []
-    for style, full_pattern in FULL_DATE_TOKEN_PATTERNS.items():
-        short_pattern = SHORT_DATE_TOKEN_PATTERNS[style]
-        full_years: set[int] = set(cross_style_anchors) if has_table_short_dates else set()
-        if has_table_short_dates and metadata_year is not None:
-            full_years.add(metadata_year)
-        supporting_cells_by_year: dict[int, list[Cell]] = (
-            {year: list(values) for year, values in cross_style_anchors.items()}
-            if has_table_short_dates
-            else {}
+    candidates = (
+        _table_date_year_candidates(
+            cells,
+            table_date_cells,
+            table_short_years_by_style,
+            table_short_months_by_style,
+            metadata,
         )
-        short_years: set[int] = set()
-        for cell in cells:
-            if not has_table_short_dates:
-                for match in full_pattern.finditer(cell.text):
-                    year = int(match.group("year"))
-                    if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
-                        continue
-                    try:
-                        date(year, int(match.group("month")), int(match.group("day")))
-                    except ValueError:
-                        continue
-                    full_years.add(year)
-                    supporting_cells_by_year.setdefault(year, []).append(cell)
-            for match in short_pattern.finditer(cell.text):
-                try:
-                    date(2000, int(match.group("month")), int(match.group("day")))
-                except ValueError:
-                    continue
-                short_years.add(int(match.group("year")))
-        if has_table_short_dates:
-            table_short_years = table_short_years_by_style[style]
-            if not table_short_years:
-                continue
-            year_by_suffix: list[tuple[int, int]] = []
-            context_supporting_cells: list[Cell] = []
-            used_evidence_years: set[int] = set()
-            for short_year in sorted(table_short_years):
-                matching_years = tuple(
-                    sorted(year for year in full_years if year % 100 == short_year)
-                )
-                candidate_evidence_years = {year: {year} for year in matching_years}
-                for bracketed_year in range(MIN_CONTEXT_YEAR, MAX_CONTEXT_YEAR + 1):
-                    if (
-                        bracketed_year % 100 == short_year
-                        and bracketed_year - 1 in full_years
-                        and bracketed_year + 1 in full_years
-                    ):
-                        candidate_evidence_years.setdefault(bracketed_year, set()).update(
-                            (bracketed_year - 1, bracketed_year + 1)
-                        )
-                if not candidate_evidence_years and len(table_short_years) == 2:
-                    months_by_year = table_short_months_by_style[style]
-                    for anchor_year in full_years:
-                        anchor_suffix = anchor_year % 100
-                        if anchor_suffix not in table_short_years or anchor_suffix == short_year:
-                            continue
-                        inferred_year: int | None = None
-                        if short_year == (anchor_suffix - 1) % 100:
-                            inferred_year = anchor_year - 1
-                        elif short_year == (anchor_suffix + 1) % 100:
-                            inferred_year = anchor_year + 1
-                        if inferred_year is None or not (
-                            MIN_CONTEXT_YEAR <= inferred_year <= MAX_CONTEXT_YEAR
-                        ):
-                            continue
-                        earlier_suffix, later_suffix = (
-                            (short_year, anchor_suffix)
-                            if inferred_year < anchor_year
-                            else (anchor_suffix, short_year)
-                        )
-                        earlier_months = months_by_year.get(earlier_suffix, set())
-                        later_months = months_by_year.get(later_suffix, set())
-                        if (
-                            earlier_months
-                            and later_months
-                            and all(month >= 10 for month in earlier_months)
-                            and all(month <= 3 for month in later_months)
-                        ):
-                            candidate_evidence_years.setdefault(inferred_year, set()).add(
-                                anchor_year
-                            )
-                if len(candidate_evidence_years) != 1:
-                    break
-                selected_suffix_year, evidence_years = next(iter(candidate_evidence_years.items()))
-                year_by_suffix.append((short_year, selected_suffix_year))
-                used_evidence_years.update(evidence_years)
-                for evidence_year in evidence_years:
-                    for cell in supporting_cells_by_year.get(evidence_year, ()):
-                        if not any(existing is cell for existing in context_supporting_cells):
-                            context_supporting_cells.append(cell)
-            if len(year_by_suffix) != len(table_short_years):
-                continue
-            if metadata_year is not None and not any(
-                abs(resolved_year - metadata_year) <= 1 for _, resolved_year in year_by_suffix
-            ):
-                continue
-            ordered_supporting_cells = tuple(
-                cell
-                for cell in cells
-                if any(cell is supporting for supporting in context_supporting_cells)
-            )
-            if not ordered_supporting_cells:
-                selected_suffixes = {suffix for suffix, _ in year_by_suffix}
-                ordered_supporting_cells = tuple(
-                    cell
-                    for cell in table_date_cells
-                    if any(
-                        int(match.group("year")) in selected_suffixes
-                        for match in short_pattern.finditer(cell.text)
-                    )
-                )
-            selected_metadata = (
-                pdf_date_metadata[1]
-                if pdf_date_metadata is not None and metadata_year in used_evidence_years
-                else ()
-            )
-            candidates.append(
-                (style, tuple(year_by_suffix), ordered_supporting_cells, selected_metadata)
-            )
-            continue
-        if len(full_years) == 1:
-            year = next(iter(full_years))
-            if short_years == {year % 100}:
-                candidates.append(
-                    (style, ((year % 100, year),), tuple(supporting_cells_by_year[year]), ())
-                )
+        if any(table_short_years_by_style.values())
+        else _document_date_year_candidates(cells)
+    )
     if len(candidates) != 1:
         return None
     style, selected_year_by_suffix, supporting_cells, metadata_evidence = candidates[0]
@@ -1845,11 +1840,7 @@ def _region_billed_amounts(
     for row in region.rows:
         if is_structural_continuation(row):
             continue
-        cells = tuple(
-            cell
-            for cell in row.cells
-            if billed_column.bbox[0] <= _center_x(cell.bbox) <= billed_column.bbox[2]
-        )
+        cells = cells_in_column(row.cells, billed_column)
         if len(cells) != 1:
             return None
         parsed = parse_amount(cells[0].text, currency_hint=currency)
@@ -2098,7 +2089,6 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
         candidate
         for page in ordered_pages
         for candidate in _singleton_transaction_candidates(
-            page,
             merged_rows_by_page[page.page_number],
             tuple(region for region in regions if region.page_number == page.page_number),
         )

@@ -243,6 +243,42 @@ def test_ocr_uses_named_version_and_recognition_timeouts() -> None:
     assert getattr(ocr_module, "TESSERACT_RECOGNITION_TIMEOUT_SECONDS", None) == 120.0
 
 
+def test_tesseract_launcher_owns_unbound_byte_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def fake_run(
+        command: tuple[str, ...],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        observed.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"version", b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    completed = ocr_module._launch_tesseract(
+        ("tesseract", "--version"),
+        include_tessdata=False,
+        input_bytes=None,
+        timeout=10.0,
+        stderr_to_stdout=True,
+    )
+
+    assert completed.stdout == b"version"
+    assert observed == [
+        (
+            ("tesseract", "--version"),
+            {
+                "check": True,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "timeout": 10.0,
+            },
+        )
+    ]
+
+
 def test_bound_runtime_validates_staging_before_and_after_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

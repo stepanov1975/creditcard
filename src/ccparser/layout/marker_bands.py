@@ -19,6 +19,7 @@ from ccparser.geometry import union_bbox as _union_bbox
 from ccparser.layout.columns import cells_in_column, isolated_date_token
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.layout.row_tags import is_structural_continuation
+from ccparser.layout.rows import _ordered_cells_from_stored_direction
 from ccparser.layout.text import logical_text_for_evidence
 from ccparser.money import canonical_currency, is_currency_shaped, is_money_shaped
 from ccparser.text_tokens import normalize_text
@@ -64,6 +65,17 @@ class _RecognitionProfile(StrEnum):
     ALPHABETIC = "alphabetic"
     MIXED = "mixed"
     SYMBOL = "symbol"
+
+
+@dataclass(frozen=True, slots=True)
+class _MarkerDateCellEvidence:
+    row: Row
+    source: Cell
+    date_word: Word
+    marker_words: tuple[Word, ...]
+    marker_bbox: BBox
+    date_bbox: BBox
+    label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,11 +143,12 @@ def _recognition_profile(text: str) -> _RecognitionProfile:
     return _RecognitionProfile.SYMBOL
 
 
-def _is_nonmaterial_layout_marker_text(text: str) -> bool:
-    compact = "".join(char for char in unicodedata.normalize("NFC", text) if not char.isspace())
-    if not 1 <= len(compact) <= 2 or len(set(compact)) != 1:
+def is_visible_vertical_layout_marker(visible_run: str) -> bool:
+    """Return whether a prepared visible run is a non-semantic vertical marker."""
+
+    if not 1 <= len(visible_run) <= 2 or len(set(visible_run)) != 1:
         return False
-    char = compact[0]
+    char = visible_run[0]
     name = unicodedata.name(char, "")
     return (
         unicodedata.category(char) == "Sm"
@@ -144,7 +157,12 @@ def _is_nonmaterial_layout_marker_text(text: str) -> bool:
     )
 
 
-def _cell_split(row: Row, cell: Cell) -> _CellSplit | None:
+def _is_nonmaterial_layout_marker_text(text: str) -> bool:
+    visible_run = "".join(char for char in unicodedata.normalize("NFC", text) if not char.isspace())
+    return is_visible_vertical_layout_marker(visible_run)
+
+
+def _marker_date_cell_evidence(row: Row, cell: Cell) -> _MarkerDateCellEvidence | None:
     date_words = tuple(word for word in cell.words if _is_exact_date_word(word))
     if len(date_words) != 1:
         return None
@@ -155,32 +173,50 @@ def _cell_split(row: Row, cell: Cell) -> _CellSplit | None:
     marker_bbox = _union_bbox(word.bbox for word in marker_words)
     if vertical_overlap(marker_bbox, date_word.bbox) < _MINIMUM_MARKER_DATE_VERTICAL_OVERLAP:
         return None
-    if any(
-        max(marker_bbox[0], glyph.bbox[0]) < min(marker_bbox[2], glyph.bbox[2])
-        and max(marker_bbox[1], glyph.bbox[1]) < min(marker_bbox[3], glyph.bbox[3])
-        for glyph in cell.glyphs
-        if not glyph.char.isspace()
-    ):
-        return None
-    if marker_bbox[2] < date_word.bbox[0]:
-        side = _MarkerSide.LEFT
-    elif date_word.bbox[2] < marker_bbox[0]:
-        side = _MarkerSide.RIGHT
-    else:
-        return None
     label = logical_text_for_evidence((), marker_words)
     if not normalize_text(label) or isolated_date_token(label) is not None:
         return None
-    return _CellSplit(
+    return _MarkerDateCellEvidence(
         row=row,
         source=cell,
         date_word=date_word,
         marker_words=marker_words,
         marker_bbox=marker_bbox,
         date_bbox=date_word.bbox,
-        side=side,
         label=label,
     )
+
+
+def _strict_cell_split(evidence: _MarkerDateCellEvidence) -> _CellSplit | None:
+    if any(
+        max(evidence.marker_bbox[0], glyph.bbox[0]) < min(evidence.marker_bbox[2], glyph.bbox[2])
+        and max(evidence.marker_bbox[1], glyph.bbox[1])
+        < min(evidence.marker_bbox[3], glyph.bbox[3])
+        for glyph in evidence.source.glyphs
+        if not glyph.char.isspace()
+    ):
+        return None
+    if evidence.marker_bbox[2] < evidence.date_bbox[0]:
+        side = _MarkerSide.LEFT
+    elif evidence.date_bbox[2] < evidence.marker_bbox[0]:
+        side = _MarkerSide.RIGHT
+    else:
+        return None
+    return _CellSplit(
+        row=evidence.row,
+        source=evidence.source,
+        date_word=evidence.date_word,
+        marker_words=evidence.marker_words,
+        marker_bbox=evidence.marker_bbox,
+        date_bbox=evidence.date_bbox,
+        side=side,
+        label=evidence.label,
+    )
+
+
+def _cell_split(row: Row, cell: Cell) -> _CellSplit | None:
+    evidence = _marker_date_cell_evidence(row, cell)
+    return _strict_cell_split(evidence) if evidence is not None else None
 
 
 def _has_multiple_positioned_dates(cell: Cell) -> bool:
@@ -325,21 +361,14 @@ def _band_occupant_split(
     row: Row,
     cell: Cell,
 ) -> _CellSplit | None:
-    direct = _cell_split(row, cell)
+    evidence = _marker_date_cell_evidence(row, cell)
+    if evidence is None:
+        return None
+    direct = _strict_cell_split(evidence)
     if direct is not None and direct.side is band.side:
         return direct
-    date_words = tuple(word for word in cell.words if _is_exact_date_word(word))
-    if len(date_words) != 1:
-        return None
-    date_word = date_words[0]
-    marker_words = tuple(word for word in cell.words if word is not date_word)
-    if not marker_words or any(word.source != "ocr" for word in marker_words):
-        return None
-    marker_bbox = _union_bbox(word.bbox for word in marker_words)
-    if vertical_overlap(marker_bbox, date_word.bbox) < _MINIMUM_MARKER_DATE_VERTICAL_OVERLAP:
-        return None
-    marker_center = _center_x(marker_bbox)
-    date_center = _center_x(date_word.bbox)
+    marker_center = _center_x(evidence.marker_bbox)
+    date_center = _center_x(evidence.date_bbox)
     marker_is_left = marker_center < band.boundary
     date_is_left = date_center < band.boundary
     if marker_is_left == date_is_left or marker_is_left != (band.side is _MarkerSide.LEFT):
@@ -350,31 +379,28 @@ def _band_occupant_split(
         typical_height * _MAXIMUM_CENTER_DEVIATION_HEIGHT_RATIO
     ):
         return None
-    label = logical_text_for_evidence((), marker_words)
-    normalized_label = normalize_text(label)
-    if not normalized_label or isolated_date_token(label) is not None:
-        return None
+    normalized_label = normalize_text(evidence.label)
     if _band_uses_cross_profile_ocr_confusion(band):
         compact = "".join(normalized_label.split())
         support_profiles = {_recognition_profile(candidate.label) for candidate in band.cells}
         if (
-            date_word.source != "ocr"
-            or len(marker_words) != 1
+            evidence.date_word.source != "ocr"
+            or len(evidence.marker_words) != 1
             or not 1 <= len(compact) <= _MAXIMUM_CONFUSED_OCR_LABEL_LENGTH
-            or _recognition_profile(label) not in support_profiles
+            or _recognition_profile(evidence.label) not in support_profiles
         ):
             return None
-    elif not _is_nonmaterial_layout_marker_text(label):
+    elif not _is_nonmaterial_layout_marker_text(evidence.label):
         return None
     return _CellSplit(
-        row=row,
-        source=cell,
-        date_word=date_word,
-        marker_words=marker_words,
-        marker_bbox=marker_bbox,
-        date_bbox=date_word.bbox,
+        row=evidence.row,
+        source=evidence.source,
+        date_word=evidence.date_word,
+        marker_words=evidence.marker_words,
+        marker_bbox=evidence.marker_bbox,
+        date_bbox=evidence.date_bbox,
         side=band.side,
-        label=label,
+        label=evidence.label,
     )
 
 
@@ -480,19 +506,9 @@ def _split_row(
     )
     if cells == row.cells:
         return row
-    direction = next(
-        (
-            diagnostic.removeprefix("dominant_direction:")
-            for diagnostic in row.diagnostics
-            if diagnostic.startswith("dominant_direction:")
-        ),
-        "ltr",
-    )
     return row.model_copy(
         update={
-            "cells": tuple(
-                sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl")
-            ),
+            "cells": _ordered_cells_from_stored_direction(row, cells),
             "diagnostics": tuple(
                 dict.fromkeys((*row.diagnostics, "split_repeated_ocr_marker_band"))
             ),

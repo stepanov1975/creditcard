@@ -42,6 +42,10 @@ type FiniteBBox = tuple[FiniteCoordinate, FiniteCoordinate, FiniteCoordinate, Fi
 type FinitePoint = tuple[FiniteCoordinate, FiniteCoordinate]
 
 
+class _ImmutablePublicModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
 class TransactionKind(StrEnum):
     """The direction of a billed transaction."""
 
@@ -70,20 +74,16 @@ class Status(StrEnum):
     NOT_STATEMENT = "not_statement"
 
 
-class EvidenceReference(BaseModel):
+class EvidenceReference(_ImmutablePublicModel):
     """Source text and geometry supporting an extracted value."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int
     bbox: FiniteBBox
     raw_text: str
 
 
-class ExtractedDecimal(BaseModel):
+class ExtractedDecimal(_ImmutablePublicModel):
     """One finite decimal value with the exact evidence that proves it."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     value: FiniteDecimal
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
@@ -93,10 +93,8 @@ class ExtractedDecimal(BaseModel):
         return plain_decimal_string(value)
 
 
-class ExtractedMoney(BaseModel):
+class ExtractedMoney(_ImmutablePublicModel):
     """One printed or exactly derived monetary value with provenance."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     amount: FiniteDecimal
     currency: str
@@ -108,10 +106,29 @@ class ExtractedMoney(BaseModel):
         return plain_decimal_string(value)
 
 
-class ForeignExchangeDetails(BaseModel):
-    """Structured rate and fee details for a foreign-currency transaction."""
+def _derive_net_fee(
+    gross_fee: ExtractedMoney,
+    fee_discount: ExtractedMoney,
+) -> ExtractedMoney:
+    if gross_fee.derivation != "printed":
+        raise ValueError("gross fee must be printed")
+    if fee_discount.derivation != "printed":
+        raise ValueError("fee discount must be printed")
+    if gross_fee.currency != fee_discount.currency:
+        raise ValueError("derived fee currencies must match")
+    amount = exact_difference(gross_fee.amount, fee_discount.amount)
+    if amount < 0:
+        raise ValueError("net fee must equal exact gross fee minus discount")
+    return ExtractedMoney(
+        amount=amount,
+        currency=gross_fee.currency,
+        evidence=tuple(dict.fromkeys((*gross_fee.evidence, *fee_discount.evidence))),
+        derivation="gross_fee_minus_discount",
+    )
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+
+class ForeignExchangeDetails(_ImmutablePublicModel):
+    """Structured rate and fee details for a foreign-currency transaction."""
 
     exchange_rate: ExtractedDecimal | None = None
     fee_percentage: ExtractedDecimal | None = None
@@ -154,23 +171,14 @@ class ForeignExchangeDetails(BaseModel):
                 != 1
             ):
                 raise ValueError("derived fee currencies must match")
-            expected = exact_difference(self.gross_fee.amount, self.fee_discount.amount)
-            expected_evidence = tuple(
-                dict.fromkeys((*self.gross_fee.evidence, *self.fee_discount.evidence))
-            )
-            if (
-                expected < 0
-                or self.net_fee.amount != expected
-                or self.net_fee.evidence != expected_evidence
-            ):
+            expected = _derive_net_fee(self.gross_fee, self.fee_discount)
+            if self.net_fee.amount != expected.amount or self.net_fee.evidence != expected.evidence:
                 raise ValueError("net fee must equal exact gross fee minus discount")
         return self
 
 
-class Transaction(BaseModel):
+class Transaction(_ImmutablePublicModel):
     """A transaction contributing to one or more candidate statement groups."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     transaction_id: str
     kind: TransactionKind
@@ -219,10 +227,8 @@ class Transaction(BaseModel):
         return self
 
 
-class PrintedTotal(BaseModel):
+class PrintedTotal(_ImmutablePublicModel):
     """A total printed for a structurally identified statement group."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: str
     amount: FiniteDecimal
@@ -234,10 +240,8 @@ class PrintedTotal(BaseModel):
         return plain_decimal_string(value)
 
 
-class ReconciliationGroup(BaseModel):
+class ReconciliationGroup(_ImmutablePublicModel):
     """Exact reconciliation of one printed total and its member transactions."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: str
     currency: str
@@ -253,10 +257,8 @@ class ReconciliationGroup(BaseModel):
         return plain_decimal_string(value)
 
 
-class DiscoveryMetadataSummary(BaseModel):
+class DiscoveryMetadataSummary(_ImmutablePublicModel):
     """A discovered metadata value and the exact evidence supporting it."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     field_name: str
     value: str
@@ -283,10 +285,8 @@ _SUMMARY_GENERIC_SUFFIX_YEAR_MAPPING_VIOLATIONS = frozenset(
 )
 
 
-class DiscoveryDateYearContextSummary(BaseModel):
+class DiscoveryDateYearContextSummary(_ImmutablePublicModel):
     """Proven short-date suffix mappings and every supporting evidence cell."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     year: int | None = Field(default=None, ge=MIN_CONTEXT_YEAR, le=MAX_CONTEXT_YEAR)
     year_by_suffix: tuple[tuple[int, int], ...] = ()
@@ -308,20 +308,16 @@ class DiscoveryDateYearContextSummary(BaseModel):
         return self
 
 
-class RejectedTotalCandidateSummary(BaseModel):
+class RejectedTotalCandidateSummary(_ImmutablePublicModel):
     """A rejected total-like row retained as a nonfatal discovery advisory."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     evidence: tuple[EvidenceReference, ...] = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
     diagnostics: tuple[str, ...] = Field(min_length=1)
 
 
-class DiscoveryGlyphSummary(BaseModel):
+class DiscoveryGlyphSummary(_ImmutablePublicModel):
     """Dependency-neutral positioned glyph provenance for discovered structure."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     char: str = Field(min_length=1)
     bbox: FiniteBBox
@@ -332,10 +328,8 @@ class DiscoveryGlyphSummary(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
-class DiscoveryWordSummary(BaseModel):
+class DiscoveryWordSummary(_ImmutablePublicModel):
     """Dependency-neutral positioned word provenance for discovered structure."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str = Field(min_length=1)
     bbox: FiniteBBox
@@ -343,10 +337,8 @@ class DiscoveryWordSummary(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
-class DiscoveryCellSummary(BaseModel):
+class DiscoveryCellSummary(_ImmutablePublicModel):
     """A logical discovery cell with its exact text and source provenance."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int = Field(gt=0)
     bbox: FiniteBBox
@@ -357,10 +349,8 @@ class DiscoveryCellSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class DiscoveryRowSummary(BaseModel):
+class DiscoveryRowSummary(_ImmutablePublicModel):
     """A discovered logical row retaining cells, words, and diagnostics."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int = Field(gt=0)
     bbox: FiniteBBox
@@ -370,10 +360,8 @@ class DiscoveryRowSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class DiscoveryColumnSummary(BaseModel):
+class DiscoveryColumnSummary(_ImmutablePublicModel):
     """A discovered schema column and the cells supporting its semantic role."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     index: int = Field(ge=0)
     page_number: int = Field(gt=0)
@@ -386,10 +374,8 @@ class DiscoveryColumnSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class DiscoveryTableSchemaSummary(BaseModel):
+class DiscoveryTableSchemaSummary(_ImmutablePublicModel):
     """A complete dependency-neutral snapshot of an inferred table schema."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int = Field(gt=0)
     bbox: FiniteBBox
@@ -400,10 +386,8 @@ class DiscoveryTableSchemaSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class TableRegionSummary(BaseModel):
+class TableRegionSummary(_ImmutablePublicModel):
     """A public, dependency-neutral summary of one inferred transaction table."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int = Field(gt=0)
     bbox: FiniteBBox
@@ -417,10 +401,8 @@ class TableRegionSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class PrintedTotalSummary(BaseModel):
+class PrintedTotalSummary(_ImmutablePublicModel):
     """A discovered printed total with label and value provenance."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: str
     amount_text: str
@@ -431,10 +413,8 @@ class PrintedTotalSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class StatementGroupDiscoverySummary(BaseModel):
+class StatementGroupDiscoverySummary(_ImmutablePublicModel):
     """A discovered statement group with exact table and total association."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: str
     table_regions: tuple[TableRegionSummary, ...]
@@ -443,10 +423,8 @@ class StatementGroupDiscoverySummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class StatementDiscoverySummary(BaseModel):
+class StatementDiscoverySummary(_ImmutablePublicModel):
     """Structured discovery boundary without importing discovery/layout models."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     classification: str
     metadata: tuple[DiscoveryMetadataSummary, ...] = ()
@@ -460,10 +438,8 @@ class StatementDiscoverySummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class RowNormalizationSummary(BaseModel):
+class RowNormalizationSummary(_ImmutablePublicModel):
     """Every accepted, rejected, or merged normalization row and its evidence."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     page_number: int = Field(gt=0)
     bbox: FiniteBBox
@@ -474,10 +450,8 @@ class RowNormalizationSummary(BaseModel):
     diagnostics: tuple[str, ...] = ()
 
 
-class StatementResult(BaseModel):
+class StatementResult(_ImmutablePublicModel):
     """Transactions and reconciliation evidence for one statement."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: Status
     transactions: tuple[Transaction, ...]
@@ -503,10 +477,8 @@ class StatementResult(BaseModel):
         return source.as_posix()
 
 
-class BatchResult(BaseModel):
+class BatchResult(_ImmutablePublicModel):
     """Ordered results and aggregate status for a statement batch."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: Status
     statements: tuple[StatementResult, ...]

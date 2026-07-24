@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 from decimal import Decimal
 
+import ccparser.ocr_repair as ocr_repair_module
 from ccparser.evidence import DocumentEvidence, ExtractionQuality, PageEvidence, Word
 from ccparser.layout import detect_table_regions
 from ccparser.ocr_repair import repair_table_numeric_ocr
+
+
+def test_ocr_schema_preview_calls_row_only_candidate_schema() -> None:
+    tree = ast.parse(inspect.getsource(ocr_repair_module._repair_page))
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_candidate_schema"
+    )
+
+    assert len(call.args) == 2
 
 
 def _ocr_word(text: str, x0: float, x1: float, y: float) -> Word:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from ccparser.evidence import Word
-from ccparser.layout.rows import cluster_rows
+from ccparser.layout.models import Cell, Row
+from ccparser.layout.rows import _ordered_cells_from_stored_direction, cluster_rows
 
 
 def _word(text: str, bbox: tuple[float, float, float, float]) -> Word:
@@ -20,6 +23,48 @@ def _scaled(word: Word, factor: float, x_shift: float = 0.0) -> Word:
             )
         }
     )
+
+
+@pytest.mark.parametrize(
+    ("diagnostics", "expected"),
+    (
+        (("dominant_direction:rtl",), ("right", "left-first", "left-second")),
+        (("dominant_direction:ltr",), ("left-first", "left-second", "right")),
+        (
+            ("dominant_direction:unknown", "dominant_direction:rtl"),
+            ("left-first", "left-second", "right"),
+        ),
+        ((), ("left-first", "left-second", "right")),
+    ),
+)
+def test_ordered_cells_from_stored_direction_uses_first_diagnostic_and_stable_x_order(
+    diagnostics: tuple[str, ...],
+    expected: tuple[str, ...],
+) -> None:
+    right = Cell(
+        page_number=1,
+        bbox=(30.0, 0.0, 40.0, 10.0),
+        text="right",
+        confidence=1.0,
+    )
+    left_first = Cell(
+        page_number=1,
+        bbox=(10.0, 0.0, 20.0, 10.0),
+        text="left-first",
+        confidence=1.0,
+    )
+    left_second = left_first.model_copy(update={"text": "left-second"})
+    row = Row(
+        page_number=1,
+        bbox=(10.0, 0.0, 40.0, 10.0),
+        cells=(right, left_first, left_second),
+        confidence=1.0,
+        diagnostics=diagnostics,
+    )
+
+    ordered = _ordered_cells_from_stored_direction(row, row.cells)
+
+    assert tuple(cell.text for cell in ordered) == expected
 
 
 def test_cluster_rows_uses_vertical_overlap_and_merges_nearby_words_into_cells() -> None:

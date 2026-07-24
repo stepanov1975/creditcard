@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import FrozenInstanceError, fields
 from datetime import date
@@ -30,6 +31,54 @@ def test_normalization_semantics_exports_exact_public_contract() -> None:
         "role_contract_diagnostics",
         "validate_transaction_semantics",
     ]
+
+
+def test_assignment_diagnostics_names_each_unresolved_decision_once() -> None:
+    source = inspect.getsource(normalization_semantics.assignment_diagnostics)
+
+    assert "common_safe =" in source
+    assert "unresolved_unknown =" in source
+    assert "unresolved_alternative =" in source
+    assert "unresolved_location =" in source
+
+
+def test_semantic_claim_accumulator_preserves_incoming_claims_and_read_only_views() -> None:
+    incoming = (
+        EvidenceClaim(SemanticOwner.DESCRIPTION, frozenset({1, 2})),
+        EvidenceClaim(SemanticOwner.BILLED_VALUE, frozenset({2, 99})),
+        EvidenceClaim(SemanticOwner.ANCILLARY, frozenset()),
+    )
+
+    accumulator = normalization_semantics._SemanticClaimAccumulator(incoming)
+
+    assert accumulator.claims == incoming
+    assert all(
+        actual is expected for actual, expected in zip(accumulator.claims, incoming, strict=True)
+    )
+    assert accumulator.claimed_atom_ids == frozenset({1, 2, 99})
+    assert isinstance(accumulator.claims, tuple)
+    assert isinstance(accumulator.claimed_atom_ids, frozenset)
+    with pytest.raises(AttributeError):
+        accumulator.claims = ()
+    with pytest.raises(AttributeError):
+        accumulator.claimed_atom_ids = frozenset()
+
+
+def test_semantic_claim_accumulator_appends_only_incremental_remaining_ids() -> None:
+    accumulator = normalization_semantics._SemanticClaimAccumulator(
+        (EvidenceClaim(SemanticOwner.DESCRIPTION, frozenset({1, 2})),)
+    )
+
+    accumulator.append_remaining(SemanticOwner.BILLED_VALUE, (2, 3, 4))
+    accumulator.append_remaining(SemanticOwner.ANCILLARY, (3, 4, 5))
+    accumulator.append_remaining(SemanticOwner.ANCILLARY, (1, 2, 3, 4, 5))
+
+    assert accumulator.claims == (
+        EvidenceClaim(SemanticOwner.DESCRIPTION, frozenset({1, 2})),
+        EvidenceClaim(SemanticOwner.BILLED_VALUE, frozenset({3, 4})),
+        EvidenceClaim(SemanticOwner.ANCILLARY, frozenset({5})),
+    )
+    assert accumulator.claimed_atom_ids == frozenset({1, 2, 3, 4, 5})
 
 
 def _word(text: str, x0: float, x1: float, y: float = 30.0) -> Word:

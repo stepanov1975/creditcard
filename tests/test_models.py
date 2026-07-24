@@ -5,9 +5,28 @@ from decimal import Decimal, localcontext
 import pytest
 from pydantic import ValidationError
 
+import ccparser.models as models_module
 from ccparser.date_tokens import DateTokenStyle
 from ccparser.discovery import DiscoveredDateYearContext
 from ccparser.models import DiscoveryDateYearContextSummary, EvidenceReference
+
+
+def test_public_models_share_the_immutable_local_base() -> None:
+    public_models = tuple(
+        value
+        for name, value in vars(models_module).items()
+        if not name.startswith("_")
+        and isinstance(value, type)
+        and value.__module__ == models_module.__name__
+        and issubclass(value, models_module.BaseModel)
+    )
+
+    assert len(public_models) == 23
+    assert all(model.__bases__ == (models_module._ImmutablePublicModel,) for model in public_models)
+    assert models_module._ImmutablePublicModel.model_config == {
+        "frozen": True,
+        "extra": "forbid",
+    }
 
 
 def _fx_evidence(raw_text: str, y: float) -> EvidenceReference:
@@ -421,6 +440,68 @@ def test_foreign_exchange_derivation_is_exact_under_low_decimal_precision() -> N
             net_fee=exact_net,
         )
     assert details.net_fee == exact_net
+
+
+def test_derived_net_fee_constructor_owns_exact_amount_and_evidence_order() -> None:
+    from ccparser.models import ExtractedMoney
+
+    gross_evidence = _fx_evidence("gross fee", 20.0)
+    shared_evidence = _fx_evidence("shared detail", 25.0)
+    discount_evidence = _fx_evidence("discount", 30.0)
+    gross = ExtractedMoney(
+        amount=Decimal("123456789012345678901234567890.12"),
+        currency="ILS",
+        evidence=(gross_evidence, shared_evidence),
+    )
+    discount = ExtractedMoney(
+        amount=Decimal("0.01"),
+        currency="ILS",
+        evidence=(shared_evidence, discount_evidence),
+    )
+
+    with localcontext() as context:
+        context.prec = 5
+        derived = models_module._derive_net_fee(gross, discount)
+
+    assert derived == ExtractedMoney(
+        amount=Decimal("123456789012345678901234567890.11"),
+        currency="ILS",
+        evidence=(gross_evidence, shared_evidence, discount_evidence),
+        derivation="gross_fee_minus_discount",
+    )
+
+
+def test_derived_net_fee_constructor_rejects_invalid_operands() -> None:
+    from ccparser.models import ExtractedMoney
+
+    evidence = (_fx_evidence("fee", 20.0),)
+    printed_gross = ExtractedMoney(amount=Decimal("0.88"), currency="ILS", evidence=evidence)
+    printed_discount = ExtractedMoney(
+        amount=Decimal("0.59"),
+        currency="ILS",
+        evidence=evidence,
+    )
+    derived_operand = ExtractedMoney(
+        amount=Decimal("0.29"),
+        currency="ILS",
+        evidence=evidence,
+        derivation="gross_fee_minus_discount",
+    )
+
+    with pytest.raises(ValueError, match="gross fee must be printed"):
+        models_module._derive_net_fee(derived_operand, printed_discount)
+    with pytest.raises(ValueError, match="fee discount must be printed"):
+        models_module._derive_net_fee(printed_gross, derived_operand)
+    with pytest.raises(ValueError, match="derived fee currencies must match"):
+        models_module._derive_net_fee(
+            printed_gross,
+            ExtractedMoney(amount=Decimal("0.59"), currency="USD", evidence=evidence),
+        )
+    with pytest.raises(ValueError, match="exact gross fee minus discount"):
+        models_module._derive_net_fee(
+            printed_gross,
+            ExtractedMoney(amount=Decimal("0.89"), currency="ILS", evidence=evidence),
+        )
 
 
 def test_foreign_exchange_requires_evidence_and_exact_derivation() -> None:

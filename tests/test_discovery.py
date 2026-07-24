@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from collections.abc import Iterable
 from decimal import Decimal, localcontext
 
@@ -67,6 +69,19 @@ def _document(*pages: PageEvidence) -> DocumentEvidence:
     return DocumentEvidence(source_sha256="a" * 64, pages=tuple(pages))
 
 
+def test_discovery_calls_row_only_singleton_candidate_scan() -> None:
+    tree = ast.parse(inspect.getsource(discover_statement))
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_singleton_transaction_candidates"
+    )
+
+    assert len(call.args) == 2
+
+
 def test_discovery_reuses_prepared_rows_for_singleton_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,6 +102,31 @@ def test_discovery_reuses_prepared_rows_for_singleton_scan(
     result = discover_statement(_document(page))
 
     assert result.classification is DocumentClassification.STATEMENT
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    (
+        "_is_future_billing_total",
+        "_amount_cells_in_nearest_billed_band",
+        "_region_billed_amounts",
+    ),
+)
+def test_cell_column_association_delegates_to_canonical_helper(
+    function_name: str,
+) -> None:
+    source = inspect.getsource(getattr(discovery_module, function_name))
+
+    assert "cells_in_column(" in source
+    assert "_center_x(" not in source
+
+
+def test_date_year_context_has_distinct_table_and_document_candidate_builders() -> None:
+    source = inspect.getsource(discovery_module._date_year_context)
+
+    assert not hasattr(discovery_module, "_complete_date_year")
+    assert "_table_date_year_candidates(" in source
+    assert "_document_date_year_candidates(" in source
 
 
 def _table(y: float, currency: str, first: str, second: str) -> tuple[Word, ...]:

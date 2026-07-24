@@ -44,6 +44,21 @@ def _rtl_glyphs(text: str, right: float, y: float) -> tuple[Glyph, ...]:
 
 
 @pytest.mark.parametrize(
+    ("texts", "expected"),
+    (
+        (("אב", "A"), "rtl"),
+        (("אב", "AB"), "ltr"),
+        (("123", "!?"), "ltr"),
+    ),
+)
+def test_dominant_direction_uses_strict_rtl_majority_with_ltr_default(
+    texts: tuple[str, ...],
+    expected: str,
+) -> None:
+    assert layout_text._dominant_direction(texts) == expected
+
+
+@pytest.mark.parametrize(
     ("words", "glyphs", "expected"),
     (
         ((), (), False),

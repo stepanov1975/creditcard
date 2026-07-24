@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 import ccparser.normalization_description as normalization_description
@@ -413,6 +415,73 @@ def test_description_leaves_uncorroborated_whole_unit_numeric_cluster_unclaimed(
 
     assert extraction.value == "Merchant"
     assert numeric_ids <= validation.unclaimed_atom_ids
+
+
+def test_processor_occurrence_geometry_is_frozen_and_explicitly_corroborated() -> None:
+    def occurrence(
+        row_index: int,
+        reference: str,
+    ) -> normalization_description._ProcessorOccurrence:
+        cell = _cell(
+            f"Merchant {reference}",
+            1,
+            bbox=(50.0, 30.0, 105.0, 40.0),
+            words=(
+                _word("Merchant", 50.0, 68.0),
+                _word(reference, 78.0, 99.0),
+            ),
+        )
+        ledger = EvidenceLedger.from_rows((_row(cell),))
+        line = normalization_description._cluster_lines(ledger.clusters_for_cell(cell))[0]
+        primary = _primary_description_cluster(line)
+        reference_cluster = next(cluster for cluster in line if cluster is not primary)
+        result = normalization_description._processor_occurrence(
+            row_index,
+            ledger,
+            cell,
+            line,
+            primary,
+            reference_cluster,
+        )
+        assert result is not None
+        return result
+
+    first = occurrence(3, "1234567")
+    matching_numeric = occurrence(4, "1234567")
+    positioned_anchor = occurrence(4, ".PROCESSOR")
+
+    assert tuple(first.__slots__) == (
+        "row_index",
+        "key",
+        "signature",
+        "center",
+        "height",
+        "side",
+    )
+    assert first.key == (
+        1,
+        (50.0, 30.0, 105.0, 40.0),
+        (50.0, 30.0, 68.0, 40.0),
+        (78.0, 30.0, 99.0, 40.0),
+        "1234567",
+    )
+    with pytest.raises(FrozenInstanceError):
+        first.side = -1
+    assert normalization_description._processor_occurrences_corroborate(
+        first,
+        matching_numeric,
+        require_signature_match=True,
+    )
+    assert not normalization_description._processor_occurrences_corroborate(
+        first,
+        positioned_anchor,
+        require_signature_match=True,
+    )
+    assert normalization_description._processor_occurrences_corroborate(
+        first,
+        positioned_anchor,
+        require_signature_match=False,
+    )
 
 
 def _repeated_numeric_description_rows(

@@ -6,7 +6,6 @@ import _imp
 import fcntl
 import json
 import locale
-import math
 import os
 import platform
 import re
@@ -77,7 +76,11 @@ from ccparser.models import (
     Transaction,
     TransactionCategory,
 )
-from ccparser.output import canonical_json_bytes, transactions_csv_bytes
+from ccparser.output import (
+    _canonical_json_value_bytes,
+    canonical_json_bytes,
+    transactions_csv_bytes,
+)
 from ccparser.parser import parse_directory
 from ccparser.paths import DirectoryRootPolicy, iter_regular_pdf_files, paths_overlap
 
@@ -100,9 +103,6 @@ type PresentFieldPath = Literal[
     "transaction_date",
 ]
 
-type _CanonicalJson = (
-    str | int | float | bool | None | list[_CanonicalJson] | dict[str, _CanonicalJson]
-)
 type _GroupProjection = tuple[str, str, str, tuple[str, ...]]
 type _GroupStructure = tuple[tuple[_GroupProjection, ...], ...]
 type _TransactionIdentity = tuple[str, tuple[str, ...]]
@@ -2797,42 +2797,12 @@ class _StructuralProjections:
     ambiguities: _AmbiguityProjection
 
 
-def _normalized_json(value: object) -> _CanonicalJson:
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError("JSON numeric values must be finite")
-    if value is None or isinstance(value, bool | int | float):
-        return value
-    if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
-    if isinstance(value, list | tuple):
-        return [_normalized_json(item) for item in value]
-    if isinstance(value, dict):
-        normalized: dict[str, _CanonicalJson] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("canonical JSON object keys must be strings")
-            normalized[unicodedata.normalize("NFC", key)] = _normalized_json(item)
-        return normalized
-    raise TypeError("unsupported canonical JSON value")
-
-
 def _digest_bytes(content: bytes) -> str:
     return sha256(content).hexdigest()
 
 
 def _digest_json(value: object) -> str:
-    normalized = _normalized_json(value)
-    content = (
-        json.dumps(
-            normalized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        + b"\n"
-    )
-    return _digest_bytes(content)
+    return _digest_bytes(_canonical_json_value_bytes(value))
 
 
 def digest_membership(source_hashes: Iterable[str]) -> CorpusMembership:
@@ -4107,8 +4077,6 @@ def _publish_json_secure(
     parent_fd: int,
     name: str,
     result: BaseModel,
-    *,
-    replace_existing: bool = True,
 ) -> None:
     content = canonical_json_bytes(result)
     temporary_name = f".{name}.{secrets.token_hex(16)}.tmp"
@@ -4117,10 +4085,7 @@ def _publish_json_secure(
     committed = False
     try:
         _validate_trusted_directory(os.fstat(parent_fd))
-        if replace_existing:
-            _validate_baseline_destination(parent_fd, name)
-        else:
-            _validate_baseline_absent(parent_fd, name)
+        _validate_baseline_absent(parent_fd, name)
         temporary_fd = os.open(
             temporary_name,
             _FILE_WRITE_FLAGS,
@@ -4139,50 +4104,30 @@ def _publish_json_secure(
         os.fsync(temporary_fd)
         if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
             raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
-        if replace_existing:
-            _validate_baseline_destination(parent_fd, name)
-        else:
-            _validate_baseline_absent(parent_fd, name)
+        _validate_baseline_absent(parent_fd, name)
         os.fsync(parent_fd)
         if not _name_matches_inode(parent_fd, temporary_name, temporary_identity):
             raise CorpusGateInputError((CorpusGateReason.UNSAFE_PATH_TOPOLOGY,))
-        if replace_existing:
-            try:
-                os.replace(
-                    temporary_name,
-                    name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-            except BaseException:
-                if _name_matches_inode(parent_fd, name, temporary_identity):
-                    committed = True
-                    with suppress(OSError):
-                        os.unlink(temporary_name, dir_fd=parent_fd)
-                    return
-                raise
-            committed = True
-        else:
-            try:
-                os.link(
-                    temporary_name,
-                    name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-            except FileExistsError:
-                raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
-            except BaseException:
-                if _name_matches_inode(parent_fd, name, temporary_identity):
-                    committed = True
-                    with suppress(OSError):
-                        os.unlink(temporary_name, dir_fd=parent_fd)
-                    return
-                raise
-            committed = True
-            with suppress(OSError):
-                os.unlink(temporary_name, dir_fd=parent_fd)
+        try:
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            raise CorpusGateInputError((CorpusGateReason.BASELINE_INVALID,)) from None
+        except BaseException:
+            if _name_matches_inode(parent_fd, name, temporary_identity):
+                committed = True
+                with suppress(OSError):
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                return
+            raise
+        committed = True
+        with suppress(OSError):
+            os.unlink(temporary_name, dir_fd=parent_fd)
     finally:
         if temporary_fd is not None:
             file_descriptor = temporary_fd
@@ -4476,7 +4421,6 @@ def _run_corpus_gate_in_process(
                         bound_paths.baseline_parent_fd,
                         bound_paths.baseline_name,
                         candidate,
-                        replace_existing=False,
                     )
                 except CorpusGateError:
                     raise

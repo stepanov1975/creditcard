@@ -12,6 +12,7 @@ from itertools import pairwise
 from ccparser.decimal_math import exact_difference, exact_product, exact_sum
 from ccparser.evidence.models import Glyph
 from ccparser.geometry import (
+    bbox_center_x,
     bbox_center_y,
     bbox_height,
     center_inside,
@@ -31,6 +32,7 @@ from ccparser.models import (
     ExtractedDecimal,
     ExtractedMoney,
     ForeignExchangeDetails,
+    _derive_net_fee,
 )
 from ccparser.money import (
     canonical_currency,
@@ -84,6 +86,103 @@ class _ProjectedDiscountEvidence:
 
     percentage_atom_ids: frozenset[int] = frozenset()
     ancillary_atom_ids: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class _PositionedDecimalProof:
+    value: Decimal
+    evidence: tuple[EvidenceReference, ...]
+    atom_ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class _PositionedMoneyProof:
+    amount: Decimal
+    currency: str
+    evidence: tuple[EvidenceReference, ...]
+    atom_ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class _PositionedFxProof:
+    exchange_rate: _PositionedDecimalProof
+    fee_percentage: _PositionedDecimalProof
+    gross_fee: _PositionedMoneyProof
+    fee_discount: _PositionedMoneyProof
+    discount_percentage_atom_ids: frozenset[int] = frozenset()
+    ancillary_claim: EvidenceClaim | None = None
+
+
+def _finalize_positioned_fx_proof(
+    proof: _PositionedFxProof,
+    *,
+    original_amount: Decimal,
+    billed_amount: Decimal,
+) -> _FxValues | None:
+    percentage_value = proof.fee_percentage.value
+    gross_amount = proof.gross_fee.amount
+    discount_amount = proof.fee_discount.amount
+    if (
+        original_amount == 0
+        or billed_amount == 0
+        or not Decimal("0") < percentage_value <= Decimal("100")
+        or proof.gross_fee.currency != proof.fee_discount.currency
+        or not Decimal("0") <= discount_amount <= gross_amount
+    ):
+        return None
+    absolute_original = original_amount.copy_abs()
+    absolute_billed = billed_amount.copy_abs()
+    rate_delta = exact_difference(
+        exact_product((proof.exchange_rate.value, absolute_original)),
+        absolute_billed,
+    ).copy_abs()
+    percentage_basis = exact_product((absolute_billed, percentage_value))
+    gross_delta = exact_difference(
+        exact_product((Decimal("100"), gross_amount)),
+        percentage_basis,
+    ).copy_abs()
+    gross_tolerance = max(
+        Decimal("1"),
+        exact_product((percentage_basis, Decimal("0.05"))),
+    )
+    if (
+        rate_delta > exact_product((absolute_billed, Decimal("0.05")))
+        or gross_delta > gross_tolerance
+    ):
+        return None
+    gross_fee = ExtractedMoney(
+        amount=gross_amount,
+        currency=proof.gross_fee.currency,
+        evidence=proof.gross_fee.evidence,
+    )
+    fee_discount = ExtractedMoney(
+        amount=discount_amount,
+        currency=proof.fee_discount.currency,
+        evidence=proof.fee_discount.evidence,
+    )
+    return _FxValues(
+        exchange_rate=ExtractedDecimal(
+            value=proof.exchange_rate.value,
+            evidence=proof.exchange_rate.evidence,
+        ),
+        fee_percentage=ExtractedDecimal(
+            value=percentage_value,
+            evidence=proof.fee_percentage.evidence,
+        ),
+        gross_fee=gross_fee,
+        fee_discount=fee_discount,
+        net_fee=_derive_net_fee(gross_fee, fee_discount),
+        claims=(
+            EvidenceClaim(SemanticOwner.EXCHANGE_RATE, proof.exchange_rate.atom_ids),
+            EvidenceClaim(SemanticOwner.FX_FEE_PERCENTAGE, proof.fee_percentage.atom_ids),
+            EvidenceClaim(SemanticOwner.GROSS_FX_FEE, proof.gross_fee.atom_ids),
+            EvidenceClaim(
+                SemanticOwner.FX_FEE_DISCOUNT,
+                proof.fee_discount.atom_ids | proof.discount_percentage_atom_ids,
+            ),
+            *((proof.ancillary_claim,) if proof.ancillary_claim is not None else ()),
+        ),
+    )
 
 
 _RATE_HEADER_CUES = (
@@ -715,23 +814,23 @@ def _has_typed_numeric_wrapper(
         and abs(bbox_center_y(atom.bbox) - bbox_center_y(candidate_bbox))
         <= min(bbox_height(atom.bbox), bbox_height(candidate_bbox)) * 0.5
     )
-    candidate_center_x = (candidate_bbox[0] + candidate_bbox[2]) / 2
+    candidate_center_x = bbox_center_x(candidate_bbox)
     for atom in same_line_atoms:
         if not any(char in wrappers for char in atom.text):
             continue
-        atom_center_x = (atom.bbox[0] + atom.bbox[2]) / 2
+        atom_center_x = bbox_center_x(atom.bbox)
         intervening = tuple(
             other
             for other in same_line_atoms
             if other.atom_id != atom.atom_id
             and min(atom_center_x, candidate_center_x)
-            < (other.bbox[0] + other.bbox[2]) / 2
+            < bbox_center_x(other.bbox)
             < max(atom_center_x, candidate_center_x)
         )
         chain = tuple(
             sorted(
                 (atom.bbox, *(item.bbox for item in intervening), candidate_bbox),
-                key=lambda bbox: (bbox[0] + bbox[2]) / 2,
+                key=bbox_center_x,
             )
         )
         if any(
@@ -805,8 +904,8 @@ def _one_decimal(
             > min(bbox_height(atom.bbox), bbox_height(candidate_bbox)) * 0.5
         ):
             return False
-        atom_center_x = (atom.bbox[0] + atom.bbox[2]) / 2
-        candidate_center_x = (candidate_bbox[0] + candidate_bbox[2]) / 2
+        atom_center_x = bbox_center_x(atom.bbox)
+        candidate_center_x = bbox_center_x(candidate_bbox)
         if atom_center_x >= candidate_center_x:
             return False
         intervening = tuple(
@@ -814,7 +913,7 @@ def _one_decimal(
             for item in sorted(ledger.atoms, key=lambda item: item.bbox[0])
             if item.atom_id in selected_ids - candidate_atom_ids - {atom.atom_id}
             and item.page_number == atom.page_number
-            and atom_center_x < (item.bbox[0] + item.bbox[2]) / 2 < candidate_center_x
+            and atom_center_x < bbox_center_x(item.bbox) < candidate_center_x
         )
         if (
             not intervening
@@ -1243,9 +1342,9 @@ def _bound_currency_annotation_fee(
         return None
     candidate_atoms = tuple(ledger.atoms[atom_id] for atom_id in candidate.atom_ids)
     candidate_bbox = union_bbox(atom.bbox for atom in candidate_atoms)
-    annotation_center = (annotation.bbox[0] + annotation.bbox[2]) / 2
-    currency_center = (currency_atom.bbox[0] + currency_atom.bbox[2]) / 2
-    candidate_center = (candidate_bbox[0] + candidate_bbox[2]) / 2
+    annotation_center = bbox_center_x(annotation.bbox)
+    currency_center = bbox_center_x(currency_atom.bbox)
+    candidate_center = bbox_center_x(candidate_bbox)
     if not annotation_center < currency_center < candidate_center:
         return None
     expected_text = normalize_text(f"{annotation.text}{currency_atom.text} {candidate.text}")
@@ -2378,21 +2477,14 @@ def _has_proven_positioned_fx_geometry(
 
 
 def _proven_expanded_positioned_fx_detail_block(
-    rows: Sequence[Row],
+    bounded_rows: Sequence[Row],
     region: TableRegion,
     ledger: EvidenceLedger,
     original_currency: str,
     billing_currency: str,
-    original_amount: Decimal,
     billed_amount: Decimal,
-) -> _FxValues | None:
-    bounded_rows = tuple(
-        sorted(
-            (row for row in rows if has_row_tag(row, RowTag.FOREIGN_CONVERSION_DETAIL)),
-            key=lambda item: (item.page_number, item.bbox[1]),
-        )
-    )
-    if len(bounded_rows) < 4 or original_amount == 0 or billed_amount == 0:
+) -> _PositionedFxProof | None:
+    if len(bounded_rows) < 4:
         return None
     source_texts = tuple(_row_source_texts(row) for row in bounded_rows)
     rate_indexes = tuple(
@@ -2539,9 +2631,6 @@ def _proven_expanded_positioned_fx_detail_block(
     if not (
         _has_exact_digital_positioned_backing(rate_atom_ids, ledger)
         and _has_exact_digital_positioned_backing(percentage_atom_ids, ledger)
-        and Decimal("0") < percentage_value <= Decimal("100")
-        and gross_currency == discount_currency
-        and Decimal("0") <= discount_amount <= gross_amount
     ):
         return None
     geometry_rows = list(bounded_rows)
@@ -2560,75 +2649,39 @@ def _proven_expanded_positioned_fx_detail_block(
     ):
         return None
 
-    absolute_original = original_amount.copy_abs()
-    absolute_billed = billed_amount.copy_abs()
-    rate_delta = exact_difference(
-        exact_product((rate_value, absolute_original)),
-        absolute_billed,
-    ).copy_abs()
-    if rate_delta > exact_product((absolute_billed, Decimal("0.05"))):
-        return None
-    percentage_basis = exact_product((absolute_billed, percentage_value))
-    gross_delta = exact_difference(
-        exact_product((Decimal("100"), gross_amount)),
-        percentage_basis,
-    ).copy_abs()
-    gross_tolerance = max(
-        Decimal("1"),
-        exact_product((percentage_basis, Decimal("0.05"))),
-    )
-    if gross_delta > gross_tolerance:
-        return None
-
     gross_evidence = _row_evidence(gross_row)
     discount_evidence = _row_evidence(discount_geometry_row)
-    net_amount = exact_difference(gross_amount, discount_amount)
-    return _FxValues(
-        exchange_rate=ExtractedDecimal(
+    return _PositionedFxProof(
+        exchange_rate=_PositionedDecimalProof(
             value=rate_value,
             evidence=_row_evidence(rate_row),
+            atom_ids=rate_atom_ids,
         ),
-        fee_percentage=ExtractedDecimal(
+        fee_percentage=_PositionedDecimalProof(
             value=percentage_value,
             evidence=_row_evidence(percentage_row),
+            atom_ids=percentage_evidence_atom_ids,
         ),
-        gross_fee=ExtractedMoney(
+        gross_fee=_PositionedMoneyProof(
             amount=gross_amount,
             currency=gross_currency,
             evidence=gross_evidence,
+            atom_ids=gross_atom_ids,
         ),
-        fee_discount=ExtractedMoney(
+        fee_discount=_PositionedMoneyProof(
             amount=discount_amount,
             currency=discount_currency,
             evidence=discount_evidence,
+            atom_ids=discount_atom_ids,
         ),
-        net_fee=ExtractedMoney(
-            amount=net_amount,
-            currency=gross_currency,
-            evidence=tuple(dict.fromkeys((*gross_evidence, *discount_evidence))),
-            derivation="gross_fee_minus_discount",
-        ),
-        claims=(
-            EvidenceClaim(SemanticOwner.EXCHANGE_RATE, rate_atom_ids),
+        discount_percentage_atom_ids=projected_discount_evidence.percentage_atom_ids,
+        ancillary_claim=(
             EvidenceClaim(
-                SemanticOwner.FX_FEE_PERCENTAGE,
-                percentage_evidence_atom_ids,
-            ),
-            EvidenceClaim(SemanticOwner.GROSS_FX_FEE, gross_atom_ids),
-            EvidenceClaim(
-                SemanticOwner.FX_FEE_DISCOUNT,
-                discount_atom_ids | projected_discount_evidence.percentage_atom_ids,
-            ),
-            *(
-                (
-                    EvidenceClaim(
-                        SemanticOwner.ANCILLARY,
-                        projected_discount_evidence.ancillary_atom_ids,
-                    ),
-                )
-                if projected_discount_evidence.ancillary_atom_ids
-                else ()
-            ),
+                SemanticOwner.ANCILLARY,
+                projected_discount_evidence.ancillary_atom_ids,
+            )
+            if projected_discount_evidence.ancillary_atom_ids
+            else None
         ),
     )
 
@@ -2881,20 +2934,12 @@ def _positioned_compact_gross_money(
 
 
 def _proven_compact_positioned_fx_detail_block(
-    rows: Sequence[Row],
+    bounded_rows: Sequence[Row],
     ledger: EvidenceLedger,
     original_currency: str,
     billing_currency: str,
-    original_amount: Decimal,
-    billed_amount: Decimal,
-) -> _FxValues | None:
-    bounded_rows = tuple(
-        sorted(
-            (row for row in rows if has_row_tag(row, RowTag.FOREIGN_CONVERSION_DETAIL)),
-            key=lambda item: (item.page_number, item.bbox[1]),
-        )
-    )
-    if len(bounded_rows) < 3 or original_amount == 0 or billed_amount == 0:
+) -> _PositionedFxProof | None:
+    if len(bounded_rows) < 3:
         return None
     rate_row, combined_row, discount_row = bounded_rows[:3]
     rate = _one_positive_decimal(_row_atom_ids(rate_row, ledger), ledger)
@@ -2917,10 +2962,7 @@ def _proven_compact_positioned_fx_detail_block(
     component_rows = (rate_row, combined_row, discount_row)
     component_sources = tuple(_row_source_texts(row) for row in component_rows)
     if (
-        not Decimal("0") < percentage_value <= Decimal("100")
-        or gross_currency != discount_currency
-        or not Decimal("0") <= discount_amount <= gross_amount
-        or any(
+        any(
             _has_unsupported_header_currency(source)
             or not set(currencies_in_text(source)) <= allowed_currencies
             for sources in component_sources
@@ -3009,59 +3051,30 @@ def _proven_compact_positioned_fx_detail_block(
     ):
         return None
 
-    absolute_original = original_amount.copy_abs()
-    absolute_billed = billed_amount.copy_abs()
-    rate_delta = exact_difference(
-        exact_product((rate_value, absolute_original)),
-        absolute_billed,
-    ).copy_abs()
-    percentage_basis = exact_product((absolute_billed, percentage_value))
-    gross_delta = exact_difference(
-        exact_product((Decimal("100"), gross_amount)),
-        percentage_basis,
-    ).copy_abs()
-    gross_tolerance = max(
-        Decimal("1"),
-        exact_product((percentage_basis, Decimal("0.05"))),
-    )
-    if (
-        rate_delta > exact_product((absolute_billed, Decimal("0.05")))
-        or gross_delta > gross_tolerance
-    ):
-        return None
-
     gross_evidence = _row_evidence(combined_row)
     discount_evidence = _row_evidence(discount_row)
-    return _FxValues(
-        exchange_rate=ExtractedDecimal(value=rate_value, evidence=_row_evidence(rate_row)),
-        fee_percentage=ExtractedDecimal(
+    return _PositionedFxProof(
+        exchange_rate=_PositionedDecimalProof(
+            value=rate_value,
+            evidence=_row_evidence(rate_row),
+            atom_ids=rate_atom_ids,
+        ),
+        fee_percentage=_PositionedDecimalProof(
             value=percentage_value,
             evidence=_row_evidence(combined_row),
+            atom_ids=percentage_evidence_atom_ids,
         ),
-        gross_fee=ExtractedMoney(
+        gross_fee=_PositionedMoneyProof(
             amount=gross_amount,
             currency=gross_currency,
             evidence=gross_evidence,
+            atom_ids=gross_atom_ids,
         ),
-        fee_discount=ExtractedMoney(
+        fee_discount=_PositionedMoneyProof(
             amount=discount_amount,
             currency=discount_currency,
             evidence=discount_evidence,
-        ),
-        net_fee=ExtractedMoney(
-            amount=exact_difference(gross_amount, discount_amount),
-            currency=gross_currency,
-            evidence=tuple(dict.fromkeys((*gross_evidence, *discount_evidence))),
-            derivation="gross_fee_minus_discount",
-        ),
-        claims=(
-            EvidenceClaim(SemanticOwner.EXCHANGE_RATE, rate_atom_ids),
-            EvidenceClaim(
-                SemanticOwner.FX_FEE_PERCENTAGE,
-                percentage_evidence_atom_ids,
-            ),
-            EvidenceClaim(SemanticOwner.GROSS_FX_FEE, gross_atom_ids),
-            EvidenceClaim(SemanticOwner.FX_FEE_DISCOUNT, discount_atom_ids),
+            atom_ids=discount_atom_ids,
         ),
     )
 
@@ -3075,24 +3088,42 @@ def _proven_positioned_fx_detail_block(
     original_amount: Decimal,
     billed_amount: Decimal,
 ) -> _FxValues | None:
+    bounded_rows = tuple(
+        sorted(
+            (row for row in rows if has_row_tag(row, RowTag.FOREIGN_CONVERSION_DETAIL)),
+            key=lambda item: (item.page_number, item.bbox[1]),
+        )
+    )
+    if original_amount == 0 or billed_amount == 0:
+        return None
     expanded = _proven_expanded_positioned_fx_detail_block(
-        rows,
+        bounded_rows,
         region,
         ledger,
         original_currency,
         billing_currency,
-        original_amount,
         billed_amount,
     )
     if expanded is not None:
-        return expanded
-    return _proven_compact_positioned_fx_detail_block(
-        rows,
+        finalized = _finalize_positioned_fx_proof(
+            expanded,
+            original_amount=original_amount,
+            billed_amount=billed_amount,
+        )
+        if finalized is not None:
+            return finalized
+    compact = _proven_compact_positioned_fx_detail_block(
+        bounded_rows,
         ledger,
         original_currency,
         billing_currency,
-        original_amount,
-        billed_amount,
+    )
+    if compact is None:
+        return None
+    return _finalize_positioned_fx_proof(
+        compact,
+        original_amount=original_amount,
+        billed_amount=billed_amount,
     )
 
 
@@ -3369,21 +3400,18 @@ def _continuation_fx_values(
         diagnostics.append("unparsed_foreign_currency_fee_discount_candidate")
 
     if gross_fee is not None and fee_discount is not None:
-        amount = exact_difference(gross_fee.amount, fee_discount.amount)
-        if gross_fee.currency != fee_discount.currency or amount < 0:
+        if gross_fee.currency != fee_discount.currency or fee_discount.amount > gross_fee.amount:
             net_ambiguous = True
             net_fee = None
             diagnostics.append("inconsistent_foreign_currency_fee_derivation")
         elif not net_ambiguous:
-            derived_net_fee = ExtractedMoney(
-                amount=amount,
-                currency=gross_fee.currency,
-                evidence=tuple(dict.fromkeys((*gross_fee.evidence, *fee_discount.evidence))),
-                derivation="gross_fee_minus_discount",
-            )
+            derived_net_fee = _derive_net_fee(gross_fee, fee_discount)
             if net_fee is None:
                 net_fee = derived_net_fee
-            elif net_fee.amount != amount or net_fee.currency != gross_fee.currency:
+            elif (
+                net_fee.amount != derived_net_fee.amount
+                or net_fee.currency != derived_net_fee.currency
+            ):
                 net_ambiguous = True
                 net_fee = None
                 diagnostics.append("inconsistent_foreign_currency_fee_derivation")

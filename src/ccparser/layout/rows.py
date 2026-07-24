@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import statistics
-import unicodedata
 from collections.abc import Sequence
 from itertools import combinations
 
@@ -16,6 +15,7 @@ from ccparser.geometry import (
     vertical_overlap,
 )
 from ccparser.layout.models import Cell, Row
+from ccparser.layout.text import _dominant_direction
 from ccparser.layout.word_dedup import deduplicate_words
 
 MAX_LINE_HEIGHT_RATIO = 2.5
@@ -40,11 +40,19 @@ def _line_reference_bbox(line: Sequence[Word]) -> BBox:
     )
 
 
-def _dominant_direction(texts: Sequence[str]) -> str:
-    text = "".join(texts)
-    rtl = sum(unicodedata.bidirectional(char) in {"R", "AL"} for char in text)
-    ltr = sum(unicodedata.bidirectional(char) == "L" for char in text)
-    return "rtl" if rtl > ltr else "ltr"
+def _ordered_cells_from_stored_direction(
+    row: Row,
+    cells: Sequence[Cell],
+) -> tuple[Cell, ...]:
+    direction = next(
+        (
+            diagnostic.removeprefix("dominant_direction:")
+            for diagnostic in row.diagnostics
+            if diagnostic.startswith("dominant_direction:")
+        ),
+        "ltr",
+    )
+    return tuple(sorted(cells, key=lambda cell: cell.bbox[0], reverse=direction == "rtl"))
 
 
 def _cluster_word_lines(words: Sequence[Word]) -> list[list[Word]]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import array
 import fcntl
+import inspect
 import io
 import json
 import os
@@ -770,6 +771,14 @@ def test_record_rejects_an_existing_baseline_before_parser_execution(tmp_path: P
     assert runner.input_dirs == []
 
 
+def test_secure_publication_exposes_only_exclusive_candidate_creation() -> None:
+    assert tuple(inspect.signature(corpus_gate_module._publish_json_secure).parameters) == (
+        "parent_fd",
+        "name",
+        "result",
+    )
+
+
 @pytest.mark.parametrize(
     "failure_point",
     (
@@ -779,10 +788,10 @@ def test_record_rejects_an_existing_baseline_before_parser_execution(tmp_path: P
         "temporary_fsync",
         "destination_revalidation",
         "parent_fsync",
-        "replace",
+        "link",
     ),
 )
-def test_secure_publication_failure_preserves_existing_baseline_bytes(
+def test_secure_publication_failure_leaves_no_candidate_or_owned_temporary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
@@ -790,12 +799,10 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    accepted_content = b"accepted baseline bytes"
-    baseline_path.write_bytes(accepted_content)
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
     original_open = corpus_gate_module.os.open
     original_fsync = corpus_gate_module.os.fsync
-    original_validate = corpus_gate_module._validate_baseline_destination
+    original_validate = corpus_gate_module._validate_baseline_absent
 
     def fail(*_args: object, **_kwargs: object) -> None:
         raise OSError("injected publication failure")
@@ -838,11 +845,11 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
 
         monkeypatch.setattr(
             corpus_gate_module,
-            "_validate_baseline_destination",
+            "_validate_baseline_absent",
             fail_second_validation,
         )
     else:
-        monkeypatch.setattr(corpus_gate_module.os, "replace", fail)
+        monkeypatch.setattr(corpus_gate_module.os, "link", fail)
 
     try:
         with pytest.raises(OSError, match="injected publication failure"):
@@ -854,8 +861,8 @@ def test_secure_publication_failure_preserves_existing_baseline_bytes(
     finally:
         corpus_gate_module.os.close(parent_fd)
 
-    assert baseline_path.read_bytes() == accepted_content
-    assert tuple(private_dir.iterdir()) == (baseline_path,)
+    assert not baseline_path.exists()
+    assert tuple(private_dir.iterdir()) == ()
 
 
 def test_exclusive_candidate_publication_never_overwrites_a_racing_destination(
@@ -893,7 +900,6 @@ def test_exclusive_candidate_publication_never_overwrites_a_racing_destination(
                 parent_fd,
                 baseline_path.name,
                 _baseline(),
-                replace_existing=False,
             )
     finally:
         os.close(parent_fd)
@@ -935,7 +941,6 @@ def test_exclusive_candidate_publication_recognizes_commit_before_link_error(
             parent_fd,
             baseline_path.name,
             _baseline(),
-            replace_existing=False,
         )
     finally:
         os.close(parent_fd)
@@ -944,17 +949,16 @@ def test_exclusive_candidate_publication_recognizes_commit_before_link_error(
     assert tuple(private_dir.iterdir()) == (baseline_path,)
 
 
-def test_secure_publication_replace_is_the_final_filesystem_operation(
+def test_secure_publication_link_then_cleanup_is_the_final_filesystem_sequence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
     original_fsync = corpus_gate_module.os.fsync
-    original_replace = corpus_gate_module.os.replace
+    original_link = corpus_gate_module.os.link
     original_unlink = corpus_gate_module.os.unlink
     events: list[str] = []
 
@@ -962,19 +966,21 @@ def test_secure_publication_replace_is_the_final_filesystem_operation(
         events.append("parent_fsync" if file_descriptor == parent_fd else "temporary_fsync")
         original_fsync(file_descriptor)
 
-    def recording_replace(
+    def recording_link(
         source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         *,
         src_dir_fd: int | None = None,
         dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
     ) -> None:
-        events.append("replace")
-        original_replace(
+        events.append("link")
+        original_link(
             source,
             destination,
             src_dir_fd=src_dir_fd,
             dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
         )
 
     def recording_unlink(
@@ -986,7 +992,7 @@ def test_secure_publication_replace_is_the_final_filesystem_operation(
         original_unlink(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(corpus_gate_module.os, "fsync", recording_fsync)
-    monkeypatch.setattr(corpus_gate_module.os, "replace", recording_replace)
+    monkeypatch.setattr(corpus_gate_module.os, "link", recording_link)
     monkeypatch.setattr(corpus_gate_module.os, "unlink", recording_unlink)
     try:
         corpus_gate_module._publish_json_secure(
@@ -997,7 +1003,7 @@ def test_secure_publication_replace_is_the_final_filesystem_operation(
     finally:
         os.close(parent_fd)
 
-    assert events == ["temporary_fsync", "parent_fsync", "replace"]
+    assert events == ["temporary_fsync", "parent_fsync", "link", "unlink"]
     assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
 
 
@@ -1008,7 +1014,6 @@ def test_secure_publication_suppresses_only_post_commit_close_failure(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
     original_close = corpus_gate_module.os.close
     failure_injected = False
@@ -1042,7 +1047,6 @@ def test_secure_publication_rejects_post_create_name_substitution(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     temporary_path = private_dir / ".baseline.json.owned.tmp"
     displaced_temporary = private_dir / "displaced-temporary"
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
@@ -1066,7 +1070,7 @@ def test_secure_publication_rejects_post_create_name_substitution(
         os.close(parent_fd)
 
     assert caught.value.reasons == (CorpusGateReason.UNSAFE_PATH_TOPOLOGY,)
-    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert not baseline_path.exists()
     assert temporary_path.read_bytes() == b"substitute"
 
 
@@ -1077,7 +1081,6 @@ def test_secure_publication_cleanup_never_unlinks_a_substituted_name(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     temporary_path = private_dir / ".baseline.json.owned.tmp"
     displaced_temporary = private_dir / "displaced-temporary"
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
@@ -1099,7 +1102,7 @@ def test_secure_publication_cleanup_never_unlinks_a_substituted_name(
     finally:
         os.close(parent_fd)
 
-    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert not baseline_path.exists()
     assert temporary_path.read_bytes() == b"substitute"
 
 
@@ -1110,9 +1113,8 @@ def test_secure_publication_treats_commit_then_interrupt_as_committed(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
-    original_replace = corpus_gate_module.os.replace
+    original_link = corpus_gate_module.os.link
 
     def commit_then_interrupt(
         source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
@@ -1120,16 +1122,18 @@ def test_secure_publication_treats_commit_then_interrupt_as_committed(
         *,
         src_dir_fd: int | None = None,
         dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
     ) -> None:
-        original_replace(
+        original_link(
             source,
             destination,
             src_dir_fd=src_dir_fd,
             dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
         )
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(corpus_gate_module.os, "replace", commit_then_interrupt)
+    monkeypatch.setattr(corpus_gate_module.os, "link", commit_then_interrupt)
     try:
         corpus_gate_module._publish_json_secure(
             parent_fd,
@@ -1142,20 +1146,19 @@ def test_secure_publication_treats_commit_then_interrupt_as_committed(
     assert baseline_path.read_bytes() == canonical_json_bytes(_baseline())
 
 
-def test_secure_publication_propagates_interrupt_before_replace(
+def test_secure_publication_propagates_interrupt_before_link(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
 
-    def interrupt_before_replace(*_args: object, **_kwargs: object) -> None:
+    def interrupt_before_link(*_args: object, **_kwargs: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(corpus_gate_module.os, "replace", interrupt_before_replace)
+    monkeypatch.setattr(corpus_gate_module.os, "link", interrupt_before_link)
     try:
         with pytest.raises(KeyboardInterrupt):
             corpus_gate_module._publish_json_secure(
@@ -1166,7 +1169,7 @@ def test_secure_publication_propagates_interrupt_before_replace(
     finally:
         os.close(parent_fd)
 
-    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert not baseline_path.exists()
 
 
 def test_secure_publication_never_unlinks_an_unowned_temporary_name(
@@ -1176,7 +1179,6 @@ def test_secure_publication_never_unlinks_an_unowned_temporary_name(
     private_dir = tmp_path / "private"
     private_dir.mkdir()
     baseline_path = private_dir / "baseline.json"
-    baseline_path.write_bytes(b"accepted baseline bytes")
     colliding_temporary_path = private_dir / ".baseline.json.collision.tmp"
     colliding_temporary_path.write_bytes(b"unowned temporary bytes")
     parent_fd = os.open(private_dir, os.O_RDONLY | os.O_DIRECTORY)
@@ -1192,7 +1194,7 @@ def test_secure_publication_never_unlinks_an_unowned_temporary_name(
     finally:
         os.close(parent_fd)
 
-    assert baseline_path.read_bytes() == b"accepted baseline bytes"
+    assert not baseline_path.exists()
     assert colliding_temporary_path.read_bytes() == b"unowned temporary bytes"
 
 
@@ -2398,11 +2400,9 @@ def test_successful_record_writes_baseline_only_after_final_attestations(
         parent_fd: int,
         name: str,
         result: CorpusBaseline,
-        *,
-        replace_existing: bool = True,
     ) -> None:
         events.append("write")
-        original_write(parent_fd, name, result, replace_existing=replace_existing)
+        original_write(parent_fd, name, result)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", recording_write)
     dependencies = CorpusGateDependencies(
@@ -2471,12 +2471,10 @@ def test_private_parent_swap_immediately_before_publication_uses_bound_parent(
         parent_fd: int,
         name: str,
         result: CorpusBaseline,
-        *,
-        replace_existing: bool = True,
     ) -> None:
         private_dir.rename(bound_private_dir)
         private_dir.symlink_to(outside_dir, target_is_directory=True)
-        original_publish(parent_fd, name, result, replace_existing=replace_existing)
+        original_publish(parent_fd, name, result)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", swap_then_publish)
 
@@ -2528,11 +2526,9 @@ def test_baseline_name_symlink_swap_immediately_before_publication_fails_closed(
         parent_fd: int,
         name: str,
         result: CorpusBaseline,
-        *,
-        replace_existing: bool = True,
     ) -> None:
         (Path(f"/proc/self/fd/{parent_fd}") / name).symlink_to(outside_baseline)
-        original_publish(parent_fd, name, result, replace_existing=replace_existing)
+        original_publish(parent_fd, name, result)
 
     monkeypatch.setattr(corpus_gate_module, "_publish_json_secure", swap_then_publish)
 

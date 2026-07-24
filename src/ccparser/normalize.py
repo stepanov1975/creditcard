@@ -346,9 +346,6 @@ def _normalize_row(
         explicit_conversion_date=conversion_date,
         semantic_extraction=ConversionDateExtraction(None, (), frozenset(), frozenset()),
     )
-    assignment_diagnostic_index = len(diagnostics)
-    diagnostics.extend(date_extraction.diagnostics)
-
     accepted_conversion_atom_ids = explicit_conversion_atom_ids
     conversion_ownership_stable = False
     for iteration in range(3):
@@ -401,17 +398,15 @@ def _normalize_row(
     description = original_extraction.description
     original_amount = original_extraction.amount
     original_currency = original_extraction.currency
-    diagnostics.extend(description_extraction.diagnostics)
-    diagnostics.extend(original_extraction.diagnostics)
-    diagnostics.extend(conversion_extraction.diagnostics)
+    conversion_resolution_diagnostics: list[str] = []
     if not conversion_ownership_stable:
-        diagnostics.append("unstable_conversion_evidence_ownership")
+        conversion_resolution_diagnostics.append("unstable_conversion_evidence_ownership")
     if conversion_date is None:
         conversion_date = conversion_extraction.value
     elif conversion_extraction.value is not None and conversion_extraction.value != conversion_date:
-        diagnostics.append("conflicting_conversion_date_evidence")
+        conversion_resolution_diagnostics.append("conflicting_conversion_date_evidence")
     if any(cell not in conversion_extraction.source_cells for cell in unresolved_conversion_cells):
-        diagnostics.append("invalid_conversion_date")
+        conversion_resolution_diagnostics.append("invalid_conversion_date")
 
     foreign_exchange_extraction = extract_foreign_exchange(
         rows=rows,
@@ -424,15 +419,21 @@ def _normalize_row(
         billed_amount=billed.amount,
     )
     semantic_claims.extend(foreign_exchange_extraction.claims)
-    diagnostics.extend(foreign_exchange_extraction.diagnostics)
-
-    diagnostics[assignment_diagnostic_index:assignment_diagnostic_index] = assignment_diagnostics(
-        row,
-        region,
-        ledger,
-        accepted_conversion_date_atom_ids=accepted_conversion_atom_ids,
-        year_context=year_context,
+    diagnostics.extend(
+        assignment_diagnostics(
+            row,
+            region,
+            ledger,
+            accepted_conversion_date_atom_ids=accepted_conversion_atom_ids,
+            year_context=year_context,
+        )
     )
+    diagnostics.extend(date_extraction.diagnostics)
+    diagnostics.extend(description_extraction.diagnostics)
+    diagnostics.extend(original_extraction.diagnostics)
+    diagnostics.extend(conversion_extraction.diagnostics)
+    diagnostics.extend(conversion_resolution_diagnostics)
+    diagnostics.extend(foreign_exchange_extraction.diagnostics)
 
     installment = extract_installment_fields(row=row, region=region)
     diagnostics.extend(installment.diagnostics)

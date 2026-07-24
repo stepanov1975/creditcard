@@ -157,6 +157,17 @@ def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None
     assert all(unicodedata.is_normalized("NFC", text) for text in _all_strings(payload))
 
 
+def test_canonical_json_value_bytes_owns_the_closed_value_grammar() -> None:
+    decomposed = "Cafe\u0301"
+    composed = "Caf\u00e9"
+
+    encoded = output_module._canonical_json_value_bytes(
+        {decomposed: (True, 1, 2.5, decomposed), composed: "last"}
+    )
+
+    assert encoded == '{"Caf\u00e9":"last"}\n'.encode()
+
+
 def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -> None:
     content = transactions_csv_bytes(_batch())
 

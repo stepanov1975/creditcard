@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 import ccparser._traced_subprocess as traced_module
 
@@ -238,6 +241,39 @@ def test_seccomp_filter_kills_syscalls_from_an_unexpected_architecture() -> None
         )
         == traced_module._SECCOMP_RET_KILL_PROCESS
     )
+
+
+@pytest.mark.parametrize(
+    ("machine", "architecture", "native_seccomp_syscall"),
+    (("x86_64", 0xC000003E, 317), ("aarch64", 0xC00000B7, 277)),
+)
+def test_filter_installation_uses_selected_policy_seccomp_syscall(
+    monkeypatch: pytest.MonkeyPatch,
+    machine: str,
+    architecture: int,
+    native_seccomp_syscall: int,
+) -> None:
+    sentinel_seccomp_syscall = 123_456
+    native_policy = traced_module._ARCHITECTURE_POLICIES[architecture]
+    assert native_policy.seccomp_syscall == native_seccomp_syscall
+    policy = replace(native_policy, seccomp_syscall=sentinel_seccomp_syscall)
+    syscall_numbers: list[int] = []
+
+    class FakeLibc:
+        def prctl(self, *arguments: object) -> int:
+            return 0
+
+        def syscall(self, syscall_number: int, *arguments: object) -> int:
+            syscall_numbers.append(syscall_number)
+            return 0
+
+    monkeypatch.setitem(traced_module._ARCHITECTURE_POLICIES, architecture, policy)
+    monkeypatch.setattr(traced_module.platform, "machine", lambda: machine)
+    monkeypatch.setattr(traced_module, "_LIBC", FakeLibc())
+
+    traced_module._install_selective_trace_filter()
+
+    assert syscall_numbers == [sentinel_seccomp_syscall]
 
 
 def test_execute_request_detection_covers_every_traced_execution_path() -> None:
