@@ -3,12 +3,15 @@ from __future__ import annotations
 import csv
 import inspect
 import io
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
 import ccparser.money as money_module
+import ccparser.text_tokens as text_tokens_module
 from ccparser.discovery import (
     DateTokenStyle,
     DiscoveredDateYearContext,
@@ -42,6 +45,19 @@ from ccparser.normalize import (
 )
 from ccparser.output import transactions_csv_bytes
 from ccparser.semantic_evidence import EvidenceLedger
+
+
+@contextmanager
+def _cleared_lexical_caches() -> Iterator[None]:
+    clear_lexical_cache = getattr(money_module._parse_lexical, "cache_clear", lambda: None)
+    clear_phrase_cache = text_tokens_module._cached_phrase_tokens.cache_clear
+    clear_lexical_cache()
+    clear_phrase_cache()
+    try:
+        yield
+    finally:
+        clear_lexical_cache()
+        clear_phrase_cache()
 
 
 def test_normalize_row_assembles_diagnostic_phases_without_retroactive_insertion() -> None:
@@ -744,9 +760,7 @@ def test_monetary_lexical_cache_reuses_text_and_separates_currency_hints(
         return original(text)
 
     monkeypatch.setattr(money_module, "_canonical_number", counting_canonical_number)
-    clear_cache = getattr(money_module._parse_lexical, "cache_clear", lambda: None)
-    clear_cache()
-    try:
+    with _cleared_lexical_caches():
         usd_first = money_module.parse_amount(raw, currency_hint="USD")
         usd_second = money_module.parse_amount(raw, currency_hint="USD")
         eur_first = money_module.parse_amount(raw, currency_hint="EUR")
@@ -757,8 +771,6 @@ def test_monetary_lexical_cache_reuses_text_and_separates_currency_hints(
         assert (eur_first.amount, eur_first.currency) == (Decimal(raw), "EUR")
         assert eur_second == eur_first
         assert calls == [raw, raw]
-    finally:
-        clear_cache()
 
 
 def test_monetary_lexical_cache_is_bounded_and_evicts_least_recently_used_entry(
@@ -776,8 +788,7 @@ def test_monetary_lexical_cache_is_bounded_and_evicts_least_recently_used_entry(
     monkeypatch.setattr(money_module, "_canonical_number", counting_canonical_number)
     cache = money_module._parse_lexical
     assert hasattr(cache, "cache_clear")
-    cache.cache_clear()
-    try:
+    with _cleared_lexical_caches():
         refreshed_first = money_module.parse_amount(refreshed_raw, currency_hint="USD")
         evicted_first = money_module.parse_amount(evicted_raw, currency_hint="USD")
         for index in range(4_094):
@@ -805,8 +816,6 @@ def test_monetary_lexical_cache_is_bounded_and_evicts_least_recently_used_entry(
             calls.count(refreshed_raw),
             calls.count(evicted_raw),
         ) == (4_096, 4_096, 1, 2)
-    finally:
-        cache.cache_clear()
 
 
 @pytest.mark.parametrize(

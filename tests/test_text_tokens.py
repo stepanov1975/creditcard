@@ -80,20 +80,24 @@ def test_phrase_tokens_reuses_each_policy_specific_result(
         return original(text)
 
     monkeypatch.setattr(text_tokens_module, "normalize_text", counting_normalize_text)
-
-    assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
-    assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
-    assert phrase_tokens(source, ignore_acronym_quotes=True) == (
-        "memoized",
-        "ab",
-        "90210",
-    )
-    assert phrase_tokens(source, ignore_acronym_quotes=True) == (
-        "memoized",
-        "ab",
-        "90210",
-    )
-    assert calls == [source, source]
+    cache = text_tokens_module._cached_phrase_tokens
+    cache.cache_clear()
+    try:
+        assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+        assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+        assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+            "memoized",
+            "ab",
+            "90210",
+        )
+        assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+            "memoized",
+            "ab",
+            "90210",
+        )
+        assert calls == [source, source]
+    finally:
+        cache.cache_clear()
 
 
 def test_phrase_token_cache_is_bounded_and_evicts_least_recently_used_entry(
