@@ -28,8 +28,10 @@ from ccparser.output import (
     canonical_json_bytes,
     transactions_csv_bytes,
     write_batch_outputs,
+    write_canonical_batch_json_stream,
     write_csv_atomic,
     write_json_atomic,
+    write_transactions_csv_stream,
 )
 
 
@@ -130,6 +132,54 @@ def _all_strings(value: object) -> tuple[str, ...]:
     if isinstance(value, list):
         return tuple(text for item in value for text in _all_strings(item))
     return ()
+
+
+@pytest.mark.parametrize(
+    "batch",
+    (
+        _batch(),
+        BatchResult(status=Status.UNSUPPORTED, statements=(), diagnostics=("no_pdf_files",)),
+        BatchResult(
+            status=Status.UNSUPPORTED,
+            statements=(
+                StatementResult(
+                    status=Status.UNSUPPORTED,
+                    transactions=(),
+                    groups=(),
+                    diagnostics=("unsupported_layout",),
+                ),
+            ),
+            diagnostics=("documents_not_reconciled:1",),
+        ),
+        BatchResult(
+            status=Status.UNRECONCILED,
+            statements=(
+                StatementResult(status=Status.RECONCILED, transactions=(), groups=()),
+                StatementResult(status=Status.UNRECONCILED, transactions=(), groups=()),
+            ),
+            diagnostics=("documents_not_reconciled:1",),
+        ),
+    ),
+)
+def test_streaming_json_and_csv_match_complete_batch_bytes(batch: BatchResult) -> None:
+    json_stream = io.BytesIO()
+    csv_stream = io.BytesIO()
+
+    write_canonical_batch_json_stream(
+        json_stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+    write_transactions_csv_stream(
+        csv_stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+
+    assert json_stream.getvalue() == canonical_json_bytes(batch)
+    assert csv_stream.getvalue() == transactions_csv_bytes(batch)
 
 
 def test_canonical_json_is_stable_nfc_decimal_safe_and_has_one_newline() -> None:

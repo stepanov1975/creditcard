@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import json
@@ -13,6 +14,7 @@ from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -24,6 +26,7 @@ from ccparser.models import (
     ExtractedMoney,
     ReconciliationGroup,
     StatementResult,
+    Status,
     Transaction,
 )
 
@@ -78,6 +81,10 @@ _FX_CSV_COLUMNS = (
 CSV_COLUMNS = (*_BASE_CSV_COLUMNS, *_FX_CSV_COLUMNS)
 
 
+class BinaryWriter(Protocol):
+    def write(self, content: bytes, /) -> int: ...
+
+
 def _normalized_json(value: object) -> JsonValue:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("JSON numeric values must be finite")
@@ -97,26 +104,46 @@ def _normalized_json(value: object) -> JsonValue:
     raise TypeError("unsupported canonical JSON value")
 
 
+def _canonical_json_value_content(value: object) -> bytes:
+    return json.dumps(
+        _normalized_json(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def _canonical_json_value_bytes(value: object) -> bytes:
     """Encode one value from the package's closed canonical JSON grammar."""
 
-    normalized = _normalized_json(value)
-    return (
-        json.dumps(
-            normalized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        + b"\n"
-    )
+    return _canonical_json_value_content(value) + b"\n"
 
 
 def canonical_json_bytes(result: BaseModel) -> bytes:
     """Return stable canonical UTF-8 JSON with logical NFC text and one newline."""
 
     return _canonical_json_value_bytes(result.model_dump(mode="json"))
+
+
+def write_canonical_batch_json_stream(
+    destination: BinaryWriter,
+    *,
+    status: Status,
+    diagnostics: tuple[str, ...],
+    statements: Iterable[StatementResult],
+) -> None:
+    destination.write(b'{"diagnostics":')
+    destination.write(_canonical_json_value_content(diagnostics))
+    destination.write(b',"statements":[')
+    separator = b""
+    for statement in statements:
+        destination.write(separator)
+        destination.write(_canonical_json_value_content(statement.model_dump(mode="json")))
+        separator = b","
+    destination.write(b'],"status":')
+    destination.write(_canonical_json_value_content(status.value))
+    destination.write(b"}\n")
 
 
 def _optional_decimal_string(value: Decimal | None) -> str:
@@ -200,7 +227,7 @@ def _empty_row(
 
 
 def _transaction_row(
-    batch: BatchResult,
+    batch_diagnostics: tuple[str, ...],
     statement: StatementResult,
     transaction: Transaction,
     groups: dict[str, ReconciliationGroup],
@@ -239,7 +266,7 @@ def _transaction_row(
         "status": statement.status.value,
         "ambiguity_codes": _codes(transaction.ambiguities),
         "diagnostic_codes": _codes(
-            batch.diagnostics,
+            batch_diagnostics,
             statement.diagnostics,
             group.diagnostics if group is not None else (),
         ),
@@ -249,41 +276,59 @@ def _transaction_row(
     }
 
 
-def _csv_rows(batch: BatchResult) -> tuple[dict[str, str], ...]:
-    rows: list[dict[str, str]] = []
-    for statement in batch.statements:
+class _Utf8TextWriter:
+    def __init__(self, destination: BinaryWriter) -> None:
+        self._destination = destination
+
+    def write(self, content: str, /) -> int:
+        self._destination.write(content.encode("utf-8"))
+        return len(content)
+
+
+def write_transactions_csv_stream(
+    destination: BinaryWriter,
+    *,
+    status: Status,
+    diagnostics: tuple[str, ...],
+    statements: Iterable[StatementResult],
+) -> None:
+    destination.write(codecs.BOM_UTF8)
+    writer = csv.DictWriter(
+        _Utf8TextWriter(destination),
+        fieldnames=CSV_COLUMNS,
+        lineterminator="\r\n",
+    )
+    writer.writeheader()
+    wrote_statement = False
+    for statement in statements:
+        wrote_statement = True
         groups = {group.group_id: group for group in statement.groups}
         if statement.transactions:
-            rows.extend(
-                _transaction_row(batch, statement, transaction, groups)
-                for transaction in statement.transactions
-            )
+            for transaction in statement.transactions:
+                writer.writerow(_transaction_row(diagnostics, statement, transaction, groups))
         else:
-            rows.append(
+            writer.writerow(
                 _empty_row(
                     status=statement.status.value,
-                    diagnostics=_codes(batch.diagnostics, statement.diagnostics),
+                    diagnostics=_codes(diagnostics, statement.diagnostics),
                     statement=statement,
                 )
             )
-    if not rows:
-        rows.append(
-            _empty_row(
-                status=batch.status.value,
-                diagnostics=_codes(batch.diagnostics),
-            )
-        )
-    return tuple(rows)
+    if not wrote_statement:
+        writer.writerow(_empty_row(status=status.value, diagnostics=_codes(diagnostics)))
 
 
 def transactions_csv_bytes(batch: BatchResult) -> bytes:
     """Return a deterministic flat RFC-compatible transaction CSV with UTF-8 BOM."""
 
-    stream = io.StringIO(newline="")
-    writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
-    writer.writeheader()
-    writer.writerows(_csv_rows(batch))
-    return stream.getvalue().encode("utf-8-sig")
+    stream = io.BytesIO()
+    write_transactions_csv_stream(
+        stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+    return stream.getvalue()
 
 
 def _write_atomic(path: str | Path, content: bytes) -> None:
@@ -354,9 +399,12 @@ def write_batch_outputs(output_dir: str | Path, batch: BatchResult) -> None:
 
 __all__ = [
     "CSV_COLUMNS",
+    "BinaryWriter",
     "canonical_json_bytes",
     "transactions_csv_bytes",
     "write_batch_outputs",
+    "write_canonical_batch_json_stream",
     "write_csv_atomic",
     "write_json_atomic",
+    "write_transactions_csv_stream",
 ]
