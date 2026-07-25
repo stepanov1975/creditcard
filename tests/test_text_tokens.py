@@ -68,6 +68,78 @@ def test_acronym_quote_policy_is_explicit() -> None:
     assert phrase_tokens('סה"כ') == ("סה", "כ")
 
 
+def test_phrase_tokens_reuses_each_policy_specific_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = 'Memoized A"B 90210'
+    calls: list[str] = []
+    original = text_tokens_module.normalize_text
+
+    def counting_normalize_text(text: str) -> str:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(text_tokens_module, "normalize_text", counting_normalize_text)
+    cache = text_tokens_module._cached_phrase_tokens
+    cache.cache_clear()
+    try:
+        assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+        assert phrase_tokens(source) == ("memoized", "a", "b", "90210")
+        assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+            "memoized",
+            "ab",
+            "90210",
+        )
+        assert phrase_tokens(source, ignore_acronym_quotes=True) == (
+            "memoized",
+            "ab",
+            "90210",
+        )
+        assert calls == [source, source]
+    finally:
+        cache.cache_clear()
+
+
+def test_phrase_token_cache_is_bounded_and_evicts_least_recently_used_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refreshed_source = "Refreshed cache sentinel"
+    evicted_source = "Evicted cache sentinel"
+    calls: list[str] = []
+    original = text_tokens_module.normalize_text
+
+    def counting_normalize_text(text: str) -> str:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(text_tokens_module, "normalize_text", counting_normalize_text)
+    cache = text_tokens_module._cached_phrase_tokens
+    cache.cache_clear()
+    try:
+        assert phrase_tokens(refreshed_source) == ("refreshed", "cache", "sentinel")
+        assert phrase_tokens(evicted_source) == ("evicted", "cache", "sentinel")
+        for index in range(8_190):
+            phrase_tokens(f"Filler cache sentinel {index}")
+
+        assert phrase_tokens(refreshed_source) == ("refreshed", "cache", "sentinel")
+        assert phrase_tokens("Overflow cache sentinel") == (
+            "overflow",
+            "cache",
+            "sentinel",
+        )
+        assert phrase_tokens(refreshed_source) == ("refreshed", "cache", "sentinel")
+        assert phrase_tokens(evicted_source) == ("evicted", "cache", "sentinel")
+
+        assert (
+            cache.cache_parameters()["maxsize"],
+            cache.cache_info().currsize,
+            calls.count(refreshed_source),
+            calls.count(evicted_source),
+        ) == (8_192, 8_192, 1, 2)
+    finally:
+        cache.cache_clear()
+
+
 def test_hebrew_clitic_prefix_is_an_explicit_first_token_policy() -> None:
     assert contains_token_sequence(
         "בשער המרה",

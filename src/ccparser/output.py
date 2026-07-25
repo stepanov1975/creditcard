@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import json
 import math
-import os
-import tempfile
+import os as os
+import tempfile as tempfile
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel
 
+from ccparser._output_publication import (
+    BinaryRenderer,
+    write_output_pair_atomic,
+)
+from ccparser._output_publication import (
+    write_bytes_atomic as _write_atomic,
+)
 from ccparser.decimal_math import plain_decimal_string
 from ccparser.models import (
     BatchResult,
@@ -24,11 +33,13 @@ from ccparser.models import (
     ExtractedMoney,
     ReconciliationGroup,
     StatementResult,
+    Status,
     Transaction,
 )
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type StatementResultFactory = Callable[[], Iterator[StatementResult]]
 
 _BASE_CSV_COLUMNS = (
     "source",
@@ -78,6 +89,10 @@ _FX_CSV_COLUMNS = (
 CSV_COLUMNS = (*_BASE_CSV_COLUMNS, *_FX_CSV_COLUMNS)
 
 
+class BinaryWriter(Protocol):
+    def write(self, content: bytes, /) -> int: ...
+
+
 def _normalized_json(value: object) -> JsonValue:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("JSON numeric values must be finite")
@@ -97,26 +112,52 @@ def _normalized_json(value: object) -> JsonValue:
     raise TypeError("unsupported canonical JSON value")
 
 
+def _canonical_json_value_content(value: object) -> bytes:
+    return json.dumps(
+        _normalized_json(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def _canonical_json_value_bytes(value: object) -> bytes:
     """Encode one value from the package's closed canonical JSON grammar."""
 
-    normalized = _normalized_json(value)
-    return (
-        json.dumps(
-            normalized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        + b"\n"
-    )
+    return _canonical_json_value_content(value) + b"\n"
 
 
 def canonical_json_bytes(result: BaseModel) -> bytes:
     """Return stable canonical UTF-8 JSON with logical NFC text and one newline."""
 
     return _canonical_json_value_bytes(result.model_dump(mode="json"))
+
+
+def write_canonical_batch_json_stream(
+    destination: BinaryWriter,
+    *,
+    status: Status,
+    diagnostics: tuple[str, ...],
+    statements: Iterable[StatementResult],
+) -> None:
+    destination.write(b'{"diagnostics":')
+    destination.write(_canonical_json_value_content(diagnostics))
+    destination.write(b',"statements":[')
+    separator = b""
+    statement_iterator = iter(statements)
+    while True:
+        try:
+            statement = next(statement_iterator)
+        except StopIteration:
+            break
+        destination.write(separator)
+        destination.write(_canonical_json_value_content(statement.model_dump(mode="json")))
+        separator = b","
+        del statement
+    destination.write(b'],"status":')
+    destination.write(_canonical_json_value_content(status.value))
+    destination.write(b"}\n")
 
 
 def _optional_decimal_string(value: Decimal | None) -> str:
@@ -200,7 +241,7 @@ def _empty_row(
 
 
 def _transaction_row(
-    batch: BatchResult,
+    batch_diagnostics: tuple[str, ...],
     statement: StatementResult,
     transaction: Transaction,
     groups: dict[str, ReconciliationGroup],
@@ -239,7 +280,7 @@ def _transaction_row(
         "status": statement.status.value,
         "ambiguity_codes": _codes(transaction.ambiguities),
         "diagnostic_codes": _codes(
-            batch.diagnostics,
+            batch_diagnostics,
             statement.diagnostics,
             group.diagnostics if group is not None else (),
         ),
@@ -249,69 +290,73 @@ def _transaction_row(
     }
 
 
-def _csv_rows(batch: BatchResult) -> tuple[dict[str, str], ...]:
-    rows: list[dict[str, str]] = []
-    for statement in batch.statements:
-        groups = {group.group_id: group for group in statement.groups}
-        if statement.transactions:
-            rows.extend(
-                _transaction_row(batch, statement, transaction, groups)
-                for transaction in statement.transactions
-            )
-        else:
-            rows.append(
-                _empty_row(
-                    status=statement.status.value,
-                    diagnostics=_codes(batch.diagnostics, statement.diagnostics),
-                    statement=statement,
-                )
-            )
-    if not rows:
-        rows.append(
+class _Utf8TextWriter:
+    def __init__(self, destination: BinaryWriter) -> None:
+        self._destination = destination
+
+    def write(self, content: str, /) -> int:
+        self._destination.write(content.encode("utf-8"))
+        return len(content)
+
+
+def _write_statement_csv_rows(
+    writer: csv.DictWriter[str],
+    batch_diagnostics: tuple[str, ...],
+    statement: StatementResult,
+) -> None:
+    groups = {group.group_id: group for group in statement.groups}
+    if statement.transactions:
+        for transaction in statement.transactions:
+            writer.writerow(_transaction_row(batch_diagnostics, statement, transaction, groups))
+    else:
+        writer.writerow(
             _empty_row(
-                status=batch.status.value,
-                diagnostics=_codes(batch.diagnostics),
+                status=statement.status.value,
+                diagnostics=_codes(batch_diagnostics, statement.diagnostics),
+                statement=statement,
             )
         )
-    return tuple(rows)
+
+
+def write_transactions_csv_stream(
+    destination: BinaryWriter,
+    *,
+    status: Status,
+    diagnostics: tuple[str, ...],
+    statements: Iterable[StatementResult],
+) -> None:
+    destination.write(codecs.BOM_UTF8)
+    writer = csv.DictWriter(
+        _Utf8TextWriter(destination),
+        fieldnames=CSV_COLUMNS,
+        lineterminator="\r\n",
+    )
+    writer.writeheader()
+    wrote_statement = False
+    statement_iterator = iter(statements)
+    while True:
+        try:
+            statement = next(statement_iterator)
+        except StopIteration:
+            break
+        wrote_statement = True
+        _write_statement_csv_rows(writer, diagnostics, statement)
+        del statement
+    if not wrote_statement:
+        writer.writerow(_empty_row(status=status.value, diagnostics=_codes(diagnostics)))
 
 
 def transactions_csv_bytes(batch: BatchResult) -> bytes:
     """Return a deterministic flat RFC-compatible transaction CSV with UTF-8 BOM."""
 
-    stream = io.StringIO(newline="")
-    writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
-    writer.writeheader()
-    writer.writerows(_csv_rows(batch))
-    return stream.getvalue().encode("utf-8-sig")
-
-
-def _write_atomic(path: str | Path, content: bytes) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary.write(content)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, destination)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        directory_descriptor = os.open(destination.parent, directory_flags)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    stream = io.BytesIO()
+    write_transactions_csv_stream(
+        stream,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=iter(batch.statements),
+    )
+    return stream.getvalue()
 
 
 def write_json_atomic(path: str | Path, result: BaseModel) -> None:
@@ -326,37 +371,53 @@ def write_csv_atomic(path: str | Path, batch: BatchResult) -> None:
     _write_atomic(path, transactions_csv_bytes(batch))
 
 
-def _restore_output(path: Path, previous: bytes | None) -> None:
-    if previous is None:
-        path.unlink(missing_ok=True)
-    else:
-        _write_atomic(path, previous)
+def write_streaming_batch_outputs(
+    output_dir: str | Path,
+    *,
+    status: Status,
+    diagnostics: tuple[str, ...],
+    statements: StatementResultFactory,
+) -> None:
+    write_output_pair_atomic(
+        output_dir,
+        render_json=lambda stream: write_canonical_batch_json_stream(
+            stream,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements(),
+        ),
+        render_csv=lambda stream: write_transactions_csv_stream(
+            stream,
+            status=status,
+            diagnostics=diagnostics,
+            statements=statements(),
+        ),
+    )
 
 
 def write_batch_outputs(output_dir: str | Path, batch: BatchResult) -> None:
-    """Pre-render and publish the JSON/CSV pair with exact rollback on failure."""
+    """Stream and publish a batch while preserving the public adapter."""
 
-    json_content = canonical_json_bytes(batch)
-    csv_content = transactions_csv_bytes(batch)
-    directory = Path(output_dir)
-    json_path = directory / "results.json"
-    csv_path = directory / "transactions.csv"
-    previous_json = json_path.read_bytes() if json_path.exists() else None
-    previous_csv = csv_path.read_bytes() if csv_path.exists() else None
-    try:
-        _write_atomic(json_path, json_content)
-        _write_atomic(csv_path, csv_content)
-    except Exception:
-        _restore_output(json_path, previous_json)
-        _restore_output(csv_path, previous_csv)
-        raise
+    write_streaming_batch_outputs(
+        output_dir,
+        status=batch.status,
+        diagnostics=batch.diagnostics,
+        statements=lambda: iter(batch.statements),
+    )
 
 
 __all__ = [
     "CSV_COLUMNS",
+    "BinaryRenderer",
+    "BinaryWriter",
+    "StatementResultFactory",
     "canonical_json_bytes",
     "transactions_csv_bytes",
     "write_batch_outputs",
+    "write_canonical_batch_json_stream",
     "write_csv_atomic",
     "write_json_atomic",
+    "write_output_pair_atomic",
+    "write_streaming_batch_outputs",
+    "write_transactions_csv_stream",
 ]

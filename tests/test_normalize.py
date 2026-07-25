@@ -3,11 +3,15 @@ from __future__ import annotations
 import csv
 import inspect
 import io
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
+import ccparser.money as money_module
+import ccparser.text_tokens as text_tokens_module
 from ccparser.discovery import (
     DateTokenStyle,
     DiscoveredDateYearContext,
@@ -41,6 +45,19 @@ from ccparser.normalize import (
 )
 from ccparser.output import transactions_csv_bytes
 from ccparser.semantic_evidence import EvidenceLedger
+
+
+@contextmanager
+def _cleared_lexical_caches() -> Iterator[None]:
+    clear_lexical_cache = getattr(money_module._parse_lexical, "cache_clear", lambda: None)
+    clear_phrase_cache = text_tokens_module._cached_phrase_tokens.cache_clear
+    clear_lexical_cache()
+    clear_phrase_cache()
+    try:
+        yield
+    finally:
+        clear_lexical_cache()
+        clear_phrase_cache()
 
 
 def test_normalize_row_assembles_diagnostic_phases_without_retroactive_insertion() -> None:
@@ -729,6 +746,76 @@ def test_parse_amount_supports_structurally_unambiguous_formats_and_credit_marke
     assert result.currency == currency
     assert result.diagnostics == ()
     assert result.confidence >= 0.9
+
+
+def test_monetary_lexical_cache_reuses_text_and_separates_currency_hints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = "987654321.09"
+    calls: list[str] = []
+    original = money_module._canonical_number
+
+    def counting_canonical_number(text: str) -> tuple[str | None, str | None]:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(money_module, "_canonical_number", counting_canonical_number)
+    with _cleared_lexical_caches():
+        usd_first = money_module.parse_amount(raw, currency_hint="USD")
+        usd_second = money_module.parse_amount(raw, currency_hint="USD")
+        eur_first = money_module.parse_amount(raw, currency_hint="EUR")
+        eur_second = money_module.parse_amount(raw, currency_hint="EUR")
+
+        assert (usd_first.amount, usd_first.currency) == (Decimal(raw), "USD")
+        assert usd_second == usd_first
+        assert (eur_first.amount, eur_first.currency) == (Decimal(raw), "EUR")
+        assert eur_second == eur_first
+        assert calls == [raw, raw]
+
+
+def test_monetary_lexical_cache_is_bounded_and_evicts_least_recently_used_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refreshed_raw = "9999999991.01"
+    evicted_raw = "9999999992.02"
+    calls: list[str] = []
+    original = money_module._canonical_number
+
+    def counting_canonical_number(text: str) -> tuple[str | None, str | None]:
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(money_module, "_canonical_number", counting_canonical_number)
+    cache = money_module._parse_lexical
+    assert hasattr(cache, "cache_clear")
+    with _cleared_lexical_caches():
+        refreshed_first = money_module.parse_amount(refreshed_raw, currency_hint="USD")
+        evicted_first = money_module.parse_amount(evicted_raw, currency_hint="USD")
+        for index in range(4_094):
+            money_module.parse_amount(f"{index}.00", currency_hint="USD")
+
+        refreshed_second = money_module.parse_amount(refreshed_raw, currency_hint="USD")
+        money_module.parse_amount("9999999993.03", currency_hint="USD")
+        refreshed_third = money_module.parse_amount(refreshed_raw, currency_hint="USD")
+        evicted_second = money_module.parse_amount(evicted_raw, currency_hint="USD")
+
+        assert (refreshed_first.amount, refreshed_first.currency) == (
+            Decimal(refreshed_raw),
+            "USD",
+        )
+        assert refreshed_second == refreshed_first
+        assert refreshed_third == refreshed_first
+        assert (evicted_first.amount, evicted_first.currency) == (
+            Decimal(evicted_raw),
+            "USD",
+        )
+        assert evicted_second == evicted_first
+        assert (
+            cache.cache_parameters()["maxsize"],
+            cache.cache_info().currsize,
+            calls.count(refreshed_raw),
+            calls.count(evicted_raw),
+        ) == (4_096, 4_096, 1, 2)
 
 
 @pytest.mark.parametrize(

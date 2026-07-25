@@ -18,9 +18,7 @@ import sys
 import sysconfig
 import tempfile
 import time
-import unicodedata
-from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from decimal import Decimal
@@ -53,6 +51,8 @@ from typing import Annotated, Literal, Protocol, Self, runtime_checkable
 import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ccparser._corpus_projection import StructuralProjection, project_statement_stream
+from ccparser._corpus_run import execute_streaming_run
 from ccparser._traced_subprocess import run_traced_subprocess
 from ccparser.evidence.ocr import (
     OCR_CURRENCY_RECOGNITION_CACHE_VERSION,
@@ -71,17 +71,15 @@ from ccparser.evidence.ocr import (
 )
 from ccparser.models import (
     BatchResult,
-    EvidenceReference,
+    StatementResult,
     Status,
-    Transaction,
-    TransactionCategory,
 )
 from ccparser.output import (
     _canonical_json_value_bytes,
     canonical_json_bytes,
     transactions_csv_bytes,
 )
-from ccparser.parser import parse_directory
+from ccparser.parser import StatementParser
 from ccparser.paths import DirectoryRootPolicy, iter_regular_pdf_files, paths_overlap
 
 type Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -103,15 +101,7 @@ type PresentFieldPath = Literal[
     "transaction_date",
 ]
 
-type _GroupProjection = tuple[str, str, str, tuple[str, ...]]
-type _GroupStructure = tuple[tuple[_GroupProjection, ...], ...]
-type _TransactionIdentity = tuple[str, tuple[str, ...]]
-type _TransactionIdentities = tuple[tuple[_TransactionIdentity, ...], ...]
-type _FieldPresence = tuple[tuple[tuple[PresentFieldPath, ...], ...], ...]
-type _EvidenceReferenceProjection = tuple[int, tuple[float, float, float, float], str]
-type _EvidenceSiteProjection = tuple[str, tuple[_EvidenceReferenceProjection, ...]]
-type _EvidenceProvenance = tuple[tuple[tuple[_EvidenceSiteProjection, ...], ...], ...]
-type _AmbiguityProjection = tuple[tuple[tuple[str, ...], ...], ...]
+type StatementResultFactory = Callable[[], Iterator[StatementResult]]
 
 
 class CorpusGateMode(StrEnum):
@@ -299,7 +289,7 @@ class RunManifest(_GateModel):
 class CompletedCorpusRun:
     """One parser result with immediately adjacent corpus snapshots."""
 
-    batch: BatchResult
+    batch_status: Status
     manifest: RunManifest
     membership_before: CorpusMembership
     membership_after: CorpusMembership
@@ -502,20 +492,6 @@ class CorpusGateDependencies:
     runtime_capabilities: _GateRuntimeCapabilities | None = None
 
 
-class _DirectoryParser(Protocol):
-    def __call__(
-        self,
-        path: str | Path,
-        output_dir: str | Path,
-        strict: bool = False,
-        jobs: int | None = None,
-        *,
-        cache_dir: str | Path | None = None,
-        directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
-    ) -> BatchResult:
-        raise NotImplementedError
-
-
 class _NanosecondClock(Protocol):
     def __call__(self) -> int:
         raise NotImplementedError
@@ -527,10 +503,10 @@ class LocalCorpusRunner:
     def __init__(
         self,
         *,
-        parser: _DirectoryParser | None = None,
+        statement_parser: StatementParser | None = None,
         monotonic_ns: _NanosecondClock | None = None,
     ) -> None:
-        self._parser = parser or parse_directory
+        self._statement_parser = statement_parser
         self._monotonic_ns = monotonic_ns or time.monotonic_ns
 
     def __call__(
@@ -543,46 +519,53 @@ class LocalCorpusRunner:
         jobs: int,
     ) -> CompletedCorpusRun:
         membership_before = _snapshot_membership(input_dir, allow_descriptor_root=True)
-        start_nanoseconds = self._monotonic_ns()
         directory_root_policy = (
             DirectoryRootPolicy.TRUSTED_DESCRIPTOR
             if all(_is_process_fd_path(path) for path in (input_dir, output_dir, cache_dir))
             else DirectoryRootPolicy.RESOLVE
         )
-        batch = self._parser(
-            input_dir,
-            output_dir,
-            strict,
-            jobs,
-            cache_dir=cache_dir,
-            directory_root_policy=directory_root_policy,
-        )
-        end_nanoseconds = self._monotonic_ns()
-        membership_after = _snapshot_membership(input_dir, allow_descriptor_root=True)
-        elapsed_nanoseconds = end_nanoseconds - start_nanoseconds
-        if elapsed_nanoseconds < 0:
-            raise RuntimeError("monotonic clock moved backwards")
-        elapsed_seconds = Decimal(elapsed_nanoseconds) / Decimal(1_000_000_000)
-        manifest = project_run(batch, elapsed_seconds=elapsed_seconds)
+        membership_after: CorpusMembership | None = None
+        membership_snapshot_error: CorpusGateError | None = None
+
+        def observe_after_publication() -> None:
+            nonlocal membership_after, membership_snapshot_error
+            try:
+                membership_after = _snapshot_membership(
+                    input_dir,
+                    allow_descriptor_root=True,
+                )
+            except CorpusGateError as error:
+                membership_snapshot_error = error
+                raise
+
         try:
-            json_content = (output_dir / "results.json").read_bytes()
-            csv_content = (output_dir / "transactions.csv").read_bytes()
-            if json_content != canonical_json_bytes(batch) or csv_content != transactions_csv_bytes(
-                batch
-            ):
-                raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,))
-        except CorpusGateError:
-            raise
+            run_data = execute_streaming_run(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                cache_dir=cache_dir,
+                strict=strict,
+                jobs=jobs,
+                directory_root_policy=directory_root_policy,
+                statement_parser=self._statement_parser,
+                monotonic_ns=self._monotonic_ns,
+                after_publication=observe_after_publication,
+            )
+            if membership_after is None:
+                raise RuntimeError("membership snapshot was not observed")
+            manifest = _manifest_from_projection(
+                run_data.structural_projection,
+                elapsed_seconds=run_data.elapsed_seconds,
+                json_digest=run_data.json_digest,
+                csv_digest=run_data.csv_digest,
+            )
+        except CorpusGateError as error:
+            if error is membership_snapshot_error:
+                raise
+            raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
         except Exception:
             raise CorpusGateRuntimeError((CorpusGateReason.PARSER_RUNTIME_FAILED,)) from None
-        manifest = manifest.model_copy(
-            update={
-                "json_digest": _digest_bytes(json_content),
-                "csv_digest": _digest_bytes(csv_content),
-            }
-        )
         return CompletedCorpusRun(
-            batch=batch,
+            batch_status=run_data.batch_status,
             manifest=manifest,
             membership_before=membership_before,
             membership_after=membership_after,
@@ -2786,17 +2769,6 @@ class LocalToolchainInspector:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class _StructuralProjections:
-    counts: CorpusCounts
-    ordered_statuses: tuple[str, tuple[str, ...]]
-    group_structure: _GroupStructure
-    transaction_identities: _TransactionIdentities
-    field_presence: _FieldPresence
-    evidence_provenance: _EvidenceProvenance
-    ambiguities: _AmbiguityProjection
-
-
 def _digest_bytes(content: bytes) -> str:
     return sha256(content).hexdigest()
 
@@ -2815,164 +2787,40 @@ def digest_membership(source_hashes: Iterable[str]) -> CorpusMembership:
     )
 
 
-def _transaction_present_fields(transaction: Transaction) -> tuple[PresentFieldPath, ...]:
-    present: list[PresentFieldPath] = []
-    if transaction.category is not TransactionCategory.UNKNOWN:
-        present.append("category")
-    if transaction.conversion_date is not None:
-        present.append("conversion_date")
-    if transaction.description is not None:
-        present.append("description")
-    if transaction.installment_current is not None:
-        present.append("installment_current")
-    if transaction.installment_total is not None:
-        present.append("installment_total")
-    if transaction.original_amount is not None:
-        present.append("original_amount")
-    if transaction.original_currency is not None:
-        present.append("original_currency")
-    if transaction.posting_date is not None:
-        present.append("posting_date")
-    if transaction.transaction_date is not None:
-        present.append("transaction_date")
-
-    details = transaction.foreign_exchange
-    if details is not None:
-        if details.exchange_rate is not None:
-            present.append("foreign_exchange.exchange_rate")
-        if details.fee_discount is not None:
-            present.append("foreign_exchange.fee_discount")
-        if details.fee_percentage is not None:
-            present.append("foreign_exchange.fee_percentage")
-        if details.gross_fee is not None:
-            present.append("foreign_exchange.gross_fee")
-        if details.net_fee is not None:
-            present.append("foreign_exchange.net_fee")
-    return tuple(sorted(present))
-
-
-def _project_evidence_reference(reference: EvidenceReference) -> _EvidenceReferenceProjection:
-    raw_text_digest = _digest_bytes(
-        unicodedata.normalize("NFC", reference.raw_text).encode("utf-8")
-    )
-    return reference.page_number, reference.bbox, raw_text_digest
-
-
-def _project_evidence_site(
-    path: str, references: tuple[EvidenceReference, ...]
-) -> _EvidenceSiteProjection:
-    return path, tuple(_project_evidence_reference(reference) for reference in references)
-
-
-def _transaction_evidence_provenance(
-    transaction: Transaction,
-) -> tuple[_EvidenceSiteProjection, ...]:
-    sites = [_project_evidence_site("evidence", transaction.evidence)]
-    details = transaction.foreign_exchange
-    if details is not None:
-        if details.exchange_rate is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.exchange_rate", details.exchange_rate.evidence
-                )
-            )
-        if details.fee_discount is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.fee_discount", details.fee_discount.evidence
-                )
-            )
-        if details.fee_percentage is not None:
-            sites.append(
-                _project_evidence_site(
-                    "foreign_exchange.fee_percentage", details.fee_percentage.evidence
-                )
-            )
-        if details.gross_fee is not None:
-            sites.append(
-                _project_evidence_site("foreign_exchange.gross_fee", details.gross_fee.evidence)
-            )
-        if details.net_fee is not None:
-            sites.append(
-                _project_evidence_site("foreign_exchange.net_fee", details.net_fee.evidence)
-            )
-    return tuple(sorted(sites, key=lambda item: item[0]))
-
-
-def _project_structural_dimensions(batch: BatchResult) -> _StructuralProjections:
-    statuses = Counter(statement.status for statement in batch.statements)
-    present_field_counts: Counter[PresentFieldPath] = Counter()
-    field_presence: list[tuple[tuple[PresentFieldPath, ...], ...]] = []
-    evidence_provenance: list[tuple[tuple[_EvidenceSiteProjection, ...], ...]] = []
-    evidence_reference_count = 0
-
-    for statement in batch.statements:
-        statement_fields: list[tuple[PresentFieldPath, ...]] = []
-        statement_evidence: list[tuple[_EvidenceSiteProjection, ...]] = []
-        for transaction in statement.transactions:
-            transaction_fields = _transaction_present_fields(transaction)
-            present_field_counts.update(transaction_fields)
-            statement_fields.append(transaction_fields)
-
-            transaction_evidence = _transaction_evidence_provenance(transaction)
-            statement_evidence.append(transaction_evidence)
-            evidence_reference_count += sum(
-                len(references) for _, references in transaction_evidence
-            )
-        field_presence.append(tuple(statement_fields))
-        evidence_provenance.append(tuple(statement_evidence))
-
-    counts = CorpusCounts(
-        documents=len(batch.statements),
-        reconciled=statuses[Status.RECONCILED],
-        unreconciled=statuses[Status.UNRECONCILED],
-        unsupported=statuses[Status.UNSUPPORTED],
-        not_statement=statuses[Status.NOT_STATEMENT],
-        groups=sum(len(statement.groups) for statement in batch.statements),
-        row_results=sum(len(statement.row_results) for statement in batch.statements),
-        transactions=sum(len(statement.transactions) for statement in batch.statements),
-        ambiguous_transactions=sum(
-            bool(transaction.ambiguities)
-            for statement in batch.statements
-            for transaction in statement.transactions
+def _manifest_from_projection(
+    projection: StructuralProjection,
+    *,
+    elapsed_seconds: Decimal,
+    json_digest: str,
+    csv_digest: str,
+) -> RunManifest:
+    counts = projection.counts
+    return RunManifest(
+        elapsed_seconds=elapsed_seconds,
+        counts=CorpusCounts(
+            documents=counts.documents,
+            reconciled=counts.reconciled,
+            unreconciled=counts.unreconciled,
+            unsupported=counts.unsupported,
+            not_statement=counts.not_statement,
+            groups=counts.groups,
+            row_results=counts.row_results,
+            transactions=counts.transactions,
+            ambiguous_transactions=counts.ambiguous_transactions,
+            ambiguity_occurrences=counts.ambiguity_occurrences,
+            evidence_references=counts.evidence_references,
+            present_fields=tuple(
+                FieldCount(path=path, count=count) for path, count in counts.present_fields
+            ),
         ),
-        ambiguity_occurrences=sum(
-            len(transaction.ambiguities)
-            for statement in batch.statements
-            for transaction in statement.transactions
-        ),
-        evidence_references=evidence_reference_count,
-        present_fields=tuple(
-            FieldCount(path=path, count=present_field_counts[path])
-            for path in sorted(present_field_counts)
-        ),
-    )
-    return _StructuralProjections(
-        counts=counts,
-        ordered_statuses=(
-            batch.status.value,
-            tuple(statement.status.value for statement in batch.statements),
-        ),
-        group_structure=tuple(
-            tuple(
-                (group.group_id, group.currency, group.status.value, group.transaction_ids)
-                for group in statement.groups
-            )
-            for statement in batch.statements
-        ),
-        transaction_identities=tuple(
-            tuple(
-                (transaction.transaction_id, transaction.reconciliation_group_ids)
-                for transaction in statement.transactions
-            )
-            for statement in batch.statements
-        ),
-        field_presence=tuple(field_presence),
-        evidence_provenance=tuple(evidence_provenance),
-        ambiguities=tuple(
-            tuple(transaction.ambiguities for transaction in statement.transactions)
-            for statement in batch.statements
-        ),
+        json_digest=json_digest,
+        csv_digest=csv_digest,
+        ordered_status_digest=projection.ordered_status_digest,
+        group_structure_digest=projection.group_structure_digest,
+        transaction_identity_digest=projection.transaction_identity_digest,
+        field_presence_digest=projection.field_presence_digest,
+        evidence_provenance_digest=projection.evidence_provenance_digest,
+        ambiguity_digest=projection.ambiguity_digest,
     )
 
 
@@ -2981,18 +2829,31 @@ def project_run(batch: BatchResult, *, elapsed_seconds: Decimal) -> RunManifest:
 
     json_content = canonical_json_bytes(batch)
     csv_content = transactions_csv_bytes(batch)
-    projections = _project_structural_dimensions(batch)
-    return RunManifest(
+    projection = project_statement_stream(batch.status, batch.statements)
+    return _manifest_from_projection(
+        projection,
         elapsed_seconds=elapsed_seconds,
-        counts=projections.counts,
         json_digest=_digest_bytes(json_content),
         csv_digest=_digest_bytes(csv_content),
-        ordered_status_digest=_digest_json(projections.ordered_statuses),
-        group_structure_digest=_digest_json(projections.group_structure),
-        transaction_identity_digest=_digest_json(projections.transaction_identities),
-        field_presence_digest=_digest_json(projections.field_presence),
-        evidence_provenance_digest=_digest_json(projections.evidence_provenance),
-        ambiguity_digest=_digest_json(projections.ambiguities),
+    )
+
+
+def project_streamed_run(
+    *,
+    batch_status: Status,
+    elapsed_seconds: Decimal,
+    json_digest: str,
+    csv_digest: str,
+    statements: StatementResultFactory,
+) -> RunManifest:
+    """Project a source-ordered statement stream into an unchanged run manifest."""
+
+    projection = project_statement_stream(batch_status, statements())
+    return _manifest_from_projection(
+        projection,
+        elapsed_seconds=elapsed_seconds,
+        json_digest=json_digest,
+        csv_digest=csv_digest,
     )
 
 
@@ -3980,20 +3841,14 @@ def _validate_completed_execution(
 ) -> tuple[CorpusGateReason, ...]:
     reasons: list[CorpusGateReason] = []
     if any(
-        run.completed.batch.status is not Status.RECONCILED
-        or any(
-            statement.status is not Status.RECONCILED
-            for statement in run.completed.batch.statements
-        )
+        run.completed.batch_status is not Status.RECONCILED
+        or run.completed.manifest.counts.reconciled != run.completed.manifest.counts.documents
         for run in retained_runs
     ):
         reasons.append(CorpusGateReason.RETAINED_NOT_RECONCILED)
     if any(
-        run.completed.batch.status is not Status.NOT_STATEMENT
-        or any(
-            statement.status is not Status.NOT_STATEMENT
-            for statement in run.completed.batch.statements
-        )
+        run.completed.batch_status is not Status.NOT_STATEMENT
+        or run.completed.manifest.counts.not_statement != run.completed.manifest.counts.documents
         for run in quarantine_runs
     ):
         reasons.append(CorpusGateReason.QUARANTINE_MISCLASSIFIED)
@@ -4008,10 +3863,7 @@ def _validate_completed_execution(
             or run.original_membership_after != expected
         ):
             reasons.append(CorpusGateReason.MEMBERSHIP_DRIFT)
-        if (
-            run.completed.manifest.counts.documents != expected.document_count
-            or len(run.completed.batch.statements) != expected.document_count
-        ):
+        if run.completed.manifest.counts.documents != expected.document_count:
             reasons.append(CorpusGateReason.COUNTS_DRIFT)
     if _snapshot_membership(prepared.config.retained_dir) != prepared.inventory.retained:
         reasons.append(CorpusGateReason.MEMBERSHIP_DRIFT)

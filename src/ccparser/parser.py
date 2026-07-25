@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from collections.abc import Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -72,6 +75,28 @@ class StatementParser(Protocol):
         *,
         cache_dir: str | Path | None = None,
     ) -> StatementResult: ...
+
+
+class StatementResultSink(Protocol):
+    def __call__(
+        self,
+        source_ordinal: int,
+        result: StatementResult,
+        /,
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryConversionSummary:
+    resolved_output_dir: Path
+    source_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class BatchDisposition:
+    status: Status
+    diagnostics: tuple[str, ...]
+    document_count: int
 
 
 def default_cache_directory() -> Path:
@@ -232,18 +257,31 @@ def _validate_path_topology(input_dir: Path, output_dir: Path, cache_dir: Path) 
         raise ParserInputError("input, output, and cache path topology is unsafe")
 
 
-def _batch_status(statements: tuple[StatementResult, ...]) -> Status:
-    statuses = tuple(statement.status for statement in statements)
-    if statuses and all(status is Status.RECONCILED for status in statuses):
-        return Status.RECONCILED
-    if any(status is Status.UNRECONCILED for status in statuses):
-        return Status.UNRECONCILED
-    if statuses and all(status is Status.NOT_STATEMENT for status in statuses):
-        return Status.NOT_STATEMENT
-    return Status.UNSUPPORTED
+def summarize_batch_statuses(
+    status_counts: Mapping[Status, int],
+) -> BatchDisposition:
+    """Summarize statement status counts using the public batch policy."""
+
+    document_count = sum(status_counts.values())
+    reconciled = status_counts.get(Status.RECONCILED, 0)
+    unreconciled = status_counts.get(Status.UNRECONCILED, 0)
+    not_statement = status_counts.get(Status.NOT_STATEMENT, 0)
+    if document_count == 0:
+        return BatchDisposition(Status.UNSUPPORTED, ("no_pdf_files",), 0)
+    if reconciled == document_count:
+        status = Status.RECONCILED
+    elif unreconciled:
+        status = Status.UNRECONCILED
+    elif not_statement == document_count:
+        status = Status.NOT_STATEMENT
+    else:
+        status = Status.UNSUPPORTED
+    non_reconciled = document_count - reconciled
+    diagnostics = (f"documents_not_reconciled:{non_reconciled}",) if non_reconciled else ()
+    return BatchDisposition(status, diagnostics, document_count)
 
 
-def parse_directory(
+def convert_directory_statements(
     path: str | Path,
     output_dir: str | Path,
     strict: bool = False,
@@ -251,9 +289,10 @@ def parse_directory(
     *,
     cache_dir: str | Path | None = None,
     statement_parser: StatementParser | None = None,
+    result_sink: StatementResultSink,
     directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
-) -> BatchResult:
-    """Recursively parse PDF files and atomically write deterministic aggregate output."""
+) -> DirectoryConversionSummary:
+    """Parse a directory and deliver each result to a coordinator-thread sink."""
 
     if jobs is not None and (isinstance(jobs, bool) or not isinstance(jobs, int) or jobs <= 0):
         raise ParserInputError("jobs must be a positive integer")
@@ -310,45 +349,92 @@ def parse_directory(
         raise ParserInputError("input directory cannot be inspected") from None
 
     if not sources:
-        batch = BatchResult(
-            status=Status.UNSUPPORTED,
-            statements=(),
-            diagnostics=("no_pdf_files",),
-        )
-    else:
-        parse = statement_parser or parse_statement
+        return DirectoryConversionSummary(resolved_output, 0)
 
-        def parse_source(source: Path) -> StatementResult:
-            result = parse(source, strict, cache_dir=resolved_cache)
-            relative_name = source.relative_to(resolved_input).as_posix()
-            return result.model_copy(update={"source_name": relative_name})
+    parse = statement_parser or parse_statement
 
-        requested_workers = jobs if jobs is not None else (os.cpu_count() or 1)
-        worker_count = min(MAX_WORKERS, requested_workers, len(sources))
-        try:
-            if worker_count == 1:
-                statements = tuple(parse_source(source) for source in sources)
-            else:
-                with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                    statements = tuple(executor.map(parse_source, sources))
-        except ParserInputError:
-            raise ParserInputError("directory input processing failed") from None
-        except Exception:
-            raise ParserRuntimeError("directory statement processing failed") from None
-        non_reconciled_count = sum(
-            statement.status is not Status.RECONCILED for statement in statements
-        )
-        diagnostics = (
-            (f"documents_not_reconciled:{non_reconciled_count}",) if non_reconciled_count else ()
-        )
-        batch = BatchResult(
-            status=_batch_status(statements),
-            statements=statements,
-            diagnostics=diagnostics,
-        )
+    def parse_source(source: Path) -> StatementResult:
+        result = parse(source, strict, cache_dir=resolved_cache)
+        relative_name = source.relative_to(resolved_input).as_posix()
+        return result.model_copy(update={"source_name": relative_name})
+
+    requested_workers = jobs if jobs is not None else (os.cpu_count() or 1)
+    worker_count = min(MAX_WORKERS, requested_workers, len(sources))
+    try:
+        if worker_count == 1:
+            for source_ordinal, source in enumerate(sources):
+                result = parse_source(source)
+                result_sink(source_ordinal, result)
+                del result
+        else:
+            pending: dict[Future[StatementResult], int] = {}
+            next_source = iter(enumerate(sources))
+
+            def submit_one(executor: ThreadPoolExecutor) -> bool:
+                try:
+                    ordinal, source = next(next_source)
+                except StopIteration:
+                    return False
+                pending[executor.submit(parse_source, source)] = ordinal
+                return True
+
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                for _ in range(worker_count):
+                    submit_one(executor)
+                while pending:
+                    completed, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                    while completed:
+                        future = completed.pop()
+                        source_ordinal = pending.pop(future)
+                        result = future.result()
+                        result_sink(source_ordinal, result)
+                        del result
+                        del future
+                        submit_one(executor)
+    except ParserInputError:
+        raise ParserInputError("directory input processing failed") from None
+    except Exception:
+        raise ParserRuntimeError("directory statement processing failed") from None
+    return DirectoryConversionSummary(resolved_output, len(sources))
+
+
+def parse_directory(
+    path: str | Path,
+    output_dir: str | Path,
+    strict: bool = False,
+    jobs: int | None = None,
+    *,
+    cache_dir: str | Path | None = None,
+    statement_parser: StatementParser | None = None,
+    directory_root_policy: DirectoryRootPolicy = DirectoryRootPolicy.RESOLVE,
+) -> BatchResult:
+    """Recursively parse PDF files and atomically write deterministic aggregate output."""
+
+    results_by_ordinal: dict[int, StatementResult] = {}
+
+    def collect(ordinal: int, result: StatementResult, /) -> None:
+        results_by_ordinal[ordinal] = result
+
+    summary = convert_directory_statements(
+        path,
+        output_dir,
+        strict,
+        jobs,
+        cache_dir=cache_dir,
+        statement_parser=statement_parser,
+        result_sink=collect,
+        directory_root_policy=directory_root_policy,
+    )
+    statements = tuple(results_by_ordinal[index] for index in range(summary.source_count))
+    disposition = summarize_batch_statuses(Counter(item.status for item in statements))
+    batch = BatchResult(
+        status=disposition.status,
+        statements=statements,
+        diagnostics=disposition.diagnostics,
+    )
 
     try:
-        write_batch_outputs(resolved_output, batch)
+        write_batch_outputs(summary.resolved_output_dir, batch)
     except Exception:
         raise ParserRuntimeError("output writing failed") from None
     return batch
