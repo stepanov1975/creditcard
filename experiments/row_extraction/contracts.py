@@ -135,6 +135,17 @@ class RowPrediction(_FrozenModel):
             raise ValueError("prediction evidence atom IDs must be unique")
         return self
 
+    @model_validator(mode="after")
+    def proposals_reference_evidence(self) -> RowPrediction:
+        evidence_ids = {atom.atom_id for atom in self.evidence_atoms}
+        if any(
+            atom_id not in evidence_ids
+            for proposal in self.proposals
+            for atom_id in proposal.atom_ids
+        ):
+            raise ValueError("proposal atom IDs must reference prediction evidence")
+        return self
+
 
 class ArtifactIdentity(_FrozenModel):
     artifact_type: str = Field(min_length=1)

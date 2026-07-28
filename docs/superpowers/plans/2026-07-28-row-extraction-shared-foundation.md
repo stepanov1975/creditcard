@@ -72,7 +72,7 @@ Scope answer: YES
 Program component: shared foundation
 Measured effect: all four experiments can exchange evidence-grounded predictions without changing row identities or inventing values
 Fixed inputs: charter enums, fixed-row semantics, evidence-only proposal rule
-Allowed files: experiments package contracts and synthetic contract tests
+Allowed files: experiments package contracts, canonical test package initializers, and synthetic contract tests
 Stop condition: stop if a contract needs production models to change or permits an authoritative generated value
 ```
 
@@ -81,6 +81,7 @@ Stop condition: stop if a contract needs production models to change or permits 
 - Create: `experiments/row_extraction/__init__.py`
 - Create: `experiments/row_extraction/contracts.py`
 - Create: `experiments/row_extraction/arms/__init__.py`
+- Create: `tests/__init__.py`
 - Create: `tests/experiments/__init__.py`
 - Create: `tests/experiments/row_extraction/__init__.py`
 - Create: `tests/experiments/row_extraction/factories.py`
@@ -90,13 +91,14 @@ Stop condition: stop if a contract needs production models to change or permits 
 **Interfaces:**
 - Consumes: Pydantic `BaseModel`, `Field`, and Python `Protocol`, `StrEnum`, `Literal`.
 - Produces: `BBox`, `DatasetSplit`, `LaneDisposition`, `RowType`, `FieldRole`, `Decision`, `EvidenceAtom`, `ColumnBand`, `FrozenRow`, `GoldField`, `GoldRow`, `OcrReference`, `FieldProposal`, `RowPrediction`, `ArtifactIdentity`, `FeatureSchema`, `FeatureVector`, and `ExperimentArm`.
+- Invariant: every `FieldProposal.atom_ids` entry must resolve to an `EvidenceAtom` in the enclosing `RowPrediction.evidence_atoms`; model construction rejects unsupported references.
 
 - [ ] **Step 1: Write failing contract tests**
 
 ```python
 # tests/experiments/row_extraction/test_contracts.py
-from pydantic import ValidationError
 import pytest
+from pydantic import ValidationError
 
 from experiments.row_extraction.contracts import (
     Decision,
@@ -135,6 +137,32 @@ def test_prediction_rejects_duplicate_evidence_atom_ids() -> None:
             exact_row_confidence=None,
             decision=Decision.ABSTAIN,
             reasons=("synthetic_duplicate",),
+        )
+
+
+def test_prediction_rejects_proposal_atom_ids_absent_from_evidence() -> None:
+    row = frozen_row()
+    with pytest.raises(
+        ValidationError,
+        match="proposal atom IDs must reference prediction evidence",
+    ):
+        RowPrediction(
+            experiment_id="control",
+            config_id="v1",
+            document_id=row.document_id,
+            row_id=row.row_id,
+            predicted_type=RowType.PRIMARY_TRANSACTION,
+            evidence_atoms=row.atoms,
+            proposals=(
+                FieldProposal(
+                    role=FieldRole.DESCRIPTION,
+                    atom_ids=("unsupported-atom",),
+                    raw_score=0.8,
+                ),
+            ),
+            exact_row_confidence=None,
+            decision=Decision.ABSTAIN,
+            reasons=("synthetic_unsupported_proposal",),
         )
 ```
 
@@ -285,6 +313,17 @@ class RowPrediction(_FrozenModel):
             raise ValueError("prediction evidence atom IDs must be unique")
         return self
 
+    @model_validator(mode="after")
+    def proposals_reference_evidence(self) -> RowPrediction:
+        evidence_ids = {atom.atom_id for atom in self.evidence_atoms}
+        if any(
+            atom_id not in evidence_ids
+            for proposal in self.proposals
+            for atom_id in proposal.atom_ids
+        ):
+            raise ValueError("proposal atom IDs must reference prediction evidence")
+        return self
+
 
 class ArtifactIdentity(_FrozenModel):
     artifact_type: str = Field(min_length=1)
@@ -336,6 +375,7 @@ Expected: `Success: no issues found`.
 ```bash
 git add experiments/__init__.py experiments/row_extraction/__init__.py \
   experiments/row_extraction/contracts.py experiments/row_extraction/arms/__init__.py \
+  tests/__init__.py \
   tests/experiments/__init__.py \
   tests/experiments/row_extraction/__init__.py \
   tests/experiments/row_extraction/arms/__init__.py \

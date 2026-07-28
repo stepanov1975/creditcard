@@ -39,3 +39,29 @@ def test_prediction_rejects_duplicate_evidence_atom_ids() -> None:
             decision=Decision.ABSTAIN,
             reasons=("synthetic_duplicate",),
         )
+
+
+def test_prediction_rejects_proposal_atom_ids_absent_from_evidence() -> None:
+    row = frozen_row()
+    with pytest.raises(
+        ValidationError,
+        match="proposal atom IDs must reference prediction evidence",
+    ):
+        RowPrediction(
+            experiment_id="control",
+            config_id="v1",
+            document_id=row.document_id,
+            row_id=row.row_id,
+            predicted_type=RowType.PRIMARY_TRANSACTION,
+            evidence_atoms=row.atoms,
+            proposals=(
+                FieldProposal(
+                    role=FieldRole.DESCRIPTION,
+                    atom_ids=("unsupported-atom",),
+                    raw_score=0.8,
+                ),
+            ),
+            exact_row_confidence=None,
+            decision=Decision.ABSTAIN,
+            reasons=("synthetic_unsupported_proposal",),
+        )
