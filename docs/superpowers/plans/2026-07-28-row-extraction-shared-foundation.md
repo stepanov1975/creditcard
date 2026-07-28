@@ -690,7 +690,12 @@ Stop condition: stop if a split requires filename, merchant, date, amount, or to
 
 **Interfaces:**
 - Consumes: `DocumentGroup(document_ids: frozenset[str], duplicate_group: str, layout_group: str, stratum: str)` records and a fixed seed string.
-- Produces: `SplitManifest`, `assign_splits(groups: Sequence[DocumentGroup], seed: str) -> SplitManifest`, `validate_split(rows: Sequence[FrozenRow], manifest: SplitManifest) -> None`, `Fold`, and `grouped_folds(rows: Sequence[FrozenRow], fold_count: int) -> tuple[Fold, ...]`.
+- Produces: `SplitManifest`, `assign_splits(groups: Sequence[DocumentGroup], seed: str) -> SplitManifest`, `validate_split(rows: Sequence[FrozenRow], manifest: SplitManifest) -> None`, `Fold`, and `grouped_folds(rows: Sequence[FrozenRow], manifest: SplitManifest, fold_count: int) -> tuple[Fold, ...]`.
+
+`SplitManifest` freezes both split membership and the connected duplicate/layout atomic unit
+for every opaque document ID. The manifest parameter is mandatory for grouped folds: a
+`FrozenRow` deliberately contains no duplicate/layout family identifier, so a rows-only fold
+API cannot preserve those groups without hidden state or forbidden inference.
 
 - [ ] **Step 1: Write failing group-leakage tests**
 
@@ -703,7 +708,7 @@ def test_assign_splits_keeps_duplicate_and_layout_groups_together() -> None:
 
 
 def test_grouped_folds_never_share_document_ids() -> None:
-    folds = grouped_folds(tuple(training_rows()), fold_count=3)
+    folds = grouped_folds(tuple(training_rows()), manifest, fold_count=3)
     assert all(
         fold.train_document_ids.isdisjoint(fold.validation_document_ids)
         for fold in folds
@@ -721,7 +726,9 @@ Expected: collection fails because `split.py` does not exist.
 Assign connected duplicate/layout groups as atomic units. Order units by
 `sha256(seed + canonical_group_ids)` and greedily minimize absolute stratum and total-ratio
 deviation without inspecting field values. Freeze explicit document membership in a private
-manifest. `grouped_folds` operates only on training documents and uses the same atomic groups.
+manifest. `grouped_folds` operates only on training documents and uses the atomic units frozen
+in that explicit manifest. It rejects rows absent from the manifest, non-training membership,
+and any manifest unit whose documents would be only partially represented.
 
 - [ ] **Step 4: Run split tests twice**
 

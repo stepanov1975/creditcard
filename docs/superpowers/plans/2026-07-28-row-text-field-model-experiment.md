@@ -50,12 +50,12 @@
 - `MetricReport` is consumed without flattening, including `log_loss`, `area_under_risk_coverage`, and `coverage_at_risk`; merchant is exactly `fields[FieldRole.DESCRIPTION]` and billed amount is `fields[FieldRole.BILLED_AMOUNT]`. `RunMeasurements` is consumed without duplication, including `cold_start_ns`, `throughput_rows_per_second`, `dependency_bytes`, `worker_count`, and its canonical prediction SHA-256. The only lane-local resource addition is `dependency_count`; shared fields may not be renamed, copied into parallel fields, or recomputed under different definitions.
 - The exact frozen records are those in `docs/superpowers/plans/2026-07-28-row-extraction-shared-foundation.md`: `BBox` is `tuple[float, float, float, float]`; `EvidenceAtom` exposes `atom_id/text/bbox/source/confidence/column_index`; `FrozenRow` exposes `document_id/row_id/split/source_pdf/page_number/bbox/baseline_type/column_bands/atoms/previous_row_id/next_row_id/gap_before/gap_after/render_version`; `GoldField` exposes `role/canonical_value/atom_ids/source_region`; and the remaining constructors match Task 1's exact field-set tests. Any mismatch stops the lane before implementation; reconcile it on the foundation branch and regenerate this plan rather than adding reflection or compatibility branches.
 - `FrozenRow.source_pdf`, `document_id`, `row_id`, `split`, `page_number`, `baseline_type`, `previous_row_id`, `next_row_id`, and `render_version` are forbidden feature inputs. The source and IDs are identity/coordination metadata; `baseline_type` is an accepted-anchor observation, not gold. Tests must prove changing any of them leaves features byte-identical. Adjacency IDs may be copied only into `FieldProposal.owner_row_id` after a model has predicted `RowType.CONTINUATION`; they never enter a score.
-- The shared `grouped_folds(rows: Sequence[FrozenRow], fold_count: int) -> tuple[Fold, ...]` is the only training fold constructor. Its `Fold.train_document_ids` and `Fold.validation_document_ids` preserve the frozen duplicate/layout grouping. This lane does not create or accept a second `group_id`.
+- The shared `grouped_folds(rows: Sequence[FrozenRow], manifest: SplitManifest, fold_count: int) -> tuple[Fold, ...]` is the only training fold constructor. Its `Fold.train_document_ids` and `Fold.validation_document_ids` preserve the duplicate/layout atomic units frozen by the shared manifest. This lane consumes that read-only manifest and does not create or accept a second lane-local `group_id`.
 - Private `DatasetSplit.TEST` observations and labels are not lane inputs. Synthetic `DatasetSplit.TEST` records may appear only in focused fail-closed unit tests proving the guard; they contain no private contents and are never scored.
 - Shared `FeatureSchema(version: str, names: tuple[str, ...])` and `FeatureVector(schema_version: str, row_id: str, values: tuple[float, ...])` remain unchanged. They describe fixed row-level vectors and are not stretched into a ragged atom-sequence contract. Experiment 3's lane-local `AtomFeatureTensor` has the exact order/mask/dtype schema in Task 2 and is not a cross-lane import; experiment 4 owns its equivalent frozen nonvisual adapter and may not import this lane.
 - Each task starts by restating the scope block, follows RED/GREEN TDD, runs the focused test first, then runs the tracked repository gates before its commit. Use `/root/creditcard/.venv/bin/` from the repository virtual environment in the isolated worktree. Do not execute any private-data command until its task's synthetic tests pass, extraction-relevant tests are green, and the full-suite result matches the accepted inherited baseline described next.
 - At this planning baseline, `/root/creditcard/.venv/bin/pytest -q` has exactly five inherited out-of-scope sandbox/controller failures. Every task still runs the extraction-relevant suite and requires it green, then runs the complete suite and requires the same five failures with no new, changed, or missing failure. Record that inherited result; do not investigate it in this lane and do not claim the complete pytest command exited 0. If the upstream baseline becomes green, require it to remain green.
-- Fixture names used in the RED snippets are concrete local pytest fixtures defined in the same test module, not deferred corpus fixtures. They must be built only from shared `frozen_row()`/`gold_row()`, Pydantic `model_copy`, `tmp_path`, and public synthetic literals. `synthetic_development_rows` covers every `RowType` across at least five distinct `DatasetSplit.TRAIN` document IDs; `synthetic_test_rows` is the same shape with `DatasetSplit.TEST`; `synthetic_frozen_row` has at least two uniquely identified atoms; `legal_tag_sequence` has one legal description span; trained artifacts are created under `tmp_path`; `candidate_validations`/`candidate_selection` instantiate Task 9's exact dataclasses with `Decimal` aggregates; `canonical_jsonl_sink_factory` returns the shared temporary-file `PredictionSink`; and `verified_text_handoff`/`validation_readiness` contain only train/validation synthetic identities. No fixture opens a source path, carries a real value, or depends on execution order.
+- Fixture names used in the RED snippets are concrete local pytest fixtures defined in the same test module, not deferred corpus fixtures. They must be built only from shared `frozen_row()`/`gold_row()`, Pydantic `model_copy`, `tmp_path`, and public synthetic literals. `synthetic_development_rows` covers every `RowType` across at least five distinct `DatasetSplit.TRAIN` document IDs; `synthetic_split_manifest` assigns exactly those document IDs to training while preserving at least one multi-document atomic family; `synthetic_test_rows` is the same shape with `DatasetSplit.TEST`; `synthetic_frozen_row` has at least two uniquely identified atoms; `legal_tag_sequence` has one legal description span; trained artifacts are created under `tmp_path`; `candidate_validations`/`candidate_selection` instantiate Task 9's exact dataclasses with `Decimal` aggregates; `canonical_jsonl_sink_factory` returns the shared temporary-file `PredictionSink`; and `verified_text_handoff`/`validation_readiness` contain only train/validation synthetic identities. No fixture opens a source path, carries a real value, or depends on execution order.
 - Stop immediately if implementation would require a production `src/` change, shared-contract mutation, row/split/label mutation, document-specific feature, free-form value, transformer/generative model, cloud call, or fifth experiment.
 
 ---
@@ -1247,7 +1247,7 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 
 **Interfaces:**
 
-- Consumes: training-only `LabeledRow`, raw row/type/span signals, shared-metric `complete_exact_row_event`, shared `Fold`, shared `grouped_folds`, and `CalibrationConfig`.
+- Consumes: training-only `LabeledRow`, the read-only shared `SplitManifest`, raw row/type/span signals, shared-metric `complete_exact_row_event`, shared `Fold`, shared `grouped_folds`, and `CalibrationConfig`.
 - Produces: `ExactRowScoreVector`, `OofPrediction`, `SigmoidCalibrator`, `validate_oof_rows(examples) -> None`, `fold_index_for_document(folds, document_id) -> int`, `fit_oof_calibrator(...) -> SigmoidCalibrator`, and canonical non-pickle calibrator serialization. Risk/coverage is always consumed from shared `MetricReport.risk_coverage`.
 - The calibrated event is complete accepted-row exactness: exact row type and exact complete evidence proposal set. The locked test never contributes a label, feature, fold, threshold, or calibrator parameter.
 
@@ -1259,7 +1259,7 @@ Stop condition: stop if the plan requires transformer/generative models, documen
   import pytest
 
   from experiments.row_extraction.contracts import DatasetSplit, LaneDisposition
-  from experiments.row_extraction.split import grouped_folds
+  from experiments.row_extraction.split import SplitManifest, grouped_folds
   from experiments.row_extraction.arms.text.calibration import (
       ExactRowScoreVector,
       fold_index_for_document,
@@ -1267,9 +1267,12 @@ Stop condition: stop if the plan requires transformer/generative models, documen
   )
 
 
-  def test_grouped_folds_never_split_a_document_family(synthetic_development_rows) -> None:
+  def test_grouped_folds_never_split_a_document_family(
+      synthetic_development_rows,
+      synthetic_split_manifest: SplitManifest,
+  ) -> None:
       rows = tuple(example.row for example in synthetic_development_rows)
-      folds = grouped_folds(rows, fold_count=3)
+      folds = grouped_folds(rows, synthetic_split_manifest, fold_count=3)
       assert all(fold.train_document_ids.isdisjoint(fold.validation_document_ids) for fold in folds)
       assert all(
           fold_index_for_document(folds, example.row.document_id) >= 0
