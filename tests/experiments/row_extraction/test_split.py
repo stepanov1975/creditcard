@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections import Counter
+from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -58,6 +62,18 @@ def _manifest(*memberships: DocumentMembership) -> SplitManifest:
     return SplitManifest(
         seed="synthetic-seed",
         version="row-extraction-split-v1",
+        memberships=memberships,
+    )
+
+
+def _forged_manifest(
+    *memberships: DocumentMembership,
+    seed: str = "synthetic-seed",
+    version: str = "row-extraction-split-v1",
+) -> SplitManifest:
+    return SplitManifest.model_construct(
+        seed=seed,
+        version=version,
         memberships=memberships,
     )
 
@@ -353,6 +369,75 @@ def test_validate_split_rejects_manifest_atomic_unit_leakage() -> None:
         )
 
 
+def test_public_consumers_reject_forged_empty_manifest_before_rows() -> None:
+    invalid = _forged_manifest()
+
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        validate_split((), invalid)
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        grouped_folds((), invalid, fold_count=2)
+
+
+@pytest.mark.parametrize(
+    ("seed", "version"),
+    (
+        ("", "row-extraction-split-v1"),
+        ("synthetic-seed", "row-extraction-split-v2"),
+    ),
+)
+def test_public_consumers_reject_forged_manifest_identity_metadata(
+    seed: str,
+    version: str,
+) -> None:
+    memberships = (_membership(1), _membership(2))
+    invalid = _forged_manifest(*memberships, seed=seed, version=version)
+    rows = (
+        frozen_row(document_id=_document(1), row_id="row-1"),
+        frozen_row(document_id=_document(2), row_id="row-2"),
+    )
+
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        validate_split(rows, invalid)
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        grouped_folds(rows, invalid, fold_count=2)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"document_id": ""},
+        {"document_id": " "},
+        {"atomic_unit": ""},
+        {"atomic_unit": " "},
+        {"stratum": ""},
+        {"stratum": " "},
+        {"split": "not-a-split"},
+    ),
+)
+def test_public_consumers_revalidate_forged_membership_contracts(
+    overrides: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "document_id": _document(1),
+        "split": DatasetSplit.TRAIN,
+        "atomic_unit": "unit-1",
+        "stratum": "stratum-a",
+    }
+    values.update(overrides)
+    membership = DocumentMembership.model_construct(
+        document_id=cast(str, values["document_id"]),
+        split=cast(DatasetSplit, values["split"]),
+        atomic_unit=cast(str, values["atomic_unit"]),
+        stratum=cast(str, values["stratum"]),
+    )
+    invalid = _forged_manifest(membership)
+
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        validate_split((), invalid)
+    with pytest.raises(SplitError, match=r"^invalid split manifest$"):
+        grouped_folds((), invalid, fold_count=2)
+
+
 def _training_manifest() -> SplitManifest:
     return _manifest(
         _membership(1, atomic_unit="family-a", stratum="stratum-a"),
@@ -496,3 +581,38 @@ def test_fold_rejects_empty_train_or_validation_membership(
             train_document_ids=train,
             validation_document_ids=validation,
         )
+
+
+def test_fold_json_is_canonical_across_python_hash_seeds() -> None:
+    repository = Path(__file__).parents[3]
+    script = """
+from experiments.row_extraction.split import Fold
+
+fold = Fold(
+    index=2,
+    train_document_ids=frozenset({
+        "opaque-08", "opaque-02", "opaque-11", "opaque-05",
+        "opaque-01", "opaque-09", "opaque-04", "opaque-07",
+    }),
+    validation_document_ids=frozenset({"opaque-10", "opaque-03", "opaque-06"}),
+)
+print(fold.model_dump_json())
+"""
+    outputs = {
+        subprocess.run(
+            (sys.executable, "-c", script),
+            check=True,
+            capture_output=True,
+            cwd=repository,
+            env={"PYTHONHASHSEED": seed, "PYTHONPATH": str(repository)},
+            text=True,
+        ).stdout.strip()
+        for seed in ("1", "2", "17", "101")
+    }
+
+    assert outputs == {
+        '{"index":2,"train_document_ids":["opaque-01","opaque-02",'
+        '"opaque-04","opaque-05","opaque-07","opaque-08","opaque-09",'
+        '"opaque-11"],"validation_document_ids":["opaque-03","opaque-06",'
+        '"opaque-10"]}'
+    }

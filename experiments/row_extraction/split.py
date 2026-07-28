@@ -7,7 +7,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Self
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from experiments.row_extraction.contracts import DatasetSplit, FrozenRow, _FrozenModel
 
@@ -113,6 +119,10 @@ class Fold(_FrozenModel):
         if not self.train_document_ids.isdisjoint(self.validation_document_ids):
             raise ValueError("fold document sets must be disjoint")
         return self
+
+    @field_serializer("train_document_ids", "validation_document_ids")
+    def canonical_document_ids(self, values: frozenset[str]) -> tuple[str, ...]:
+        return tuple(sorted(values))
 
 
 @dataclass(frozen=True)
@@ -307,13 +317,63 @@ def assign_splits(
     )
 
 
+def _validated_manifest(manifest: SplitManifest) -> SplitManifest:
+    try:
+        if (
+            manifest.version != _SPLIT_VERSION
+            or not isinstance(manifest.seed, str)
+            or not manifest.seed.strip()
+            or not manifest.memberships
+        ):
+            raise SplitError("invalid split manifest")
+        validated_memberships: list[DocumentMembership] = []
+        for membership in manifest.memberships:
+            if isinstance(membership, DocumentMembership):
+                raw_membership: object = {
+                    "document_id": membership.document_id,
+                    "split": membership.split,
+                    "atomic_unit": membership.atomic_unit,
+                    "stratum": membership.stratum,
+                }
+            else:
+                raw_membership = membership
+            validated_memberships.append(DocumentMembership.model_validate(raw_membership))
+    except (AttributeError, TypeError, ValueError) as error:
+        if isinstance(error, SplitError):
+            raise
+        raise SplitError("invalid split manifest") from error
+
+    document_ids: set[str] = set()
+    unit_splits: dict[str, DatasetSplit] = {}
+    for membership in validated_memberships:
+        if membership.document_id in document_ids:
+            raise SplitError("manifest document membership is duplicated")
+        document_ids.add(membership.document_id)
+        previous_split = unit_splits.setdefault(
+            membership.atomic_unit,
+            membership.split,
+        )
+        if previous_split is not membership.split:
+            raise SplitError("manifest atomic unit spans splits")
+    return SplitManifest(
+        seed=manifest.seed,
+        version=_SPLIT_VERSION,
+        memberships=tuple(validated_memberships),
+    )
+
+
 def _membership_index(
     manifest: SplitManifest,
-) -> tuple[dict[str, DocumentMembership], dict[str, frozenset[str]]]:
+) -> tuple[
+    SplitManifest,
+    dict[str, DocumentMembership],
+    dict[str, frozenset[str]],
+]:
+    validated = _validated_manifest(manifest)
     memberships: dict[str, DocumentMembership] = {}
     unit_documents: dict[str, set[str]] = {}
     unit_splits: dict[str, DatasetSplit] = {}
-    for membership in manifest.memberships:
+    for membership in validated.memberships:
         if membership.document_id in memberships:
             raise SplitError("manifest document membership is duplicated")
         memberships[membership.document_id] = membership
@@ -324,13 +384,15 @@ def _membership_index(
         )
         if previous_split is not membership.split:
             raise SplitError("manifest atomic unit spans splits")
-    return memberships, {
-        unit: frozenset(document_ids) for unit, document_ids in unit_documents.items()
-    }
+    return (
+        validated,
+        memberships,
+        {unit: frozenset(document_ids) for unit, document_ids in unit_documents.items()},
+    )
 
 
 def validate_split(rows: Sequence[FrozenRow], manifest: SplitManifest) -> None:
-    memberships, _ = _membership_index(manifest)
+    _, memberships, _ = _membership_index(manifest)
     row_identities: set[tuple[str, str]] = set()
     row_documents: set[str] = set()
     for row in rows:
@@ -353,11 +415,11 @@ def grouped_folds(
     manifest: SplitManifest,
     fold_count: int,
 ) -> tuple[Fold, ...]:
+    validated_manifest, memberships, manifest_units = _membership_index(manifest)
     if not rows:
         raise SplitError("at least one training row is required")
     if fold_count < 2:
         raise SplitError("fold_count must be at least two")
-    memberships, manifest_units = _membership_index(manifest)
     row_ids: set[str] = set()
     selected_documents: set[str] = set()
     selected_units: set[str] = set()
@@ -385,7 +447,11 @@ def grouped_folds(
 
     ordered_units = sorted(
         selected_units,
-        key=lambda unit_id: _seeded_order_key(manifest.seed, unit_id, "fold"),
+        key=lambda unit_id: _seeded_order_key(
+            validated_manifest.seed,
+            unit_id,
+            "fold",
+        ),
     )
     validation_units: list[list[str]] = [[] for _ in range(fold_count)]
     validation_document_counts = [0] * fold_count
