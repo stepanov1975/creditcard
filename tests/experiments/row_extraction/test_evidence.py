@@ -148,6 +148,16 @@ def test_kind_is_derived_only_from_supported_billed_amount_sign(
 
 
 @pytest.mark.parametrize(
+    ("source", "expected"),
+    (("12.34", "charge"), ("-12.34", "credit")),
+)
+def test_kind_accepts_bare_supported_amount_sign(source: str, expected: str) -> None:
+    prediction = accepted_prediction(role=FieldRole.KIND, texts=(source,))
+
+    assert resolve_proposal(prediction, prediction.proposals[0]).canonical_value == expected
+
+
+@pytest.mark.parametrize(
     ("role", "source"),
     (
         (FieldRole.TRANSACTION_DATE, "03/02/26"),
@@ -243,6 +253,149 @@ def test_amount_rejects_zero_or_multiple_same_family_currency_hints() -> None:
 
     with pytest.raises(EvidenceContractError, match="invalid or nonunique proposal value"):
         resolve_proposal(prediction, amount)
+
+
+@pytest.mark.parametrize(
+    ("role", "source", "expected"),
+    (
+        (FieldRole.BILLED_AMOUNT, "12.34", "12.34"),
+        (FieldRole.KIND, "12,34", "charge"),
+    ),
+)
+def test_currency_hint_ignores_proposals_owned_by_other_rows(
+    role: FieldRole,
+    source: str,
+    expected: str,
+) -> None:
+    row = frozen_row()
+    atoms = (
+        evidence_atom(atom_id="amount", text=source),
+        evidence_atom(atom_id="same-owner-currency", text="USD"),
+        evidence_atom(atom_id="other-owner-currency", text="EUR"),
+    )
+    amount = FieldProposal(
+        role=role,
+        atom_ids=("amount",),
+        owner_row_id="owner-a",
+        raw_score=1.0,
+    )
+    currencies = (
+        FieldProposal(
+            role=FieldRole.BILLING_CURRENCY,
+            atom_ids=("same-owner-currency",),
+            owner_row_id="owner-a",
+            raw_score=1.0,
+        ),
+        FieldProposal(
+            role=FieldRole.BILLING_CURRENCY,
+            atom_ids=("other-owner-currency",),
+            owner_row_id="owner-b",
+            raw_score=1.0,
+        ),
+    )
+    prediction = RowPrediction(
+        experiment_id="synthetic",
+        config_id="v1",
+        document_id=row.document_id,
+        row_id=row.row_id,
+        predicted_type=RowType.PRIMARY_TRANSACTION,
+        evidence_atoms=atoms,
+        proposals=(amount, *currencies),
+        exact_row_confidence=1.0,
+        decision=Decision.ACCEPT,
+        reasons=(),
+    )
+
+    assert resolve_proposal(prediction, amount).canonical_value == expected
+
+
+@pytest.mark.parametrize(
+    ("role", "source"),
+    ((FieldRole.BILLED_AMOUNT, "12.34"), (FieldRole.KIND, "12,34")),
+)
+def test_currency_hint_rejects_absent_same_owner_proposal(
+    role: FieldRole,
+    source: str,
+) -> None:
+    row = frozen_row()
+    atoms = (
+        evidence_atom(atom_id="amount", text=source),
+        evidence_atom(atom_id="other-owner-currency", text="USD"),
+    )
+    amount = FieldProposal(
+        role=role,
+        atom_ids=("amount",),
+        owner_row_id="owner-a",
+        raw_score=1.0,
+    )
+    currency = FieldProposal(
+        role=FieldRole.BILLING_CURRENCY,
+        atom_ids=("other-owner-currency",),
+        owner_row_id="owner-b",
+        raw_score=1.0,
+    )
+    prediction = RowPrediction(
+        experiment_id="synthetic",
+        config_id="v1",
+        document_id=row.document_id,
+        row_id=row.row_id,
+        predicted_type=RowType.PRIMARY_TRANSACTION,
+        evidence_atoms=atoms,
+        proposals=(amount, currency),
+        exact_row_confidence=1.0,
+        decision=Decision.ACCEPT,
+        reasons=(),
+    )
+
+    with pytest.raises(EvidenceContractError, match="invalid or nonunique proposal value"):
+        resolve_proposal(prediction, amount)
+
+
+@pytest.mark.parametrize(
+    ("amount_owner", "currency_owner"),
+    ((None, "row-1"), ("row-1", None)),
+)
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    ((FieldRole.BILLED_AMOUNT, "12.34"), (FieldRole.KIND, "charge")),
+)
+def test_current_row_and_implicit_owner_are_equivalent_for_currency_hints(
+    amount_owner: str | None,
+    currency_owner: str | None,
+    role: FieldRole,
+    expected: str,
+) -> None:
+    row = frozen_row()
+    atoms = (
+        evidence_atom(atom_id="amount", text="12,34"),
+        evidence_atom(atom_id="currency", text="USD"),
+    )
+    amount = FieldProposal(
+        role=role,
+        atom_ids=("amount",),
+        owner_row_id=amount_owner,
+        raw_score=1.0,
+    )
+    currency = FieldProposal(
+        role=FieldRole.BILLING_CURRENCY,
+        atom_ids=("currency",),
+        owner_row_id=currency_owner,
+        raw_score=1.0,
+    )
+    prediction = RowPrediction(
+        experiment_id="synthetic",
+        config_id="v1",
+        document_id=row.document_id,
+        row_id=row.row_id,
+        predicted_type=RowType.PRIMARY_TRANSACTION,
+        evidence_atoms=atoms,
+        proposals=(amount, currency),
+        exact_row_confidence=1.0,
+        decision=Decision.ACCEPT,
+        reasons=(),
+    )
+
+    assert resolve_proposal(prediction, amount).canonical_value == expected
 
 
 def test_text_resolution_normalizes_nfc_controls_and_spacing() -> None:

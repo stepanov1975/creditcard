@@ -65,9 +65,13 @@ def _currency_value(rendered: str) -> str:
 def _currency_hint(
     prediction: RowPrediction,
     currency_role: FieldRole,
+    owner_row_id: str,
 ) -> str:
     proposals = tuple(
-        proposal for proposal in prediction.proposals if proposal.role is currency_role
+        proposal
+        for proposal in prediction.proposals
+        if proposal.role is currency_role
+        and (proposal.owner_row_id or prediction.row_id) == owner_row_id
     )
     if len(proposals) != 1:
         _invalid_value()
@@ -76,12 +80,17 @@ def _currency_hint(
 
 def _amount_value(
     prediction: RowPrediction,
+    proposal: FieldProposal,
     rendered: str,
     currency_role: FieldRole,
 ) -> Decimal:
     currency_hint = None
     if not currencies_in_text(rendered):
-        currency_hint = _currency_hint(prediction, currency_role)
+        currency_hint = _currency_hint(
+            prediction,
+            currency_role,
+            proposal.owner_row_id or prediction.row_id,
+        )
     parsed = parse_amount(rendered, currency_hint=currency_hint)
     if parsed.diagnostics or parsed.amount is None:
         _invalid_value()
@@ -100,6 +109,17 @@ def _decimal_value(rendered: str) -> Decimal:
         return finite_decimal(Decimal(normalize_text(rendered)))
     except (InvalidOperation, ValueError):
         _invalid_value()
+
+
+def _kind_amount(
+    prediction: RowPrediction,
+    proposal: FieldProposal,
+    rendered: str,
+) -> Decimal:
+    try:
+        return _decimal_value(rendered)
+    except EvidenceContractError:
+        return _amount_value(prediction, proposal, rendered, FieldRole.BILLING_CURRENCY)
 
 
 def _canonical_value(
@@ -128,13 +148,15 @@ def _canonical_value(
         current, total = installment
         return f"{current}/{total}"
     if role is FieldRole.BILLED_AMOUNT:
-        return plain_decimal_string(_amount_value(prediction, rendered, FieldRole.BILLING_CURRENCY))
+        return plain_decimal_string(
+            _amount_value(prediction, proposal, rendered, FieldRole.BILLING_CURRENCY)
+        )
     if role is FieldRole.ORIGINAL_AMOUNT:
         return plain_decimal_string(
-            _amount_value(prediction, rendered, FieldRole.ORIGINAL_CURRENCY)
+            _amount_value(prediction, proposal, rendered, FieldRole.ORIGINAL_CURRENCY)
         )
     if role is FieldRole.KIND:
-        amount = _amount_value(prediction, rendered, FieldRole.BILLING_CURRENCY)
+        amount = _kind_amount(prediction, proposal, rendered)
         if amount == 0:
             _invalid_value()
         return TransactionKind.CREDIT.value if amount < 0 else TransactionKind.CHARGE.value

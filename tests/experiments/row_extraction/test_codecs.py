@@ -19,6 +19,12 @@ class _CanonicalRecord(BaseModel):
     label: str
 
 
+class _FloatRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    value: float
+
+
 def test_jsonl_round_trip_is_byte_deterministic(tmp_path: Path) -> None:
     row = frozen_row()
     first = tmp_path / "first.jsonl"
@@ -44,6 +50,16 @@ def test_write_jsonl_uses_canonical_nfc_sorted_json_with_one_newline(
     assert destination.read_bytes() == expected
     assert identity.sha256 == hashlib.sha256(expected).hexdigest()
     assert identity.byte_size == len(expected)
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_write_jsonl_rejects_nonfinite_numbers(tmp_path: Path, value: float) -> None:
+    destination = tmp_path / "nonfinite.jsonl"
+
+    with pytest.raises(ValueError, match="numeric values must be finite"):
+        write_jsonl(destination, (_FloatRecord(value=value),))
+
+    assert not destination.exists()
 
 
 def test_read_jsonl_validates_only_the_line_requested(tmp_path: Path) -> None:

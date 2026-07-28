@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -18,7 +17,7 @@ _FORMAT_VERSION = "canonical-jsonl-v1"
 
 
 def _canonical_record_bytes(record: BaseModel) -> bytes:
-    value = json.loads(record.model_dump_json())
+    value = record.model_dump(mode="json")
     return _canonical_json_value_content(value) + b"\n"
 
 
