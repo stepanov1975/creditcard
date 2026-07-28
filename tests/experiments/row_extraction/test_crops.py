@@ -58,3 +58,24 @@ def test_reference_crop_is_byte_deterministic(tmp_path: Path) -> None:
     assert (first_root / first.relative_path).read_bytes() == (
         second_root / second.relative_path
     ).read_bytes()
+
+
+def test_reference_crop_fractional_origin_has_no_device_envelope_padding(
+    tmp_path: Path,
+) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    row = frozen_row(
+        document_id="b" * 64,
+        row_id="d" * 64,
+        source_pdf=source,
+        bbox=(10.25, 20.5, 82.25, 44.5),
+    )
+
+    record = render_reference_crop(row, tmp_path / "private-crops")
+    crop_path = tmp_path / "private-crops" / record.relative_path
+    content = crop_path.read_bytes()
+    header = f"P6\n{record.width} {record.height}\n255\n".encode()
+
+    assert record.row_bbox == (10.25, 20.5, 82.25, 44.5)
+    assert (record.width, record.height) == (300, 100)
+    assert len(content) == len(header) + (300 * 100 * 3)

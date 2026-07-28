@@ -66,8 +66,9 @@ def render_reference_crop(row: FrozenRow, private_root: Path) -> CropRecord:
             if clip.is_empty or clip.is_infinite or not page.rect.contains(clip):
                 raise CropRenderError("fixed row bbox is outside source page")
             scale = _REFERENCE_DPI / _POINTS_PER_INCH
+            matrix = fitz.Matrix(scale, scale).pretranslate(-clip.x0, -clip.y0)
             pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale),
+                matrix=matrix,
                 colorspace=fitz.csRGB,
                 alpha=False,
                 clip=clip,

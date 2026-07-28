@@ -554,6 +554,43 @@ def _continuation_prediction(row: FrozenRow, accepted: RowNormalizationSummary) 
     )
 
 
+def _validated_baseline_universe(
+    rows: Sequence[FrozenRow],
+    result: StatementResult,
+) -> dict[tuple[int, BBox], RowNormalizationSummary]:
+    if result.discovery is None or result.source_sha256 is None:
+        raise BundlePreparationError("accepted fixed row universe is absent")
+    source_rows = tuple(
+        source for region in result.discovery.table_regions for source in region.rows
+    )
+    if len(rows) != len(source_rows) or len(source_rows) != len(result.row_results):
+        raise BundlePreparationError("accepted row count mismatch")
+    accepted_rows = _normalization_rows(result)
+    if len(accepted_rows) != len(source_rows):
+        raise BundlePreparationError("accepted row count mismatch")
+    expected_ids = tuple(
+        fixed_row_id(result.source_sha256, source.page_number, source.bbox)
+        for source in source_rows
+    )
+    for index, (row, source) in enumerate(zip(rows, source_rows, strict=True)):
+        accepted = accepted_rows.get(_row_key(source.page_number, source.bbox))
+        if accepted is None:
+            raise BundlePreparationError("accepted normalization row is absent")
+        expected_previous = expected_ids[index - 1] if index else None
+        expected_next = expected_ids[index + 1] if index + 1 < len(expected_ids) else None
+        if (
+            row.document_id != result.source_sha256
+            or row.row_id != expected_ids[index]
+            or row.page_number != source.page_number
+            or row.bbox != source.bbox
+            or row.baseline_type is not _baseline_type(accepted)
+            or row.previous_row_id != expected_previous
+            or row.next_row_id != expected_next
+        ):
+            raise BundlePreparationError("fixed row universe mismatch")
+    return accepted_rows
+
+
 def baseline_predictions_from_statement(
     rows: Sequence[FrozenRow],
     result: StatementResult,
@@ -564,7 +601,7 @@ def baseline_predictions_from_statement(
         raise BundlePreparationError("accepted row count mismatch")
     if result.source_sha256 is None or any(row.document_id != result.source_sha256 for row in rows):
         raise BundlePreparationError("fixed row document identity mismatch")
-    accepted_rows = _normalization_rows(result)
+    accepted_rows = _validated_baseline_universe(rows, result)
     predictions: list[RowPrediction] = []
     for row in rows:
         accepted = accepted_rows.get(_row_key(row.page_number, row.bbox))

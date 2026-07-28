@@ -284,6 +284,45 @@ def test_accepted_baseline_rejects_row_from_another_document(tmp_path: Path) -> 
         baseline_predictions_from_statement(changed, statement)
 
 
+def test_accepted_baseline_rejects_forged_fixed_row_id(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "source.pdf")
+    statement = _synthetic_statement()
+    rows = rows_from_statement(source, statement, DatasetSplit.TRAIN)
+    changed = (rows[0].model_copy(update={"row_id": "forged-row"}), rows[1])
+
+    with pytest.raises(BundlePreparationError, match="fixed row universe mismatch"):
+        baseline_predictions_from_statement(changed, statement)
+
+
+def test_accepted_baseline_rejects_duplicate_row_replacing_peer(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "source.pdf")
+    statement = _synthetic_statement()
+    rows = rows_from_statement(source, statement, DatasetSplit.TRAIN)
+
+    with pytest.raises(BundlePreparationError, match="fixed row universe mismatch"):
+        baseline_predictions_from_statement((rows[0], rows[0]), statement)
+
+
+def test_accepted_baseline_rejects_mutated_baseline_type(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "source.pdf")
+    statement = _synthetic_statement()
+    rows = rows_from_statement(source, statement, DatasetSplit.TRAIN)
+    changed = (rows[0], rows[1].model_copy(update={"baseline_type": RowType.PRIMARY_TRANSACTION}))
+
+    with pytest.raises(BundlePreparationError, match="fixed row universe mismatch"):
+        baseline_predictions_from_statement(changed, statement)
+
+
+def test_accepted_baseline_rejects_corrupted_continuation_owner(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "source.pdf")
+    statement = _synthetic_statement()
+    rows = rows_from_statement(source, statement, DatasetSplit.TRAIN)
+    changed = (rows[0], rows[1].model_copy(update={"previous_row_id": "forged-owner"}))
+
+    with pytest.raises(BundlePreparationError, match="fixed row universe mismatch"):
+        baseline_predictions_from_statement(changed, statement)
+
+
 def test_rows_from_statement_rejects_duplicate_fixed_identity(tmp_path: Path) -> None:
     source = _synthetic_pdf(tmp_path / "source.pdf")
 
