@@ -51,6 +51,9 @@ A continuation row prints evidence owned by the exact fixed predecessor rather t
 starting a new transaction. Its `previous_row_id` must identify the preceding fixed row in
 the same opaque document, the predecessor must point back with `next_row_id`, and the
 predecessor annotation must itself have transaction ownership (primary or continuation).
+Following predecessor ownership through any continuation chain must be acyclic and must
+terminate at a primary transaction in that same frozen document. A self-loop or a chain
+consisting only of continuations is invalid ownership.
 
 A continuation may carry any field role printed on that row. It is not limited to merchant
 text. For example, one synthetic continuation may print `SYNTHETIC CONTINUATION`, an

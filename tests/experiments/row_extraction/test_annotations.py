@@ -229,6 +229,22 @@ def test_unknown_label_identity_is_rejected_without_field_values() -> None:
     assert "12.34" not in error
 
 
+def test_invalid_frozen_row_bbox_is_rejected() -> None:
+    row = _primary_row().model_copy(update={"bbox": (0.0, 0.0, 0.0, 30.0)})
+
+    assert "frozen row bbox is invalid" in _error_text((row,), (_primary_gold(),))
+
+
+def test_duplicate_frozen_atom_ids_are_rejected() -> None:
+    row = _primary_row()
+    row = row.model_copy(update={"atoms": (row.atoms[0], row.atoms[0])})
+
+    assert "frozen row atom IDs must be unique" in _error_text(
+        (row,),
+        (_primary_gold(),),
+    )
+
+
 @pytest.mark.parametrize(
     ("rows", "labels", "message"),
     (
@@ -371,6 +387,49 @@ def test_gold_source_region_must_overlap_its_declared_support_atoms() -> None:
     )
 
 
+def test_gold_source_region_must_overlap_every_declared_atom() -> None:
+    row = _primary_row()
+    atoms = list(row.atoms)
+    atoms.insert(4, _atom("description-tail", "EAST", 90.0, 91.0))
+    row = row.model_copy(update={"atoms": tuple(atoms)})
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP EAST",
+                ("description", "description-tail"),
+                source_region=(53.0, 10.0, 89.0, 20.0),
+            ),
+        )
+    )
+
+    assert "gold source region does not overlap declared atoms" in _error_text(
+        (row,),
+        (label,),
+    )
+
+
+def test_gold_source_region_outside_the_fixed_row_is_rejected() -> None:
+    row = _primary_row()
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP",
+                ("description",),
+                source_region=(53.0, 10.0, 201.0, 20.0),
+            ),
+        )
+    )
+
+    assert "gold source region is outside the exact fixed row" in _error_text(
+        (row,),
+        (label,),
+    )
+
+
 @pytest.mark.parametrize(
     ("role", "invalid", "atom_id"),
     (
@@ -438,6 +497,20 @@ def test_kind_must_agree_with_the_nonzero_billed_amount_sign() -> None:
     row = _primary_row()
     fields = (
         _field(FieldRole.BILLED_AMOUNT, "-12.34", ("billed-amount",)),
+        _field(FieldRole.BILLING_CURRENCY, "USD", ("billing-currency",)),
+        _field(FieldRole.KIND, "charge", ("billed-amount",)),
+    )
+
+    assert "kind does not match billed amount sign" in _error_text(
+        (row,),
+        (_primary_gold(fields=fields),),
+    )
+
+
+def test_zero_billed_amount_cannot_have_a_transaction_kind() -> None:
+    row = _primary_row()
+    fields = (
+        _field(FieldRole.BILLED_AMOUNT, "0", ("billed-amount",)),
         _field(FieldRole.BILLING_CURRENCY, "USD", ("billing-currency",)),
         _field(FieldRole.KIND, "charge", ("billed-amount",)),
     )
@@ -536,12 +609,88 @@ def _continuation_pair() -> tuple[FrozenRow, FrozenRow, GoldRow, GoldRow]:
     return previous, current, previous_gold, current_gold
 
 
+def _synthetic_continuation(
+    *,
+    row_id: str,
+    previous_row_id: str,
+    next_row_id: str,
+    atom_id: str,
+) -> tuple[FrozenRow, GoldRow]:
+    row = frozen_row(
+        document_id=_DOCUMENT_ID,
+        row_id=row_id,
+        bbox=(0.0, 31.0, 200.0, 50.0),
+        atoms=(
+            EvidenceAtom(
+                atom_id=atom_id,
+                text="SYNTHETIC CONTINUATION",
+                bbox=(20.0, 35.0, 120.0, 45.0),
+                source="digital",
+                confidence=1.0,
+                column_index=None,
+            ),
+        ),
+    ).model_copy(
+        update={
+            "previous_row_id": previous_row_id,
+            "next_row_id": next_row_id,
+        }
+    )
+    label = GoldRow(
+        document_id=row.document_id,
+        row_id=row.row_id,
+        row_type=RowType.CONTINUATION,
+        fields=(
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC CONTINUATION",
+                (atom_id,),
+            ),
+        ),
+    )
+    return row, label
+
+
 def test_continuation_requires_a_valid_fixed_predecessor() -> None:
     previous, current, previous_gold, current_gold = _continuation_pair()
 
     summary = validate_annotations((previous, current), (previous_gold, current_gold))
 
     assert summary.continuation_row_count == 1
+
+
+def test_continuation_ownership_rejects_a_self_loop() -> None:
+    row, label = _synthetic_continuation(
+        row_id="row-self-loop",
+        previous_row_id="row-self-loop",
+        next_row_id="row-self-loop",
+        atom_id="self-loop-description",
+    )
+
+    assert "continuation ownership must terminate at a primary row" in _error_text(
+        (row,),
+        (label,),
+    )
+
+
+def test_continuation_ownership_rejects_an_all_continuation_cycle() -> None:
+    first, first_label = _synthetic_continuation(
+        row_id="row-cycle-first",
+        previous_row_id="row-cycle-second",
+        next_row_id="row-cycle-second",
+        atom_id="cycle-first-description",
+    )
+    second, second_label = _synthetic_continuation(
+        row_id="row-cycle-second",
+        previous_row_id="row-cycle-first",
+        next_row_id="row-cycle-first",
+        atom_id="cycle-second-description",
+    )
+
+    assert "continuation ownership must terminate at a primary row" in _error_text(
+        (first, second),
+        (first_label, second_label),
+    )
 
 
 def test_continuation_rejects_missing_or_nonreciprocal_predecessor() -> None:
@@ -555,6 +704,26 @@ def test_continuation_rejects_missing_or_nonreciprocal_predecessor() -> None:
     )
     assert "continuation predecessor is not reciprocal" in _error_text(
         (nonreciprocal, current),
+        (previous_gold, current_gold),
+    )
+
+
+def test_continuation_predecessor_must_have_transaction_ownership() -> None:
+    previous, current, previous_gold, current_gold = _continuation_pair()
+    previous_gold = previous_gold.model_copy(update={"row_type": RowType.STRUCTURAL, "fields": ()})
+
+    assert "continuation predecessor has no transaction ownership" in _error_text(
+        (previous, current),
+        (previous_gold, current_gold),
+    )
+
+
+def test_continuation_must_have_a_uniquely_supported_field() -> None:
+    previous, current, previous_gold, current_gold = _continuation_pair()
+    current_gold = current_gold.model_copy(update={"fields": ()})
+
+    assert "continuation row has no uniquely supported fields" in _error_text(
+        (previous, current),
         (previous_gold, current_gold),
     )
 
@@ -616,6 +785,22 @@ def test_continuation_may_carry_typed_subordinate_financial_fields() -> None:
 
     assert summary.continuation_row_count == 1
     assert summary.field_count == 8
+
+
+def test_cited_atom_must_be_inside_the_exact_fixed_row() -> None:
+    row = _primary_row()
+    atoms = tuple(
+        atom.model_copy(update={"bbox": (100.0, 31.0, 115.0, 40.0)})
+        if atom.atom_id == "billed-amount"
+        else atom
+        for atom in row.atoms
+    )
+    row = row.model_copy(update={"atoms": atoms})
+
+    assert "gold atom is outside the exact fixed row" in _error_text(
+        (row,),
+        (_primary_gold(),),
+    )
 
 
 def test_structural_row_cannot_assert_transaction_fields() -> None:

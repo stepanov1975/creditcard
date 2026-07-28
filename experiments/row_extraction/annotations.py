@@ -278,6 +278,33 @@ def _validate_field_relationships(row: FrozenRow, label: GoldRow) -> None:
         _fail("kind does not match billed amount sign", identity)
 
 
+def _validate_continuation_ownership(
+    rows: Mapping[_RowIdentity, FrozenRow],
+    labels: Mapping[_RowIdentity, GoldRow],
+) -> None:
+    for origin, origin_label in labels.items():
+        if origin_label.row_type is not RowType.CONTINUATION:
+            continue
+        visited: set[_RowIdentity] = set()
+        current = origin
+        while True:
+            if current in visited:
+                _fail("continuation ownership must terminate at a primary row", origin)
+            visited.add(current)
+            current_label = labels.get(current)
+            current_row = rows.get(current)
+            if current_label is None or current_row is None:
+                _fail("continuation ownership must terminate at a primary row", origin)
+            if current_label.row_type is RowType.PRIMARY_TRANSACTION:
+                break
+            if (
+                current_label.row_type is not RowType.CONTINUATION
+                or current_row.previous_row_id is None
+            ):
+                _fail("continuation ownership must terminate at a primary row", origin)
+            current = (current_row.document_id, current_row.previous_row_id)
+
+
 def _validate_references(
     references: Iterable[OcrReference],
     rows: Mapping[_RowIdentity, FrozenRow],
@@ -341,6 +368,7 @@ def validate_annotations(
         _validate_row_type(row, label, indexed_rows, indexed_labels)
         _validate_field_support(row, label)
         _validate_field_relationships(row, label)
+    _validate_continuation_ownership(indexed_rows, indexed_labels)
 
     reference_count, referenced_rows, referenced_fields = _validate_references(
         ocr_references,
