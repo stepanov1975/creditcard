@@ -1,0 +1,634 @@
+# Transaction-Row Extraction Experiment Charter
+
+**Status:** Approved design authority for the transaction-row extraction experiment
+program.
+
+**Authority date:** 2026-07-28
+
+**Accepted comparison anchor:**
+`dee4b071ad65231da13825f2f7c74a488ca96c7c`
+
+## Authority and Purpose
+
+This document is the single authoritative design for experiments intended to improve
+transaction-row recognition and field extraction in this repository. It exists to prevent
+scope drift, preserve fair comparisons, and make every experimental result traceable to one
+of four predeclared questions.
+
+The program has exactly four experiments:
+
+1. per-row OCR;
+2. deterministic row-type classification with type-specific extraction;
+3. a lightweight text model over positioned OCR/PDF evidence tokens; and
+4. a lightweight row-image or image-plus-text model.
+
+The accepted pipeline, conditional and forced whole-page OCR baselines, shared data and
+metrics, and the final calibrated cascade are comparison infrastructure. They are not
+additional experiments.
+
+This charter supersedes conflicting experiment-program intent in earlier uncommitted plans
+or experiment branches. Those artifacts remain preserved as historical material, but they
+do not authorize work. The research notes cited by this charter provide evidence, not scope.
+Repository instructions in `AGENTS.md` and direct user instructions remain higher authority.
+
+## Goal
+
+Measure which general, local approach most reliably extracts exact structured credit-card
+transaction fields when transaction rows can already be separated reasonably well but text
+and fields inside those rows are unreliable, especially merchant descriptions.
+
+The program must produce:
+
+- a reproducible, private, document-disjoint evaluation dataset;
+- independent implementations of all four experiments;
+- common baseline and metric implementations;
+- comparative measurements and error analysis;
+- a confidence-based cascade that abstains on unsupported cases;
+- an evidence-backed recommendation; and
+- only after a measured winner exists, a minimal production integration plan.
+
+Production integration is not part of the experiment program itself.
+
+## Mandatory Scope Test
+
+Before starting every task, the worker must answer:
+
+> Does this directly measure or improve transaction-row recognition or field extraction?
+
+A valid `yes` must name the affected experiment or shared comparison component and the
+metric it is expected to change or measure. A bare assertion of relevance is insufficient.
+
+Every task brief, plan task, and subagent prompt must start with this block:
+
+```text
+Scope answer: YES
+Program component: <shared foundation | experiment 1 | experiment 2 | experiment 3 |
+  experiment 4 | comparison | cascade>
+Measured effect: <named metric or experimental invariant>
+Fixed inputs: <row identities, split, labels, or other inputs that cannot change>
+Allowed files: <exact directory or file list>
+Stop condition: <condition that ends the task without expanding scope>
+```
+
+If this block cannot be completed concretely, the task must not begin. If the answer changes
+to `no` while work is underway, the worker must stop, preserve any in-scope evidence, and
+return to this charter.
+
+## Definitions
+
+**Shared foundation** means the frozen row observations, private labels and split manifest,
+common contracts, metrics, baseline adapters, runner, and privacy-safe reporting used by all
+experiments.
+
+**Fixed row** means one row identity and bounding box produced by the accepted comparison
+anchor. Holding rows fixed also holds the row count and row membership fixed. An experiment
+may not add, remove, split, merge, or move a row.
+
+**Experiment** means one of the four numbered, independent hypotheses in this charter. A
+baseline, ablation of an experiment, metric, runner, or cascade is not another experiment.
+
+**Proposal** means a typed candidate field backed by positioned evidence. A proposal is not
+an accepted transaction value until deterministic validation succeeds.
+
+**Abstention** means declining to emit an unsupported row or field while recording a stable
+reason. Abstention is not an extraction error hidden as an empty string, and it is not a
+positive proof that a row should be ignored.
+
+**Locked test** means the document-disjoint test partition that cannot be used for feature,
+configuration, model, calibration, threshold, or cascade selection.
+
+**Production integration** means any change to the normal parser path or its public output.
+No experiment branch may perform it.
+
+## Non-Negotiable Invariants
+
+1. Row detection remains fixed for the complete four-experiment comparison.
+2. Every experiment consumes the same reviewed row identities and document partitions.
+3. All rows, pages, and revisions from one source document remain in one partition.
+4. Near-duplicate statement revisions and detected layout families remain in one partition.
+5. No experiment uses filenames, paths, hashes, document ordinals, merchants, exact dates,
+   exact amounts, printed totals, or template identities as predictive features.
+6. Every financial number is parsed and compared with `Decimal`, never binary floating point.
+7. Learned models propose types or exact evidence spans. They do not author authoritative
+   merchant strings, dates, currencies, amounts, signs, or installment values.
+8. Reconciliation may reject a candidate. It may not select among candidates or repair a
+   prediction merely because the resulting total balances.
+9. Private documents, crops, labels, outputs, caches, model artifacts, and derived values stay
+   in ignored local paths.
+10. The locked test is evaluated only after all four lane configurations and calibration
+    rules are frozen.
+11. The cascade is built only after all four independent locked predictions exist.
+12. Production `src/` behavior remains unchanged until the program has issued a measured
+    recommendation and a separate integration design has been approved.
+
+## Shared Foundation
+
+### Comparison anchor
+
+The accepted comparison anchor is the exact source tree at
+`dee4b071ad65231da13825f2f7c74a488ca96c7c`. The shared foundation records the complete
+runtime identity relevant to extraction, including Python, PyMuPDF, Tesseract, language
+packs, commands, worker count, and configuration.
+
+Baseline outputs and performance measurements are stored privately. Tracked documentation
+must not contain document names, merchant text, dates, amounts, totals, row images, private
+artifact hashes, or other derived financial values.
+
+### Frozen row observations
+
+The foundation materializes one compact private observation per fixed row. Each observation
+contains only what the four experiments need:
+
+- opaque document identity and immutable split role;
+- fixed page number, row identity, row bounding box, and column bands;
+- positioned digital and accepted OCR words, glyphs, cells, and evidence atom identities;
+- source-quality and geometry measurements;
+- a versioned row-render recipe and private crop location;
+- accepted-anchor row and transaction outcomes for baseline comparison; and
+- version identifiers for every transformation.
+
+The compact bundle exists so configuration sweeps do not repeatedly parse complete PDFs or
+serialize the production evidence-rich batch output. Bundle creation may observe the
+accepted row detector; it may not change the detector.
+
+### Gold annotations
+
+Accepted-anchor output is a baseline proposal, not ground truth. Private review notes may
+bootstrap annotation, but every validation and test label used for scoring must be reviewed
+against source evidence under one versioned handbook.
+
+The handbook defines:
+
+- primary transaction, continuation, structural/nontransaction, and ambiguous rows;
+- exact expected transaction fields;
+- exact evidence atom or image-region support for every present field;
+- absent-field semantics;
+- continuation ownership;
+- field-level ambiguity; and
+- error categories used in analysis.
+
+Ambiguous source evidence remains explicitly ambiguous and is excluded from claims that
+require a unique gold value. It must not be coerced into a convenient training label.
+
+A document-disjoint sample is independently reviewed twice and adjudicated before model
+selection. Agreement is reported per row type and field.
+
+### Document partitions
+
+The target partition ratio is 60% development/train, 20% calibration/validation, and 20%
+locked test. Group constraints take precedence over exact ratios:
+
+- all observations from a document share one partition;
+- near-duplicate revisions share one partition; and
+- layout-family groups inferred only for evaluation share one partition.
+
+The split manifest is frozen privately before configuration selection. Development data may
+use grouped cross-validation. Calibration/validation data selects OCR configurations,
+models, calibrators, thresholds, and cascade policy. The locked test produces one final
+comparison after all decisions are frozen.
+
+### Common prediction contract
+
+Every experiment returns the same conceptual result for a fixed row:
+
+- experiment and configuration identity;
+- predicted row type;
+- zero or more typed field proposals;
+- exact supporting evidence atom IDs or image regions;
+- raw score and, where applicable, separately calibrated exact-row confidence;
+- deterministic validation disposition;
+- abstention reasons;
+- runtime and resource observations; and
+- no generated authoritative financial value.
+
+Shared deterministic renderers derive proposed strings from exact evidence and pass typed
+values through the repository's date, currency, installment, and `Decimal` parsers. A field
+with no unique support remains absent or causes row abstention according to the annotation
+and validation contract.
+
+## Shared Baselines
+
+Every experiment is compared with the same baselines:
+
+1. accepted pipeline output from the comparison anchor;
+2. the accepted conditional whole-page OCR behavior;
+3. forced whole-page OCR assigned to fixed rows and fixed column bands; and
+4. applicable no-learning or no-image controls defined within each experiment.
+
+Forced whole-page OCR may change recognized words, but it may not change fixed row identities
+or boxes. Baseline results are materialized through the common prediction contract so metric
+code has one path.
+
+## Experiment 1: Per-Row OCR
+
+### Question
+
+Does recognizing each fixed transaction row independently improve exact merchant and field
+extraction over accepted and forced whole-page OCR without increasing omissions,
+hallucinations, or cross-column ownership errors?
+
+### Fixed inputs
+
+- row identities and row bounding boxes;
+- document partitions and gold annotations;
+- accepted column bands for the recognition-only comparison; and
+- the accepted full-page OCR output.
+
+### Allowed variables
+
+- row-crop padding under a versioned point-to-pixel rule;
+- rendering scale/DPI;
+- deterministic preprocessing;
+- Tesseract page-segmentation mode and language order;
+- pinned trained-data variants;
+- whole-row versus fixed-field crops; and
+- recognition-only versus fixed-row cell reconstruction as separately reported modes.
+
+The sweep is sequential, not an unconstrained Cartesian search. Each stage selects on
+development and calibration data before the next stage begins.
+
+### Outputs
+
+Positioned OCR tokens and field proposals mapped back into the fixed row coordinate system,
+with crop/configuration identity, OCR confidence, latency, resource use, and abstention
+reasons.
+
+### Stop conditions
+
+Stop rather than expand scope if improvements require changing row detection, adding a
+document-specific OCR rule, or adding a heavyweight neural OCR dependency. A neural OCR
+comparison requires a charter amendment; it is not implicit in experiment 1.
+
+## Experiment 2: Deterministic Row Types and Extraction
+
+### Question
+
+Does a closed, issuer-neutral row-type classifier with type-specific deterministic
+extraction improve exact row outcomes and reduce merchant-field ownership errors?
+
+### Fixed inputs
+
+- the same fixed rows, accepted evidence, splits, and labels;
+- no learned weights; and
+- no merchant, document, date, amount, or template lookup tables.
+
+### Row-type vocabulary
+
+The first-stage vocabulary remains low-cardinality:
+
+- primary transaction;
+- continuation;
+- structural or nontransaction row; and
+- ambiguous/unsupported.
+
+Existing deterministic continuation logic may subtype a proven continuation. A classifier
+may not convert ambiguity into a primary transaction.
+
+### Allowed signals
+
+Only general text shape, Unicode script, positioned geometry, inferred column occupancy,
+date/money/currency/installment shape, source confidence, and neighboring row structure are
+allowed.
+
+### Outputs
+
+A deterministic row type, applicable extraction strategy, exact evidence-backed field
+proposals, and explicit ambiguity or abstention reasons.
+
+### Stop conditions
+
+Stop if a residual case can be solved only with a document-, merchant-, filename-, amount-,
+date-, total-, or corpus-specific branch. Such a case is recorded in error analysis, not
+encoded as a rule.
+
+## Experiment 3: Lightweight Text Model
+
+### Question
+
+Can a small local discriminative model over positioned OCR/PDF tokens identify merchant and
+other field spans more accurately than deterministic extraction while remaining fully
+evidence-grounded and selectively calibrated?
+
+### Required controls
+
+- deterministic row-type and field extraction from experiment 2;
+- a text/shape-only model; and
+- a text/shape-plus-geometry model.
+
+### Initial model scope
+
+The primary implementation is a small hashed linear classifier and/or linear-chain sequence
+tagger. It predicts the closed row vocabulary and BIO-style roles over existing evidence
+tokens. Candidate roles include date, description, billed amount, original amount, currency,
+installment, FX detail, ancillary evidence, and outside.
+
+The model artifact remains private. Features must not expose or memorize complete merchant
+strings or financial values in tracked files.
+
+### Outputs
+
+Row-type scores, exact token/evidence spans for field roles, sequence legality, calibrated
+exact-row confidence, and abstention reasons. The model never emits free-form field values.
+
+### Stop conditions
+
+Stop before introducing transformer or generative text models unless the compact models have
+been measured, residual errors are demonstrably textual/semantic, and the user approves a
+charter amendment naming the added model, dependency footprint, and question.
+
+## Experiment 4: Lightweight Image or Image-Plus-Text Model
+
+### Question
+
+Do row pixels add held-out information for merchant and field-span recognition beyond the
+same text, geometry, and deterministic candidate features?
+
+### Required controls
+
+- the best non-visual feature set from experiment 3 or an equivalent frozen control;
+- identical splits, labels, candidates, and calibration procedure; and
+- an ablation that removes pixels while keeping the prediction head and nonvisual inputs
+  comparable.
+
+### Initial model scope
+
+The primary visual model is a compact MobileNetV3-small-class row or atom-crop encoder
+combined with normalized geometry, OCR confidence, Unicode/token-shape features, and existing
+candidate signals. It predicts row types or exact evidence atom/span roles.
+
+It does not generate merchant text or transaction JSON. A visual proposal must resolve to one
+unique evidence span or deterministically recognized crop before existing field validators
+may accept it.
+
+### Outputs
+
+Grounded field-span proposals, row-type scores, pixel-ablation results, calibrated exact-row
+confidence, latency, peak memory, artifact size, and repeatability measurements.
+
+### Stop conditions
+
+Stop if pixels do not improve document-held-out selective risk over the nonvisual control.
+LiLT, LayoutLM, Florence, Donut, TrOCR, VLMs, or other larger pretrained models are not
+implicit follow-ups. Each requires a user-approved charter amendment after the lightweight
+result exists.
+
+## Common Measurements
+
+All four experiments report the following on identical eligible observations:
+
+- complete transaction-row exact match;
+- merchant exact match and predeclared normalized match;
+- transaction date, posting/conversion date where applicable, billed amount, original
+  amount, currency, charge/credit kind, installment, and FX-field accuracy;
+- field omission rate;
+- field hallucination/fabrication rate;
+- unsupported-evidence and ownership-collision rate;
+- OCR character and word error rate where ground truth exists;
+- row-type precision, recall, macro F1, and confusion matrix;
+- confidence calibration, Brier/log loss, and reliability diagnostics;
+- risk-coverage curve, area under the risk-coverage curve, and coverage at predeclared risk
+  thresholds;
+- abstention rate and abstention error composition;
+- p50/p95 row latency, cold start, throughput, subprocess count, peak RSS, model bytes,
+  dependency footprint, and cache bytes;
+- byte-identical repeated canonical predictions under a pinned runtime; and
+- document-macro and row-micro results by predeclared row type, source mode, script mix,
+  acquisition quality, and error category where privacy-safe sample sizes permit.
+
+Confidence is calibrated for the event that the complete emitted row is exactly correct. OCR
+confidence, token marginals, geometry confidence, and reconciliation are not substitutes for
+that event.
+
+Uncertainty intervals and comparisons resample documents, not rows. The final recommendation
+uses paired document-level comparisons and reports practical effect sizes alongside
+uncertainty.
+
+## Error Taxonomy
+
+Every wrong or abstained locked-test outcome is assigned one primary cause and optional
+secondary causes from a frozen taxonomy:
+
+- OCR substitution, insertion, deletion, or segmentation;
+- crop truncation or neighboring-row contamination;
+- mixed-direction or Unicode-order error;
+- word-box or column-assignment drift;
+- row-type error;
+- continuation ownership error;
+- merchant-span boundary or typed-nondescription error;
+- date parsing or year-context error;
+- amount, separator, sign, kind, or currency error;
+- optional-field ownership error;
+- calibration/threshold false acceptance;
+- correct abstention on ambiguous evidence; or
+- annotation ambiguity or defect.
+
+The taxonomy may be clarified before the locked test, but categories may not be added after
+opening locked results merely to make an experiment appear better.
+
+## Cascade
+
+The cascade is a post-comparison consumer of frozen predictions, not a fifth experiment. It
+is designed only after all four experiments have produced validation and locked-test outputs.
+
+The initial cascade order is selected on calibration/validation data and must obey:
+
+1. preserve an already exact, unambiguous accepted result;
+2. consider only proposals with unique source support;
+3. run deterministic syntax, type, geometry, ownership, and `Decimal` validation;
+4. apply a separately frozen exact-row confidence threshold;
+5. use independently shaped agreement only if its rule was frozen before the locked test;
+6. use reconciliation only as a terminal rejection check; and
+7. abstain on disagreement, overlap, unsupported values, low confidence, or failed
+   validation.
+
+The cascade cannot override a supported accepted value merely to improve aggregate metrics.
+Its primary comparison is incremental exact coverage at a fixed or lower accepted-row error
+risk.
+
+## Isolation and Parallel Work
+
+The charter and shared foundation are developed in
+`codex/row-extraction-evaluation`. After the foundation is reviewed and committed, each
+experiment starts from that exact foundation commit in an isolated worktree and branch:
+
+- `codex/row-extraction-ocr`;
+- `codex/row-extraction-profiles`;
+- `codex/row-extraction-text`; and
+- `codex/row-extraction-vision`.
+
+Each lane owns one experiment directory and its focused tests. Shared contracts, bundle
+formats, split membership, gold labels, and metrics are read-only to experiment lanes. A lane
+that needs a shared-contract change must stop and return a proposal to the foundation branch;
+it may not change the contract locally.
+
+Private artifacts use separate ignored directories per lane. Parallel workers may not write
+the same cache, output, manifest, model, report, or worktree. Subagents receive only their
+lane's scope block, interfaces, exact allowed paths, measurements, and stop conditions.
+
+## Program Stages and Gates
+
+### Stage 0: Charter
+
+Deliver this approved, self-reviewed, committed charter and its primary-source research
+notes. No experiment code is allowed before this gate.
+
+### Stage 1: Shared foundation
+
+Implement and review private bundle preparation, annotation validation, immutable document
+splits, common contracts, baselines, metrics, privacy-safe reports, and deterministic runner.
+Freeze a foundation commit before branching experiments.
+
+Gate: all four planned experiments can consume the same synthetic test observation and
+private bundle contract without modifying it.
+
+### Stage 2: Four independent experiments
+
+Run experiments 1 through 4 in separate worktrees. Experiments may run in parallel after the
+foundation gate. Each lane uses TDD for deterministic behavior and commits focused changes.
+
+Gate: each lane produces frozen validation predictions, configuration, artifact identities,
+resource measurements, and an error report through the shared contract.
+
+### Stage 3: Configuration freeze
+
+Select one predeclared configuration per experiment using development and calibration data.
+Freeze models, OCR settings, preprocessing, calibrators, thresholds, worker counts, and
+runtime identity.
+
+Gate: no lane has inspected locked-test metrics.
+
+### Stage 4: Locked comparison
+
+Run all shared baselines and four experiments once on the locked test under the same runner.
+Repeat canonical prediction generation to measure determinism. Produce the comparative
+metric and error-analysis report.
+
+Gate: complete results exist for all four experiments. A missing lane cannot be silently
+removed from the comparison.
+
+### Stage 5: Cascade
+
+Build and evaluate the confidence-based cascade from frozen candidate outputs and validation-
+selected policy. Do not retrain or retune an experiment using cascade or locked-test results.
+
+### Stage 6: Recommendation
+
+Recommend the strongest measured option, a bounded combination, or no production change.
+The recommendation must identify gains, regressions, uncertainty, failure slices, resource
+cost, determinism, and abstention behavior.
+
+### Stage 7: Separate integration decision
+
+Only an evidence-backed winner may trigger a new production-integration design. Integration
+requires explicit user approval, production TDD, full tracked verification, and the private
+corpus acceptance process from a clean committed candidate. Experiment success alone is not
+corpus acceptance.
+
+## Required Checkpoint Report
+
+Every lane checkpoint contains exactly these substantive sections:
+
+1. scope answer and program component;
+2. hypothesis tested;
+3. fixed inputs and exact configuration;
+4. files changed;
+5. tests and verification evidence;
+6. measurements without private contents;
+7. error categories and limitations; and
+8. next in-scope action or stop decision.
+
+Do not report unrelated architecture proposals, security work, or speculative follow-ups.
+
+## Explicitly Forbidden Work
+
+The following are outside this program and must not be researched, designed, implemented,
+reviewed, or used as a reason to delay an experiment:
+
+- C5a0-P, C5aA, or C5a0-R;
+- trusted-worker or pre-import controller architecture;
+- deployment attestations;
+- cryptographic signatures or crypto dependencies;
+- native ptrace/seccomp controller machinery;
+- private-corpus acceptance redesign;
+- release-bundle or toolchain-authority formalization;
+- security-design continuation from `codex/row-preparation-runtime`;
+- table or row detection changes during the fixed-row comparison;
+- document-, issuer-, template-, merchant-, filename-, path-, hash-, amount-, date-, total-,
+  or corpus-specific extraction branches;
+- cloud document processing or transmission of source/derived financial data;
+- production parser integration before the measured recommendation gate;
+- a fifth experiment introduced by renaming a baseline, ablation, cascade, model family, or
+  infrastructure task; and
+- heavyweight model escalation without a user-approved charter amendment.
+
+Ordinary privacy-preserving experiment code, ignored local artifacts, dependency pinning,
+cache keys, and reproducibility metadata are allowed when they directly support a named
+experiment measurement. They must remain proportional to that measurement and may not grow
+into infrastructure architecture.
+
+## Amendment Procedure
+
+This charter may change only when a direct user instruction approves the changed scope.
+
+An amendment is required before any of the following:
+
+- adding, removing, combining, or redefining an experiment;
+- changing fixed row detection or locked split membership;
+- changing gold-label semantics after locked-test access;
+- adding a heavyweight or generative model family;
+- allowing a learned model to generate authoritative values;
+- changing the role of reconciliation from rejection to selection;
+- modifying production behavior; or
+- entering any currently forbidden direction.
+
+The worker must first write a concise proposed amendment containing the reason, affected
+experiment, metric, comparison impact, privacy/dependency impact, and invalidated results.
+No code or artifact migration may begin until the user approves it. The approved amendment
+is committed to this document before work resumes.
+
+Bug fixes that preserve the frozen contract and dependency/configuration corrections within
+an already approved lane do not require an amendment, but they invalidate affected
+measurements and require reruns.
+
+## Testing and Verification
+
+- Follow Python 3.13 and use the repository virtual environment.
+- Follow red-green-refactor TDD for every deterministic behavior.
+- Keep functions typed, deterministic, and focused.
+- Use synthetic, non-sensitive fixtures in tracked tests.
+- Keep private labels, crops, model artifacts, outputs, caches, and reports ignored.
+- Run focused tests for every lane change and the required repository verification before
+  committing a completed implementation task.
+- A sandbox-specific failure in explicitly forbidden controller code is recorded as an
+  inherited environment limitation and is not investigated within this program.
+- Never claim field accuracy from reconciliation counts, parser status, or tracked tests.
+- Never claim private-corpus acceptance without the repository's formal clean-commit verify
+  gate after a separately approved production candidate exists.
+
+## Research Basis
+
+The charter's bounded candidates and transfer limits are documented in:
+
+- [`2026-07-28-row-ocr-table-extraction.md`](../../research/2026-07-28-row-ocr-table-extraction.md);
+- [`2026-07-28-row-text-models-calibration.md`](../../research/2026-07-28-row-text-models-calibration.md);
+  and
+- [`2026-07-28-row-vision-multimodal-models.md`](../../research/2026-07-28-row-vision-multimodal-models.md).
+
+These notes may suggest later challengers, but a suggestion is not authorization. This
+charter's four experiment definitions and amendment procedure control execution.
+
+## Acceptance Criteria for This Charter
+
+The charter is ready for implementation planning only when all of the following are true:
+
+- exactly four experiments are named and bounded;
+- baselines and cascade are explicitly non-experiments;
+- row detection and dataset partitions are fixed;
+- shared and lane-owned responsibilities are unambiguous;
+- every experiment has a question, inputs, outputs, controls, and stop conditions;
+- common metrics cover exactness, omission, hallucination, calibration, abstention,
+  resources, determinism, and error slices;
+- forbidden context-drift directions are explicit;
+- new directions require a user-approved committed amendment;
+- production integration is a separate post-evidence decision; and
+- no private corpus contents or derived financial values are recorded in the charter.
