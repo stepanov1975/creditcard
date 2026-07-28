@@ -158,6 +158,17 @@ def test_kind_accepts_bare_supported_amount_sign(source: str, expected: str) -> 
 
 
 @pytest.mark.parametrize(
+    "source",
+    ("1E3", "1_2", "NaN", "Infinity", "1 2", "0", "-0"),
+)
+def test_kind_rejects_unsupported_nonfinite_or_zero_lexeme(source: str) -> None:
+    prediction = accepted_prediction(role=FieldRole.KIND, texts=(source,))
+
+    with pytest.raises(EvidenceContractError, match="invalid or nonunique proposal value"):
+        resolve_proposal(prediction, prediction.proposals[0])
+
+
+@pytest.mark.parametrize(
     ("role", "source"),
     (
         (FieldRole.TRANSACTION_DATE, "03/02/26"),
@@ -262,7 +273,7 @@ def test_amount_rejects_zero_or_multiple_same_family_currency_hints() -> None:
         (FieldRole.KIND, "12,34", "charge"),
     ),
 )
-def test_currency_hint_ignores_proposals_owned_by_other_rows(
+def test_other_owner_currency_does_not_conflict_with_field_resolution(
     role: FieldRole,
     source: str,
     expected: str,
@@ -309,21 +320,14 @@ def test_currency_hint_ignores_proposals_owned_by_other_rows(
     assert resolve_proposal(prediction, amount).canonical_value == expected
 
 
-@pytest.mark.parametrize(
-    ("role", "source"),
-    ((FieldRole.BILLED_AMOUNT, "12.34"), (FieldRole.KIND, "12,34")),
-)
-def test_currency_hint_rejects_absent_same_owner_proposal(
-    role: FieldRole,
-    source: str,
-) -> None:
+def test_currency_hint_rejects_absent_same_owner_proposal() -> None:
     row = frozen_row()
     atoms = (
-        evidence_atom(atom_id="amount", text=source),
+        evidence_atom(atom_id="amount", text="12.34"),
         evidence_atom(atom_id="other-owner-currency", text="USD"),
     )
     amount = FieldProposal(
-        role=role,
+        role=FieldRole.BILLED_AMOUNT,
         atom_ids=("amount",),
         owner_row_id="owner-a",
         raw_score=1.0,
@@ -355,15 +359,9 @@ def test_currency_hint_rejects_absent_same_owner_proposal(
     ("amount_owner", "currency_owner"),
     ((None, "row-1"), ("row-1", None)),
 )
-@pytest.mark.parametrize(
-    ("role", "expected"),
-    ((FieldRole.BILLED_AMOUNT, "12.34"), (FieldRole.KIND, "charge")),
-)
 def test_current_row_and_implicit_owner_are_equivalent_for_currency_hints(
     amount_owner: str | None,
     currency_owner: str | None,
-    role: FieldRole,
-    expected: str,
 ) -> None:
     row = frozen_row()
     atoms = (
@@ -371,7 +369,7 @@ def test_current_row_and_implicit_owner_are_equivalent_for_currency_hints(
         evidence_atom(atom_id="currency", text="USD"),
     )
     amount = FieldProposal(
-        role=role,
+        role=FieldRole.BILLED_AMOUNT,
         atom_ids=("amount",),
         owner_row_id=amount_owner,
         raw_score=1.0,
@@ -395,7 +393,49 @@ def test_current_row_and_implicit_owner_are_equivalent_for_currency_hints(
         reasons=(),
     )
 
-    assert resolve_proposal(prediction, amount).canonical_value == expected
+    assert resolve_proposal(prediction, amount).canonical_value == "12.34"
+
+
+@pytest.mark.parametrize(
+    ("amount_owner", "currency_owner"),
+    ((None, ""), ("", None), ("row-1", ""), ("", "row-1")),
+)
+def test_empty_owner_is_not_equivalent_to_current_row_for_currency_hints(
+    amount_owner: str | None,
+    currency_owner: str | None,
+) -> None:
+    row = frozen_row()
+    atoms = (
+        evidence_atom(atom_id="amount", text="12,34"),
+        evidence_atom(atom_id="currency", text="USD"),
+    )
+    amount = FieldProposal(
+        role=FieldRole.BILLED_AMOUNT,
+        atom_ids=("amount",),
+        owner_row_id=amount_owner,
+        raw_score=1.0,
+    )
+    currency = FieldProposal(
+        role=FieldRole.BILLING_CURRENCY,
+        atom_ids=("currency",),
+        owner_row_id=currency_owner,
+        raw_score=1.0,
+    )
+    prediction = RowPrediction(
+        experiment_id="synthetic",
+        config_id="v1",
+        document_id=row.document_id,
+        row_id=row.row_id,
+        predicted_type=RowType.PRIMARY_TRANSACTION,
+        evidence_atoms=atoms,
+        proposals=(amount, currency),
+        exact_row_confidence=1.0,
+        decision=Decision.ACCEPT,
+        reasons=(),
+    )
+
+    with pytest.raises(EvidenceContractError, match="invalid or nonunique proposal value"):
+        resolve_proposal(prediction, amount)
 
 
 def test_text_resolution_normalizes_nfc_controls_and_spacing() -> None:

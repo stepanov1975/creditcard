@@ -7,7 +7,7 @@ from typing import Never
 
 from ccparser.decimal_math import finite_decimal, plain_decimal_string
 from ccparser.models import TransactionKind
-from ccparser.money import canonical_currency, currencies_in_text, parse_amount
+from ccparser.money import _parse_lexical, canonical_currency, currencies_in_text, parse_amount
 from ccparser.normalization_dates import _parse_date
 from ccparser.normalization_fields import _parse_installment
 from ccparser.text_tokens import normalize_text
@@ -62,6 +62,10 @@ def _currency_value(rendered: str) -> str:
     return currency
 
 
+def _proposal_owner(prediction: RowPrediction, proposal: FieldProposal) -> str:
+    return prediction.row_id if proposal.owner_row_id is None else proposal.owner_row_id
+
+
 def _currency_hint(
     prediction: RowPrediction,
     currency_role: FieldRole,
@@ -70,8 +74,7 @@ def _currency_hint(
     proposals = tuple(
         proposal
         for proposal in prediction.proposals
-        if proposal.role is currency_role
-        and (proposal.owner_row_id or prediction.row_id) == owner_row_id
+        if proposal.role is currency_role and _proposal_owner(prediction, proposal) == owner_row_id
     )
     if len(proposals) != 1:
         _invalid_value()
@@ -89,7 +92,7 @@ def _amount_value(
         currency_hint = _currency_hint(
             prediction,
             currency_role,
-            proposal.owner_row_id or prediction.row_id,
+            _proposal_owner(prediction, proposal),
         )
     parsed = parse_amount(rendered, currency_hint=currency_hint)
     if parsed.diagnostics or parsed.amount is None:
@@ -111,15 +114,11 @@ def _decimal_value(rendered: str) -> Decimal:
         _invalid_value()
 
 
-def _kind_amount(
-    prediction: RowPrediction,
-    proposal: FieldProposal,
-    rendered: str,
-) -> Decimal:
-    try:
-        return _decimal_value(rendered)
-    except EvidenceContractError:
-        return _amount_value(prediction, proposal, rendered, FieldRole.BILLING_CURRENCY)
+def _kind_amount(rendered: str) -> Decimal:
+    parsed = _parse_lexical(rendered, None)
+    if parsed.value is None or not set(parsed.diagnostics) <= {"unknown_currency"}:
+        _invalid_value()
+    return finite_decimal(parsed.value)
 
 
 def _canonical_value(
@@ -156,7 +155,7 @@ def _canonical_value(
             _amount_value(prediction, proposal, rendered, FieldRole.ORIGINAL_CURRENCY)
         )
     if role is FieldRole.KIND:
-        amount = _kind_amount(prediction, proposal, rendered)
+        amount = _kind_amount(rendered)
         if amount == 0:
             _invalid_value()
         return TransactionKind.CREDIT.value if amount < 0 else TransactionKind.CHARGE.value
