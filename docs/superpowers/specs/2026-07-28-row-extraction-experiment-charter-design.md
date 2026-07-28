@@ -115,9 +115,11 @@ No experiment branch may perform it.
    prediction merely because the resulting total balances.
 9. Private documents, crops, labels, outputs, caches, model artifacts, and derived values stay
    in ignored local paths.
-10. The locked test is evaluated only after all four lane configurations and calibration
-    rules are frozen.
-11. The cascade is built only after all four independent locked predictions exist.
+10. The locked test is evaluated only after all four lane dispositions are frozen, including
+    every eligible configuration/calibration rule and every valid terminal-stop handoff.
+11. The cascade is built only from the locked predictions of validation-eligible frozen
+    lanes; every validation-stopped lane remains visible as a required noncandidate
+    disposition.
 12. Production `src/` behavior remains unchanged until the program has issued a measured
     recommendation and a separate integration design has been approved.
 
@@ -428,7 +430,8 @@ opening locked results merely to make an experiment appear better.
 ## Cascade
 
 The cascade is a post-comparison consumer of frozen predictions, not a fifth experiment. It
-is designed only after all four experiments have produced validation and locked-test outputs.
+is designed only after all four experiments have produced frozen validation dispositions and
+every validation-eligible lane has produced its one central locked-test output.
 
 The initial cascade order is selected on calibration/validation data and must obey:
 
@@ -486,30 +489,35 @@ private bundle contract without modifying it.
 Run experiments 1 through 4 in separate worktrees. Experiments may run in parallel after the
 foundation gate. Each lane uses TDD for deterministic behavior and commits focused changes.
 
-Gate: each lane produces frozen validation predictions, configuration, artifact identities,
-resource measurements, and an error report through the shared contract.
+Gate: each lane produces validation predictions, configuration/artifact identities, resource
+measurements, and an error report through the shared contract. A charter stop condition
+produces a typed terminal-stop handoff with its validation evidence; it does not disappear.
 
 ### Stage 3: Configuration freeze
 
-Select one predeclared configuration per experiment using development and calibration data.
-Freeze models, OCR settings, preprocessing, calibrators, thresholds, worker counts, and
-runtime identity.
+Select one predeclared configuration per eligible experiment using development and calibration
+data. Freeze models, OCR settings, preprocessing, calibrators, thresholds, worker counts, and
+runtime identity. Preserve any valid terminal-stop handoff unchanged.
 
 Gate: no lane has inspected locked-test metrics.
 
 ### Stage 4: Locked comparison
 
-Run all shared baselines and four experiments once on the locked test under the same runner.
-Repeat canonical prediction generation to measure determinism. Produce the comparative
-metric and error-analysis report.
+Run all shared baselines and every validation-eligible frozen experiment once on the locked
+test under the same runner. Repeat canonical prediction generation to measure determinism.
+Produce the comparative metric and error-analysis report. A lane that triggered its
+predeclared validation stop is reported as validation-stopped and is not opened on locked
+data, promoted into the cascade, or treated as a locked-test candidate.
 
-Gate: complete results exist for all four experiments. A missing lane cannot be silently
-removed from the comparison.
+Gate: exactly four lane dispositions exist: a complete locked result or a valid terminal-stop
+handoff with validation measurements. A missing lane cannot be silently removed from the
+comparison, and a stopped lane cannot be described as a locked result.
 
 ### Stage 5: Cascade
 
-Build and evaluate the confidence-based cascade from frozen candidate outputs and validation-
-selected policy. Do not retrain or retune an experiment using cascade or locked-test results.
+Build and evaluate the confidence-based cascade from eligible frozen candidate outputs and a
+validation-selected policy. Do not include validation-stopped lanes, and do not retrain or
+retune an experiment using cascade or locked-test results.
 
 ### Stage 6: Recommendation
 
@@ -616,6 +624,23 @@ The charter's bounded candidates and transfer limits are documented in:
 
 These notes may suggest later challengers, but a suggestion is not authorization. This
 charter's four experiment definitions and amendment procedure control execution.
+
+## Subordinate Execution Plans
+
+The implementation plans below translate this charter into TDD tasks. They are subordinate
+to this charter: if a plan conflicts with the charter, execution stops and the plan is
+corrected; the conflict never silently amends the program.
+
+- [shared fixed-row and evaluation foundation](../plans/2026-07-28-row-extraction-shared-foundation.md);
+- [experiment 1: per-row OCR](../plans/2026-07-28-row-targeted-ocr-experiment.md);
+- [experiment 2: deterministic row types](../plans/2026-07-28-deterministic-row-type-experiment.md);
+- [experiment 3: lightweight text model](../plans/2026-07-28-row-text-field-model-experiment.md);
+- [experiment 4: lightweight vision/image-plus-text model](../plans/2026-07-28-row-vision-field-model-experiment.md); and
+- [central comparison, cascade, and recommendation](../plans/2026-07-28-row-extraction-comparison-cascade.md).
+
+Only the central comparison plan may open the locked test. Experiment lanes end at a frozen
+validation handoff. Baselines and the cascade remain comparison infrastructure, never extra
+experiments.
 
 ## Acceptance Criteria for This Charter
 
