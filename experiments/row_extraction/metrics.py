@@ -5,14 +5,18 @@ from __future__ import annotations
 import math
 import unicodedata
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from decimal import Decimal, localcontext
+from types import MappingProxyType
+from typing import Annotated
 
-from pydantic import Field, ValidationError
+from pydantic import AfterValidator, Field, PlainSerializer, ValidationError
 
 from experiments.row_extraction.contracts import (
     Decision,
     FieldProposal,
     FieldRole,
+    FrozenRow,
     GoldRow,
     OcrReference,
     RowPrediction,
@@ -21,12 +25,10 @@ from experiments.row_extraction.contracts import (
 )
 from experiments.row_extraction.evidence import (
     EvidenceContractError,
-    render_proposal,
     resolve_proposal,
 )
 
 type _Identity = tuple[str, str]
-type _ReferenceKey = tuple[str, str, FieldRole]
 type _Outcome = tuple[Decimal, bool]
 
 _DECIMAL_PRECISION = 28
@@ -88,6 +90,25 @@ class RiskTargetCoverage(_FrozenModel):
     coverage: Decimal
 
 
+def _freeze_fields(
+    fields: Mapping[FieldRole, FieldMetric],
+) -> Mapping[FieldRole, FieldMetric]:
+    return MappingProxyType(dict(fields))
+
+
+def _serialize_fields(
+    fields: Mapping[FieldRole, FieldMetric],
+) -> dict[FieldRole, FieldMetric]:
+    return dict(fields)
+
+
+type _ImmutableFields = Annotated[
+    Mapping[FieldRole, FieldMetric],
+    AfterValidator(_freeze_fields),
+    PlainSerializer(_serialize_fields, return_type=dict[FieldRole, FieldMetric]),
+]
+
+
 class MetricReport(_FrozenModel):
     row_count: int = Field(ge=0)
     exact_rows: int = Field(ge=0)
@@ -97,7 +118,7 @@ class MetricReport(_FrozenModel):
     row_type_macro_f1: Decimal
     row_types: tuple[RowTypeMetric, ...]
     row_type_confusion: tuple[ConfusionCell, ...]
-    fields: Mapping[FieldRole, FieldMetric]
+    fields: _ImmutableFields
     accepted_rows: int = Field(ge=0)
     abstained_rows: int = Field(ge=0)
     rejected_rows: int = Field(ge=0)
@@ -144,25 +165,38 @@ def _mean(values: Sequence[Decimal]) -> Decimal | None:
     return _ratio(_sum(values), len(values))
 
 
-def _identity(record: GoldRow | RowPrediction | OcrReference) -> _Identity:
+def _identity(record: FrozenRow | GoldRow | RowPrediction | OcrReference) -> _Identity:
     return record.document_id, record.row_id
 
 
-def _validated[ContractModel: (GoldRow, RowPrediction, OcrReference)](
+def _validated[ContractModel: (FrozenRow, GoldRow, RowPrediction, OcrReference)](
     record: ContractModel,
     model: type[ContractModel],
     message: str,
 ) -> ContractModel:
-    try:
+    validated: ContractModel | None = None
+    with suppress(AttributeError, TypeError, ValidationError, ValueError):
         validated = model.model_validate(record.model_dump(mode="python"))
-    except (AttributeError, TypeError, ValidationError, ValueError) as error:
-        raise ScoringInputError(message) from error
+    if validated is None:
+        raise ScoringInputError(message) from None
     return validated
 
 
 def _bbox_is_valid(bbox: tuple[float, float, float, float]) -> bool:
     x0, y0, x1, y1 = bbox
     return all(math.isfinite(value) for value in bbox) and x0 < x1 and y0 < y1
+
+
+def _bbox_contains(
+    outer: tuple[float, float, float, float],
+    inner: tuple[float, float, float, float],
+) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and inner[2] <= outer[2]
+        and inner[3] <= outer[3]
+    )
 
 
 def _validate_gold(record: GoldRow) -> GoldRow:
@@ -175,6 +209,25 @@ def _validate_gold(record: GoldRow) -> GoldRow:
         for field in validated.fields
     ):
         raise ScoringInputError("invalid gold input")
+    return validated
+
+
+def _validate_row(record: FrozenRow) -> FrozenRow:
+    validated = _validated(record, FrozenRow, "invalid frozen row input")
+    atom_ids = tuple(atom.atom_id for atom in validated.atoms)
+    valid_geometry = (
+        _bbox_is_valid(validated.bbox)
+        and all(
+            _bbox_is_valid(atom.bbox) and _bbox_contains(validated.bbox, atom.bbox)
+            for atom in validated.atoms
+        )
+        and all(
+            _bbox_is_valid(band.bbox) and _bbox_contains(validated.bbox, band.bbox)
+            for band in validated.column_bands
+        )
+    )
+    if len(atom_ids) != len(set(atom_ids)) or not valid_geometry:
+        raise ScoringInputError("invalid frozen row input")
     return validated
 
 
@@ -213,6 +266,17 @@ def _index_gold(gold: Sequence[GoldRow]) -> dict[_Identity, GoldRow]:
     return indexed
 
 
+def _index_rows(rows: Sequence[FrozenRow]) -> dict[_Identity, FrozenRow]:
+    indexed: dict[_Identity, FrozenRow] = {}
+    for raw_record in rows:
+        record = _validate_row(raw_record)
+        identity = _identity(record)
+        if identity in indexed:
+            raise ScoringInputError("duplicate frozen row identity")
+        indexed[identity] = record
+    return indexed
+
+
 def _index_predictions(predictions: Sequence[RowPrediction]) -> dict[_Identity, RowPrediction]:
     indexed: dict[_Identity, RowPrediction] = {}
     for raw_record in predictions:
@@ -224,12 +288,43 @@ def _index_predictions(predictions: Sequence[RowPrediction]) -> dict[_Identity, 
     return indexed
 
 
+def _validate_prediction_region_context(
+    rows: Mapping[_Identity, FrozenRow],
+    predictions: Mapping[_Identity, RowPrediction],
+) -> None:
+    for identity, prediction in predictions.items():
+        row_bbox = rows[identity].bbox
+        atoms_inside = all(
+            _bbox_contains(row_bbox, atom.bbox) for atom in prediction.evidence_atoms
+        )
+        proposal_regions_inside = all(
+            proposal.source_region is None or _bbox_contains(row_bbox, proposal.source_region)
+            for proposal in prediction.proposals
+        )
+        if not atoms_inside or not proposal_regions_inside:
+            raise ScoringInputError("invalid prediction region context")
+
+
 def _canonical_owner(prediction: RowPrediction, proposal: FieldProposal) -> str:
     return prediction.row_id if proposal.owner_row_id is None else proposal.owner_row_id
 
 
+def _proposal_region_is_grounded(
+    prediction: RowPrediction,
+    proposal: FieldProposal,
+) -> bool:
+    if proposal.source_region is None:
+        return True
+    ledger = {atom.atom_id: atom for atom in prediction.evidence_atoms}
+    return all(
+        _regions_overlap(ledger[atom_id].bbox, proposal.source_region)
+        for atom_id in proposal.atom_ids
+    )
+
+
 def _resolved_fields(
     prediction: RowPrediction,
+    expected_owner: str,
 ) -> tuple[dict[FieldRole, str], frozenset[FieldRole], int, int]:
     if prediction.decision is not Decision.ACCEPT:
         return {}, frozenset(), 0, 0
@@ -241,28 +336,32 @@ def _resolved_fields(
     resolved: dict[FieldRole, str] = {}
     present: set[FieldRole] = set()
     unsupported = 0
-    ownership_collisions = 0
+    ownership_collision = False
     for role in FieldRole:
         proposals = grouped.get(role, [])
         if not proposals:
             continue
         present.add(role)
-        if any(
+        owners = {_canonical_owner(prediction, proposal) for proposal in proposals}
+        wrong_owner = owners != {expected_owner}
+        ownership_collision = ownership_collision or wrong_owner
+        group_unsupported = len(proposals) != 1
+        group_unsupported = group_unsupported or any(
             proposal.owner_row_id is not None and not proposal.owner_row_id.strip()
             for proposal in proposals
-        ):
+        )
+        group_unsupported = group_unsupported or any(
+            not _proposal_region_is_grounded(prediction, proposal) for proposal in proposals
+        )
+        if group_unsupported:
             unsupported += 1
-            continue
-        if len(proposals) != 1:
-            unsupported += 1
-            owners = {_canonical_owner(prediction, proposal) for proposal in proposals}
-            ownership_collisions += int(len(owners) > 1)
+        if wrong_owner or group_unsupported:
             continue
         try:
             resolved[role] = resolve_proposal(prediction, proposals[0]).canonical_value
         except EvidenceContractError:
             unsupported += 1
-    return resolved, frozenset(present), unsupported, ownership_collisions
+    return resolved, frozenset(present), unsupported, int(ownership_collision)
 
 
 def _normalize_description(value: str) -> str:
@@ -271,6 +370,7 @@ def _normalize_description(value: str) -> str:
 
 
 def _field_metrics(
+    rows: Mapping[_Identity, FrozenRow],
     gold: Mapping[_Identity, GoldRow],
     predictions: Mapping[_Identity, RowPrediction],
 ) -> tuple[dict[FieldRole, FieldMetric], dict[_Identity, bool], int, int]:
@@ -281,9 +381,18 @@ def _field_metrics(
 
     for identity in sorted(gold):
         label = gold[identity]
+        row = rows[identity]
         prediction = predictions[identity]
         expected = {field.role: field for field in label.fields}
-        resolved, present, unsupported, collisions = _resolved_fields(prediction)
+        expected_owner = row.row_id
+        if label.row_type is RowType.CONTINUATION:
+            if row.previous_row_id is None or not row.previous_row_id.strip():
+                raise ScoringInputError("invalid row ownership context")
+            expected_owner = row.previous_row_id
+        resolved, present, unsupported, collisions = _resolved_fields(
+            prediction,
+            expected_owner,
+        )
         unsupported_evidence += unsupported
         ownership_collisions += collisions
 
@@ -548,26 +657,13 @@ def _regions_overlap(
     )
 
 
-def _proposal_matches_reference(
-    prediction: RowPrediction,
-    proposal: FieldProposal,
-    reference: OcrReference,
-) -> bool:
-    if proposal.source_region is not None:
-        return proposal.source_region == reference.source_region
-    ledger = {atom.atom_id: atom for atom in prediction.evidence_atoms}
-    return all(
-        atom_id in ledger and _regions_overlap(ledger[atom_id].bbox, reference.source_region)
-        for atom_id in proposal.atom_ids
-    )
-
-
 def _ocr_rates(
     references: Sequence[OcrReference],
+    rows: Mapping[_Identity, FrozenRow],
     gold: Mapping[_Identity, GoldRow],
     predictions: Mapping[_Identity, RowPrediction],
 ) -> tuple[Decimal | None, Decimal | None]:
-    indexed: dict[_ReferenceKey, OcrReference] = {}
+    indexed: list[OcrReference] = []
     full_identities: set[tuple[str, str, FieldRole, tuple[float, float, float, float]]] = set()
     for raw_reference in references:
         reference = _validate_reference(raw_reference)
@@ -575,6 +671,8 @@ def _ocr_rates(
         label = gold.get(identity)
         if label is None or reference.role not in {field.role for field in label.fields}:
             raise ScoringInputError("unknown OCR reference identity")
+        if not _bbox_contains(rows[identity].bbox, reference.source_region):
+            raise ScoringInputError("invalid OCR reference context")
         full_identity = (
             reference.document_id,
             reference.row_id,
@@ -584,55 +682,58 @@ def _ocr_rates(
         if full_identity in full_identities:
             raise ScoringInputError("duplicate OCR reference identity")
         full_identities.add(full_identity)
-        key = (reference.document_id, reference.row_id, reference.role)
-        if key in indexed:
-            raise ScoringInputError("ambiguous OCR reference identity")
-        indexed[key] = reference
+        indexed.append(reference)
 
     character_edits = 0
     character_units = 0
     word_edits = 0
     word_units = 0
-    eligible = 0
-    for key in sorted(indexed, key=lambda item: (item[0], item[1], item[2].value)):
-        reference = indexed[key]
+    for reference in sorted(
+        indexed,
+        key=lambda item: (
+            item.document_id,
+            item.row_id,
+            item.role.value,
+            item.source_region,
+        ),
+    ):
         prediction = predictions[_identity(reference)]
-        proposals = tuple(
-            proposal for proposal in prediction.proposals if proposal.role is reference.role
+        hypothesis = " ".join(
+            atom.text
+            for atom in prediction.evidence_atoms
+            if _regions_overlap(atom.bbox, reference.source_region)
         )
-        if len(proposals) != 1 or not _proposal_matches_reference(
-            prediction, proposals[0], reference
-        ):
-            continue
-        try:
-            hypothesis = render_proposal(prediction, proposals[0])
-        except EvidenceContractError:
-            continue
-        eligible += 1
         reference_words = tuple(reference.verbatim_text.split())
         hypothesis_words = tuple(hypothesis.split())
         character_edits += _edit_distance(reference.verbatim_text, hypothesis)
         character_units += max(1, len(reference.verbatim_text))
         word_edits += _edit_distance(reference_words, hypothesis_words)
         word_units += max(1, len(reference_words))
-    if not eligible:
+    if not indexed:
         return None, None
     return _ratio(character_edits, character_units), _ratio(word_edits, word_units)
 
 
 def score_predictions(
+    rows: Sequence[FrozenRow],
     gold: Sequence[GoldRow],
     predictions: Sequence[RowPrediction],
     ocr_references: Sequence[OcrReference] = (),
 ) -> MetricReport:
     """Score one complete prediction set without consulting any external truth source."""
 
+    rows_by_id = _index_rows(rows)
     gold_by_id = _index_gold(gold)
     predictions_by_id = _index_predictions(predictions)
-    if set(gold_by_id) != set(predictions_by_id):
-        raise ScoringInputError("prediction identities do not match gold identities")
+    if set(rows_by_id) != set(gold_by_id) or set(gold_by_id) != set(predictions_by_id):
+        raise ScoringInputError("row, gold, and prediction identities do not match")
+    _validate_prediction_region_context(rows_by_id, predictions_by_id)
 
-    fields, exact_outcomes, unsupported, collisions = _field_metrics(gold_by_id, predictions_by_id)
+    fields, exact_outcomes, unsupported, collisions = _field_metrics(
+        rows_by_id,
+        gold_by_id,
+        predictions_by_id,
+    )
     row_types, confusion, row_type_correct, macro_f1 = _row_type_metrics(
         gold_by_id, predictions_by_id
     )
@@ -657,7 +758,12 @@ def score_predictions(
         if prediction.decision is Decision.ACCEPT and prediction.exact_row_confidence is not None
     )
     selective_points = risk_coverage(selective_outcomes, total_rows=row_count)
-    ocr_cer, ocr_wer = _ocr_rates(ocr_references, gold_by_id, predictions_by_id)
+    ocr_cer, ocr_wer = _ocr_rates(
+        ocr_references,
+        rows_by_id,
+        gold_by_id,
+        predictions_by_id,
+    )
 
     decisions = tuple(prediction.decision for prediction in predictions_by_id.values())
     return MetricReport(
