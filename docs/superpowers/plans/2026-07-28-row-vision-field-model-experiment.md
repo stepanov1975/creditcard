@@ -58,7 +58,7 @@ from experiments.row_extraction.runner import RunMeasurements, run_arm
 
 `ExperimentArm` has read-only `experiment_id: str`, `config_id: str`, and
 `predict(row: FrozenRow) -> RowPrediction`. `runner.run_arm(rows, arm, sink) ->
-RunMeasurements`; `metrics.score_predictions(gold, predictions) -> MetricReport`; shared
+RunMeasurements`; `metrics.score_predictions(rows, gold, predictions) -> MetricReport`; shared
 JSONL codecs stream records.
 
 The lane additionally assumes these immutable field shapes, which Task 1 must verify before

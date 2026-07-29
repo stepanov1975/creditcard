@@ -83,6 +83,7 @@ def run_arm(
 
 
 def score_predictions(
+    rows: Sequence[FrozenRow],
     gold: Sequence[GoldRow],
     predictions: Sequence[RowPrediction],
 ) -> MetricReport: ...
@@ -99,7 +100,7 @@ The lane also expects the frozen foundation models/codecs to expose the followin
 - `Decision` provides `ACCEPT`, `ABSTAIN`, `REJECT`, and `IGNORE`; `DatasetSplit` provides `TRAIN`, `VALIDATION`, and `TEST`; `LaneDisposition` provides `FROZEN_ELIGIBLE` and `VALIDATION_STOPPED`.
 - `ArtifactIdentity` is `ArtifactIdentity(artifact_type: str, sha256: str, version: str, byte_size: int)` and has canonical JSON serialization.
 - `MetricReport` exposes `row_count`, `exact_rows`, `exact_row_rate`, `row_type_correct`, `row_type_accuracy`, `row_type_macro_f1`, `row_types`, `row_type_confusion`, `fields: Mapping[FieldRole, FieldMetric]`, `accepted_rows`, `abstained_rows`, `rejected_rows`, `ignored_rows`, `unsupported_evidence`, `ownership_collisions`, `ocr_cer`, `ocr_wer`, `calibration_bins`, `brier_score`, `log_loss`, `expected_calibration_error`, `risk_coverage`, `area_under_risk_coverage`, and `coverage_at_risk`. `FieldMetric` exposes `role`, `eligible_rows`, `exact_matches`, `normalized_matches`, `omissions`, `hallucinations`, `exact_rate`, `normalized_rate`, `omission_rate`, and `hallucination_rate`. `RunMeasurements` exposes `row_count`, `total_ns`, `p50_ns`, `p95_ns`, `cold_start_ns`, `throughput_rows_per_second`, `peak_rss_bytes`, `model_bytes`, `dependency_bytes`, `cache_bytes`, `subprocess_count`, `worker_count`, and `predictions_sha256`.
-- `experiments.row_extraction.codecs` provides `write_jsonl(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity` and `read_jsonl(path: Path, model: type[T]) -> Iterator[T]`; the shared runner provides `JsonlPredictionSink`. `score_predictions(gold, predictions)` resolves every proposal through the complete `RowPrediction.evidence_atoms` ledger, so no OCR text sidecar or mutable registry is allowed.
+- `experiments.row_extraction.codecs` provides `write_jsonl(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity` and `read_jsonl(path: Path, model: type[T]) -> Iterator[T]`; the shared runner provides `JsonlPredictionSink`. `score_predictions(rows, gold, predictions)` resolves every proposal through the complete `RowPrediction.evidence_atoms` ledger and uses the rows only for frozen ownership/region validation, so no OCR text sidecar or mutable registry is allowed.
 - Shared synthetic constructors are `tests.experiments.row_extraction.factories.frozen_row()` and `tests.experiments.row_extraction.factories.gold_row()`.
 
 ## File Structure
@@ -1261,7 +1262,7 @@ Expected: FAIL during collection because `cli.py` does not exist.
 3. reject `DatasetSplit.TEST` unconditionally; the central comparison package imports the verified frozen arm and owns the only locked run;
 4. construct `JsonlPredictionSink` inside a new, nonexistent run directory;
 5. call `run_arm(rows, arm, prediction_sink)` exactly once;
-6. reopen predictions with `read_jsonl(path, RowPrediction)`, require every proposal ID to resolve exactly once in its prediction's `evidence_atoms`, and call `score_predictions(gold, predictions)` exactly once;
+6. reopen predictions with `read_jsonl(path, RowPrediction)`, require every proposal ID to resolve exactly once in its prediction's `evidence_atoms`, and call `score_predictions(rows, gold, predictions)` exactly once;
 7. compare emitted row IDs with expected fixed row IDs in streaming sorted order and fail closed on any missing, extra, duplicate, or reordered ID;
 8. write canonical compact sorted JSON with mode `0o600`, atomic rename, and no source names/values;
 9. print only `f"experiment=1 split={split.value} rows={row_count} status=ok"`.

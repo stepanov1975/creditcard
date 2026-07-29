@@ -750,7 +750,7 @@ git commit -m "feat: freeze grouped row experiment splits"
 Scope answer: YES
 Program component: shared foundation
 Measured effect: all baselines and experiments are compared with identical exactness, omission, hallucination, OCR, calibration, and abstention definitions
-Fixed inputs: reviewed GoldRow records and self-contained RowPrediction evidence ledgers
+Fixed inputs: frozen rows, reviewed GoldRow records, and self-contained RowPrediction evidence ledgers
 Allowed files: metrics module and tests
 Stop condition: stop if a metric uses reconciliation as ground truth or silently excludes abstentions/errors
 ```
@@ -760,14 +760,15 @@ Stop condition: stop if a metric uses reconciliation as ground truth or silently
 - Test: `tests/experiments/row_extraction/test_metrics.py`
 
 **Interfaces:**
-- Consumes: sequences of `GoldRow` and `RowPrediction` joined by document/row IDs, plus optional reviewed `OcrReference` records.
-- Produces: immutable `FieldMetric`, `RowTypeMetric`, `ConfusionCell`, `CalibrationBin`, `RiskCoveragePoint`, `RiskTargetCoverage`, `MetricReport`, `score_predictions(gold: Sequence[GoldRow], predictions: Sequence[RowPrediction], ocr_references: Sequence[OcrReference] = ()) -> MetricReport`, `character_error_rate`, and `word_error_rate`.
+- Consumes: sequences of `FrozenRow`, `GoldRow`, and `RowPrediction` joined by document/row IDs, plus optional reviewed `OcrReference` records. Frozen rows are mandatory ownership and region context, not a feature or alternate truth source.
+- Produces: immutable `FieldMetric`, `RowTypeMetric`, `ConfusionCell`, `CalibrationBin`, `RiskCoveragePoint`, `RiskTargetCoverage`, `MetricReport`, `score_predictions(rows: Sequence[FrozenRow], gold: Sequence[GoldRow], predictions: Sequence[RowPrediction], ocr_references: Sequence[OcrReference] = ()) -> MetricReport`, `character_error_rate`, and `word_error_rate`.
 
 - [ ] **Step 1: Write failing exactness, omission, hallucination, and risk tests**
 
 ```python
 def test_score_predictions_separates_omission_from_hallucination() -> None:
     report = score_predictions(
+        rows=(frozen_row(row_id="row-1"), frozen_row(row_id="row-2")),
         gold=(gold_row_with_description(), gold_row_without_description()),
         predictions=(abstained_prediction(), description_prediction_for_second_row()),
     )
@@ -870,13 +871,23 @@ class MetricReport(_FrozenModel):
     coverage_at_risk: tuple[RiskTargetCoverage, ...]
 ```
 
+Join the frozen rows bijectively with gold and predictions. Canonicalize proposal owner `None`
+to the current row. For a reviewed continuation, the only correct owner is its fixed
+`previous_row_id`; for every other reviewed row type, the only correct owner is the current
+row. Count a wrong singleton owner or conflicting duplicate owners as one row-level ownership
+collision and make the complete-row event false. Never infer adjacency without the frozen row.
+
 Normalize merchant comparison under one versioned NFC/case/space policy while retaining raw
 exact match separately. Use edit distance for CER/WER. Count every eligible gold row in
 coverage. Treat accepted wrong/extra fields as hallucinations and absent expected fields as
 omissions. Build fixed predeclared calibration bins, Brier/log loss, and risk-coverage points
 from exact-row outcomes. Reject duplicate/missing prediction IDs instead of dropping them.
-Compute CER/WER only against supplied verbatim `OcrReference` records; report `None` when none
-are eligible, never against accepted OCR or canonicalized date/amount values.
+Compute CER/WER only against supplied verbatim `OcrReference` records. Every supplied valid
+reviewed region is eligible: derive its hypothesis directly from the prediction evidence atoms
+overlapping that exact region in ledger order, and use an empty hypothesis when recognition
+produced no regional atoms. Do not condition OCR scoring on a successful or unique field
+proposal. Report `None` only when no reviewed references were supplied, never score against
+accepted OCR or canonicalized date/amount values.
 
 - [ ] **Step 4: Run focused metrics and Decimal tests**
 
@@ -984,7 +995,8 @@ and public runtime versions.
 The CLI requires explicit private bundle/label/output paths, refuses paths tracked by Git,
 and never defaults outputs into the source tree. `validate` and `score` accept an optional
 explicit `--ocr-references` JSONL path, validate it through `validate_annotations`, and pass
-it unchanged to `score_predictions`; when omitted, CER/WER remain `None`.
+it unchanged to `score_predictions` together with the exact frozen row stream; when omitted,
+CER/WER remain `None`.
 
 - [ ] **Step 4: Run all foundation tests and mypy**
 
