@@ -25,6 +25,7 @@ from ccparser.evidence.models import Word
 from ccparser.output import _canonical_json_value_content
 from experiments.row_extraction.annotations import validate_annotations
 from experiments.row_extraction.baselines import (
+    PAGE_OWNERSHIP_RESOLVER_VERSION,
     AcceptedBaselineArmFactory,
     ConditionalPageOcrArmFactory,
     ForcedPageOcrArmFactory,
@@ -448,7 +449,7 @@ def _page_config(mode: _PageMode) -> str:
 
 
 def _page_factory_config(mode: _PageMode) -> str:
-    return f"{_PAGE_EVIDENCE_VERSION}:{_page_config(mode)}"
+    return f"{_PAGE_EVIDENCE_VERSION}:{_page_config(mode)}:{PAGE_OWNERSHIP_RESOLVER_VERSION}"
 
 
 def _validate_mode_model_inventory(mode: _Mode, inventory: ResourceInventory) -> None:

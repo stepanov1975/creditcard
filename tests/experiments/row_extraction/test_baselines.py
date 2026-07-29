@@ -459,35 +459,79 @@ def test_band_assignment_ignores_independent_vertical_extent(tmp_path: Path) -> 
     assert prediction.evidence_atoms[0].column_index == 0
 
 
-@pytest.mark.parametrize("collision", ("row", "band"))
-def test_page_assignment_fails_closed_on_geometry_collisions(
+def test_overlapping_rows_assign_a_word_only_to_the_unique_largest_intersection(
     tmp_path: Path,
-    collision: str,
 ) -> None:
-    if collision == "row":
-        rows = (
-            _row(
-                row_id="one",
-                bands=(_band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 200.0, 40.0)),),
-            ),
-            _row(
-                row_id="two",
-                bands=(_band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 200.0, 40.0)),),
-            ),
-        )
-    else:
-        rows = (
-            _row(
-                bands=(
-                    _band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 150.0, 40.0)),
-                    _band(1, FieldRole.ANCILLARY, (50.0, 10.0, 200.0, 40.0)),
-                )
-            ),
-        )
-    page = _page((_word(0, "COLLISION", (80.0, 20.0, 100.0, 30.0)),))
+    larger_overlap = _row(
+        row_id="larger-overlap",
+        bbox=(0.0, 10.0, 120.0, 40.0),
+        bands=(_band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 120.0, 40.0)),),
+    )
+    smaller_overlap = _row(
+        row_id="smaller-overlap",
+        bbox=(80.0, 10.0, 200.0, 40.0),
+        bands=(_band(0, FieldRole.DESCRIPTION, (80.0, 10.0, 200.0, 40.0)),),
+    )
+    page = _page((_word(0, "UNIQUE", (70.0, 20.0, 100.0, 30.0)),))
 
-    with pytest.raises(BaselineContractError, match=f"page word {collision} collision"):
-        _page_arm(tmp_path, rows, (page,))
+    arm = _page_arm(tmp_path, (smaller_overlap, larger_overlap), (page,))
+
+    assert tuple(atom.text for atom in arm.predict(larger_overlap).evidence_atoms) == ("UNIQUE",)
+    assert arm.predict(smaller_overlap).evidence_atoms == ()
+
+
+def test_overlapping_rows_omit_a_word_when_largest_intersection_is_tied(
+    tmp_path: Path,
+) -> None:
+    left = _row(
+        row_id="left",
+        bbox=(0.0, 10.0, 120.0, 40.0),
+        bands=(_band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 120.0, 40.0)),),
+    )
+    right = _row(
+        row_id="right",
+        bbox=(80.0, 10.0, 200.0, 40.0),
+        bands=(_band(0, FieldRole.DESCRIPTION, (80.0, 10.0, 200.0, 40.0)),),
+    )
+    page = _page((_word(0, "AMBIGUOUS", (90.0, 20.0, 110.0, 30.0)),))
+
+    arm = _page_arm(tmp_path, (left, right), (page,))
+
+    assert arm.predict(left).evidence_atoms == ()
+    assert arm.predict(right).evidence_atoms == ()
+
+
+def test_overlapping_bands_assign_a_word_only_to_the_unique_largest_intersection(
+    tmp_path: Path,
+) -> None:
+    row = _row(
+        bands=(
+            _band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 120.0, 40.0)),
+            _band(1, FieldRole.ANCILLARY, (80.0, 10.0, 200.0, 40.0)),
+        )
+    )
+    page = _page((_word(0, "UNIQUE", (70.0, 20.0, 100.0, 30.0)),))
+
+    prediction = _page_arm(tmp_path, (row,), (page,)).predict(row)
+
+    assert tuple(atom.text for atom in prediction.evidence_atoms) == ("UNIQUE",)
+    assert prediction.evidence_atoms[0].column_index == 0
+
+
+def test_overlapping_bands_omit_a_word_when_largest_intersection_is_tied(
+    tmp_path: Path,
+) -> None:
+    row = _row(
+        bands=(
+            _band(0, FieldRole.DESCRIPTION, (0.0, 10.0, 120.0, 40.0)),
+            _band(1, FieldRole.ANCILLARY, (80.0, 10.0, 200.0, 40.0)),
+        )
+    )
+    page = _page((_word(0, "AMBIGUOUS", (90.0, 20.0, 110.0, 30.0)),))
+
+    prediction = _page_arm(tmp_path, (row,), (page,)).predict(row)
+
+    assert prediction.evidence_atoms == ()
 
 
 def test_unassigned_words_are_ignored_and_words_have_unique_row_ownership(tmp_path: Path) -> None:
@@ -654,11 +698,11 @@ def test_conditional_and_forced_ids_and_config_ids_are_exact(tmp_path: Path) -> 
 
     assert (forced.experiment_id, forced.config_id) == (
         "forced-page-ocr",
-        "fixed-page-evidence-v1:synthetic-config-v1",
+        "fixed-page-evidence-v1:synthetic-config-v1:unique-intersection-ownership-v1",
     )
     assert (conditional.experiment_id, conditional.config_id) == (
         "conditional-page-ocr",
-        "fixed-page-evidence-v1:synthetic-config-v1",
+        "fixed-page-evidence-v1:synthetic-config-v1:unique-intersection-ownership-v1",
     )
 
 
@@ -735,7 +779,9 @@ def test_page_factories_match_runner_protocol_and_build_fresh_arms(
     factory = factory_type(rows, (page,), manifest, **_factory_kwargs(rows, tmp_path))
 
     assert factory.experiment_id == mode
-    assert factory.config_id == "fixed-page-evidence-v1:synthetic-config-v1"
+    assert factory.config_id == (
+        "fixed-page-evidence-v1:synthetic-config-v1:unique-intersection-ownership-v1"
+    )
     assert factory.resource_basis == "end-to-end-method"
     assert factory.worker_count == 1
     assert factory.subprocess_count == 0

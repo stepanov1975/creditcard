@@ -712,8 +712,14 @@ def test_prepare_page_evidence_uses_exact_fresh_tesseract_launches(
     preparation = PreparationMeasurements.model_validate_json(preparation_output.read_bytes())
     assert preparation.subprocess_count == 4
     expected_configs = {
-        "conditional-page-ocr": ("fixed-page-evidence-v1:production-conditional-page-evidence-v1"),
-        "forced-page-ocr": ("fixed-page-evidence-v1:production-forced-whole-page-tesseract-v1"),
+        "conditional-page-ocr": (
+            "fixed-page-evidence-v1:production-conditional-page-evidence-v1:"
+            "unique-intersection-ownership-v1"
+        ),
+        "forced-page-ocr": (
+            "fixed-page-evidence-v1:production-forced-whole-page-tesseract-v1:"
+            "unique-intersection-ownership-v1"
+        ),
     }
     assert preparation.config_id == expected_configs[mode]
     assert preparation.arm_manifest_identity == ArtifactIdentity.model_validate_json(
@@ -1277,7 +1283,10 @@ def test_prepare_run_spec_filters_rows_and_fixes_the_mode_resource_basis(
     assert result.stdout == ""
     spec = ResourceSpec.model_validate_json(output.read_bytes())
     assert spec.experiment_id == "forced-page-ocr"
-    assert spec.config_id == ("fixed-page-evidence-v1:production-forced-whole-page-tesseract-v1")
+    assert spec.config_id == (
+        "fixed-page-evidence-v1:production-forced-whole-page-tesseract-v1:"
+        "unique-intersection-ownership-v1"
+    )
     assert spec.resource_basis == "end-to-end-method"
     assert spec.expected_row_count == 1
     assert spec.split is DatasetSplit.VALIDATION

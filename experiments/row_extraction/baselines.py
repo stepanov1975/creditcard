@@ -33,6 +33,7 @@ _ACCEPTED_CONFIG_ID = "accepted-anchor"
 _CONDITIONAL_EXPERIMENT_ID: Literal["conditional-page-ocr"] = "conditional-page-ocr"
 _FORCED_EXPERIMENT_ID: Literal["forced-page-ocr"] = "forced-page-ocr"
 _PAGE_EVIDENCE_VERSION = "fixed-page-evidence-v1"
+PAGE_OWNERSHIP_RESOLVER_VERSION = "unique-intersection-ownership-v1"
 _JSONL_ARTIFACT_TYPE = "jsonl"
 _JSONL_VERSION = "canonical-jsonl-v1"
 _ROW_SEQUENCE_ARTIFACT_TYPE = "frozen-row-sequence"
@@ -107,6 +108,16 @@ def _center_inside(bbox: BBox, point: tuple[float, float]) -> bool:
 
 def _horizontal_center_inside(bbox: BBox, x_center: float) -> bool:
     return bbox[0] <= x_center < bbox[2]
+
+
+def _intersection_width(first: BBox, second: BBox) -> float:
+    return max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+
+
+def _intersection_area(first: BBox, second: BBox) -> float:
+    width = _intersection_width(first, second)
+    height = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+    return width * height
 
 
 def _clip(bbox: BBox, outer: BBox) -> BBox:
@@ -260,7 +271,7 @@ class AcceptedBaselineArm:
 
 
 def _page_config_id(config_id: str) -> str:
-    return f"{_PAGE_EVIDENCE_VERSION}:{config_id}"
+    return f"{_PAGE_EVIDENCE_VERSION}:{config_id}:{PAGE_OWNERSHIP_RESOLVER_VERSION}"
 
 
 def _atom_id(
@@ -386,8 +397,17 @@ class _PageBaselineArm:
                     row for row in page_rows if _center_inside(row.bbox, _center(word.bbox))
                 )
                 if len(candidates) > 1:
-                    _fail("page word row collision")
+                    largest_area = max(
+                        _intersection_area(row.bbox, word.bbox) for row in candidates
+                    )
+                    candidates = tuple(
+                        row
+                        for row in candidates
+                        if _intersection_area(row.bbox, word.bbox) == largest_area
+                    )
                 if not candidates:
+                    continue
+                if len(candidates) > 1:
                     continue
                 row = candidates[0]
                 clipped_bbox = _clip(word.bbox, row.bbox)
@@ -398,8 +418,17 @@ class _PageBaselineArm:
                     if _horizontal_center_inside(band.bbox, clipped_center[0])
                 )
                 if len(band_candidates) > 1:
-                    _fail("page word band collision")
+                    largest_width = max(
+                        _intersection_width(band.bbox, clipped_bbox) for band in band_candidates
+                    )
+                    band_candidates = tuple(
+                        band
+                        for band in band_candidates
+                        if _intersection_width(band.bbox, clipped_bbox) == largest_width
+                    )
                 if not band_candidates:
+                    continue
+                if len(band_candidates) > 1:
                     continue
                 band = band_candidates[0]
                 atom_id = _atom_id(record, row, word, clipped_bbox)
@@ -738,6 +767,7 @@ class ForcedPageOcrArmFactory(_PageBaselineArmFactory):
 
 
 __all__ = [
+    "PAGE_OWNERSHIP_RESOLVER_VERSION",
     "AcceptedBaselineArm",
     "AcceptedBaselineArmFactory",
     "BaselineContractError",

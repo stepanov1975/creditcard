@@ -994,7 +994,8 @@ row/split/arm/runtime/model/dependency/cache identities, reordered predictions, 
 fresh factory construction, exact subprocess counts, one-shot sink publication
 and abort cleanup, nearest-rank quantiles, and a nonadvancing clock. Baseline tests cover an
 accepted-prediction bijection; missing/duplicate/extra/wrong-mode page records; noncontiguous
-word ordinals; wrong page identity; half-open boundary assignment; overlap collisions;
+word ordinals; wrong page identity; half-open boundary assignment; strict unique overlap
+assignment and tied-overlap omission;
 both-axis clipping; unique atom ownership; every row-type resolver outcome; and value-free
 errors. Report and CLI tests cover every ID mismatch, absence of hashes/paths/values, required
 output nonexistence/ignored-root checks, optional OCR references, and traceback-cause
@@ -1235,11 +1236,15 @@ for every uncached page request; it verifies the corresponding new cache artifac
 or cache mismatch fails instead of estimating a count.
 
 All page arms receive the complete frozen-row sequence, the complete typed page stream, and
-its expected artifact identity. A word is eligible for exactly one row only when its center is
-inside exactly one same-document/page row under half-open right/bottom bounds; zero candidates
-are ignored and multiple candidates fail closed. Clip an eligible word bbox to the fixed row,
-then assign it by the same center rule: zero candidate bands are ignored, exactly one is
-assigned, and multiple candidate bands fail closed. Atom IDs hash the page-evidence
+its expected artifact identity. Candidate rows contain the word center under half-open
+right/bottom bounds. Zero candidates are ignored; one is assigned; for multiple candidates,
+only a strict unique maximum 2-D word/row intersection is assigned and tied maxima are ignored.
+Clip an eligible word bbox to the fixed row, then find candidate column bands by the same
+half-open x-center rule. Zero candidates are ignored; one is assigned; for multiple candidates,
+only a strict unique maximum horizontal word/band intersection is assigned and tied maxima are
+ignored. This local omission policy preserves unique ownership without aborting the complete
+control or using row order, identifiers, or extracted values as tie-breakers. Atom IDs hash the
+page-evidence
 version/config, row ID, word ordinal, text, clipped
 bbox, source, and confidence. No word can appear in two predictions. Neither page arm detects,
 moves, merges, or splits a row or column.
