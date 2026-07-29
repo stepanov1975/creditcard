@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 from pydantic import BaseModel
 
 from ccparser.output import _canonical_json_value_content
-from experiments.row_extraction.codecs import write_jsonl
+from experiments.row_extraction.codecs import read_jsonl, write_jsonl
+from experiments.row_extraction.comparison.errors import (
+    ErrorCategory,
+    ErrorCategoryCount,
+    ValidationErrorSummary,
+)
 from experiments.row_extraction.comparison.handoffs import (
     ArtifactFile,
     BaselineHandoff,
@@ -81,6 +87,7 @@ class _SyntheticFactory:
         arm_manifest_identity: ArtifactIdentity,
         model_inventory_identity: ArtifactIdentity,
         dependency_inventory_identity: ArtifactIdentity,
+        cache_root: Path,
     ) -> None:
         self._rows = rows
         self._row_sequence_identity = row_sequence_identity
@@ -90,6 +97,7 @@ class _SyntheticFactory:
         self._arm_manifest_identity = arm_manifest_identity
         self._model_inventory_identity = model_inventory_identity
         self._dependency_inventory_identity = dependency_inventory_identity
+        self._cache_root = cache_root
 
     @property
     def experiment_id(self) -> str:
@@ -129,7 +137,7 @@ class _SyntheticFactory:
 
     @property
     def cache_root(self) -> Path:
-        return Path("synthetic-cache")
+        return self._cache_root
 
     @property
     def resource_basis(
@@ -182,12 +190,27 @@ def _identity(path: Path, artifact_type: str, version: str) -> ArtifactIdentity:
     )
 
 
-def _write_model(path: Path, value: object, artifact_type: str) -> ArtifactFile:
+def _write_model(
+    path: Path,
+    value: object,
+    artifact_type: str,
+    version: str = "synthetic-v1",
+) -> ArtifactFile:
     payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     path.write_bytes(_canonical_json_value_content(payload) + b"\n")
     return ArtifactFile(
         path=path,
-        identity=_identity(path, artifact_type, "synthetic-v1"),
+        identity=_identity(path, artifact_type, version),
+    )
+
+
+def _error_summary(row_count: int) -> ValidationErrorSummary:
+    empty = tuple(ErrorCategoryCount(category=category, count=0) for category in ErrorCategory)
+    return ValidationErrorSummary(
+        version="row-comparison-error-summary-v1",
+        row_count=row_count,
+        primary_counts=empty,
+        secondary_counts=empty,
     )
 
 
@@ -295,6 +318,7 @@ def _manifest(
     lane_ids: tuple[str, ...] = _LANE_IDS,
     prediction_mutator: Callable[[str, list[RowPrediction]], None] | None = None,
     stopped: frozenset[str] = frozenset(),
+    runtime_overrides: Mapping[str, ArtifactIdentity] | None = None,
 ) -> ComparisonManifest:
     rows = (
         frozen_row(
@@ -324,7 +348,7 @@ def _manifest(
     runtime = ArtifactIdentity(
         artifact_type="row-runtime-manifest",
         sha256="9" * 64,
-        version="row-runtime-v1",
+        version="row-runtime-manifest-v1",
         byte_size=1,
     )
     bundle = ArtifactIdentity(
@@ -334,9 +358,9 @@ def _manifest(
         byte_size=1,
     )
     split = ArtifactIdentity(
-        artifact_type="split",
+        artifact_type="row-split-manifest",
         sha256="7" * 64,
-        version="synthetic-v1",
+        version="row-extraction-split-v1",
         byte_size=1,
     )
     labels = ArtifactIdentity(
@@ -348,6 +372,7 @@ def _manifest(
 
     def handoff(arm_id: str, is_lane: bool) -> BaselineHandoff | LaneHandoff:
         config_id = f"{arm_id}-config"
+        arm_runtime = (runtime_overrides or {}).get(arm_id, runtime)
         model = _inventory(tmp_path, f"{arm_id}-model", "model")
         dependency = _inventory(tmp_path, f"{arm_id}-dependency", "dependency")
         arm_manifest = _write_model(
@@ -365,14 +390,15 @@ def _manifest(
         metric = _write_model(
             tmp_path / f"{arm_id}-metrics.json",
             metric_report,
-            "metric-report",
+            "row-comparison-validation-metrics",
+            "row-comparison-validation-metrics-v1",
         )
         measurement_value = _measurement(
             arm_id,
             config_id,
             validation_rows_identity,
             prediction_identity,
-            runtime,
+            arm_runtime,
             arm_manifest.identity,
             model.identity,
             dependency.identity,
@@ -380,27 +406,37 @@ def _manifest(
         measurement = _write_model(
             tmp_path / f"{arm_id}-run.json",
             measurement_value,
-            "run-measurements",
+            "row-comparison-validation-measurements",
+            "row-comparison-validation-measurements-v1",
+        )
+        error_summary = _write_model(
+            tmp_path / f"{arm_id}-errors.json",
+            _error_summary(len(rows)),
+            "row-comparison-error-summary",
+            "row-comparison-error-summary-v1",
         )
 
         def load(
             loaded_rows: tuple[FrozenRow, ...],
             row_identity: ArtifactIdentity,
+            cache_root: Path,
         ) -> MeasuredArmFactory:
             return _SyntheticFactory(
                 loaded_rows,
                 row_identity,
                 experiment_id=arm_id,
                 config_id=config_id,
-                runtime_identity=runtime,
+                runtime_identity=arm_runtime,
                 arm_manifest_identity=arm_manifest.identity,
                 model_inventory_identity=model.identity,
                 dependency_inventory_identity=dependency.identity,
+                cache_root=cache_root,
             )
 
         frozen_arm = FrozenArmInput(
             arm_manifest=arm_manifest,
             factory_loader=load,
+            validation_replay_cache_root=tmp_path / f"{arm_id}-replay-cache",
         )
         common = {
             "experiment_id": arm_id,
@@ -409,12 +445,13 @@ def _manifest(
             "bundle_identity": bundle,
             "split_identity": split,
             "label_identity": labels,
-            "runtime_identity": runtime,
+            "runtime_identity": arm_runtime,
             "model_inventory": model,
             "dependency_inventory": dependency,
             "validation_predictions": prediction_file,
             "validation_metrics": metric,
-            "validation_measurements": measurement,
+            "validation_measurements": (measurement,),
+            "validation_error_summary": error_summary,
         }
         if not is_lane:
             return BaselineHandoff(**common, frozen_arm=frozen_arm)
@@ -439,8 +476,16 @@ def _manifest(
             frozen_arm=(None if disposition is LaneDisposition.VALIDATION_STOPPED else frozen_arm),
         )
 
-    baselines = {arm_id: handoff(arm_id, False) for arm_id in _BASELINE_IDS}
-    lanes = {arm_id: handoff(arm_id, True) for arm_id in lane_ids}
+    baselines: dict[str, BaselineHandoff] = {}
+    for arm_id in _BASELINE_IDS:
+        value = handoff(arm_id, False)
+        assert isinstance(value, BaselineHandoff)
+        baselines[arm_id] = value
+    lanes: dict[str, LaneHandoff] = {}
+    for arm_id in lane_ids:
+        value = handoff(arm_id, True)
+        assert isinstance(value, LaneHandoff)
+        lanes[arm_id] = value
     return ComparisonManifest(
         foundation_sha=_FOUNDATION_SHA,
         bundle_identity=bundle,
@@ -449,8 +494,8 @@ def _manifest(
         runtime_identity=runtime,
         validation_rows=validation_rows,
         locked_row_ids=ArtifactFile(locked_ids_path, locked_ids_identity),
-        baselines=baselines,  # type: ignore[arg-type]
-        lanes=lanes,  # type: ignore[arg-type]
+        baselines=baselines,
+        lanes=lanes,
     )
 
 
@@ -544,8 +589,9 @@ def test_handoff_rejects_factory_identity_mismatch(tmp_path: Path) -> None:
     def mismatched_loader(
         rows: tuple[FrozenRow, ...],
         row_identity: ArtifactIdentity,
+        cache_root: Path,
     ) -> MeasuredArmFactory:
-        loaded = original.frozen_arm.factory_loader(rows, row_identity)
+        loaded = original.frozen_arm.factory_loader(rows, row_identity, cache_root)
         assert isinstance(loaded, _SyntheticFactory)
         return _SyntheticFactory(
             rows,
@@ -556,6 +602,7 @@ def test_handoff_rejects_factory_identity_mismatch(tmp_path: Path) -> None:
             arm_manifest_identity=loaded.arm_manifest_identity,
             model_inventory_identity=loaded.model_inventory_identity,
             dependency_inventory_identity=loaded.dependency_inventory_identity,
+            cache_root=cache_root,
         )
 
     changed_lane = LaneHandoff(
@@ -564,6 +611,7 @@ def test_handoff_rejects_factory_identity_mismatch(tmp_path: Path) -> None:
             "frozen_arm": FrozenArmInput(
                 arm_manifest=original.frozen_arm.arm_manifest,
                 factory_loader=mismatched_loader,
+                validation_replay_cache_root=(original.frozen_arm.validation_replay_cache_root),
             ),
         }
     )
@@ -590,8 +638,9 @@ def test_handoff_replays_frozen_factory_predictions(tmp_path: Path) -> None:
     def changed_loader(
         rows: tuple[FrozenRow, ...],
         row_identity: ArtifactIdentity,
+        cache_root: Path,
     ) -> MeasuredArmFactory:
-        loaded = original.frozen_arm.factory_loader(rows, row_identity)
+        loaded = original.frozen_arm.factory_loader(rows, row_identity, cache_root)
         assert isinstance(loaded, _SyntheticFactory)
         return _ChangedFactory(
             rows,
@@ -602,6 +651,7 @@ def test_handoff_replays_frozen_factory_predictions(tmp_path: Path) -> None:
             arm_manifest_identity=loaded.arm_manifest_identity,
             model_inventory_identity=loaded.model_inventory_identity,
             dependency_inventory_identity=loaded.dependency_inventory_identity,
+            cache_root=cache_root,
         )
 
     changed_lane = LaneHandoff(
@@ -610,6 +660,7 @@ def test_handoff_replays_frozen_factory_predictions(tmp_path: Path) -> None:
             "frozen_arm": FrozenArmInput(
                 arm_manifest=original.frozen_arm.arm_manifest,
                 factory_loader=changed_loader,
+                validation_replay_cache_root=(original.frozen_arm.validation_replay_cache_root),
             ),
         }
     )
@@ -702,3 +753,248 @@ def test_handoff_rejects_lane_record_in_baseline_mapping(tmp_path: Path) -> None
 
     with pytest.raises(HandoffError, match="invalid baseline handoff type"):
         validate_handoffs(changed)
+
+
+def test_handoff_rejects_matching_but_invalid_shared_identity(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    invalid = cast(ArtifactIdentity, None)
+    baselines = {
+        key: replace(value, bundle_identity=invalid) for key, value in manifest.baselines.items()
+    }
+    lanes = {key: replace(value, bundle_identity=invalid) for key, value in manifest.lanes.items()}
+    changed = replace(
+        manifest,
+        bundle_identity=invalid,
+        baselines=baselines,
+        lanes=lanes,
+    )
+
+    with pytest.raises(HandoffError, match="invalid bundle identity"):
+        validate_handoffs(changed)
+
+
+def test_handoff_rejects_invalid_runtime_identity_version(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    invalid_runtime = manifest.runtime_identity.model_copy(update={"version": "unknown-runtime-v1"})
+    baselines = {
+        key: replace(value, runtime_identity=invalid_runtime)
+        for key, value in manifest.baselines.items()
+    }
+    lanes = {
+        key: replace(value, runtime_identity=invalid_runtime)
+        for key, value in manifest.lanes.items()
+    }
+    changed = replace(
+        manifest,
+        runtime_identity=invalid_runtime,
+        baselines=baselines,
+        lanes=lanes,
+    )
+
+    with pytest.raises(HandoffError, match="invalid runtime identity"):
+        validate_handoffs(changed)
+
+
+def test_handoff_rejects_wrong_validation_row_identity_type(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    invalid_rows = replace(
+        manifest.validation_rows,
+        identity=manifest.validation_rows.identity.model_copy(
+            update={"artifact_type": "opaque-binary"}
+        ),
+    )
+    changed = replace(manifest, validation_rows=invalid_rows)
+
+    with pytest.raises(HandoffError, match="invalid validation row identity"):
+        validate_handoffs(changed)
+
+
+@pytest.mark.parametrize("disposition", ["validation_stopped", object()])
+def test_handoff_rejects_untyped_or_unknown_disposition(
+    tmp_path: Path,
+    disposition: object,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    original = manifest.lanes["row-ocr"]
+    changed_lane = replace(
+        original,
+        disposition=cast(LaneDisposition, disposition),
+    )
+    changed = replace(
+        manifest,
+        lanes={**manifest.lanes, "row-ocr": changed_lane},
+    )
+
+    with pytest.raises(HandoffError, match="invalid lane disposition"):
+        validate_handoffs(changed)
+
+
+def test_stopped_handoff_requires_complete_coherent_validation_metrics(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    original = manifest.lanes["row-ocr"]
+    report = MetricReport.model_validate_json(original.validation_metrics.path.read_bytes())
+    incomplete = report.model_copy(
+        update={
+            "exact_rows": 999,
+            "row_types": (),
+            "row_type_confusion": (),
+            "fields": {},
+        }
+    )
+    metric_file = _write_model(
+        tmp_path / "row-ocr-invalid-metrics.json",
+        incomplete,
+        "row-comparison-validation-metrics",
+        "row-comparison-validation-metrics-v1",
+    )
+    changed_lane = replace(original, validation_metrics=metric_file)
+    changed = replace(
+        manifest,
+        lanes={**manifest.lanes, "row-ocr": changed_lane},
+    )
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(changed)
+
+
+def test_stopped_handoff_preserves_complete_typed_validation_evidence(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+
+    validated = validate_handoffs(manifest)
+    evidence = validated.validation_evidence["row-ocr"]
+    binding = validated.arm_bindings["row-ocr"]
+
+    assert evidence.stop_reason == "ocr_stage_validation_failed"
+    assert evidence.metrics.row_count == 2
+    assert evidence.measurements[0].row_count == 2
+    assert evidence.error_summary is not None
+    assert evidence.error_summary.row_count == 2
+    assert binding.experiment_id == "row-ocr"
+    assert binding.config_id == "row-ocr-config"
+    assert binding.arm_manifest is None
+
+
+def test_frozen_loader_binds_each_explicit_cache_root(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    validated = validate_handoffs(manifest)
+    run_inputs = validated.run_inputs["row-text"]
+    rows = tuple(read_jsonl(manifest.validation_rows.path, FrozenRow))
+    first_cache = tmp_path / "locked-first-cache"
+    second_cache = tmp_path / "locked-repeat-cache"
+
+    first = run_inputs.factory_loader(
+        rows,
+        manifest.validation_rows.identity,
+        first_cache,
+    )
+    second = run_inputs.factory_loader(
+        rows,
+        manifest.validation_rows.identity,
+        second_cache,
+    )
+
+    assert first.cache_root == first_cache
+    assert second.cache_root == second_cache
+    assert first.cache_root != second.cache_root
+
+
+def test_handoffs_preserve_distinct_valid_per_arm_runtime_identities(
+    tmp_path: Path,
+) -> None:
+    vision_runtime = ArtifactIdentity(
+        artifact_type="row-runtime-manifest",
+        sha256="4" * 64,
+        version="row-runtime-manifest-v1",
+        byte_size=1,
+    )
+    manifest = _manifest(
+        tmp_path,
+        runtime_overrides={"row-vision": vision_runtime},
+    )
+
+    validated = validate_handoffs(manifest)
+
+    assert validated.arm_bindings["row-vision"].runtime_identity == vision_runtime
+    assert validated.arm_bindings["accepted-baseline"].runtime_identity == manifest.runtime_identity
+
+
+def test_handoff_preserves_one_or_two_typed_validation_measurements(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-profiles"}))
+    original = manifest.lanes["row-profiles"]
+    (first_file,) = original.validation_measurements
+    first = RunMeasurements.model_validate_json(first_file.path.read_bytes())
+    repeat_file = _write_model(
+        tmp_path / "row-profiles-run-repeat.json",
+        first,
+        "row-comparison-validation-measurements",
+        "row-comparison-validation-measurements-v1",
+    )
+    changed_lane = replace(
+        original,
+        validation_measurements=(first_file, repeat_file),
+    )
+    changed = replace(
+        manifest,
+        lanes={**manifest.lanes, "row-profiles": changed_lane},
+    )
+
+    validated = validate_handoffs(changed)
+    evidence = validated.validation_evidence["row-profiles"]
+
+    assert len(evidence.measurements) == 2
+    assert evidence.measurements[0] == first
+    assert evidence.measurements[1] == first
+    assert evidence.measurement_paths == (first_file.path, repeat_file.path)
+    assert evidence.measurement_identities == (
+        first_file.identity,
+        repeat_file.identity,
+    )
+
+
+def test_validation_replay_rejects_loader_that_ignores_cache_root(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    original = manifest.lanes["row-text"]
+    assert original.frozen_arm is not None
+
+    def ignoring_loader(
+        rows: tuple[FrozenRow, ...],
+        row_identity: ArtifactIdentity,
+        _cache_root: Path,
+    ) -> MeasuredArmFactory:
+        return original.frozen_arm.factory_loader(
+            rows,
+            row_identity,
+            tmp_path / "ignored-cache-root",
+        )
+
+    changed_lane = replace(
+        original,
+        frozen_arm=FrozenArmInput(
+            arm_manifest=original.frozen_arm.arm_manifest,
+            factory_loader=ignoring_loader,
+            validation_replay_cache_root=(original.frozen_arm.validation_replay_cache_root),
+        ),
+    )
+    changed = replace(
+        manifest,
+        lanes={**manifest.lanes, "row-text": changed_lane},
+    )
+
+    with pytest.raises(HandoffError, match="frozen factory identity mismatch"):
+        validate_handoffs(changed)
+
+
+def test_validation_replay_requires_new_explicit_cache_root(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    lane = manifest.lanes["row-text"]
+    assert lane.frozen_arm is not None
+    lane.frozen_arm.validation_replay_cache_root.mkdir()
+
+    with pytest.raises(HandoffError, match="validation replay cache must be new"):
+        validate_handoffs(manifest)

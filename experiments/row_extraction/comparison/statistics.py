@@ -5,13 +5,13 @@ from __future__ import annotations
 import hashlib
 import random
 from collections.abc import Mapping, Sequence
-from decimal import Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 
 from pydantic import Field
 
 from experiments.row_extraction.contracts import _FrozenModel
 
-_DECIMAL_PRECISION = 28
+_DECIMAL_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
 _LOW_PERCENTILE_NUMERATOR = 25
 _HIGH_PERCENTILE_NUMERATOR = 975
 _PERCENTILE_DENOMINATOR = 1000
@@ -29,8 +29,7 @@ class PairedInterval(_FrozenModel):
 
 
 def _mean(values: Sequence[Decimal]) -> Decimal:
-    with localcontext() as context:
-        context.prec = _DECIMAL_PRECISION
+    with localcontext(_DECIMAL_CONTEXT):
         return sum(values, start=Decimal(0)) / Decimal(len(values))
 
 
@@ -65,10 +64,14 @@ def paired_document_bootstrap(
     seed: str,
     samples: int,
 ) -> PairedInterval:
-    """Bootstrap paired document-macro effects with replacement and exact decimals."""
+    """Bootstrap ``first - second`` document-macro effects with exact decimals.
+
+    A positive effect and positive interval endpoints favor ``first``.
+    """
 
     document_ids = _validate(first, second, seed, samples)
-    differences = tuple(first[key] - second[key] for key in document_ids)
+    with localcontext(_DECIMAL_CONTEXT):
+        differences = tuple(first[key] - second[key] for key in document_ids)
     effect = _mean(differences)
     generator = random.Random(hashlib.sha256(seed.encode("utf-8")).digest())
     distribution = [

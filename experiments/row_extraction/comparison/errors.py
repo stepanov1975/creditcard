@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal, Self
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from experiments.row_extraction.contracts import (
     Decision,
@@ -40,77 +41,107 @@ class ErrorAssignment(_FrozenModel):
     reason_codes: tuple[str, ...]
 
 
+class ErrorCategoryCount(_FrozenModel):
+    category: ErrorCategory
+    count: int = Field(ge=0)
+
+
+class ValidationErrorSummary(_FrozenModel):
+    """Closed aggregate error evidence for one validation prediction stream."""
+
+    version: Literal["row-comparison-error-summary-v1"]
+    row_count: int = Field(gt=0)
+    primary_counts: tuple[ErrorCategoryCount, ...]
+    secondary_counts: tuple[ErrorCategoryCount, ...]
+
+    @model_validator(mode="after")
+    def complete_closed_counts(self) -> Self:
+        expected = tuple(ErrorCategory)
+        if (
+            tuple(value.category for value in self.primary_counts) != expected
+            or tuple(value.category for value in self.secondary_counts) != expected
+            or sum(value.count for value in self.primary_counts) > self.row_count
+            or any(value.count > self.row_count for value in self.secondary_counts)
+        ):
+            raise ValueError("error summary must contain the closed taxonomy")
+        return self
+
+
 class ErrorClassificationError(ValueError):
     """Gold and prediction records cannot be compared without exposing values."""
 
 
-_DATE_ROLES = {
-    FieldRole.TRANSACTION_DATE,
-    FieldRole.POSTING_DATE,
-    FieldRole.CONVERSION_DATE,
+_ROLE_RULES = {
+    FieldRole.DESCRIPTION: ErrorCategory.MERCHANT_SPAN,
+    FieldRole.TRANSACTION_DATE: ErrorCategory.DATE,
+    FieldRole.POSTING_DATE: ErrorCategory.DATE,
+    FieldRole.CONVERSION_DATE: ErrorCategory.DATE,
+    FieldRole.BILLED_AMOUNT: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+    FieldRole.BILLING_CURRENCY: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+    FieldRole.ORIGINAL_AMOUNT: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+    FieldRole.ORIGINAL_CURRENCY: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+    FieldRole.KIND: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+    FieldRole.INSTALLMENT: ErrorCategory.OPTIONAL_FIELD,
+    FieldRole.FX_RATE: ErrorCategory.OPTIONAL_FIELD,
+    FieldRole.ANCILLARY: ErrorCategory.OPTIONAL_FIELD,
 }
-_FINANCIAL_ROLES = {
-    FieldRole.BILLED_AMOUNT,
-    FieldRole.BILLING_CURRENCY,
-    FieldRole.ORIGINAL_AMOUNT,
-    FieldRole.ORIGINAL_CURRENCY,
-    FieldRole.KIND,
-}
-_OPTIONAL_ROLES = {
-    FieldRole.INSTALLMENT,
-    FieldRole.FX_RATE,
-    FieldRole.ANCILLARY,
-}
-_SEMANTIC_ROLE_PRIORITY = (
-    FieldRole.DESCRIPTION,
-    FieldRole.TRANSACTION_DATE,
-    FieldRole.POSTING_DATE,
-    FieldRole.CONVERSION_DATE,
-    FieldRole.BILLED_AMOUNT,
-    FieldRole.BILLING_CURRENCY,
-    FieldRole.ORIGINAL_AMOUNT,
-    FieldRole.ORIGINAL_CURRENCY,
-    FieldRole.KIND,
-    FieldRole.INSTALLMENT,
-    FieldRole.FX_RATE,
-    FieldRole.ANCILLARY,
-)
-_DIAGNOSTIC_RULES: tuple[tuple[tuple[str, ...], ErrorCategory, str], ...] = (
-    (
-        ("ocr_substitution", "ocr_insertion", "ocr_deletion", "ocr_segmentation"),
+if set(_ROLE_RULES) != set(FieldRole):
+    raise RuntimeError("field error taxonomy is incomplete")
+_SEMANTIC_ROLE_PRIORITY = tuple(_ROLE_RULES)
+
+_DIAGNOSTIC_CODE_RULES = {
+    "ocr_substitution_error": (
         ErrorCategory.OCR_EDIT_OR_SEGMENTATION,
         "ocr_edit_or_segmentation",
     ),
-    (
-        (
-            "crop_truncation",
-            "neighboring_row",
-            "mixed_direction",
-            "unicode_order",
-            "word_box",
-            "column_assignment",
-        ),
+    "ocr_insertion_error": (
+        ErrorCategory.OCR_EDIT_OR_SEGMENTATION,
+        "ocr_edit_or_segmentation",
+    ),
+    "ocr_deletion_error": (
+        ErrorCategory.OCR_EDIT_OR_SEGMENTATION,
+        "ocr_edit_or_segmentation",
+    ),
+    "ocr_segmentation_error": (
+        ErrorCategory.OCR_EDIT_OR_SEGMENTATION,
+        "ocr_edit_or_segmentation",
+    ),
+    "crop_truncation": (ErrorCategory.CROP_BOX_OR_COLUMN, "crop_box_or_column"),
+    "neighboring_row_contamination": (
         ErrorCategory.CROP_BOX_OR_COLUMN,
         "crop_box_or_column",
     ),
-    (
-        ("continuation_ownership", "owner_collision", "wrong_owner"),
+    "mixed_direction_error": (
+        ErrorCategory.CROP_BOX_OR_COLUMN,
+        "crop_box_or_column",
+    ),
+    "unicode_order_error": (
+        ErrorCategory.CROP_BOX_OR_COLUMN,
+        "crop_box_or_column",
+    ),
+    "word_box_drift": (ErrorCategory.CROP_BOX_OR_COLUMN, "crop_box_or_column"),
+    "column_assignment_drift": (
+        ErrorCategory.CROP_BOX_OR_COLUMN,
+        "crop_box_or_column",
+    ),
+    "continuation_ownership_error": (
         ErrorCategory.CONTINUATION_OWNERSHIP,
         "continuation_ownership",
     ),
+    "owner_collision": (
+        ErrorCategory.CONTINUATION_OWNERSHIP,
+        "continuation_ownership",
+    ),
+    "wrong_owner": (
+        ErrorCategory.CONTINUATION_OWNERSHIP,
+        "continuation_ownership",
+    ),
+}
+_DIAGNOSTIC_PRIORITY = (
+    ErrorCategory.OCR_EDIT_OR_SEGMENTATION,
+    ErrorCategory.CROP_BOX_OR_COLUMN,
+    ErrorCategory.CONTINUATION_OWNERSHIP,
 )
-
-
-def _role_category(role: FieldRole) -> ErrorCategory:
-    if role is FieldRole.DESCRIPTION:
-        return ErrorCategory.MERCHANT_SPAN
-    if role in _DATE_ROLES:
-        return ErrorCategory.DATE
-    if role in _FINANCIAL_ROLES:
-        return ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY
-    if role in _OPTIONAL_ROLES:
-        return ErrorCategory.OPTIONAL_FIELD
-    return ErrorCategory.OPTIONAL_FIELD
 
 
 def _role_reason(role: FieldRole, suffix: str) -> str:
@@ -156,11 +187,12 @@ def classify_error(gold: GoldRow, prediction: RowPrediction) -> ErrorAssignment:
         if all(existing != category for existing, _ in assignments):
             assignments.append((category, reason_code))
 
-    ambiguous_abstention = gold.ambiguous and prediction.decision is not Decision.ACCEPT
+    accepted = prediction.decision is Decision.ACCEPT
+    correct_abstention = gold.ambiguous and prediction.decision is Decision.ABSTAIN
     if gold.ambiguous:
         add(ErrorCategory.ANNOTATION_AMBIGUITY, "annotation_ambiguous")
 
-    grouped = _proposals_by_role(prediction)
+    grouped = _proposals_by_role(prediction) if accepted else {}
     resolved: dict[FieldRole, tuple[str, tuple[str, ...]]] = {}
     wrong_owner = False
     for role in _SEMANTIC_ROLE_PRIORITY:
@@ -192,38 +224,44 @@ def classify_error(gold: GoldRow, prediction: RowPrediction) -> ErrorAssignment:
     if prediction.predicted_type is not gold.row_type:
         add(ErrorCategory.ROW_TYPE, "row_type_mismatch")
 
-    for fragments, category, reason_code in _DIAGNOSTIC_RULES:
-        if any(fragment in reason for reason in prediction.reasons for fragment in fragments):
-            add(category, reason_code)
+    diagnostic_categories = {
+        value[0]
+        for reason in prediction.reasons
+        if (value := _DIAGNOSTIC_CODE_RULES.get(reason)) is not None
+    }
+    for category in _DIAGNOSTIC_PRIORITY:
+        if category in diagnostic_categories:
+            add(category, category.value)
     if wrong_owner:
         add(ErrorCategory.CONTINUATION_OWNERSHIP, "continuation_ownership")
 
     expected = {field.role: field for field in gold.fields}
-    for role in _SEMANTIC_ROLE_PRIORITY:
-        gold_field = expected.get(role)
-        actual = resolved.get(role)
-        if gold_field is None and role in grouped:
-            add(
-                ErrorCategory.UNSUPPORTED_FIELD_HALLUCINATION,
-                f"unsupported_{role.value}_hallucination",
-            )
-            continue
-        if gold_field is None:
-            continue
-        category = _role_category(role)
-        if role not in grouped:
-            add(category, _role_reason(role, "omission"))
-            continue
-        if actual is None:
-            continue
-        canonical_value, atom_ids = actual
-        if canonical_value != gold_field.canonical_value:
-            add(category, _role_reason(role, "value_mismatch"))
-        elif gold_field.atom_ids and atom_ids != gold_field.atom_ids:
-            add(category, _role_reason(role, "evidence_mismatch"))
+    if not correct_abstention:
+        for role in _SEMANTIC_ROLE_PRIORITY:
+            gold_field = expected.get(role)
+            actual = resolved.get(role)
+            if gold_field is None and role in grouped:
+                add(
+                    ErrorCategory.UNSUPPORTED_FIELD_HALLUCINATION,
+                    f"unsupported_{role.value}_hallucination",
+                )
+                continue
+            if gold_field is None:
+                continue
+            category = _ROLE_RULES[role]
+            if role not in grouped:
+                add(category, _role_reason(role, "omission"))
+                continue
+            if actual is None:
+                continue
+            canonical_value, atom_ids = actual
+            if canonical_value != gold_field.canonical_value:
+                add(category, _role_reason(role, "value_mismatch"))
+            elif gold_field.atom_ids and atom_ids != gold_field.atom_ids:
+                add(category, _role_reason(role, "evidence_mismatch"))
 
     exact_acceptance = (
-        prediction.decision is Decision.ACCEPT
+        accepted
         and not gold.ambiguous
         and not assignments
         and set(grouped) == set(expected)
@@ -231,12 +269,10 @@ def classify_error(gold: GoldRow, prediction: RowPrediction) -> ErrorAssignment:
     )
     if exact_acceptance:
         return ErrorAssignment(primary=None, secondary=(), reason_codes=())
-    if prediction.decision is Decision.ACCEPT:
+    if accepted:
         add(ErrorCategory.CALIBRATION_FALSE_ACCEPT, "accepted_inexact_row")
-    elif ambiguous_abstention:
+    elif correct_abstention:
         add(ErrorCategory.CORRECT_ABSTENTION, "ambiguous_row_abstained")
-    elif not assignments:
-        add(ErrorCategory.CORRECT_ABSTENTION, "prediction_abstained")
 
     return ErrorAssignment(
         primary=assignments[0][0] if assignments else None,
@@ -248,6 +284,8 @@ def classify_error(gold: GoldRow, prediction: RowPrediction) -> ErrorAssignment:
 __all__ = [
     "ErrorAssignment",
     "ErrorCategory",
+    "ErrorCategoryCount",
     "ErrorClassificationError",
+    "ValidationErrorSummary",
     "classify_error",
 ]

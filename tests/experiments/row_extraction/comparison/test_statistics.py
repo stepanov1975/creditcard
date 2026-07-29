@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -32,6 +32,26 @@ def test_paired_bootstrap_is_deterministic_and_does_not_mutate_inputs() -> None:
     assert one.model_dump_json() == two.model_dump_json()
     assert first == {"doc-a": Decimal("0.25"), "doc-b": Decimal("0.75")}
     assert second == {"doc-a": Decimal("0.5"), "doc-b": Decimal("0.5")}
+
+
+def test_paired_bootstrap_is_invariant_to_ambient_decimal_context() -> None:
+    first = {
+        "doc-a": Decimal("0.987654321"),
+        "doc-b": Decimal("0.765432109"),
+    }
+    second = {
+        "doc-a": Decimal("0.123456789"),
+        "doc-b": Decimal("0.172839501"),
+    }
+
+    with localcontext() as context:
+        context.prec = 2
+        low_precision = paired_document_bootstrap(first, second, "fixed", 101)
+    with localcontext() as context:
+        context.prec = 50
+        high_precision = paired_document_bootstrap(first, second, "fixed", 101)
+
+    assert low_precision.model_dump_json() == high_precision.model_dump_json()
 
 
 @pytest.mark.parametrize(

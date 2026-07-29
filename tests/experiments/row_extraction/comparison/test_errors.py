@@ -1,3 +1,5 @@
+import pytest
+
 from experiments.row_extraction.comparison.errors import (
     ErrorCategory,
     classify_error,
@@ -262,8 +264,118 @@ def test_correct_abstention_remains_last_in_the_frozen_priority() -> None:
     )
 
     assert assignment.primary is ErrorCategory.ANNOTATION_AMBIGUITY
-    assert assignment.secondary == (
-        ErrorCategory.EVIDENCE_CONTRACT,
-        ErrorCategory.UNSUPPORTED_FIELD_HALLUCINATION,
-        ErrorCategory.CORRECT_ABSTENTION,
+    assert assignment.secondary == (ErrorCategory.CORRECT_ABSTENTION,)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [Decision.ABSTAIN, Decision.REJECT, Decision.IGNORE],
+)
+def test_nonaccepted_latent_exact_proposal_is_an_accepted_output_omission(
+    decision: Decision,
+) -> None:
+    gold = _gold(
+        GoldField(
+            role=FieldRole.DESCRIPTION,
+            canonical_value="SYNTHETIC SHOP",
+            atom_ids=("description",),
+        )
     )
+
+    assignment = classify_error(
+        gold,
+        _prediction(_description_proposal(), decision=decision),
+    )
+
+    assert assignment.primary is ErrorCategory.MERCHANT_SPAN
+    assert ErrorCategory.UNSUPPORTED_FIELD_HALLUCINATION not in assignment.secondary
+    assert ErrorCategory.CORRECT_ABSTENTION not in assignment.secondary
+    assert assignment.reason_codes == ("description_omission",)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [Decision.ABSTAIN, Decision.REJECT, Decision.IGNORE],
+)
+def test_nonaccepted_extra_latent_proposal_is_not_a_hallucination(
+    decision: Decision,
+) -> None:
+    assignment = classify_error(
+        _gold(),
+        _prediction(_description_proposal(), decision=decision),
+    )
+
+    assert assignment.primary is None
+    assert ErrorCategory.UNSUPPORTED_FIELD_HALLUCINATION not in assignment.secondary
+    assert ErrorCategory.CORRECT_ABSTENTION not in assignment.secondary
+    assert assignment.reason_codes == ()
+
+
+def test_correct_abstention_is_reserved_for_ambiguous_abstain() -> None:
+    abstained = classify_error(
+        _gold(ambiguous=True),
+        _prediction(decision=Decision.ABSTAIN),
+    )
+    rejected = classify_error(
+        _gold(ambiguous=True),
+        _prediction(decision=Decision.REJECT),
+    )
+    ignored = classify_error(
+        _gold(ambiguous=True),
+        _prediction(decision=Decision.IGNORE),
+    )
+
+    assert ErrorCategory.CORRECT_ABSTENTION in abstained.secondary
+    assert ErrorCategory.CORRECT_ABSTENTION not in rejected.secondary
+    assert ErrorCategory.CORRECT_ABSTENTION not in ignored.secondary
+
+
+@pytest.mark.parametrize("reason", ["not_ocr_segmentation", "word_boxed"])
+def test_diagnostic_reason_near_match_does_not_activate_taxonomy(reason: str) -> None:
+    gold = _gold(
+        GoldField(
+            role=FieldRole.DESCRIPTION,
+            canonical_value="SYNTHETIC SHOP",
+            atom_ids=("description",),
+        )
+    )
+
+    assignment = classify_error(
+        gold,
+        _prediction(_description_proposal(), reasons=(reason,)),
+    )
+
+    assert assignment.primary is None
+    assert assignment.secondary == ()
+    assert assignment.reason_codes == ()
+
+
+def test_every_field_role_has_an_explicit_frozen_error_category() -> None:
+    expected = {
+        FieldRole.DESCRIPTION: ErrorCategory.MERCHANT_SPAN,
+        FieldRole.TRANSACTION_DATE: ErrorCategory.DATE,
+        FieldRole.POSTING_DATE: ErrorCategory.DATE,
+        FieldRole.CONVERSION_DATE: ErrorCategory.DATE,
+        FieldRole.BILLED_AMOUNT: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+        FieldRole.BILLING_CURRENCY: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+        FieldRole.ORIGINAL_AMOUNT: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+        FieldRole.ORIGINAL_CURRENCY: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+        FieldRole.KIND: ErrorCategory.AMOUNT_SIGN_KIND_CURRENCY,
+        FieldRole.INSTALLMENT: ErrorCategory.OPTIONAL_FIELD,
+        FieldRole.FX_RATE: ErrorCategory.OPTIONAL_FIELD,
+        FieldRole.ANCILLARY: ErrorCategory.OPTIONAL_FIELD,
+    }
+    assert set(expected) == set(FieldRole)
+
+    for role, category in expected.items():
+        assignment = classify_error(
+            _gold(
+                GoldField(
+                    role=role,
+                    canonical_value="SYNTHETIC",
+                    atom_ids=("gold",),
+                )
+            ),
+            _prediction(),
+        )
+        assert assignment.primary is category
