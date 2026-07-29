@@ -86,10 +86,18 @@ class FrozenRow(_FrozenModel):
 
 
 class GoldField(_FrozenModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
     role: FieldRole
     canonical_value: str
-    atom_ids: tuple[str, ...] = Field(min_length=1)
+    atom_ids: tuple[str, ...] = ()
     source_region: BBox | None = None
+
+    @model_validator(mode="after")
+    def has_evidence_support(self) -> GoldField:
+        if not self.atom_ids and self.source_region is None:
+            raise ValueError("gold field requires atom IDs or source region")
+        return self
 
 
 class GoldRow(_FrozenModel):

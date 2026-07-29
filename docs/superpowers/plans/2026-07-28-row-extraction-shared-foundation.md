@@ -58,6 +58,12 @@ out-of-scope sandbox/controller failures. Any new or changed failure stops the t
 - `experiments/row_extraction/baselines.py`: accepted-anchor prediction adapter.
 - `experiments/row_extraction/report.py`: privacy-safe aggregate report projection.
 - `experiments/row_extraction/cli.py`: private-path preparation, validation, baseline, and scoring commands.
+- `experiments/row_extraction/grouping.py`: content-neutral structure profiles, review
+  candidates, reviewed partitions, and leakage-safe split freezing.
+- `experiments/row_extraction/runtime.py`: canonical runtime manifests and report-context
+  derivation through the existing toolchain-inspector seam.
+- `experiments/row_extraction/foundation_admin.py`: separate privacy-safe administration for
+  grouping and runtime artifacts; it does not add an experiment or a command to `cli.py`.
 - `experiments/row_extraction/arms/__init__.py`: stable parent package for the four isolated experiment lanes.
 - `docs/experiments/row-extraction-annotation-handbook.md`: tracked annotation semantics with synthetic examples only.
 - `docs/experiments/row-extraction-foundation-runbook.md`: exact private commands and freeze gates without private values.
@@ -266,7 +272,7 @@ class FrozenRow(_FrozenModel):
 class GoldField(_FrozenModel):
     role: FieldRole
     canonical_value: str
-    atom_ids: tuple[str, ...] = Field(min_length=1)
+    atom_ids: tuple[str, ...] = ()
     source_region: BBox | None = None
 
 
@@ -352,6 +358,14 @@ class ExperimentArm(Protocol):
 
     def predict(self, row: FrozenRow) -> RowPrediction: ...
 ```
+
+`GoldField` requires at least one exact same-row support form: one or more frozen atom IDs,
+or a finite nonempty `source_region` inside the fixed row. Region-only support is required for
+legible printing that the accepted digital/OCR atom stream missed; these cases remain in gold
+so recovery experiments are measured instead of silently excluded. When both forms are
+present, every declared atom overlaps the region. This changes no prediction contract:
+`FieldProposal.atom_ids` remains nonempty and every prediction grounds its value in evidence
+atoms produced by that measured arm.
 
 `FieldProposal.owner_row_id=None` canonically means the current `FrozenRow.row_id`. A
 continuation that proposes evidence for its fixed predecessor must set `owner_row_id` to
@@ -647,11 +661,18 @@ Expected: collection fails because `annotations.py` does not exist.
 - [ ] **Step 3: Implement closed validation and the annotation handbook**
 
 Validate one label per frozen row; exact document/row identity; field-role uniqueness;
-evidence membership and nonoverlap; `Decimal` parsing for amount roles; existing date and
+atom-or-region support and nonoverlap; `Decimal` parsing for amount roles; existing date and
 currency parsers for typed roles; paired original amount/currency; primary-versus-
 continuation rules; and explicit ambiguity. The handbook defines these decisions with
 synthetic merchant, amount, date, currency, continuation, structural, and ambiguous examples.
 It states that accepted output is a proposal, not gold.
+
+An atom-supported field has nonempty, unique, source-ordered frozen atom IDs. A region-supported
+field has a finite nonempty image region wholly inside the exact fixed row. At least one form is
+mandatory. If both are supplied, every atom overlaps the region. Independent field supports
+cannot overlap; billed amount and kind are the sole exception and use exactly the same atom
+tuple and region. Region-only support remains valid for a legible field absent from the frozen
+atoms, including its optional matching `OcrReference`.
 
 An `OcrReference` is optional and records a human-reviewed verbatim source transcription plus
 the exact source region for a field whose printing is legible enough to score recognition.
@@ -1223,9 +1244,14 @@ version/config, row ID, word ordinal, text, clipped
 bbox, source, and confidence. No word can appear in two predictions. Neither page arm detects,
 moves, merges, or splits a row or column.
 
-`AcceptedBaselineArm(rows, accepted_predictions, artifact_identity)` consumes the already
-materialized accepted-prediction stream from `prepare_bundle`, requires a bijection with exact
-frozen row identities, and returns those immutable projections without consulting gold.
+`AcceptedBaselineArm(rows, accepted_predictions, artifact_identity)` consumes and verifies the
+complete already-materialized accepted-prediction stream from `prepare_bundle`. Prediction
+identities must be globally unique, and the split-filtered fixed rows must have an exact
+bijection with their selected subset; verified predictions for other splits are ignored only
+after the complete stream identity is checked. The CLI additionally validates the complete
+bundle row/prediction bijection before split selection. The arm returns the selected immutable
+projections without consulting gold, while `arm_manifest_identity` remains the identity of the
+complete accepted artifact named by Task 8.
 `ConditionalPageOcrArm` and `ForcedPageOcrArm` share one deterministic page-word-to-band field
 resolver and copy the accepted baseline row type only as fixed baseline context. A structural
 row emits `IGNORE` with no proposals; an ambiguous row emits `ABSTAIN` with no proposals. For
@@ -1345,16 +1371,89 @@ Stop condition: stop if private preparation fails, labels remain unreviewed, spl
 ```
 
 **Files:**
+- Create: `experiments/row_extraction/grouping.py`
+- Create: `experiments/row_extraction/runtime.py`
+- Create: `experiments/row_extraction/foundation_admin.py`
+- Create: `tests/experiments/row_extraction/test_grouping.py`
+- Create: `tests/experiments/row_extraction/test_runtime.py`
+- Create: `tests/experiments/row_extraction/test_foundation_admin.py`
 - Create: `docs/experiments/row-extraction-foundation-runbook.md`
 - Test: all foundation and repository tests.
 
 **Interfaces:**
-- Consumes: `experiments.row_extraction.cli` commands and ignored private directories.
-- Produces: exact privacy-safe commands, required artifact categories, freeze checklist, and the committed foundation SHA used by all four experiment worktrees.
+- Consumes: accepted discovery geometry, the existing `ToolchainInspector`,
+  `experiments.row_extraction.cli` commands, and ignored private directories.
+- Produces: content-neutral structure profiles, exact-match review candidates, a geometry-only
+  SVG atlas, two-review partitions, singleton `DocumentGroup` records, a positive
+  train/validation/test `SplitManifest`, a canonical runtime manifest, derived report
+  contexts, exact privacy-safe commands, required artifact categories, a freeze checklist,
+  and the committed foundation SHA used by all four experiment worktrees.
+- Invariant: `experiments.row_extraction.cli` retains exactly its seven shared experiment
+  commands. `experiments.row_extraction.foundation_admin` is a separate five-command
+  administrative surface: `profile-groups`, `freeze-groups`, `prepare-runtime`,
+  `verify-runtime`, and `prepare-report-context`.
+
+The structure profile uses a fixed 64-cell normalized grid and contains no filename, PDF
+metadata, glyph or word text, font name, merchant/date/amount/currency/total, parser outcome,
+diagnostic, confidence, gold label, or split assignment. Its duplicate fingerprint includes
+page topology, image/vector geometry, table/header/column geometry, and row bands. Its layout
+fingerprint omits row bands, OCR modality/quality, text density, and semantic column roles.
+Exact fingerprints produce review candidates, not mandatory merges. Two independent reviewers
+may reject false positives and may conservatively merge visually equivalent or uncertain
+non-exact profiles using only the ignored geometry atlas. Their final partitions require two
+distinct attestations over one exact decision. Strata are only `digital:single`,
+`digital:multi`, `ocr:single`, `ocr:multi`, or `mixed:multi`.
+
+Every source is inode/stat/hash stable before, during, and after profiling. The grouping freeze
+emits one singleton `DocumentGroup` per document and refuses a result unless every document is
+covered exactly once and train, validation, and locked test each contain at least one document.
+Group integrity takes precedence over the target ratio; an empty partition is a stop condition,
+not permission to break a reviewed group or tune against labels/results.
+
+All multi-artifact administrative commands stage complete canonical bytes first, publish with
+no-clobber inode ownership, and on failure remove only artifacts they still own. The runtime
+manifest reuses `ToolchainInspector` and binds the exact dependency-inventory identity. Public
+report context is derived from a completed `RunMeasurements` and exposes only Python, fixed
+dependency, PyMuPDF binding/engine, Tesseract, and OCR-pipeline versions—never hashes, paths,
+environment values, or asset sizes.
 
 - [ ] **Step 1: Write the runbook with exact commands**
 
 Document commands using shell variables whose values point only to ignored local paths:
+
+```bash
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.foundation_admin profile-groups \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --documents "$ROW_EXPERIMENT_DOCUMENTS" \
+  --cache-dir "$ROW_EXPERIMENT_PRIVATE/group-profile-cache" \
+  --profiles-output "$ROW_EXPERIMENT_PRIVATE/group-profiles.jsonl" \
+  --profiles-identity-output "$ROW_EXPERIMENT_PRIVATE/group-profiles.identity.json" \
+  --proposals-output "$ROW_EXPERIMENT_PRIVATE/group-proposals.jsonl" \
+  --proposals-identity-output "$ROW_EXPERIMENT_PRIVATE/group-proposals.identity.json" \
+  --atlas-output "$ROW_EXPERIMENT_PRIVATE/group-atlas.svg" \
+  --atlas-identity-output "$ROW_EXPERIMENT_PRIVATE/group-atlas.identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.foundation_admin freeze-groups \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --profiles "$ROW_EXPERIMENT_PRIVATE/group-profiles.jsonl" \
+  --proposals "$ROW_EXPERIMENT_PRIVATE/group-proposals.jsonl" \
+  --reviewed-grouping "$ROW_EXPERIMENT_PRIVATE/reviewed-groups.json" \
+  --seed "$ROW_EXPERIMENT_SPLIT_SEED" \
+  --groups-output "$ROW_EXPERIMENT_PRIVATE/document-groups.jsonl" \
+  --groups-identity-output "$ROW_EXPERIMENT_PRIVATE/document-groups.identity.json" \
+  --split-output "$ROW_EXPERIMENT_PRIVATE/splits.json" \
+  --split-identity-output "$ROW_EXPERIMENT_PRIVATE/splits.identity.json"
+```
+
+Before `freeze-groups`, two reviewers independently inspect only the canonical profiles,
+exact-match proposals, and geometry-only atlas. Store both ignored draft decisions. They
+must agree on the final duplicate/layout partitions, or produce an ignored adjudication; the
+final `ReviewedGrouping` has two distinct reviewer attestations over that exact decision.
+Reviewers see no filenames, PDF pixels, text, gold, predictions, metrics, or proposed split.
+Possible near-duplicates/layout matches are merged when uncertain. The split seed is declared
+before labels or results and is never searched to optimize membership or ratios.
 
 ```bash
 PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
@@ -1391,6 +1490,22 @@ PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
   --roots "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-roots.json" \
   --output "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.json" \
   --identity-output "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.foundation_admin prepare-runtime \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --dependency-inventory-identity \
+  "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.identity.json" \
+  --output "$ROW_EXPERIMENT_PRIVATE/runtime-manifest.json" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/runtime-identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.foundation_admin verify-runtime \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --manifest "$ROW_EXPERIMENT_PRIVATE/runtime-manifest.json" \
+  --identity "$ROW_EXPERIMENT_PRIVATE/runtime-identity.json" \
+  --dependency-inventory-identity \
+  "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.identity.json"
 
 PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
   experiments.row_extraction.cli prepare-page-evidence \

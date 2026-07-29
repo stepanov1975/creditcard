@@ -292,6 +292,28 @@ def test_gold_field_atom_ids_are_unique_within_the_field() -> None:
     assert "gold field atom IDs must be unique" in _error_text((row,), (label,))
 
 
+def test_annotation_rejects_forged_gold_field_without_support() -> None:
+    row = _primary_row()
+    unsupported = GoldField.model_construct(
+        role=FieldRole.DESCRIPTION,
+        canonical_value="SYNTHETIC BOOKSHOP",
+        atom_ids=(),
+        source_region=None,
+    )
+    label = GoldRow.model_construct(
+        document_id=row.document_id,
+        row_id=row.row_id,
+        row_type=RowType.PRIMARY_TRANSACTION,
+        fields=(*_required_primary_fields(), unsupported),
+        ambiguous=False,
+    )
+
+    error = _error_text((row,), (label,))
+
+    assert "gold field requires atom IDs or source region" in error
+    assert unsupported.canonical_value not in error
+
+
 def test_gold_field_atom_ids_must_preserve_frozen_source_order() -> None:
     row = _primary_row()
     atoms = list(row.atoms)
@@ -312,6 +334,99 @@ def test_gold_field_atom_ids_must_preserve_frozen_source_order() -> None:
         (row,),
         (label,),
     )
+
+
+def test_region_only_merchant_support_is_valid_when_frozen_atoms_missed_printing() -> None:
+    row = _primary_row()
+    row = row.model_copy(
+        update={
+            "atoms": tuple(atom for atom in row.atoms if atom.atom_id != "description"),
+        }
+    )
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP",
+                (),
+                source_region=(53.0, 10.0, 90.0, 20.0),
+            ),
+        )
+    )
+
+    assert validate_annotations((row,), (label,)).field_count == 4
+
+
+def test_region_only_billed_amount_and_kind_share_exact_support() -> None:
+    row = _primary_row()
+    row = row.model_copy(
+        update={
+            "atoms": tuple(atom for atom in row.atoms if atom.atom_id != "billed-amount"),
+        }
+    )
+    billed_region = (100.0, 10.0, 115.0, 20.0)
+    label = _primary_gold(
+        fields=(
+            _field(
+                FieldRole.BILLED_AMOUNT,
+                "12.34",
+                (),
+                source_region=billed_region,
+            ),
+            _field(FieldRole.BILLING_CURRENCY, "USD", ("billing-currency",)),
+            _field(
+                FieldRole.KIND,
+                TransactionKind.CHARGE.value,
+                (),
+                source_region=billed_region,
+            ),
+        )
+    )
+
+    assert validate_annotations((row,), (label,)).field_count == 3
+
+
+def test_region_only_field_cannot_overlap_an_independent_atom_supported_field() -> None:
+    row = _primary_row()
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP",
+                (),
+                source_region=(90.0, 9.0, 100.5, 21.0),
+            ),
+        )
+    )
+
+    assert "gold field supports overlap across fields" in _error_text((row,), (label,))
+
+
+def test_mixed_support_atom_cannot_overlap_outside_its_narrow_region() -> None:
+    row = _primary_row()
+    row = row.model_copy(
+        update={
+            "atoms": (
+                *row.atoms,
+                _atom("wide-description", "SYNTHETIC BOOKSHOP", 89.0, 98.0),
+            )
+        }
+    )
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP",
+                ("wide-description",),
+                source_region=(89.0, 9.0, 90.0, 21.0),
+            ),
+        )
+    )
+
+    assert "gold field supports overlap across fields" in _error_text((row,), (label,))
 
 
 def test_independent_gold_fields_cannot_share_an_atom() -> None:
@@ -364,7 +479,7 @@ def test_overlapping_independent_source_regions_are_rejected() -> None:
         )
     )
 
-    assert "gold source regions overlap across fields" in _error_text((row,), (label,))
+    assert "gold field supports overlap across fields" in _error_text((row,), (label,))
 
 
 def test_gold_source_region_must_overlap_its_declared_support_atoms() -> None:
@@ -980,6 +1095,36 @@ def test_ocr_reference_region_equals_explicit_gold_field_region() -> None:
         (narrower,),
     )
     assert validate_annotations((row,), (label,), (exact,)).ocr_reference_count == 1
+
+
+def test_ocr_reference_region_matches_region_only_gold_support() -> None:
+    row = _primary_row()
+    row = row.model_copy(
+        update={
+            "atoms": tuple(atom for atom in row.atoms if atom.atom_id != "description"),
+        }
+    )
+    declared_region = (53.0, 10.0, 90.0, 20.0)
+    label = _primary_gold(
+        fields=(
+            *_required_primary_fields(),
+            _field(
+                FieldRole.DESCRIPTION,
+                "SYNTHETIC BOOKSHOP",
+                (),
+                source_region=declared_region,
+            ),
+        )
+    )
+    reference = OcrReference(
+        document_id=row.document_id,
+        row_id=row.row_id,
+        role=FieldRole.DESCRIPTION,
+        verbatim_text="SYNTHETIC BOOKSHOP",
+        source_region=declared_region,
+    )
+
+    assert validate_annotations((row,), (label,), (reference,)).ocr_reference_count == 1
 
 
 def test_validator_never_synthesizes_ocr_references() -> None:

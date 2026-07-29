@@ -573,7 +573,7 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 **Interfaces:**
 
 - Consumes: `FrozenRow`, `GoldRow`, `GoldField`, `FieldRole`, `RowType`, `DatasetSplit`.
-- Produces: `LabeledRow`, `BioSpan`, `gold_bio_tags(example) -> tuple[str, ...]`, `validate_bio(tags) -> tuple[BioSpan, ...]`, `exact_evidence_event(gold, prediction) -> bool`, and `complete_exact_row_event(gold, prediction) -> bool`.
+- Produces: `LabeledRow`, `BioSpan`, `BioTargets(tags: tuple[str, ...], crf_eligible: bool, masked_roles: tuple[FieldRole, ...])`, `gold_bio_targets(example) -> BioTargets`, `validate_bio(tags) -> tuple[BioSpan, ...]`, `exact_evidence_event(gold, prediction) -> bool`, and `complete_exact_row_event(gold, prediction) -> bool`.
 - `LabeledRow(row, gold)` pairs immutable foundation records. Split membership comes only from `row.split`; grouped fold membership comes only from shared `Fold` document-ID sets. Feature functions accept `FrozenRow`, never `LabeledRow`.
 
 - [ ] **Step 1: Write failing tests for exact ownership, sequence legality, and exact-row labels.**
@@ -583,14 +583,16 @@ Stop condition: stop if the plan requires transformer/generative models, documen
   import pytest
 
   from experiments.row_extraction.arms.text.labels import validate_bio
-  from experiments.row_extraction.arms.text.training_data import LabeledRow, gold_bio_tags
+  from experiments.row_extraction.arms.text.training_data import LabeledRow, gold_bio_targets
   from tests.experiments.row_extraction.factories import frozen_row, gold_row
 
 
   def test_gold_spans_become_bio_in_canonical_atom_order() -> None:
       row = frozen_row()
       gold = gold_row(atom_ids=(row.atoms[0].atom_id,))
-      tags = gold_bio_tags(LabeledRow(row=row, gold=gold))
+      targets = gold_bio_targets(LabeledRow(row=row, gold=gold))
+      assert targets.crf_eligible is True
+      tags = targets.tags
       assert len(tags) == len(row.atoms)
       spans = validate_bio(tags)
       assert len(spans) == 1
@@ -617,7 +619,7 @@ Stop condition: stop if the plan requires transformer/generative models, documen
       base = gold_row(atom_ids=(row.atoms[0].atom_id,))
       overlapping = base.model_copy(update={"fields": (base.fields[0], base.fields[0])})
       with pytest.raises(ValueError, match="gold_evidence_ownership"):
-          gold_bio_tags(LabeledRow(row=row, gold=overlapping))
+          gold_bio_targets(LabeledRow(row=row, gold=overlapping))
 
 
   def test_canonical_values_are_targets_for_shared_scoring_not_model_features() -> None:
@@ -625,9 +627,16 @@ Stop condition: stop if the plan requires transformer/generative models, documen
       gold = gold_row(atom_ids=(row.atoms[0].atom_id,))
       changed_field = gold.fields[0].model_copy(update={"canonical_value": "different-private-value"})
       changed_gold = gold.model_copy(update={"fields": (changed_field,)})
-      assert gold_bio_tags(LabeledRow(row=row, gold=gold)) == gold_bio_tags(
+      assert gold_bio_targets(LabeledRow(row=row, gold=gold)) == gold_bio_targets(
           LabeledRow(row=row, gold=changed_gold)
       )
+
+  def test_region_only_gold_is_retained_but_ineligible_for_crf_loss() -> None:
+      row = frozen_row()
+      gold = gold_row(atom_ids=(), source_region=row.bbox)
+      targets = gold_bio_targets(LabeledRow(row=row, gold=gold))
+      assert targets.crf_eligible is False
+      assert targets.masked_roles == (gold.fields[0].role,)
   ```
 
 - [ ] **Step 2: Run the focused test and confirm RED.**
@@ -702,9 +711,15 @@ Stop condition: stop if the plan requires transformer/generative models, documen
   class LabeledRow:
       row: FrozenRow
       gold: GoldRow
+
+  @dataclass(frozen=True)
+  class BioTargets:
+      tags: tuple[str, ...]
+      crf_eligible: bool
+      masked_roles: tuple[FieldRole, ...]
   ```
 
-  `gold_bio_tags` must verify matching document/row IDs, unique row atom IDs, every gold atom present exactly once, each field's atoms contiguous and canonically ordered, no atom owned by two fields, and no empty gold field. It fills `O`, then `B:<FieldRole.value>` and `I:<FieldRole.value>`, and round-trips through `validate_bio`. `exact_evidence_event` returns true only for an accepted prediction whose predicted `RowType`, proposal role/atom tuples, and complete proposal set exactly match gold; duplicate roles/ownership, source regions, nonfinite scores, ambiguous gold, or abstention are false. `complete_exact_row_event` is the calibrator target and delegates value rendering/normalization to the shared metric path exactly:
+`gold_bio_targets` must verify matching document/row IDs, unique row atom IDs, every declared gold atom present exactly once, each atom-supported field's atoms contiguous and canonically ordered, and no atom owned by two fields. `BioTargets` always retains the closed BIO sequence plus sorted `masked_roles`. A row containing any valid region-only field has `crf_eligible=False` and is excluded as one whole sequence from CRF field loss, because CRFsuite cannot mask individual tokens safely; it remains eligible for row-type training and every shared evaluation metric. It is never converted to an all-`O` negative or silently removed from evaluation. For eligible rows the codec fills `O` only for atoms outside every reviewed field support, then `B:<FieldRole.value>` and `I:<FieldRole.value>`, and round-trips through `validate_bio`. Training and validation report excluded-row counts and masked roles so a token model cannot hide recognition-ineligible gold. `exact_evidence_event` returns true only for an accepted prediction whose predicted `RowType`, proposal role/atom tuples, and complete proposal set exactly match atom-supported gold; region-only gold, duplicate roles/ownership, incompatible source regions, nonfinite scores, ambiguous gold, or abstention are false. `complete_exact_row_event` remains the calibrator target for every evaluated row and delegates value rendering/normalization to the shared metric path exactly:
 
   ```python
   def complete_exact_row_event(
@@ -1037,8 +1052,8 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 
   Training requirements:
 
-  - Reject duplicate/non-training records, then sort by `(sha256(AtomFeatureTensor.canonical_bytes()), tuple(gold_bio_tags(example)))`; document/row identity must not affect CRF append order.
-  - Append `_crf_features(tensor)` and `gold_bio_tags(example)` in that order.
+  - Reject duplicate/non-training records, compute `gold_bio_targets`, report every ineligible sequence and its masked roles by aggregate count, retain it for row-type training/evaluation, and exclude it from CRF append operations. Sort eligible sequences by `(sha256(AtomFeatureTensor.canonical_bytes()), tuple(targets.tags))`; document/row identity must not affect CRF append order.
+  - Append `_crf_features(tensor)` and `targets.tags` for eligible sequences in that order.
   - Call `trainer.select(config.algorithm)` and set exactly `c1`, `c2`, `max_iterations`, `feature.possible_transitions`, and `feature.minfreq=0.0`; do not enable random restarts or multiple workers.
   - Write to an explicit lane-private path, close the trainer, SHA-256 the file, load it into a fresh `pycrfsuite.Tagger`, and verify every label is `O` or a valid shared `FieldRole` BIO label.
   - At prediction, compute the feature sequence, obtain the best tag sequence, call `validate_bio` without repair, and query `tagger.marginal(tag, position)` for each chosen tag. Reject nonfinite/out-of-range marginals or atom-count mismatch.

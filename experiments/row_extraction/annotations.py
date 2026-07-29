@@ -210,8 +210,11 @@ def _validate_field_support(row: FrozenRow, label: GoldRow) -> None:
     atom_order = {atom.atom_id: index for index, atom in enumerate(row.atoms)}
     owners: dict[str, FieldRole] = {}
     regions: list[tuple[FieldRole, BBox]] = []
+    supports: list[tuple[FieldRole, BBox]] = []
     by_role = {field.role: field for field in label.fields}
     for field in label.fields:
+        if not field.atom_ids and field.source_region is None:
+            _fail("gold field requires atom IDs or source region", identity)
         if len(field.atom_ids) != len(set(field.atom_ids)):
             _fail("gold field atom IDs must be unique", identity)
         for atom_id in field.atom_ids:
@@ -233,7 +236,7 @@ def _validate_field_support(row: FrozenRow, label: GoldRow) -> None:
         if field.source_region is not None:
             if not _inside(row.bbox, field.source_region):
                 _fail("gold source region is outside the exact fixed row", identity)
-            if not all(
+            if field.atom_ids and not all(
                 _regions_overlap(field.source_region, atoms[atom_id].bbox)
                 for atom_id in field.atom_ids
             ):
@@ -247,6 +250,17 @@ def _validate_field_support(row: FrozenRow, label: GoldRow) -> None:
             regions.append((field.role, field.source_region))
         if not _canonical_field(field):
             _fail("invalid canonical field value", identity)
+        field_support = tuple(atoms[atom_id].bbox for atom_id in field.atom_ids) + (
+            (field.source_region,) if field.source_region is not None else ()
+        )
+        if any(
+            _regions_overlap(previous_bbox, bbox)
+            and {previous_role, field.role} != {FieldRole.BILLED_AMOUNT, FieldRole.KIND}
+            for bbox in field_support
+            for previous_role, previous_bbox in supports
+        ):
+            _fail("gold field supports overlap across fields", identity)
+        supports.extend((field.role, bbox) for bbox in field_support)
 
     billed = by_role.get(FieldRole.BILLED_AMOUNT)
     kind = by_role.get(FieldRole.KIND)

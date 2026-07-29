@@ -568,6 +568,13 @@ def test_ambiguous_gold_row_is_fully_masked(synthetic_row, ambiguous_gold) -> No
     assert targets.atom_loss_mask.tolist() == [False] * len(synthetic_row.atoms)
 
 
+def test_region_only_gold_masks_only_field_loss(synthetic_row, region_only_gold) -> None:
+    targets = encode_gold(synthetic_row, region_only_gold, LabelVocabulary.from_shared_enums())
+    assert targets.row_loss_mask.item() is True
+    assert targets.atom_loss_mask.tolist() == [False] * len(synthetic_row.atoms)
+    assert targets.masked_roles == (region_only_gold.fields[0].role,)
+
+
 def test_accepted_baseline_type_cannot_change_features(
     synthetic_row, synthetic_feature_schema, synthetic_feature_vector, rendered_atoms
 ) -> None:
@@ -583,9 +590,9 @@ def test_accepted_baseline_type_cannot_change_features(
     assert torch.equal(original.atom_values, changed_features.atom_values)
 ```
 
-Also test that overlapping non-ambiguous gold fields, missing atom IDs, reordered feature
-records, duplicate/missing row feature vectors, and a gold document/row mismatch raise stable
-`ValueError`s.
+Also test that overlapping non-ambiguous gold fields, fields with neither atom nor region
+support, reordered feature records, duplicate/missing row feature vectors, and a gold
+document/row mismatch raise stable `ValueError`s. A valid region-only field must not raise.
 
 - [ ] **Step 2: Run focused tests and verify RED**
 
@@ -625,6 +632,7 @@ class GoldTargets:
     row_loss_mask: torch.Tensor
     bio_indices: torch.Tensor
     atom_loss_mask: torch.Tensor
+    masked_roles: tuple[FieldRole, ...]
 ```
 
 `build_nonvisual_vector` deterministically derives an experiment-4-owned equivalent
@@ -675,12 +683,17 @@ class LabelVocabulary:
         return cls(row_types=row_types, bio_labels=labels)
 ```
 
-`encode_gold` marks every uniquely supported field with one `B` followed by `I` labels in
+`encode_gold` marks every uniquely atom-supported field with one `B` followed by `I` labels in
 canonical atom order. It never reads `GoldField.canonical_value`. A `GoldRow.ambiguous` row
-is fully masked from both losses. Unlabeled atoms in a reviewed unambiguous row are `O`.
-`GoldField.atom_ids` must be nonempty; an optional `source_region` is validation context only.
-Missing, reordered, noncontiguous, multiply resolvable, or overlapping support is a hard
-eligibility error rather than a coerced label.
+is fully masked from both losses. A row containing any region-only field retains row-type loss
+but masks the entire atom-BIO loss, because the frozen atom sequence cannot identify which
+tokens, if any, lie inside printing that the atom stream missed. The sorted roles are preserved
+in `masked_roles`, reported by aggregate count, and retained in shared locked evaluation; the
+row is never converted to an all-`O` negative.
+Missing, reordered, noncontiguous, multiply resolvable, or overlapping atom support is a hard
+eligibility error rather than a coerced label. The lane reports region-only performance as a
+separate eligibility slice and may not claim image recognition recovery merely from row-level
+visual features when it cannot emit newly recognized evidence atoms.
 
 - [ ] **Step 4: Run GREEN**
 

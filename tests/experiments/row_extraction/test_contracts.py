@@ -5,6 +5,7 @@ from experiments.row_extraction.contracts import (
     Decision,
     FieldProposal,
     FieldRole,
+    GoldField,
     LaneDisposition,
     RowPrediction,
     RowType,
@@ -15,6 +16,19 @@ from tests.experiments.row_extraction.factories import frozen_row
 def test_field_proposal_requires_evidence_atoms() -> None:
     with pytest.raises(ValidationError):
         FieldProposal(role=FieldRole.DESCRIPTION, atom_ids=(), raw_score=0.8)
+
+
+def test_gold_field_requires_atom_ids_or_source_region() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="gold field requires atom IDs or source region",
+    ) as captured:
+        GoldField(
+            role=FieldRole.DESCRIPTION,
+            canonical_value="SECRET",
+            atom_ids=(),
+        )
+    assert "SECRET" not in str(captured.value)
 
 
 def test_lane_disposition_vocabulary_is_closed() -> None:

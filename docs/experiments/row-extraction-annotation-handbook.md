@@ -1,6 +1,6 @@
 # Transaction-Row Annotation Handbook
 
-**Handbook version:** `row-extraction-annotations-v1`
+**Handbook version:** `row-extraction-annotations-v2`
 
 **Status:** Authoritative annotation semantics for the four fixed-row extraction
 experiments.
@@ -81,7 +81,7 @@ field value. Set both `row_type=ambiguous` and `ambiguous=true`, and provide no 
 fields. Conversely, primary, continuation, and structural rows use `ambiguous=false`.
 
 Ambiguity is not a convenient label for hard OCR, and it must not be coerced into a primary
-transaction for training coverage. Under version 1, field-level uncertainty makes the row
+transaction for training coverage. Under version 2, field-level uncertainty makes the row
 explicitly ambiguous and fieldless; the contract does not retain selected clear fields from
 the same uncertain row.
 
@@ -129,13 +129,17 @@ uniquely printed field role, subject to the same typing and pairing rules.
 
 ## Source support and ownership
 
-Each present `GoldField` cites one or more unique evidence atom IDs from that exact frozen
-row. Atom order follows source order. An atom cannot support independent fields at the same
-time. The sole intentional overlap is `kind`, which derives from and must cite exactly the
-same atom IDs and optional source region as `billed_amount`.
+Each present `GoldField` cites at least one exact same-row support form: one or more unique
+evidence atom IDs, or a bounded image `source_region`. Region-only support is required when
+the printing is legible but the frozen digital/OCR stream missed it; omitting such a field
+would hide exactly the recognition failures these experiments measure. Atom order follows
+source order. An atom cannot support independent fields at the same time. The sole intentional
+overlap is `kind`, which derives from and must cite exactly the same atom IDs and optional
+source region as `billed_amount`.
 
 When a reviewer records a `source_region`, it must be finite, nonempty, and wholly inside
-the exact fixed row, and it must intersect every atom declared as that field's support.
+the exact fixed row. If atom IDs are also recorded, the region must intersect every declared
+atom. A field with neither atom IDs nor a source region is invalid.
 Independent field regions must not overlap. The billed-amount/kind pair may share its
 identical region. Evidence from another row is never copied into the current row label;
 continuation ownership is expressed by the validated predecessor relationship.
@@ -174,7 +178,8 @@ reference; do not force a transcript.
 2. Ignore accepted output as an authority and choose the row type from source evidence.
 3. Record every uniquely present field in the closed role vocabulary and omit truly absent
    fields.
-4. Attach exact same-row atom IDs and, when useful, a bounded source region.
+4. Attach exact same-row atom IDs, a bounded source region, or both. Use region-only support
+   for legible printing absent from the frozen atoms.
 5. Apply the canonical type, pairing, ownership, and ambiguity rules above.
 6. Add OCR references only for independently legible regions.
 7. Run `validate_annotations` and correct every value-free identity or contract violation.
@@ -201,3 +206,7 @@ Any semantic change to row types, ambiguity, field ownership, canonical typing, 
 eligibility requires a new handbook version and revalidation of every affected label.
 Changing gold-label semantics after locked-test access requires the charter amendment
 procedure and explicit user approval.
+
+Version 2 adds region-only gold support for legible printing absent from frozen atoms and
+requires revalidation of every label and OCR reference created under version 1. No locked-test
+labels or results existed when this correction was made.
