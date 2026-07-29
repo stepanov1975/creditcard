@@ -34,6 +34,12 @@ def _unit_interval(value: Decimal) -> bool:
     return value.is_finite() and Decimal(0) <= value <= Decimal(1)
 
 
+def _attainable_rate(value: Decimal, count: int) -> bool:
+    with localcontext(_CONTEXT):
+        nearest_count = int((value * Decimal(count)).to_integral_value(rounding=ROUND_HALF_EVEN))
+    return 0 <= nearest_count <= count and value == _ratio(nearest_count, count)
+
+
 def _validate_row_types(report: MetricReport) -> None:
     if tuple(metric.row_type for metric in report.row_types) != tuple(RowType):
         _fail()
@@ -102,6 +108,8 @@ def _validate_calibration(report: MetricReport) -> None:
             or bin_.empirical_accuracy is None
             or not _unit_interval(bin_.mean_confidence)
             or not _unit_interval(bin_.empirical_accuracy)
+            or not bin_.lower <= bin_.mean_confidence <= bin_.upper
+            or not _attainable_rate(bin_.empirical_accuracy, bin_.count)
         ):
             _fail()
     if confidence_rows > report.row_count:
@@ -124,6 +132,20 @@ def _validate_calibration(report: MetricReport) -> None:
         or not _unit_interval(report.expected_calibration_error)
     ):
         _fail()
+    else:
+        with localcontext(_CONTEXT):
+            expected_error = sum(
+                (
+                    _ratio(bin_.count, confidence_rows)
+                    * abs(bin_.empirical_accuracy - bin_.mean_confidence)
+                )
+                for bin_ in report.calibration_bins
+                if bin_.count
+                and bin_.empirical_accuracy is not None
+                and bin_.mean_confidence is not None
+            )
+        if report.expected_calibration_error != expected_error:
+            _fail()
 
 
 def _validate_selective_risk(report: MetricReport) -> None:
@@ -147,10 +169,26 @@ def _validate_selective_risk(report: MetricReport) -> None:
             report.area_under_risk_coverage
         ):
             _fail()
+        previous_coverage = Decimal(0)
+        with localcontext(_CONTEXT):
+            expected_area = Decimal(0)
+            for point in report.risk_coverage:
+                expected_area += (point.coverage - previous_coverage) * point.selective_risk
+                previous_coverage = point.coverage
+        if report.area_under_risk_coverage != expected_area:
+            _fail()
     elif report.area_under_risk_coverage is not None:
         _fail()
-    if tuple(value.target_risk for value in report.coverage_at_risk) != _RISK_TARGETS or any(
-        not _unit_interval(value.coverage) for value in report.coverage_at_risk
+    expected_coverages = tuple(
+        max(
+            (point.coverage for point in report.risk_coverage if point.selective_risk <= target),
+            default=Decimal(0),
+        )
+        for target in _RISK_TARGETS
+    )
+    if (
+        tuple(value.target_risk for value in report.coverage_at_risk) != _RISK_TARGETS
+        or tuple(value.coverage for value in report.coverage_at_risk) != expected_coverages
     ):
         _fail()
 

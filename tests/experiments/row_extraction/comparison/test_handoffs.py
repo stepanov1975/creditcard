@@ -859,6 +859,105 @@ def test_stopped_handoff_requires_complete_coherent_validation_metrics(
         validate_handoffs(changed)
 
 
+def _replace_stopped_metric(
+    tmp_path: Path,
+    manifest: ComparisonManifest,
+    report: MetricReport,
+) -> ComparisonManifest:
+    original = manifest.lanes["row-ocr"]
+    metric_file = _write_model(
+        tmp_path / "row-ocr-replacement-metrics.json",
+        report,
+        "row-comparison-validation-metrics",
+        "row-comparison-validation-metrics-v1",
+    )
+    return replace(
+        manifest,
+        lanes={**manifest.lanes, "row-ocr": replace(original, validation_metrics=metric_file)},
+    )
+
+
+def test_stopped_handoff_rejects_calibration_mean_outside_bin(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    bins = list(report.calibration_bins)
+    bins[-1] = bins[-1].model_copy(update={"mean_confidence": Decimal("0.01")})
+    incoherent = report.model_copy(
+        update={
+            "calibration_bins": tuple(bins),
+            "expected_calibration_error": Decimal("0.99"),
+        }
+    )
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
+def test_stopped_handoff_rejects_unattainable_calibration_accuracy(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    bins = list(report.calibration_bins)
+    bins[-1] = bins[-1].model_copy(update={"empirical_accuracy": Decimal("0.25")})
+    incoherent = report.model_copy(
+        update={
+            "calibration_bins": tuple(bins),
+            "expected_calibration_error": Decimal("0.75"),
+        }
+    )
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
+def test_stopped_handoff_rejects_arbitrary_expected_calibration_error(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    incoherent = report.model_copy(update={"expected_calibration_error": Decimal("0.5")})
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
+def test_stopped_handoff_rejects_arbitrary_area_under_risk_coverage(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    incoherent = report.model_copy(update={"area_under_risk_coverage": Decimal("0.5")})
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
+def test_stopped_handoff_rejects_arbitrary_coverage_at_risk(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    coverage = list(report.coverage_at_risk)
+    coverage[0] = coverage[0].model_copy(update={"coverage": Decimal(0)})
+    incoherent = report.model_copy(update={"coverage_at_risk": tuple(coverage)})
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
 def test_stopped_handoff_preserves_complete_typed_validation_evidence(
     tmp_path: Path,
 ) -> None:
