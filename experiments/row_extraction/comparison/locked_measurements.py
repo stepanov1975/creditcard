@@ -14,8 +14,8 @@ from experiments.row_extraction.contracts import ArtifactIdentity, DatasetSplit
 from experiments.row_extraction.runner import RunMeasurements
 
 from .locked_artifacts import (
+    verified_resource_inventory,
     verify_cache_root,
-    verify_resource_inventory,
 )
 from .locked_contracts import LockedArmResult, fail
 from .locked_preparations import validate_preparation_pair
@@ -137,25 +137,18 @@ def validate_measurement_pair(
     repeat_root = verify_cache_root(result.repeat_cache_root)
     if first_root == repeat_root:
         fail("locked repeats require independent cache roots")
-    first_inventory = verify_resource_inventory(
+    first_inventory, first_resource_output = verified_resource_inventory(
         result.resource_inventory_path,
         first.resource_inventory_identity,
     )
-    repeat_inventory = verify_resource_inventory(
+    repeat_inventory, repeat_resource_output = verified_resource_inventory(
         result.repeat_resource_inventory_path,
         repeat.resource_inventory_identity,
     )
-    try:
-        first_output = result.resource_inventory_path.resolve(strict=True)
-        repeat_output = result.repeat_resource_inventory_path.resolve(strict=True)
-        first_metadata = first_output.stat()
-        repeat_metadata = repeat_output.stat()
-    except OSError:
-        fail("resource inventory identity mismatch")
-    if first_output == repeat_output or (
-        first_metadata.st_dev,
-        first_metadata.st_ino,
-    ) == (repeat_metadata.st_dev, repeat_metadata.st_ino):
+    if first_resource_output.path == repeat_resource_output.path or (
+        first_resource_output.device,
+        first_resource_output.inode,
+    ) == (repeat_resource_output.device, repeat_resource_output.inode):
         fail("locked repeats require independent resource outputs")
     validate_preparation_pair(
         result,
@@ -164,6 +157,8 @@ def validate_measurement_pair(
         repeat_measurements=repeat,
         first_inventory=first_inventory,
         repeat_inventory=repeat_inventory,
+        first_run_resource_output=first_resource_output,
+        repeat_run_resource_output=repeat_resource_output,
         first_run_cache_root=first_root,
         repeat_run_cache_root=repeat_root,
         row_identity=row_identity,

@@ -36,6 +36,7 @@ from .result_catalog import MANIFEST_POLICY_BY_RESULT
 @dataclass(frozen=True)
 class _VerifiedPreparation:
     cache_root: Path
+    cache_file_identities: frozenset[tuple[int, int]]
     arm_manifest: VerifiedRegularFile
     measurements: VerifiedRegularFile
     resource_inventory: VerifiedRegularFile
@@ -103,7 +104,7 @@ def _validate_preparation(
     if any(entry not in run_inventory.entries for entry in inventory.entries):
         fail("locked preparation resource inventory mismatch")
     cache_root = verify_cache_root(preparation.cache_root)
-    verify_cache_inventory_root(inventory, cache_root)
+    cache_file_identities = verify_cache_inventory_root(inventory, cache_root)
     arm_manifest = verify_prepared_arm_manifest(
         preparation.arm_manifest_path,
         preparation.arm_manifest_identity,
@@ -117,19 +118,21 @@ def _validate_preparation(
         fail("preparation cache provenance mismatch")
     return _VerifiedPreparation(
         cache_root=cache_root,
+        cache_file_identities=cache_file_identities,
         arm_manifest=arm_manifest,
         measurements=measurement_file,
         resource_inventory=inventory_file,
     )
 
 
-def _require_distinct_files(
-    first: VerifiedRegularFile,
-    repeat: VerifiedRegularFile,
+def _require_pairwise_distinct_files(
+    files: tuple[VerifiedRegularFile, ...],
     *,
     message: str,
 ) -> None:
-    if first.path == repeat.path or (first.device, first.inode) == (repeat.device, repeat.inode):
+    if len({file.path for file in files}) != len(files) or len(
+        {(file.device, file.inode) for file in files}
+    ) != len(files):
         fail(message)
 
 
@@ -141,6 +144,8 @@ def validate_preparation_pair(
     repeat_measurements: RunMeasurements,
     first_inventory: ResourceInventory,
     repeat_inventory: ResourceInventory,
+    first_run_resource_output: VerifiedRegularFile,
+    repeat_run_resource_output: VerifiedRegularFile,
     first_run_cache_root: Path,
     repeat_run_cache_root: Path,
     row_identity: ArtifactIdentity,
@@ -160,11 +165,17 @@ def validate_preparation_pair(
         fail("repeat prepared arm manifest mismatch")
     first_declared_root = verify_cache_root(result.preparation.cache_root)
     repeat_declared_root = verify_cache_root(result.repeat_preparation.cache_root)
-    if (
-        first_declared_root in (repeat_declared_root, first_run_cache_root)
-        or repeat_declared_root == repeat_run_cache_root
-    ):
-        fail("locked repeats require independent preparation cache roots")
+    all_cache_roots = (
+        first_run_cache_root,
+        repeat_run_cache_root,
+        first_declared_root,
+        repeat_declared_root,
+    )
+    if len(set(all_cache_roots)) != len(all_cache_roots):
+        fail(
+            "locked repeats require independent preparation cache roots; "
+            "all run and preparation cache roots must be pairwise distinct"
+        )
     first = _validate_preparation(
         result.preparation,
         result=result,
@@ -187,20 +198,24 @@ def validate_preparation_pair(
     )
     if first.cache_root != first_declared_root or repeat.cache_root != repeat_declared_root:
         fail("preparation cache provenance mismatch")
-    _require_distinct_files(
-        first.arm_manifest,
-        repeat.arm_manifest,
+    _require_pairwise_distinct_files(
+        (first.arm_manifest, repeat.arm_manifest),
         message="locked repeats require independent prepared arm outputs",
     )
-    _require_distinct_files(
-        first.measurements,
-        repeat.measurements,
+    if not first.cache_file_identities.isdisjoint(repeat.cache_file_identities):
+        fail("locked preparation cache entries must be independent")
+    _require_pairwise_distinct_files(
+        (first.measurements, repeat.measurements),
         message="locked repeats require independent preparation measurement outputs",
     )
-    _require_distinct_files(
-        first.resource_inventory,
-        repeat.resource_inventory,
-        message="locked repeats require independent preparation resource outputs",
+    _require_pairwise_distinct_files(
+        (
+            first_run_resource_output,
+            repeat_run_resource_output,
+            first.resource_inventory,
+            repeat.resource_inventory,
+        ),
+        message="locked run and preparation resource outputs must be pairwise distinct",
     )
 
 

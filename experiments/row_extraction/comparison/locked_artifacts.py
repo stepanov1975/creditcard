@@ -184,12 +184,16 @@ def verified_resource_inventory(
     )
 
 
-def verify_cache_inventory_root(inventory: ResourceInventory, root: Path) -> None:
-    """Require every declared preparation-cache entry beneath one verified root."""
+def verify_cache_inventory_root(
+    inventory: ResourceInventory,
+    root: Path,
+) -> frozenset[tuple[int, int]]:
+    """Verify cache entries beneath one root and return their filesystem identities."""
 
     cache_entries = tuple(entry for entry in inventory.entries if entry.category == "cache")
     if not cache_entries:
         fail("preparation cache provenance mismatch")
+    file_identities: set[tuple[int, int]] = set()
     for entry in cache_entries:
         verified = _stable_regular_bytes(
             entry.resolved_path,
@@ -203,6 +207,8 @@ def verify_cache_inventory_root(inventory: ResourceInventory, root: Path) -> Non
             or hashlib.sha256(verified.payload).hexdigest() != entry.sha256
         ):
             fail("preparation cache provenance mismatch")
+        file_identities.add((verified.file.device, verified.file.inode))
+    return frozenset(file_identities)
 
 
 def verify_prepared_arm_manifest(

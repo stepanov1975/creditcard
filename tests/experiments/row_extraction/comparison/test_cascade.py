@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from experiments.row_extraction.comparison import cascade as cascade_module
 from experiments.row_extraction.comparison.cascade import (
     CascadeCandidates,
     CascadePolicy,
@@ -91,6 +92,10 @@ def _accepted_prediction(
         decision=decision,
         reasons=(),
     )
+
+
+def test_cascade_uses_shared_primary_required_field_roles() -> None:
+    assert not hasattr(cascade_module, "_PRIMARY_REQUIRED_ROLES")
 
 
 def _fixed_row(prediction: RowPrediction) -> FrozenRow:

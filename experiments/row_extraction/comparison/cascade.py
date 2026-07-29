@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 from ccparser.money import currencies_in_text
 from experiments.row_extraction.contracts import (
+    PRIMARY_REQUIRED_FIELD_ROLES,
     DatasetSplit,
     Decision,
     FieldProposal,
@@ -25,9 +26,6 @@ from experiments.row_extraction.evidence import (
     resolve_proposal,
 )
 
-_PRIMARY_REQUIRED_ROLES = frozenset(
-    {FieldRole.BILLED_AMOUNT, FieldRole.BILLING_CURRENCY, FieldRole.KIND}
-)
 _SHARED_SUPPORT_ROLES = frozenset({FieldRole.BILLED_AMOUNT, FieldRole.KIND})
 
 
@@ -224,7 +222,7 @@ def _is_deterministically_valid(row: FrozenRow, prediction: RowPrediction) -> bo
     roles = {proposal.role for proposal in prediction.proposals}
     expected_owner = _proposal_owner(row, prediction)
     if prediction.predicted_type is RowType.PRIMARY_TRANSACTION:
-        if not roles >= _PRIMARY_REQUIRED_ROLES:
+        if not roles >= PRIMARY_REQUIRED_FIELD_ROLES:
             return False
     elif prediction.predicted_type is RowType.CONTINUATION:
         if expected_owner is None or not expected_owner.strip() or not prediction.proposals:

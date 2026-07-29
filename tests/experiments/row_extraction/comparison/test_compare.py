@@ -340,10 +340,12 @@ def _write_locked_preparation(
         binding,
         page_keys=tuple(sorted({(row.document_id, row.page_number) for row in rows})),
     )
+    cache_artifact_path = cache_root / "cache-artifact.bin"
+    cache_artifact_path.write_bytes(f"synthetic {label} cache artifact".encode("ascii"))
     resource_inventory_path = tmp_path / f"{label}-preparation-resources.json"
     resource_inventory_identity = _write_resource_inventory(
         resource_inventory_path,
-        cache_files=(arm_manifest_path,),
+        cache_files=(arm_manifest_path, cache_artifact_path),
     )
     measurements = PreparationMeasurements(
         experiment_id=experiment_id,
@@ -373,6 +375,15 @@ def _write_locked_preparation(
         measurements=measurements,
         resource_inventory_path=resource_inventory_path,
         resource_inventory_identity=resource_inventory_identity,
+    )
+
+
+def _preparation_cache_files(
+    preparation: LockedPreparationResult,
+) -> tuple[Path, ...]:
+    return (
+        preparation.arm_manifest_path,
+        preparation.cache_root / "cache-artifact.bin",
     )
 
 
@@ -577,16 +588,12 @@ def _locked_results(
                 rows,
                 preparation_ns=30 + duration_offset,
             )
-            prepared_manifest_path = preparation.arm_manifest_path
             prepared_manifest_identity = preparation.arm_manifest_identity
-            repeat_prepared_manifest_path = repeat_preparation.arm_manifest_path
             repeat_prepared_manifest_identity = repeat_preparation.arm_manifest_identity
             assert prepared_manifest_identity == repeat_prepared_manifest_identity
         else:
             preparation = None
             repeat_preparation = None
-            prepared_manifest_path = None
-            repeat_prepared_manifest_path = None
             prepared_manifest_identity = binding.arm_manifest
             repeat_prepared_manifest_identity = binding.arm_manifest
         assert prepared_manifest_identity is not None
@@ -594,14 +601,16 @@ def _locked_results(
         resource_inventory_path = tmp_path / f"{experiment_id}-resources.json"
         resource_inventory_identity = _write_resource_inventory(
             resource_inventory_path,
-            cache_files=(prepared_manifest_path,) if prepared_manifest_path is not None else (),
+            cache_files=(_preparation_cache_files(preparation) if preparation is not None else ()),
         )
         repeat_resource_inventory_path = tmp_path / f"{experiment_id}-repeat-resources.json"
         repeat_resource_inventory_identity = _write_resource_inventory(
             repeat_resource_inventory_path,
-            cache_files=(repeat_prepared_manifest_path,)
-            if repeat_prepared_manifest_path is not None
-            else (),
+            cache_files=(
+                _preparation_cache_files(repeat_preparation)
+                if repeat_preparation is not None
+                else ()
+            ),
         )
         cache_root = tmp_path / f"{experiment_id}-cache"
         cache_root.mkdir()
@@ -1093,6 +1102,33 @@ def test_page_baseline_preparation_cache_cannot_reuse_execution_cache(tmp_path: 
         compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 
+@pytest.mark.parametrize(
+    ("run_root_field", "preparation_field"),
+    [
+        ("cache_root", "repeat_preparation"),
+        ("repeat_cache_root", "preparation"),
+    ],
+)
+def test_page_baseline_requires_all_run_and_preparation_cache_roots_pairwise_distinct(
+    tmp_path: Path,
+    run_root_field: str,
+    preparation_field: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    preparation = getattr(original, preparation_field)
+    assert isinstance(preparation, LockedPreparationResult)
+    replacement = replace(
+        original,
+        **{run_root_field: preparation.cache_root},
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="cache roots must be pairwise distinct"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
 def test_page_baseline_requires_evidence_beneath_preparation_cache_root(
     tmp_path: Path,
 ) -> None:
@@ -1212,6 +1248,102 @@ def test_page_baseline_rejects_hardlinked_repeat_evidence(tmp_path: Path) -> Non
     results["conditional-page-ocr"] = replacement
 
     with pytest.raises(ComparisonError, match="independent prepared arm outputs"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_rejects_hardlinked_nonmanifest_preparation_cache_entry(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    assert original.repeat_preparation is not None
+    repeat = original.repeat_preparation
+    alias = repeat.cache_root / "hardlinked-cache-artifact.bin"
+    alias.hardlink_to(original.preparation.cache_root / "cache-artifact.bin")
+    cache_files = (repeat.arm_manifest_path, alias)
+    preparation_inventory_path = tmp_path / "hardlinked-cache-preparation-resources.json"
+    preparation_inventory_identity = _write_resource_inventory(
+        preparation_inventory_path,
+        cache_files=cache_files,
+    )
+    preparation_measurements = repeat.measurements.model_copy(
+        update={
+            "resource_inventory_path": preparation_inventory_path,
+            "resource_inventory_identity": preparation_inventory_identity,
+        }
+    )
+    preparation_measurements_path = tmp_path / "hardlinked-cache-preparation-measurements.json"
+    preparation_measurements_identity = _write_preparation_measurements(
+        preparation_measurements_path,
+        preparation_measurements,
+    )
+    run_inventory_path = tmp_path / "hardlinked-cache-run-resources.json"
+    run_inventory_identity = _write_resource_inventory(
+        run_inventory_path,
+        cache_files=cache_files,
+    )
+    replacement = replace(
+        original,
+        repeat_resource_inventory_path=run_inventory_path,
+        repeat_measurements=original.repeat_measurements.model_copy(
+            update={"resource_inventory_identity": run_inventory_identity}
+        ),
+        repeat_preparation=replace(
+            repeat,
+            measurements_path=preparation_measurements_path,
+            measurements_identity=preparation_measurements_identity,
+            measurements=preparation_measurements,
+            resource_inventory_path=preparation_inventory_path,
+            resource_inventory_identity=preparation_inventory_identity,
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="preparation cache entries must be independent"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize("alias_kind", ["same-path", "hardlink"])
+def test_page_baseline_requires_all_resource_inventory_outputs_pairwise_distinct(
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    preparation = original.preparation
+    inventory_path = original.resource_inventory_path
+    if alias_kind == "hardlink":
+        inventory_path = tmp_path / "hardlinked-cross-phase-resources.json"
+        inventory_path.hardlink_to(original.resource_inventory_path)
+    preparation_measurements = preparation.measurements.model_copy(
+        update={
+            "resource_inventory_path": inventory_path,
+            "resource_inventory_identity": original.measurements.resource_inventory_identity,
+        }
+    )
+    measurements_path = tmp_path / f"{alias_kind}-cross-phase-preparation-measurements.json"
+    measurements_identity = _write_preparation_measurements(
+        measurements_path,
+        preparation_measurements,
+    )
+    replacement = replace(
+        original,
+        preparation=replace(
+            preparation,
+            measurements_path=measurements_path,
+            measurements_identity=measurements_identity,
+            measurements=preparation_measurements,
+            resource_inventory_path=inventory_path,
+            resource_inventory_identity=original.measurements.resource_inventory_identity,
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="resource outputs must be pairwise distinct"):
         compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 
