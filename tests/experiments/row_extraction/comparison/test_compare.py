@@ -9,12 +9,14 @@ from typing import Literal, cast
 import pytest
 
 from ccparser.output import _canonical_json_value_content
-from experiments.row_extraction.baselines import PageEvidenceRecord
+from experiments.row_extraction.baselines import PageEvidenceRecord, page_arm_config_id
 from experiments.row_extraction.codecs import write_jsonl
+from experiments.row_extraction.comparison import handoffs as handoffs_module
 from experiments.row_extraction.comparison.compare import (
     ComparisonError,
     ExperimentResult,
     LockedArmResult,
+    LockedPreparationResult,
     LockedResultSet,
     ResultBasis,
     build_comparison,
@@ -28,13 +30,22 @@ from experiments.row_extraction.comparison.errors import (
     classify_error,
 )
 from experiments.row_extraction.comparison.handoff_contracts import (
+    BASELINE_IDS as HANDOFF_BASELINE_IDS,
+)
+from experiments.row_extraction.comparison.handoff_contracts import (
     EXPERIMENT_IDS,
     FrozenRunInputs,
     ValidatedArmBinding,
     ValidatedHandoffs,
     ValidationEvidence,
 )
+from experiments.row_extraction.comparison.locked_contracts import (
+    PREPARATION_MEASUREMENT_TYPE,
+    PREPARATION_MEASUREMENT_VERSION,
+)
 from experiments.row_extraction.comparison.result_catalog import (
+    BASELINE_ID_SET,
+    LANE_ID_SET,
     MANIFEST_POLICY_BY_RESULT,
     PRIMARY_REQUIRED_FIELD_ROLES,
     RESULT_IDS,
@@ -56,6 +67,7 @@ from experiments.row_extraction.contracts import (
 from experiments.row_extraction.metrics import score_predictions
 from experiments.row_extraction.runner import (
     MeasuredArmFactory,
+    PreparationMeasurements,
     ResourceInventory,
     ResourceInventoryEntry,
     RunMeasurements,
@@ -76,6 +88,10 @@ def _artifact(
         version=version,
         byte_size=len(payload),
     )
+
+
+def _raw_page_config(experiment_id: str) -> str:
+    return f"synthetic-{experiment_id}-provider-v1"
 
 
 def _rows() -> tuple[FrozenRow, ...]:
@@ -131,12 +147,17 @@ def _predictions(
     wrong_last: bool = False,
 ) -> tuple[RowPrediction, ...]:
     predictions: list[RowPrediction] = []
+    config_id = (
+        page_arm_config_id(_raw_page_config(experiment_id))
+        if experiment_id in {"conditional-page-ocr", "forced-page-ocr"}
+        else f"{experiment_id}-config"
+    )
     for index, row in enumerate(rows):
         wrong = wrong_last and index == len(rows) - 1
         predictions.append(
             RowPrediction(
                 experiment_id=experiment_id,
-                config_id=f"{experiment_id}-config",
+                config_id=config_id,
                 document_id=row.document_id,
                 row_id=row.row_id,
                 predicted_type=RowType.PRIMARY_TRANSACTION,
@@ -189,6 +210,10 @@ def _measurement(
     duration_offset: int = 0,
 ) -> RunMeasurements:
     arm_manifest = binding.arm_manifest or _artifact(f"{experiment_id}-validation-arm")
+    preparation_ns = (
+        30 + duration_offset if experiment_id in {"conditional-page-ocr", "forced-page-ocr"} else 0
+    )
+    total_ns = 200 + duration_offset
     return RunMeasurements(
         experiment_id=experiment_id,
         config_id=binding.config_id,
@@ -200,11 +225,11 @@ def _measurement(
         ),
         arm_manifest_identity=arm_manifest_identity or arm_manifest,
         row_count=2,
-        total_ns=200 + duration_offset,
+        total_ns=total_ns,
         p50_ns=90 + duration_offset,
         p95_ns=110 + duration_offset,
-        preparation_ns=30 + duration_offset,
-        end_to_end_ns=230 + duration_offset,
+        preparation_ns=preparation_ns,
+        end_to_end_ns=total_ns + preparation_ns,
         cold_start_ns=40 + duration_offset,
         throughput_rows_per_second=Decimal("8.5"),
         peak_rss_bytes=1_024 + duration_offset,
@@ -255,6 +280,20 @@ def _write_resource_inventory(
     )
 
 
+def _write_preparation_measurements(
+    path: Path,
+    measurements: PreparationMeasurements,
+) -> ArtifactIdentity:
+    payload = _canonical_json_value_content(measurements.model_dump(mode="json")) + b"\n"
+    path.write_bytes(payload)
+    return ArtifactIdentity(
+        artifact_type=PREPARATION_MEASUREMENT_TYPE,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        version=PREPARATION_MEASUREMENT_VERSION,
+        byte_size=len(payload),
+    )
+
+
 def _write_page_evidence(
     path: Path,
     experiment_id: str,
@@ -273,12 +312,67 @@ def _write_page_evidence(
                 page_bbox=(0.0, 0.0, page_extent, page_extent),
                 mode=mode,
                 evidence_version="fixed-page-evidence-v1",
-                config_id=binding.config_id,
+                config_id=_raw_page_config(experiment_id),
                 runtime_identity=binding.runtime_identity,
                 words=(),
             )
             for document_id, page_number in page_keys
         ),
+    )
+
+
+def _write_locked_preparation(
+    tmp_path: Path,
+    label: str,
+    experiment_id: str,
+    binding: ValidatedArmBinding,
+    row_identity: ArtifactIdentity,
+    rows: tuple[FrozenRow, ...],
+    *,
+    preparation_ns: int,
+) -> LockedPreparationResult:
+    cache_root = tmp_path / f"{label}-preparation-cache"
+    cache_root.mkdir()
+    arm_manifest_path = cache_root / "page-evidence.jsonl"
+    arm_manifest_identity = _write_page_evidence(
+        arm_manifest_path,
+        experiment_id,
+        binding,
+        page_keys=tuple(sorted({(row.document_id, row.page_number) for row in rows})),
+    )
+    resource_inventory_path = tmp_path / f"{label}-preparation-resources.json"
+    resource_inventory_identity = _write_resource_inventory(
+        resource_inventory_path,
+        cache_files=(arm_manifest_path,),
+    )
+    measurements = PreparationMeasurements(
+        experiment_id=experiment_id,
+        config_id=binding.config_id,
+        row_sequence_identity=row_identity,
+        row_count=len(rows),
+        split=DatasetSplit.TEST,
+        cache_policy="new-empty-v1",
+        resource_basis="end-to-end-method",
+        preparation_ns=preparation_ns,
+        peak_rss_bytes=1_024,
+        subprocess_count=1,
+        worker_count=1,
+        runtime_identity=binding.runtime_identity,
+        arm_manifest_identity=arm_manifest_identity,
+        resource_inventory_path=resource_inventory_path,
+        resource_inventory_identity=resource_inventory_identity,
+    )
+    measurements_path = tmp_path / f"{label}-preparation-measurements.json"
+    measurements_identity = _write_preparation_measurements(measurements_path, measurements)
+    return LockedPreparationResult(
+        cache_root=cache_root,
+        arm_manifest_path=arm_manifest_path,
+        arm_manifest_identity=arm_manifest_identity,
+        measurements_path=measurements_path,
+        measurements_identity=measurements_identity,
+        measurements=measurements,
+        resource_inventory_path=resource_inventory_path,
+        resource_inventory_identity=resource_inventory_identity,
     )
 
 
@@ -340,9 +434,14 @@ def _handoffs(
     validation_predictions: dict[str, Path] = {}
     for experiment_id in RESULT_IDS:
         is_stopped = experiment_id in stopped
+        config_id = (
+            page_arm_config_id(_raw_page_config(experiment_id))
+            if experiment_id in {"conditional-page-ocr", "forced-page-ocr"}
+            else f"{experiment_id}-config"
+        )
         binding = ValidatedArmBinding(
             experiment_id=experiment_id,
-            config_id=f"{experiment_id}-config",
+            config_id=config_id,
             runtime_identity=_artifact(f"{experiment_id}-runtime"),
             model_inventory=_artifact(
                 f"{experiment_id}-model",
@@ -442,11 +541,13 @@ def _locked_results(
     handoffs: ValidatedHandoffs,
 ) -> LockedResultSet:
     results: dict[str, LockedArmResult] = {}
-    page_keys = tuple(sorted({(row.document_id, row.page_number) for row in rows}))
     for offset, experiment_id in enumerate(RESULT_IDS):
         if handoffs.dispositions.get(experiment_id) is LaneDisposition.VALIDATION_STOPPED:
             continue
         binding = handoffs.arm_bindings[experiment_id]
+        duration_offset = (
+            -20 if experiment_id == "row-vision" else 50 if experiment_id == "row-ocr" else offset
+        )
         predictions = _predictions(
             rows,
             experiment_id,
@@ -458,24 +559,32 @@ def _locked_results(
         repeat_identity = write_jsonl(repeat_path, predictions)
         page_prepared = experiment_id in {"conditional-page-ocr", "forced-page-ocr"}
         if page_prepared:
-            prepared_manifest_path = tmp_path / f"{experiment_id}-prepared-page-evidence.jsonl"
-            prepared_manifest_identity = _write_page_evidence(
-                prepared_manifest_path,
+            preparation = _write_locked_preparation(
+                tmp_path,
+                f"{experiment_id}-first",
                 experiment_id,
                 binding,
-                page_keys=page_keys,
+                row_identity,
+                rows,
+                preparation_ns=30 + duration_offset,
             )
-            repeat_prepared_manifest_path = (
-                tmp_path / f"{experiment_id}-repeat-prepared-page-evidence.jsonl"
-            )
-            repeat_prepared_manifest_identity = _write_page_evidence(
-                repeat_prepared_manifest_path,
+            repeat_preparation = _write_locked_preparation(
+                tmp_path,
+                f"{experiment_id}-repeat",
                 experiment_id,
                 binding,
-                page_keys=page_keys,
+                row_identity,
+                rows,
+                preparation_ns=30 + duration_offset,
             )
+            prepared_manifest_path = preparation.arm_manifest_path
+            prepared_manifest_identity = preparation.arm_manifest_identity
+            repeat_prepared_manifest_path = repeat_preparation.arm_manifest_path
+            repeat_prepared_manifest_identity = repeat_preparation.arm_manifest_identity
             assert prepared_manifest_identity == repeat_prepared_manifest_identity
         else:
+            preparation = None
+            repeat_preparation = None
             prepared_manifest_path = None
             repeat_prepared_manifest_path = None
             prepared_manifest_identity = binding.arm_manifest
@@ -504,7 +613,6 @@ def _locked_results(
         )
         error_path = tmp_path / f"{experiment_id}-errors.jsonl"
         error_identity = write_jsonl(error_path, assignments)
-        duration_offset = -20 if experiment_id == "row-vision" else offset
         results[experiment_id] = LockedArmResult(
             experiment_id=experiment_id,
             config_id=binding.config_id,
@@ -546,6 +654,8 @@ def _locked_results(
             ),
             error_assignments_path=error_path,
             error_assignments_identity=error_identity,
+            preparation=preparation,
+            repeat_preparation=repeat_preparation,
         )
     rows_path = tmp_path / "locked-rows.jsonl"
     write_jsonl(rows_path, rows)
@@ -611,9 +721,9 @@ def test_comparison_requires_every_metric_family_and_lane(tmp_path: Path) -> Non
         accepted.repeat_predictions_identity
         == locked.results["accepted-baseline"].repeat_predictions_identity
     )
-    assert accepted.measurements.preparation_ns == 30
+    assert accepted.measurements.preparation_ns == 0
     assert accepted.measurements.total_ns == 200
-    assert accepted.measurements.end_to_end_ns == 230
+    assert accepted.measurements.end_to_end_ns == 200
     assert accepted.measurements.cold_start_ns == 40
     assert accepted.measurements.p50_ns == 90
     assert accepted.measurements.p95_ns == 110
@@ -637,6 +747,12 @@ def test_comparison_requires_every_metric_family_and_lane(tmp_path: Path) -> Non
     assert vision.paired_row_exact_interval.effect == Decimal("-0.5")
     assert tuple(count.category for count in vision.primary_error_counts) == tuple(ErrorCategory)
     assert sum(count.count for count in vision.primary_error_counts) == 1
+
+
+def test_handoff_closed_sets_are_derived_from_the_result_catalog() -> None:
+    assert HANDOFF_BASELINE_IDS is BASELINE_ID_SET
+    assert EXPERIMENT_IDS is LANE_ID_SET
+    assert not hasattr(handoffs_module, "_STOP_REASONS")
 
 
 def test_stopped_lane_retains_validation_metrics_errors_and_reason_without_locked_claims(
@@ -808,7 +924,7 @@ def test_page_baseline_requires_prepared_manifest_in_each_resource_inventory(
     results = dict(locked.results)
     results["conditional-page-ocr"] = replacement
 
-    with pytest.raises(ComparisonError, match="prepared arm manifest inventory mismatch"):
+    with pytest.raises(ComparisonError, match="locked preparation resource inventory mismatch"):
         compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 
@@ -852,9 +968,11 @@ def test_page_baseline_requires_exact_locked_page_universe(tmp_path: Path) -> No
     handoffs, locked, gold = _case(tmp_path)
     original = locked.results["conditional-page-ocr"]
     binding = handoffs.arm_bindings["conditional-page-ocr"]
-    evidence_paths = (
-        tmp_path / "wrong-pages-first.jsonl",
-        tmp_path / "wrong-pages-repeat.jsonl",
+    assert original.preparation is not None
+    assert original.repeat_preparation is not None
+    preparations = (original.preparation, original.repeat_preparation)
+    evidence_paths = tuple(
+        preparation.cache_root / "wrong-pages.jsonl" for preparation in preparations
     )
     identities = tuple(
         _write_page_evidence(
@@ -866,14 +984,55 @@ def test_page_baseline_requires_exact_locked_page_universe(tmp_path: Path) -> No
         for path in evidence_paths
     )
     assert identities[0] == identities[1]
-    inventory_paths = (
-        tmp_path / "wrong-pages-first-resources.json",
-        tmp_path / "wrong-pages-repeat-resources.json",
+    inventory_paths = tuple(
+        tmp_path / f"wrong-pages-{index}-preparation-resources.json" for index in (1, 2)
     )
     inventory_identities = tuple(
         _write_resource_inventory(path, cache_files=(evidence_path,))
         for path, evidence_path in zip(inventory_paths, evidence_paths, strict=True)
     )
+    replacement_preparations: list[LockedPreparationResult] = []
+    for index, (
+        preparation,
+        evidence_path,
+        evidence_identity,
+        inventory_path,
+        inventory_identity,
+    ) in enumerate(
+        zip(
+            preparations,
+            evidence_paths,
+            identities,
+            inventory_paths,
+            inventory_identities,
+            strict=True,
+        ),
+        start=1,
+    ):
+        measurements = preparation.measurements.model_copy(
+            update={
+                "arm_manifest_identity": evidence_identity,
+                "resource_inventory_path": inventory_path,
+                "resource_inventory_identity": inventory_identity,
+            }
+        )
+        measurements_path = tmp_path / f"wrong-pages-{index}-preparation-measurements.json"
+        measurements_identity = _write_preparation_measurements(
+            measurements_path,
+            measurements,
+        )
+        replacement_preparations.append(
+            replace(
+                preparation,
+                arm_manifest_path=evidence_path,
+                arm_manifest_identity=evidence_identity,
+                measurements_path=measurements_path,
+                measurements_identity=measurements_identity,
+                measurements=measurements,
+                resource_inventory_path=inventory_path,
+                resource_inventory_identity=inventory_identity,
+            )
+        )
     replacement = replace(
         original,
         resource_inventory_path=inventory_paths[0],
@@ -890,11 +1049,250 @@ def test_page_baseline_requires_exact_locked_page_universe(tmp_path: Path) -> No
                 "resource_inventory_identity": inventory_identities[1],
             }
         ),
+        preparation=replacement_preparations[0],
+        repeat_preparation=replacement_preparations[1],
     )
     results = dict(locked.results)
     results["conditional-page-ocr"] = replacement
 
     with pytest.raises(ComparisonError, match="prepared arm manifest page membership mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_requires_distinct_preparation_cache_roots(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    assert original.repeat_preparation is not None
+    replacement = replace(
+        original,
+        repeat_preparation=replace(
+            original.repeat_preparation,
+            cache_root=original.preparation.cache_root,
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="independent preparation cache roots"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_preparation_cache_cannot_reuse_execution_cache(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    replacement = replace(
+        original,
+        preparation=replace(original.preparation, cache_root=original.cache_root),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="independent preparation cache roots"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_requires_evidence_beneath_preparation_cache_root(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    unrelated_root = tmp_path / "unrelated-preparation-cache"
+    unrelated_root.mkdir()
+    replacement = replace(
+        original,
+        preparation=replace(original.preparation, cache_root=unrelated_root),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="preparation cache provenance mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_rejects_cache_inventory_entries_outside_preparation_root(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    outside = tmp_path / "outside-preparation-cache.bin"
+    outside.write_bytes(b"synthetic outside cache")
+    preparation = original.preparation
+    inventory_path = tmp_path / "preparation-with-outside-cache-entry.json"
+    inventory_identity = _write_resource_inventory(
+        inventory_path,
+        cache_files=(preparation.arm_manifest_path, outside),
+    )
+    measurements = preparation.measurements.model_copy(
+        update={
+            "resource_inventory_path": inventory_path,
+            "resource_inventory_identity": inventory_identity,
+        }
+    )
+    measurements_path = tmp_path / "preparation-with-outside-cache-measurements.json"
+    measurements_identity = _write_preparation_measurements(measurements_path, measurements)
+    run_inventory_path = tmp_path / "run-with-outside-cache-entry.json"
+    run_inventory_identity = _write_resource_inventory(
+        run_inventory_path,
+        cache_files=(preparation.arm_manifest_path, outside),
+    )
+    replacement = replace(
+        original,
+        resource_inventory_path=run_inventory_path,
+        measurements=original.measurements.model_copy(
+            update={"resource_inventory_identity": run_inventory_identity}
+        ),
+        preparation=replace(
+            preparation,
+            measurements_path=measurements_path,
+            measurements_identity=measurements_identity,
+            measurements=measurements,
+            resource_inventory_path=inventory_path,
+            resource_inventory_identity=inventory_identity,
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="preparation cache provenance mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_rejects_hardlinked_repeat_evidence(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    assert original.repeat_preparation is not None
+    repeat = original.repeat_preparation
+    alias = repeat.cache_root / "hardlinked-page-evidence.jsonl"
+    alias.hardlink_to(original.preparation.arm_manifest_path)
+    preparation_inventory_path = tmp_path / "hardlinked-preparation-resources.json"
+    preparation_inventory_identity = _write_resource_inventory(
+        preparation_inventory_path,
+        cache_files=(alias,),
+    )
+    preparation_measurements = repeat.measurements.model_copy(
+        update={
+            "arm_manifest_identity": original.preparation.arm_manifest_identity,
+            "resource_inventory_path": preparation_inventory_path,
+            "resource_inventory_identity": preparation_inventory_identity,
+        }
+    )
+    preparation_measurements_path = tmp_path / "hardlinked-preparation-measurements.json"
+    preparation_measurements_identity = _write_preparation_measurements(
+        preparation_measurements_path,
+        preparation_measurements,
+    )
+    run_inventory_path = tmp_path / "hardlinked-run-resources.json"
+    run_inventory_identity = _write_resource_inventory(
+        run_inventory_path,
+        cache_files=(alias,),
+    )
+    replacement = replace(
+        original,
+        repeat_resource_inventory_path=run_inventory_path,
+        repeat_measurements=original.repeat_measurements.model_copy(
+            update={"resource_inventory_identity": run_inventory_identity}
+        ),
+        repeat_preparation=replace(
+            repeat,
+            arm_manifest_path=alias,
+            arm_manifest_identity=original.preparation.arm_manifest_identity,
+            measurements_path=preparation_measurements_path,
+            measurements_identity=preparation_measurements_identity,
+            measurements=preparation_measurements,
+            resource_inventory_path=preparation_inventory_path,
+            resource_inventory_identity=preparation_inventory_identity,
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="independent prepared arm outputs"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["arm_manifest_identity", "measurements_identity", "resource_inventory_identity"],
+)
+def test_page_baseline_rejects_mismatched_preparation_identities(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    assert original.preparation is not None
+    identity = _artifact(
+        f"wrong-{field}",
+        artifact_type=(
+            PREPARATION_MEASUREMENT_TYPE
+            if field == "measurements_identity"
+            else "resource-inventory"
+            if field == "resource_inventory_identity"
+            else "jsonl"
+        ),
+        version=(
+            PREPARATION_MEASUREMENT_VERSION
+            if field == "measurements_identity"
+            else "row-resource-inventory-v1"
+            if field == "resource_inventory_identity"
+            else "canonical-jsonl-v1"
+        ),
+    )
+    replacement = replace(
+        original,
+        preparation=replace(original.preparation, **{field: identity}),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match=r"locked preparation .* mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_non_page_arm_rejects_preparation_outputs(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    accepted = locked.results["accepted-baseline"]
+    page = locked.results["conditional-page-ocr"]
+    assert page.preparation is not None
+    assert page.repeat_preparation is not None
+    results = dict(locked.results)
+    results["accepted-baseline"] = replace(
+        accepted,
+        preparation=page.preparation,
+        repeat_preparation=page.repeat_preparation,
+    )
+
+    with pytest.raises(ComparisonError, match="non-page arm cannot carry preparation"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize(
+    ("experiment_id", "updates"),
+    [
+        ("accepted-baseline", {"preparation_ns": 1, "end_to_end_ns": 201}),
+        ("conditional-page-ocr", {"end_to_end_ns": 201}),
+    ],
+)
+def test_comparison_rejects_incoherent_measurement_phase_accounting(
+    tmp_path: Path,
+    experiment_id: str,
+    updates: dict[str, int],
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results[experiment_id]
+    replacement = replace(
+        original,
+        measurements=original.measurements.model_copy(update=updates),
+    )
+    results = dict(locked.results)
+    results[experiment_id] = replacement
+
+    with pytest.raises(ComparisonError, match="locked measurement phase accounting mismatch"):
         compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 

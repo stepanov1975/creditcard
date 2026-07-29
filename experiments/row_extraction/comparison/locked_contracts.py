@@ -9,15 +9,32 @@ from typing import Never
 
 from experiments.row_extraction.comparison.errors import ErrorAssignment
 from experiments.row_extraction.contracts import ArtifactIdentity, FrozenRow, GoldRow, RowPrediction
-from experiments.row_extraction.runner import RunMeasurements
+from experiments.row_extraction.runner import PreparationMeasurements, RunMeasurements
 
 from .result_catalog import ResultId
 
 type RowKey = tuple[str, str]
 
+PREPARATION_MEASUREMENT_TYPE = "row-extraction-locked-preparation-measurement"
+PREPARATION_MEASUREMENT_VERSION = "row-extraction-locked-preparation-measurement-v1"
+
 
 class ComparisonError(ValueError):
     """A result set cannot enter the aggregate comparison."""
+
+
+@dataclass(frozen=True)
+class LockedPreparationResult:
+    """Identity-bound outputs from one page-baseline preparation."""
+
+    cache_root: Path
+    arm_manifest_path: Path
+    arm_manifest_identity: ArtifactIdentity
+    measurements_path: Path
+    measurements_identity: ArtifactIdentity
+    measurements: PreparationMeasurements
+    resource_inventory_path: Path
+    resource_inventory_identity: ArtifactIdentity
 
 
 @dataclass(frozen=True)
@@ -38,6 +55,8 @@ class LockedArmResult:
     repeat_measurements: RunMeasurements
     error_assignments_path: Path
     error_assignments_identity: ArtifactIdentity
+    preparation: LockedPreparationResult | None = None
+    repeat_preparation: LockedPreparationResult | None = None
 
 
 @dataclass(frozen=True)
@@ -73,9 +92,12 @@ def fail(message: str) -> Never:
 
 
 __all__ = [
+    "PREPARATION_MEASUREMENT_TYPE",
+    "PREPARATION_MEASUREMENT_VERSION",
     "ComparisonError",
     "LockedArmResult",
     "LockedComparisonInputs",
+    "LockedPreparationResult",
     "LockedResultSet",
     "RowKey",
     "ValidatedLockedArm",

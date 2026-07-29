@@ -7,9 +7,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal, cast
 
-from experiments.row_extraction.annotations import (
-    _PRIMARY_REQUIRED_ROLES as PRIMARY_REQUIRED_FIELD_ROLES,
-)
+from experiments.row_extraction.contracts import PRIMARY_REQUIRED_FIELD_ROLES
 
 type BaselineId = Literal[
     "accepted-baseline",

@@ -46,6 +46,11 @@ class FieldRole(StrEnum):
     ANCILLARY = "ancillary"
 
 
+PRIMARY_REQUIRED_FIELD_ROLES = frozenset(
+    {FieldRole.BILLED_AMOUNT, FieldRole.BILLING_CURRENCY, FieldRole.KIND}
+)
+
+
 class Decision(StrEnum):
     ACCEPT = "accept"
     ABSTAIN = "abstain"

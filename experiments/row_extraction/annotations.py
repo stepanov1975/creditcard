@@ -16,6 +16,7 @@ from ccparser.normalization_dates import _parse_date
 from ccparser.normalization_fields import _parse_installment
 from ccparser.text_tokens import normalize_text
 from experiments.row_extraction.contracts import (
+    PRIMARY_REQUIRED_FIELD_ROLES,
     BBox,
     FieldRole,
     FrozenRow,
@@ -39,9 +40,6 @@ _DATE_ROLES = frozenset(
     }
 )
 _TEXT_ROLES = frozenset({FieldRole.DESCRIPTION, FieldRole.ANCILLARY})
-_PRIMARY_REQUIRED_ROLES = frozenset(
-    {FieldRole.BILLED_AMOUNT, FieldRole.BILLING_CURRENCY, FieldRole.KIND}
-)
 
 
 class AnnotationError(ValueError):
@@ -178,7 +176,7 @@ def _validate_row_type(
         _fail("structural row cannot assert transaction fields", identity)
     if label.row_type is RowType.PRIMARY_TRANSACTION:
         roles = {field.role for field in label.fields}
-        if not roles >= _PRIMARY_REQUIRED_ROLES:
+        if not roles >= PRIMARY_REQUIRED_FIELD_ROLES:
             _fail("primary row is missing required transaction fields", identity)
     if label.row_type is not RowType.CONTINUATION:
         return

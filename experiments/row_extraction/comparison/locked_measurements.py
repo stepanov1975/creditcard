@@ -15,10 +15,10 @@ from experiments.row_extraction.runner import RunMeasurements
 
 from .locked_artifacts import (
     verify_cache_root,
-    verify_prepared_arm_manifest,
     verify_resource_inventory,
 )
 from .locked_contracts import LockedArmResult, fail
+from .locked_preparations import validate_preparation_pair
 from .result_catalog import MANIFEST_POLICY_BY_RESULT
 
 
@@ -73,6 +73,14 @@ def _validate_measurement(
     ):
         fail("locked measurement binding mismatch")
     manifest_policy = MANIFEST_POLICY_BY_RESULT[result.experiment_id]
+    page_prepared = manifest_policy == "locked-page-preparation"
+    if (
+        page_prepared and validated.end_to_end_ns != validated.preparation_ns + validated.total_ns
+    ) or (
+        not page_prepared
+        and (validated.preparation_ns != 0 or validated.end_to_end_ns != validated.total_ns)
+    ):
+        fail("locked measurement phase accounting mismatch")
     if manifest_policy == "fixed" and (
         validated.arm_manifest_identity != binding.arm_manifest
         or validated.arm_manifest_identity != run_input.arm_manifest
@@ -149,27 +157,19 @@ def validate_measurement_pair(
         first_metadata.st_ino,
     ) == (repeat_metadata.st_dev, repeat_metadata.st_ino):
         fail("locked repeats require independent resource outputs")
-    if MANIFEST_POLICY_BY_RESULT[result.experiment_id] == "locked-page-preparation":
-        if first.arm_manifest_identity != repeat.arm_manifest_identity:
-            fail("repeat prepared arm manifest mismatch")
-        first_manifest = verify_prepared_arm_manifest(
-            first.arm_manifest_identity,
-            first_inventory,
-            experiment_id=result.experiment_id,
-            config_id=result.config_id,
-            runtime_identity=binding.runtime_identity,
-            expected_page_keys=expected_page_keys,
-        )
-        repeat_manifest = verify_prepared_arm_manifest(
-            repeat.arm_manifest_identity,
-            repeat_inventory,
-            experiment_id=result.experiment_id,
-            config_id=result.config_id,
-            runtime_identity=binding.runtime_identity,
-            expected_page_keys=expected_page_keys,
-        )
-        if first_manifest == repeat_manifest:
-            fail("prepared arm manifests require independent outputs")
+    validate_preparation_pair(
+        result,
+        binding=binding,
+        first_measurements=first,
+        repeat_measurements=repeat,
+        first_inventory=first_inventory,
+        repeat_inventory=repeat_inventory,
+        first_run_cache_root=first_root,
+        repeat_run_cache_root=repeat_root,
+        row_identity=row_identity,
+        row_count=row_count,
+        expected_page_keys=expected_page_keys,
+    )
     return first, repeat
 
 

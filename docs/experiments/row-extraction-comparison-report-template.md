@@ -112,6 +112,12 @@ latency label.
 | Result ID | First prediction identity | Repeat prediction identity | Byte-identical predictions | First resource inventory identity | Repeat resource inventory identity | Distinct regular inventory outputs | Distinct empty-cache roots |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 
+For conditional and forced page OCR, also record the preparation measurement, preparation
+resource-inventory, and page-evidence identities for both runs, plus privacy-safe booleans for
+distinct preparation cache roots and distinct regular outputs. Every preparation cache entry
+and page-evidence output must be beneath that run's declared preparation root. Reused resolved
+roots, reused output paths, and hardlink/same-inode aliases fail closed.
+
 Model, dependency, and cache bytes are disjoint inventories and must not be collapsed into an
 unlabeled size. The accepted baseline is labeled `materialized-adapter`: its replay numbers do
 not represent production extraction cost and it is excluded from all resource-dominance and
@@ -130,7 +136,11 @@ manifest. Conditional and forced page OCR use `locked-page-preparation`: each lo
 bound to canonical page-evidence JSONL generated for exactly the locked document/page universe,
 never validation-split page evidence. The two locked preparations must have identical content
 identities from distinct cache entries, and each identity must occur in its run's verified
-resource inventory.
+resource inventory. Page-evidence records retain the raw provider config; derive the reported
+page-arm config through the shared `fixed-page-evidence-v1` plus ownership-policy rule rather
+than comparing raw and derived config strings directly. Preparation measurements and resource
+inventories must be canonical identity-bound outputs and agree with the measured run's arm,
+runtime, row sequence, phase accounting, and combined resource inventory.
 
 ## Pareto report
 

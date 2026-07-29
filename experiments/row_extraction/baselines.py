@@ -270,7 +270,9 @@ class AcceptedBaselineArm:
         return self._predictions[identity]
 
 
-def _page_config_id(config_id: str) -> str:
+def page_arm_config_id(config_id: str) -> str:
+    """Derive the page-arm config ID from a raw provider evidence config."""
+
     return f"{_PAGE_EVIDENCE_VERSION}:{config_id}:{PAGE_OWNERSHIP_RESOLVER_VERSION}"
 
 
@@ -339,7 +341,7 @@ class _PageBaselineArm:
             if stream_runtime != expected_runtime:
                 _fail("page evidence runtime identity contract")
         self._runtime_identity = stream_runtime
-        self.config_id = _page_config_id(next(iter(configs)))
+        self.config_id = page_arm_config_id(next(iter(configs)))
 
         pages_by_id: dict[_PageIdentity, PageEvidenceRecord] = {}
         for record in validated_pages:
@@ -743,7 +745,7 @@ class _PageBaselineArmFactory(_BaselineArmFactory):
             dependency_inventory_identity=dependency_inventory_identity,
             cache_root=cache_root,
             experiment_id=self.mode,
-            config_id=_page_config_id(next(iter(configs))),
+            config_id=page_arm_config_id(next(iter(configs))),
             resource_basis="end-to-end-method",
         )
 
@@ -777,4 +779,5 @@ __all__ = [
     "ForcedPageOcrArmFactory",
     "PageEvidenceRecord",
     "PageWord",
+    "page_arm_config_id",
 ]

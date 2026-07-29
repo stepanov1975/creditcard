@@ -7,12 +7,6 @@ from collections.abc import Sequence
 from pydantic import ValidationError
 
 from experiments.row_extraction.comparison.handoff_contracts import (
-    BASELINE_IDS as HANDOFF_BASELINE_IDS,
-)
-from experiments.row_extraction.comparison.handoff_contracts import (
-    EXPERIMENT_IDS as HANDOFF_EXPERIMENT_IDS,
-)
-from experiments.row_extraction.comparison.handoff_contracts import (
     FrozenRunInputs,
     ValidatedArmBinding,
     ValidatedHandoffs,
@@ -73,9 +67,7 @@ def _validate_run_input(run_input: FrozenRunInputs, binding: ValidatedArmBinding
 def _expected_locked(handoffs: ValidatedHandoffs) -> tuple[str, ...]:
     expected_ids = set(RESULT_IDS)
     if (
-        set(HANDOFF_BASELINE_IDS) != set(BASELINE_ID_SET)
-        or set(HANDOFF_EXPERIMENT_IDS) != set(LANE_ID_SET)
-        or set(handoffs.dispositions) != set(LANE_ID_SET)
+        set(handoffs.dispositions) != set(LANE_ID_SET)
         or set(handoffs.arm_bindings) != expected_ids
         or set(handoffs.validation_evidence) != expected_ids
     ):

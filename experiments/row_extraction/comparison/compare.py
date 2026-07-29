@@ -15,6 +15,7 @@ from experiments.row_extraction.comparison.handoff_contracts import ValidatedHan
 from experiments.row_extraction.comparison.locked_results import (
     ComparisonError,
     LockedArmResult,
+    LockedPreparationResult,
     LockedResultSet,
     fail,
     read_locked_rows,
@@ -235,6 +236,7 @@ __all__ = [
     "ComparisonReport",
     "ExperimentResult",
     "LockedArmResult",
+    "LockedPreparationResult",
     "LockedResultSet",
     "ResultBasis",
     "build_comparison",

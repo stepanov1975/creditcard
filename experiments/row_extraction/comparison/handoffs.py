@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 from experiments.row_extraction.contracts import (
     ArtifactIdentity,
@@ -50,13 +51,8 @@ from .handoff_contracts import (
 )
 from .measurement_validation import validate_measurements
 from .metric_integrity import validate_metric_report
+from .result_catalog import STOP_REASON_BY_LANE, LaneId
 
-_STOP_REASONS = {
-    "row-ocr": "ocr_stage_validation_failed",
-    "row-profiles": "no_profile_candidate_met_validation_gate",
-    "row-text": "no_text_candidate_met_validation_gate",
-    "row-vision": "no_pixel_gain",
-}
 _GIT_SHA_LENGTH = 40
 _RUNTIME_TYPE = "row-runtime-manifest"
 _RUNTIME_VERSION = "row-runtime-manifest-v1"
@@ -190,7 +186,7 @@ def _validate_disposition(lane: LaneHandoff) -> None:
     elif lane.disposition is LaneDisposition.VALIDATION_STOPPED:
         if lane.frozen_arm is not None:
             raise HandoffError("stopped lane cannot have run inputs")
-        if lane.stop_reason != _STOP_REASONS[lane.experiment_id]:
+        if lane.stop_reason != STOP_REASON_BY_LANE[cast(LaneId, lane.experiment_id)]:
             raise HandoffError("stopped lane reason mismatch")
     else:
         raise HandoffError("invalid lane disposition")

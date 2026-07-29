@@ -25,12 +25,12 @@ from ccparser.evidence.models import Word
 from ccparser.output import _canonical_json_value_content
 from experiments.row_extraction.annotations import validate_annotations
 from experiments.row_extraction.baselines import (
-    PAGE_OWNERSHIP_RESOLVER_VERSION,
     AcceptedBaselineArmFactory,
     ConditionalPageOcrArmFactory,
     ForcedPageOcrArmFactory,
     PageEvidenceRecord,
     PageWord,
+    page_arm_config_id,
 )
 from experiments.row_extraction.bundle import prepare_bundle
 from experiments.row_extraction.codecs import _canonical_record_bytes, read_jsonl, write_jsonl
@@ -449,7 +449,7 @@ def _page_config(mode: _PageMode) -> str:
 
 
 def _page_factory_config(mode: _PageMode) -> str:
-    return f"{_PAGE_EVIDENCE_VERSION}:{_page_config(mode)}:{PAGE_OWNERSHIP_RESOLVER_VERSION}"
+    return page_arm_config_id(_page_config(mode))
 
 
 def _validate_mode_model_inventory(mode: _Mode, inventory: ResourceInventory) -> None:

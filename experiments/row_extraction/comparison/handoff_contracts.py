@@ -19,24 +19,12 @@ from experiments.row_extraction.metrics import MetricReport
 from experiments.row_extraction.runner import MeasuredArmFactory, RunMeasurements
 
 from .errors import ValidationErrorSummary
+from .result_catalog import BASELINE_ID_SET, LANE_ID_SET
 
 type RowKey = tuple[str, str]
 
-BASELINE_IDS = frozenset(
-    {
-        "accepted-baseline",
-        "conditional-page-ocr",
-        "forced-page-ocr",
-    }
-)
-EXPERIMENT_IDS = frozenset(
-    {
-        "row-ocr",
-        "row-profiles",
-        "row-text",
-        "row-vision",
-    }
-)
+BASELINE_IDS = BASELINE_ID_SET
+EXPERIMENT_IDS = LANE_ID_SET
 
 VALIDATION_METRIC_TYPE = "row-comparison-validation-metrics"
 VALIDATION_METRIC_VERSION = "row-comparison-validation-metrics-v1"
