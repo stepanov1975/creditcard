@@ -62,12 +62,14 @@ def _gold_row(
     row_id: str,
     row_type: RowType = RowType.PRIMARY_TRANSACTION,
     fields: tuple[GoldField, ...] = (),
+    ambiguous: bool = False,
 ) -> GoldRow:
     return GoldRow(
         document_id=_DOCUMENT_ID,
         row_id=row_id,
         row_type=row_type,
         fields=fields,
+        ambiguous=ambiguous,
     )
 
 
@@ -166,6 +168,76 @@ def test_score_predictions_counts_a_complete_accepted_row_as_exact() -> None:
     assert report.exact_rows == 1
     assert report.exact_row_rate == Decimal("1")
     assert report.fields[FieldRole.DESCRIPTION].exact_matches == 1
+
+
+def test_accepted_ambiguous_gold_is_wrong_for_exact_calibration_and_risk() -> None:
+    report = _score(
+        gold=(
+            _gold_row(
+                row_id="row-ambiguous",
+                row_type=RowType.AMBIGUOUS,
+                ambiguous=True,
+            ),
+        ),
+        predictions=(
+            _prediction(
+                row_id="row-ambiguous",
+                predicted_type=RowType.AMBIGUOUS,
+                confidence=0.8,
+            ),
+        ),
+    )
+
+    assert report.row_count == 1
+    assert report.accepted_rows == 1
+    assert report.exact_rows == 0
+    assert report.exact_row_rate == Decimal("0")
+    assert report.calibration_bins[8].count == 1
+    assert report.calibration_bins[8].mean_confidence == Decimal("0.8")
+    assert report.calibration_bins[8].empirical_accuracy == Decimal("0")
+    assert report.brier_score == Decimal("0.64")
+    assert report.log_loss == Decimal("1.609437912434100374600759333")
+    assert report.risk_coverage[0].coverage == Decimal("1")
+    assert report.risk_coverage[0].selective_risk == Decimal("1")
+
+
+def test_abstained_ambiguous_gold_remains_nonexact_and_in_denominators() -> None:
+    report = _score(
+        gold=(
+            _gold_row(
+                row_id="row-ambiguous",
+                row_type=RowType.AMBIGUOUS,
+                ambiguous=True,
+            ),
+            _gold_row(
+                row_id="row-exact",
+                fields=(_description_field(),),
+            ),
+        ),
+        predictions=(
+            _prediction(
+                row_id="row-ambiguous",
+                predicted_type=RowType.AMBIGUOUS,
+                decision=Decision.ABSTAIN,
+                confidence=0.2,
+            ),
+            _prediction(
+                row_id="row-exact",
+                description="SYNTHETIC MERCHANT",
+                confidence=0.8,
+            ),
+        ),
+    )
+
+    assert report.row_count == 2
+    assert report.exact_rows == 1
+    assert report.exact_row_rate == Decimal("0.5")
+    assert report.accepted_rows == 1
+    assert report.abstained_rows == 1
+    assert sum(bin_.count for bin_ in report.calibration_bins) == 2
+    assert report.calibration_bins[2].empirical_accuracy == Decimal("0")
+    assert report.risk_coverage[0].coverage == Decimal("0.5")
+    assert report.risk_coverage[0].selective_risk == Decimal("0")
 
 
 def test_score_predictions_separates_omission_from_hallucination() -> None:

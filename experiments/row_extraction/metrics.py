@@ -422,6 +422,7 @@ def _field_metrics(
 
         exact_outcomes[identity] = (
             prediction.decision is Decision.ACCEPT
+            and not label.ambiguous
             and prediction.predicted_type is label.row_type
             and fields_exact
         )
