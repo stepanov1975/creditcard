@@ -882,6 +882,8 @@ exact match separately. Use edit distance for CER/WER. Count every eligible gold
 coverage. Treat accepted wrong/extra fields as hallucinations and absent expected fields as
 omissions. Build fixed predeclared calibration bins, Brier/log loss, and risk-coverage points
 from exact-row outcomes. Reject duplicate/missing prediction IDs instead of dropping them.
+Reviewed ambiguous rows remain in row, calibration, and coverage denominators but can never be
+a complete exact-row success because they have no unique gold transaction value.
 Compute CER/WER only against supplied verbatim `OcrReference` records. Every supplied valid
 reviewed region is eligible: derive its hypothesis directly from the prediction evidence atoms
 overlapping that exact region in ledger order, and use an empty hypothesis when recognition
