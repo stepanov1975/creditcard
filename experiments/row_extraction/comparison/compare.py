@@ -1,176 +1,236 @@
-"""Closed aggregate comparison for the four row-extraction lanes and controls."""
+"""Fail-closed comparison for frozen row-extraction results and controls."""
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Literal, Self
+from collections.abc import Sequence
+from decimal import Decimal
 
-from pydantic import Field, model_validator
-
-from experiments.row_extraction.contracts import LaneDisposition, _FrozenModel
-
-_RESULT_IDS = (
-    "accepted-baseline",
-    "conditional-page-ocr",
-    "forced-page-ocr",
-    "row-ocr",
-    "row-profiles",
-    "row-text",
-    "row-vision",
+from experiments.row_extraction.comparison.errors import (
+    ErrorAssignment,
+    ErrorCategory,
+    ErrorCategoryCount,
+    classify_error,
 )
-_BASELINE_IDS = frozenset(_RESULT_IDS[:3])
-_METRIC_FAMILIES = (
-    "row_exact",
-    "merchant",
-    "typed_fields",
-    "omission_hallucination",
-    "ocr_error",
-    "calibration_abstention",
-    "resources_determinism",
-    "row_type_errors",
+from experiments.row_extraction.comparison.handoff_contracts import ValidatedHandoffs
+from experiments.row_extraction.comparison.locked_results import (
+    ComparisonError,
+    LockedArmResult,
+    LockedResultSet,
+    fail,
+    read_locked_rows,
+    row_key,
+    validate_locked_arm,
+    validate_locked_inputs,
 )
+from experiments.row_extraction.comparison.reporting import (
+    RESULT_IDS,
+    ComparisonReport,
+    ExperimentResult,
+    ResultBasis,
+    build_comparison,
+    complete_error_counts,
+    pareto_front,
+    result_fields,
+)
+from experiments.row_extraction.comparison.statistics import paired_document_bootstrap
+from experiments.row_extraction.contracts import (
+    FrozenRow,
+    GoldRow,
+    LaneDisposition,
+    OcrReference,
+    RowPrediction,
+)
+from experiments.row_extraction.metrics import MetricReport, score_predictions
+
+_BOOTSTRAP_SAMPLES = 1_000
 
 
-class ResultBasis(StrEnum):
-    """Whether a result is a locked measurement or a preserved validation stop."""
-
-    LOCKED_TEST = "locked_test"
-    VALIDATION_STOP = "validation_stop"
-
-
-class ExperimentResult(_FrozenModel):
-    """Privacy-safe aggregate projection of one baseline or experiment outcome."""
-
-    experiment_id: str = Field(min_length=1)
-    result_basis: ResultBasis
-    disposition: LaneDisposition | None
-    stop_reason: str | None
-    row_count: int = Field(gt=0)
-    exact_rows: int = Field(ge=0)
-    merchant_exact_rows: int = Field(ge=0)
-    omissions: int = Field(ge=0)
-    hallucinations: int = Field(ge=0)
-    accepted_rows: int = Field(ge=0)
-    p95_ns: int | None = Field(default=None, gt=0)
-    peak_rss_bytes: int | None = Field(default=None, gt=0)
-    model_bytes: int | None = Field(default=None, ge=0)
-    dependency_bytes: int | None = Field(default=None, gt=0)
-    deterministic: bool
-    resource_basis: Literal["end-to-end-method", "materialized-adapter"] | None
-
-    @model_validator(mode="after")
-    def coherent_basis(self) -> Self:
-        stopped = self.disposition is LaneDisposition.VALIDATION_STOPPED
-        resources = (
-            self.p95_ns,
-            self.peak_rss_bytes,
-            self.model_bytes,
-            self.dependency_bytes,
-            self.resource_basis,
+def _error_counts(
+    assignments: Sequence[ErrorAssignment],
+) -> tuple[tuple[ErrorCategoryCount, ...], tuple[ErrorCategoryCount, ...]]:
+    primary = tuple(
+        ErrorCategoryCount(
+            category=category,
+            count=sum(value.primary is category for value in assignments),
         )
-        if stopped and (
-            self.result_basis is not ResultBasis.VALIDATION_STOP
-            or not self.stop_reason
-            or any(value is not None for value in resources)
-        ):
-            raise ValueError("stopped result must remain validation-only")
-        if not stopped and self.result_basis is ResultBasis.VALIDATION_STOP:
-            raise ValueError("validation-stop result requires stopped disposition")
-        if self.result_basis is ResultBasis.LOCKED_TEST and any(
-            value is None for value in resources
-        ):
-            raise ValueError("locked result requires complete resource aggregates")
-        if self.disposition is LaneDisposition.FROZEN_ELIGIBLE and self.stop_reason is not None:
-            raise ValueError("eligible result cannot carry a stop reason")
-        if self.exact_rows > self.row_count or self.accepted_rows > self.row_count:
-            raise ValueError("result counts exceed row count")
-        return self
-
-
-class ComparisonReport(_FrozenModel):
-    """Complete, ordered result set without a hidden weighted score."""
-
-    experiment_ids: tuple[str, ...]
-    required_metric_families: tuple[str, ...]
-    locked_experiment_ids: tuple[str, ...]
-    validation_stopped_ids: tuple[str, ...]
-    resource_pareto_ids: tuple[str, ...]
-    results: tuple[ExperimentResult, ...]
-
-
-def _dominates(first: ExperimentResult, second: ExperimentResult) -> bool:
-    first_axes = (
-        first.exact_rows,
-        first.merchant_exact_rows,
-        -first.omissions,
-        -first.hallucinations,
-        -(first.p95_ns or 0),
-        -(first.peak_rss_bytes or 0),
-        -(first.model_bytes or 0),
+        for category in ErrorCategory
     )
-    second_axes = (
-        second.exact_rows,
-        second.merchant_exact_rows,
-        -second.omissions,
-        -second.hallucinations,
-        -(second.p95_ns or 0),
-        -(second.peak_rss_bytes or 0),
-        -(second.model_bytes or 0),
-    )
-    return all(left >= right for left, right in zip(first_axes, second_axes, strict=True)) and any(
-        left > right for left, right in zip(first_axes, second_axes, strict=True)
-    )
-
-
-def build_comparison(results: tuple[ExperimentResult, ...]) -> ComparisonReport:
-    """Validate completeness and expose locked, stopped, and Pareto membership."""
-
-    by_id = {result.experiment_id: result for result in results}
-    if len(results) != len(_RESULT_IDS) or set(by_id) != set(_RESULT_IDS):
-        raise ValueError("comparison requires exactly seven result IDs")
-    ordered = tuple(by_id[experiment_id] for experiment_id in _RESULT_IDS)
-    for result in ordered:
-        if result.experiment_id in _BASELINE_IDS:
-            if result.disposition is not None or result.result_basis is not ResultBasis.LOCKED_TEST:
-                raise ValueError("baseline must be a locked control result")
-        elif result.disposition is None:
-            raise ValueError("experiment result requires a lane disposition")
-    locked = tuple(
-        result.experiment_id for result in ordered if result.result_basis is ResultBasis.LOCKED_TEST
-    )
-    stopped = tuple(
-        result.experiment_id
-        for result in ordered
-        if result.result_basis is ResultBasis.VALIDATION_STOP
-    )
-    resource_candidates = tuple(
-        result
-        for result in ordered
-        if result.result_basis is ResultBasis.LOCKED_TEST
-        and result.resource_basis == "end-to-end-method"
-        and result.deterministic
-    )
-    pareto = tuple(
-        candidate.experiment_id
-        for candidate in resource_candidates
-        if not any(
-            other.experiment_id != candidate.experiment_id and _dominates(other, candidate)
-            for other in resource_candidates
+    secondary = tuple(
+        ErrorCategoryCount(
+            category=category,
+            count=sum(category in value.secondary for value in assignments),
         )
+        for category in ErrorCategory
     )
-    return ComparisonReport(
-        experiment_ids=_RESULT_IDS,
-        required_metric_families=_METRIC_FAMILIES,
-        locked_experiment_ids=locked,
-        validation_stopped_ids=stopped,
-        resource_pareto_ids=pareto,
-        results=ordered,
+    return primary, secondary
+
+
+def _document_exact_contributions(
+    rows: Sequence[FrozenRow],
+    gold: Sequence[GoldRow],
+    predictions: Sequence[RowPrediction],
+) -> dict[str, Decimal]:
+    documents = tuple(sorted({row.document_id for row in rows}))
+    contributions: dict[str, Decimal] = {}
+    for document_id in documents:
+        document_rows = tuple(row for row in rows if row.document_id == document_id)
+        document_gold = tuple(value for value in gold if value.document_id == document_id)
+        document_predictions = tuple(
+            value for value in predictions if value.document_id == document_id
+        )
+        report = score_predictions(document_rows, document_gold, document_predictions)
+        contributions[document_id] = report.exact_row_rate
+    return contributions
+
+
+def _stopped_result(
+    experiment_id: str,
+    handoffs: ValidatedHandoffs,
+) -> ExperimentResult:
+    evidence = handoffs.validation_evidence[experiment_id]
+    summary = evidence.error_summary
+    if (
+        summary is None
+        or evidence.error_summary_identity is None
+        or summary.row_count != evidence.metrics.row_count
+        or not complete_error_counts(summary.primary_counts)
+        or not complete_error_counts(summary.secondary_counts)
+    ):
+        fail("stopped validation error evidence mismatch")
+    return ExperimentResult(
+        experiment_id=experiment_id,
+        result_basis=ResultBasis.VALIDATION_STOP,
+        disposition=LaneDisposition.VALIDATION_STOPPED,
+        stop_reason=evidence.stop_reason,
+        p95_ns=None,
+        peak_rss_bytes=None,
+        model_bytes=None,
+        dependency_bytes=None,
+        deterministic=len(evidence.measurements) == 2,
+        resource_basis=None,
+        metric_report=evidence.metrics,
+        measurements=None,
+        repeat_measurements=None,
+        paired_row_exact_interval=None,
+        predictions_identity=evidence.predictions_identity,
+        repeat_predictions_identity=None,
+        error_assignments_identity=evidence.error_summary_identity,
+        primary_error_counts=summary.primary_counts,
+        secondary_error_counts=summary.secondary_counts,
+        **result_fields(evidence.metrics),
     )
+
+
+def _locked_result(
+    experiment_id: str,
+    *,
+    handoffs: ValidatedHandoffs,
+    locked_results: LockedResultSet,
+    score_rows: tuple[FrozenRow, ...],
+    gold: tuple[GoldRow, ...],
+    predictions: tuple[RowPrediction, ...],
+    assignments: tuple[ErrorAssignment, ...],
+    metrics: MetricReport,
+    interval_baseline: dict[str, Decimal],
+) -> tuple[ExperimentResult, dict[str, Decimal]]:
+    raw_result = locked_results.results[experiment_id]
+    gold_by_key = {row_key(label): label for label in gold}
+    expected_assignments = tuple(
+        classify_error(gold_by_key[row_key(prediction)], prediction) for prediction in predictions
+    )
+    if assignments != expected_assignments or len(assignments) != metrics.row_count:
+        fail("locked error-assignment identity mismatch")
+    primary, secondary = _error_counts(assignments)
+    contributions = _document_exact_contributions(score_rows, gold, predictions)
+    baseline = contributions if experiment_id == "accepted-baseline" else interval_baseline
+    if not baseline:
+        fail("accepted baseline must be scored first")
+    interval = paired_document_bootstrap(
+        contributions,
+        baseline,
+        seed=f"{handoffs.foundation_sha}:{experiment_id}:row_exact",
+        samples=_BOOTSTRAP_SAMPLES,
+    )
+    result = ExperimentResult(
+        experiment_id=experiment_id,
+        result_basis=ResultBasis.LOCKED_TEST,
+        disposition=handoffs.dispositions.get(experiment_id),
+        stop_reason=None,
+        p95_ns=raw_result.measurements.p95_ns,
+        peak_rss_bytes=raw_result.measurements.peak_rss_bytes,
+        model_bytes=raw_result.measurements.model_bytes,
+        dependency_bytes=raw_result.measurements.dependency_bytes,
+        deterministic=True,
+        resource_basis=raw_result.measurements.resource_basis,
+        metric_report=metrics,
+        measurements=raw_result.measurements,
+        repeat_measurements=raw_result.repeat_measurements,
+        paired_row_exact_interval=interval,
+        predictions_identity=raw_result.predictions_identity,
+        repeat_predictions_identity=raw_result.repeat_predictions_identity,
+        error_assignments_identity=raw_result.error_assignments_identity,
+        primary_error_counts=primary,
+        secondary_error_counts=secondary,
+        **result_fields(metrics),
+    )
+    return result, baseline
+
+
+def compare_handoffs(
+    handoffs: ValidatedHandoffs,
+    locked_results: LockedResultSet,
+    gold: Sequence[GoldRow],
+    ocr_references: Sequence[OcrReference] = (),
+) -> ComparisonReport:
+    """Verify, score, and compare the fixed seven-result experiment set."""
+
+    inputs = validate_locked_inputs(handoffs, locked_results, gold)
+    results: list[ExperimentResult] = []
+    baseline_contributions: dict[str, Decimal] = {}
+    for experiment_id in RESULT_IDS:
+        if experiment_id not in inputs.expected_locked:
+            results.append(_stopped_result(experiment_id, handoffs))
+            continue
+        raw_result = locked_results.results[experiment_id]
+        if not isinstance(raw_result, LockedArmResult) or raw_result.experiment_id != experiment_id:
+            fail("locked result binding mismatch")
+        predictions, assignments = validate_locked_arm(
+            raw_result,
+            handoffs=handoffs,
+            locked_results=locked_results,
+            row_count=len(inputs.rows),
+        )
+        # Reopen and validate the fixed row stream for every score operation.
+        score_rows = read_locked_rows(locked_results)
+        metrics = score_predictions(
+            score_rows,
+            inputs.ordered_gold,
+            predictions,
+            tuple(ocr_references),
+        )
+        result, baseline_contributions = _locked_result(
+            experiment_id,
+            handoffs=handoffs,
+            locked_results=locked_results,
+            score_rows=score_rows,
+            gold=inputs.ordered_gold,
+            predictions=predictions,
+            assignments=assignments,
+            metrics=metrics,
+            interval_baseline=baseline_contributions,
+        )
+        results.append(result)
+    return build_comparison(tuple(results))
 
 
 __all__ = [
+    "ComparisonError",
     "ComparisonReport",
     "ExperimentResult",
+    "LockedArmResult",
+    "LockedResultSet",
     "ResultBasis",
     "build_comparison",
+    "compare_handoffs",
+    "pareto_front",
 ]
