@@ -109,14 +109,28 @@ latency label.
 | Result ID | Resource basis | Model bytes | Dependency bytes | Cache bytes | Subprocess count | Worker count | Measurement protocol | Runtime identity | Arm identity | Model inventory identity | Dependency inventory identity | Resource inventory identity |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-| Result ID | First prediction identity | Repeat prediction identity | Byte-identical predictions | First resource inventory identity | Repeat resource inventory identity | Independent empty-cache/resource outputs |
-| --- | --- | --- | --- | --- | --- | --- |
+| Result ID | First prediction identity | Repeat prediction identity | Byte-identical predictions | First resource inventory identity | Repeat resource inventory identity | Distinct regular inventory outputs | Distinct empty-cache roots |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 
 Model, dependency, and cache bytes are disjoint inventories and must not be collapsed into an
 unlabeled size. The accepted baseline is labeled `materialized-adapter`: its replay numbers do
 not represent production extraction cost and it is excluded from all resource-dominance and
 Pareto statements. Only `end-to-end-method` locked results with byte-identical predictions may
 enter resource Pareto comparison. Validation-stopped results have no locked resource row.
+First and repeat resource-inventory content identities may be equal: deterministic resource
+sets can produce identical canonical bytes. Independence is instead proved by distinct regular
+inventory output paths and distinct empty-cache roots, with each output's bytes validated
+against that run's measured inventory identity. Reusing either output path or cache root is a
+fail-closed comparison error.
+
+Accepted baseline uses `locked-materialized-input`: its locked measurement is bound to the
+canonical, exact ordered prediction stream for the locked row universe, never the validation
+prediction stream. Frozen row-lane measurements remain bound to their validated fixed arm
+manifest. Conditional and forced page OCR use `locked-page-preparation`: each locked run is
+bound to canonical page-evidence JSONL generated for exactly the locked document/page universe,
+never validation-split page evidence. The two locked preparations must have identical content
+identities from distinct cache entries, and each identity must occur in its run's verified
+resource inventory.
 
 ## Pareto report
 
@@ -128,6 +142,11 @@ coverage, and target-risk coverage; fewer wrong required fields and hallucinatio
 selective risk, area under risk-coverage, phase-matched end-to-end latency, process-tree peak
 RSS, and model bytes; and deterministic output. Report tradeoffs directly. Do not calculate or
 publish an unreviewed weighted score.
+
+`Wrong required fields` counts only the primary-row roles declared required by the annotation
+contract: billed amount, billing currency, and kind. Optional or ancillary field errors remain
+fully visible in typed-field metrics, omissions, and hallucinations, but do not alter this
+Pareto axis.
 
 ## Required limitations and decision boundary
 
@@ -141,7 +160,8 @@ The private report must state all applicable limitations:
 - any privacy-unsafe or insufficiently supported slice omitted from the report;
 - that intervals resample documents and do not establish corpus-wide acceptance;
 - that resource comparisons require the same measurement protocol, one-worker policy,
-  phase definition, row sequence, and identity-bound runtime/inventories;
+  new-empty cache policy, phase definition, row sequence, and identity-bound
+  runtime/inventories;
 - that prediction determinism requires byte-identical canonical first/repeat artifacts from
   independent empty-cache/resource outputs; and
 - that a comparison report does not authorize production integration. Recommendation and any

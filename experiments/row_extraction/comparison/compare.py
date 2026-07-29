@@ -41,6 +41,7 @@ from experiments.row_extraction.contracts import (
     RowPrediction,
 )
 from experiments.row_extraction.metrics import MetricReport, score_predictions
+from experiments.row_extraction.runner import RunMeasurements
 
 _BOOTSTRAP_SAMPLES = 1_000
 
@@ -130,6 +131,8 @@ def _locked_result(
     gold: tuple[GoldRow, ...],
     predictions: tuple[RowPrediction, ...],
     assignments: tuple[ErrorAssignment, ...],
+    measurements: RunMeasurements,
+    repeat_measurements: RunMeasurements,
     metrics: MetricReport,
     interval_baseline: dict[str, Decimal],
 ) -> tuple[ExperimentResult, dict[str, Decimal]]:
@@ -156,15 +159,15 @@ def _locked_result(
         result_basis=ResultBasis.LOCKED_TEST,
         disposition=handoffs.dispositions.get(experiment_id),
         stop_reason=None,
-        p95_ns=raw_result.measurements.p95_ns,
-        peak_rss_bytes=raw_result.measurements.peak_rss_bytes,
-        model_bytes=raw_result.measurements.model_bytes,
-        dependency_bytes=raw_result.measurements.dependency_bytes,
+        p95_ns=measurements.p95_ns,
+        peak_rss_bytes=measurements.peak_rss_bytes,
+        model_bytes=measurements.model_bytes,
+        dependency_bytes=measurements.dependency_bytes,
         deterministic=True,
-        resource_basis=raw_result.measurements.resource_basis,
+        resource_basis=measurements.resource_basis,
         metric_report=metrics,
-        measurements=raw_result.measurements,
-        repeat_measurements=raw_result.repeat_measurements,
+        measurements=measurements,
+        repeat_measurements=repeat_measurements,
         paired_row_exact_interval=interval,
         predictions_identity=raw_result.predictions_identity,
         repeat_predictions_identity=raw_result.repeat_predictions_identity,
@@ -194,12 +197,14 @@ def compare_handoffs(
         raw_result = locked_results.results[experiment_id]
         if not isinstance(raw_result, LockedArmResult) or raw_result.experiment_id != experiment_id:
             fail("locked result binding mismatch")
-        predictions, assignments = validate_locked_arm(
+        validated_arm = validate_locked_arm(
             raw_result,
             handoffs=handoffs,
             locked_results=locked_results,
-            row_count=len(inputs.rows),
+            rows=inputs.rows,
         )
+        predictions = validated_arm.predictions
+        assignments = validated_arm.assignments
         # Reopen and validate the fixed row stream for every score operation.
         score_rows = read_locked_rows(locked_results)
         metrics = score_predictions(
@@ -216,6 +221,8 @@ def compare_handoffs(
             gold=inputs.ordered_gold,
             predictions=predictions,
             assignments=assignments,
+            measurements=validated_arm.measurements,
+            repeat_measurements=validated_arm.repeat_measurements,
             metrics=metrics,
             interval_baseline=baseline_contributions,
         )

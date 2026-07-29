@@ -4,10 +4,12 @@ import hashlib
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 
+from ccparser.output import _canonical_json_value_content
+from experiments.row_extraction.baselines import PageEvidenceRecord
 from experiments.row_extraction.codecs import write_jsonl
 from experiments.row_extraction.comparison.compare import (
     ComparisonError,
@@ -32,6 +34,12 @@ from experiments.row_extraction.comparison.handoff_contracts import (
     ValidatedHandoffs,
     ValidationEvidence,
 )
+from experiments.row_extraction.comparison.result_catalog import (
+    MANIFEST_POLICY_BY_RESULT,
+    PRIMARY_REQUIRED_FIELD_ROLES,
+    RESULT_IDS,
+    STOP_REASON_BY_LANE,
+)
 from experiments.row_extraction.contracts import (
     ArtifactIdentity,
     DatasetSplit,
@@ -46,24 +54,13 @@ from experiments.row_extraction.contracts import (
     RowType,
 )
 from experiments.row_extraction.metrics import score_predictions
-from experiments.row_extraction.runner import MeasuredArmFactory, RunMeasurements
-from tests.experiments.row_extraction.factories import evidence_atom, frozen_row
-
-_RESULT_IDS = (
-    "accepted-baseline",
-    "conditional-page-ocr",
-    "forced-page-ocr",
-    "row-ocr",
-    "row-profiles",
-    "row-text",
-    "row-vision",
+from experiments.row_extraction.runner import (
+    MeasuredArmFactory,
+    ResourceInventory,
+    ResourceInventoryEntry,
+    RunMeasurements,
 )
-_STOP_REASONS = {
-    "row-ocr": "ocr_stage_validation_failed",
-    "row-profiles": "no_profile_candidate_met_validation_gate",
-    "row-text": "no_text_candidate_met_validation_gate",
-    "row-vision": "no_pixel_gain",
-}
+from tests.experiments.row_extraction.factories import evidence_atom, frozen_row
 
 
 def _artifact(
@@ -87,13 +84,19 @@ def _rows() -> tuple[FrozenRow, ...]:
             document_id="a" * 64,
             row_id="row-a",
             split=DatasetSplit.TEST,
-            atoms=(evidence_atom(atom_id="atom-a", text="SYNTHETIC A"),),
+            atoms=(
+                evidence_atom(atom_id="atom-a", text="SYNTHETIC A"),
+                evidence_atom(atom_id="ancillary-a", text="SYNTHETIC NOTE A"),
+            ),
         ),
         frozen_row(
             document_id="b" * 64,
             row_id="row-b",
             split=DatasetSplit.TEST,
-            atoms=(evidence_atom(atom_id="atom-b", text="SYNTHETIC B"),),
+            atoms=(
+                evidence_atom(atom_id="atom-b", text="SYNTHETIC B"),
+                evidence_atom(atom_id="ancillary-b", text="SYNTHETIC NOTE B"),
+            ),
         ),
     )
 
@@ -109,6 +112,11 @@ def _gold(rows: tuple[FrozenRow, ...]) -> tuple[GoldRow, ...]:
                     role=FieldRole.DESCRIPTION,
                     canonical_value=row.atoms[0].text,
                     atom_ids=(row.atoms[0].atom_id,),
+                ),
+                GoldField(
+                    role=FieldRole.ANCILLARY,
+                    canonical_value=row.atoms[1].text,
+                    atom_ids=(row.atoms[1].atom_id,),
                 ),
             ),
         )
@@ -133,13 +141,22 @@ def _predictions(
                 row_id=row.row_id,
                 predicted_type=RowType.PRIMARY_TRANSACTION,
                 evidence_atoms=row.atoms,
-                proposals=()
-                if wrong
-                else (
+                proposals=(
                     FieldProposal(
                         role=FieldRole.DESCRIPTION,
                         atom_ids=(row.atoms[0].atom_id,),
                         raw_score=1.0,
+                    ),
+                    *(
+                        ()
+                        if wrong
+                        else (
+                            FieldProposal(
+                                role=FieldRole.ANCILLARY,
+                                atom_ids=(row.atoms[1].atom_id,),
+                                raw_score=1.0,
+                            ),
+                        )
                     ),
                 ),
                 exact_row_confidence=0.8 if wrong else 0.9,
@@ -165,9 +182,10 @@ def _measurement(
     row_identity: ArtifactIdentity,
     prediction_identity: ArtifactIdentity,
     binding: ValidatedArmBinding,
+    resource_inventory_identity: ArtifactIdentity,
     *,
     split: DatasetSplit,
-    repeat: bool = False,
+    arm_manifest_identity: ArtifactIdentity | None = None,
     duration_offset: int = 0,
 ) -> RunMeasurements:
     arm_manifest = binding.arm_manifest or _artifact(f"{experiment_id}-validation-arm")
@@ -180,7 +198,7 @@ def _measurement(
         resource_basis=(
             "materialized-adapter" if experiment_id == "accepted-baseline" else "end-to-end-method"
         ),
-        arm_manifest_identity=arm_manifest,
+        arm_manifest_identity=arm_manifest_identity or arm_manifest,
         row_count=2,
         total_ns=200 + duration_offset,
         p50_ns=90 + duration_offset,
@@ -199,12 +217,68 @@ def _measurement(
         runtime_identity=binding.runtime_identity,
         model_inventory_identity=binding.model_inventory,
         dependency_inventory_identity=binding.dependency_inventory,
-        resource_inventory_identity=_artifact(
-            f"{experiment_id}-resources-{'repeat' if repeat else 'first'}",
-            artifact_type="resource-inventory",
-            version="row-resource-inventory-v1",
-        ),
+        resource_inventory_identity=resource_inventory_identity,
         predictions_sha256=prediction_identity.sha256,
+    )
+
+
+def _write_resource_inventory(
+    path: Path,
+    *,
+    cache_files: tuple[Path, ...] = (),
+) -> ArtifactIdentity:
+    entries: list[ResourceInventoryEntry] = []
+    for cache_file in cache_files:
+        payload = cache_file.read_bytes()
+        metadata = cache_file.stat()
+        entries.append(
+            ResourceInventoryEntry(
+                category="cache",
+                resolved_path=cache_file.resolve(strict=True),
+                sha256=hashlib.sha256(payload).hexdigest(),
+                byte_size=len(payload),
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+            )
+        )
+    inventory = ResourceInventory(
+        version="row-resource-inventory-v1",
+        entries=tuple(entries),
+    )
+    payload = _canonical_json_value_content(inventory.model_dump(mode="json")) + b"\n"
+    path.write_bytes(payload)
+    return ArtifactIdentity(
+        artifact_type="resource-inventory",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        version="row-resource-inventory-v1",
+        byte_size=len(payload),
+    )
+
+
+def _write_page_evidence(
+    path: Path,
+    experiment_id: str,
+    binding: ValidatedArmBinding,
+    *,
+    page_keys: tuple[tuple[str, int], ...],
+    page_extent: float = 100.0,
+) -> ArtifactIdentity:
+    mode = cast(Literal["conditional-page-ocr", "forced-page-ocr"], experiment_id)
+    return write_jsonl(
+        path,
+        tuple(
+            PageEvidenceRecord(
+                document_id=document_id,
+                page_number=page_number,
+                page_bbox=(0.0, 0.0, page_extent, page_extent),
+                mode=mode,
+                evidence_version="fixed-page-evidence-v1",
+                config_id=binding.config_id,
+                runtime_identity=binding.runtime_identity,
+                words=(),
+            )
+            for document_id, page_number in page_keys
+        ),
     )
 
 
@@ -264,7 +338,7 @@ def _handoffs(
     evidence: dict[str, ValidationEvidence] = {}
     run_inputs: dict[str, FrozenRunInputs] = {}
     validation_predictions: dict[str, Path] = {}
-    for experiment_id in _RESULT_IDS:
+    for experiment_id in RESULT_IDS:
         is_stopped = experiment_id in stopped
         binding = ValidatedArmBinding(
             experiment_id=experiment_id,
@@ -317,6 +391,11 @@ def _handoffs(
                     row_identity,
                     prediction_identity,
                     binding,
+                    _artifact(
+                        f"{experiment_id}-validation-resources",
+                        artifact_type="resource-inventory",
+                        version="row-resource-inventory-v1",
+                    ),
                     split=DatasetSplit.VALIDATION,
                 ),
             ),
@@ -327,7 +406,7 @@ def _handoffs(
                 version="row-comparison-error-summary-v1",
             ),
             error_summary=summary,
-            stop_reason=_STOP_REASONS.get(experiment_id) if is_stopped else None,
+            stop_reason=STOP_REASON_BY_LANE.get(experiment_id) if is_stopped else None,
         )
         if not is_stopped:
             assert binding.arm_manifest is not None
@@ -363,7 +442,8 @@ def _locked_results(
     handoffs: ValidatedHandoffs,
 ) -> LockedResultSet:
     results: dict[str, LockedArmResult] = {}
-    for offset, experiment_id in enumerate(_RESULT_IDS):
+    page_keys = tuple(sorted({(row.document_id, row.page_number) for row in rows}))
+    for offset, experiment_id in enumerate(RESULT_IDS):
         if handoffs.dispositions.get(experiment_id) is LaneDisposition.VALIDATION_STOPPED:
             continue
         binding = handoffs.arm_bindings[experiment_id]
@@ -376,6 +456,48 @@ def _locked_results(
         prediction_identity = write_jsonl(prediction_path, predictions)
         repeat_path = tmp_path / f"{experiment_id}-repeat-predictions.jsonl"
         repeat_identity = write_jsonl(repeat_path, predictions)
+        page_prepared = experiment_id in {"conditional-page-ocr", "forced-page-ocr"}
+        if page_prepared:
+            prepared_manifest_path = tmp_path / f"{experiment_id}-prepared-page-evidence.jsonl"
+            prepared_manifest_identity = _write_page_evidence(
+                prepared_manifest_path,
+                experiment_id,
+                binding,
+                page_keys=page_keys,
+            )
+            repeat_prepared_manifest_path = (
+                tmp_path / f"{experiment_id}-repeat-prepared-page-evidence.jsonl"
+            )
+            repeat_prepared_manifest_identity = _write_page_evidence(
+                repeat_prepared_manifest_path,
+                experiment_id,
+                binding,
+                page_keys=page_keys,
+            )
+            assert prepared_manifest_identity == repeat_prepared_manifest_identity
+        else:
+            prepared_manifest_path = None
+            repeat_prepared_manifest_path = None
+            prepared_manifest_identity = binding.arm_manifest
+            repeat_prepared_manifest_identity = binding.arm_manifest
+        assert prepared_manifest_identity is not None
+        assert repeat_prepared_manifest_identity is not None
+        resource_inventory_path = tmp_path / f"{experiment_id}-resources.json"
+        resource_inventory_identity = _write_resource_inventory(
+            resource_inventory_path,
+            cache_files=(prepared_manifest_path,) if prepared_manifest_path is not None else (),
+        )
+        repeat_resource_inventory_path = tmp_path / f"{experiment_id}-repeat-resources.json"
+        repeat_resource_inventory_identity = _write_resource_inventory(
+            repeat_resource_inventory_path,
+            cache_files=(repeat_prepared_manifest_path,)
+            if repeat_prepared_manifest_path is not None
+            else (),
+        )
+        cache_root = tmp_path / f"{experiment_id}-cache"
+        cache_root.mkdir()
+        repeat_cache_root = tmp_path / f"{experiment_id}-repeat-cache"
+        repeat_cache_root.mkdir()
         assignments = tuple(
             classify_error(label, prediction)
             for label, prediction in zip(gold, predictions, strict=True)
@@ -388,23 +510,38 @@ def _locked_results(
             config_id=binding.config_id,
             predictions_path=prediction_path,
             predictions_identity=prediction_identity,
+            resource_inventory_path=resource_inventory_path,
+            cache_root=cache_root,
             measurements=_measurement(
                 experiment_id,
                 row_identity,
                 prediction_identity,
                 binding,
+                resource_inventory_identity,
                 split=DatasetSplit.TEST,
+                arm_manifest_identity=(
+                    prediction_identity
+                    if experiment_id == "accepted-baseline"
+                    else prepared_manifest_identity
+                ),
                 duration_offset=duration_offset,
             ),
             repeat_predictions_path=repeat_path,
             repeat_predictions_identity=repeat_identity,
+            repeat_resource_inventory_path=repeat_resource_inventory_path,
+            repeat_cache_root=repeat_cache_root,
             repeat_measurements=_measurement(
                 experiment_id,
                 row_identity,
                 repeat_identity,
                 binding,
+                repeat_resource_inventory_identity,
                 split=DatasetSplit.TEST,
-                repeat=True,
+                arm_manifest_identity=(
+                    repeat_identity
+                    if experiment_id == "accepted-baseline"
+                    else repeat_prepared_manifest_identity
+                ),
                 duration_offset=duration_offset,
             ),
             error_assignments_path=error_path,
@@ -449,7 +586,7 @@ def test_comparison_requires_every_metric_family_and_lane(tmp_path: Path) -> Non
 
     report = compare_handoffs(handoffs, locked, gold)
 
-    assert report.experiment_ids == _RESULT_IDS
+    assert report.experiment_ids == RESULT_IDS
     assert report.required_metric_families == (
         "row_exact",
         "merchant",
@@ -488,8 +625,14 @@ def test_comparison_requires_every_metric_family_and_lane(tmp_path: Path) -> Non
     assert accepted.resource_basis == "materialized-adapter"
     assert accepted.experiment_id not in report.resource_pareto_ids
     assert vision.metric_report is not None
-    assert vision.metric_report.fields[FieldRole.DESCRIPTION].omissions == 1
-    assert vision.metric_report.fields[FieldRole.DESCRIPTION].hallucinations == 0
+    assert vision.metric_report.fields[FieldRole.DESCRIPTION].omissions == 0
+    assert vision.metric_report.fields[FieldRole.ANCILLARY].omissions == 1
+    assert vision.metric_report.fields[FieldRole.ANCILLARY].hallucinations == 0
+    assert vision.wrong_required_fields == accepted.wrong_required_fields == 0
+    assert (
+        frozenset({FieldRole.BILLED_AMOUNT, FieldRole.BILLING_CURRENCY, FieldRole.KIND})
+        == PRIMARY_REQUIRED_FIELD_ROLES
+    )
     assert vision.paired_row_exact_interval is not None
     assert vision.paired_row_exact_interval.effect == Decimal("-0.5")
     assert tuple(count.category for count in vision.primary_error_counts) == tuple(ErrorCategory)
@@ -576,7 +719,186 @@ def test_comparison_rejects_prediction_repeat_and_error_identity_failures(
             compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 
-def test_comparison_rejects_measurement_binding_and_reused_resource_inventory(
+def test_comparison_allows_identical_resource_inventory_content_from_distinct_runs(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["row-ocr"]
+    assert (
+        original.measurements.resource_inventory_identity
+        == original.repeat_measurements.resource_inventory_identity
+    )
+
+    report = compare_handoffs(handoffs, locked, gold)
+
+    assert "row-ocr" in report.locked_experiment_ids
+
+
+def test_page_baselines_bind_locked_preparation_instead_of_validation_manifest(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+
+    report = compare_handoffs(handoffs, locked, gold)
+
+    assert MANIFEST_POLICY_BY_RESULT["accepted-baseline"] == "locked-materialized-input"
+    assert MANIFEST_POLICY_BY_RESULT["conditional-page-ocr"] == "locked-page-preparation"
+    for experiment_id in ("conditional-page-ocr", "forced-page-ocr"):
+        result = locked.results[experiment_id]
+        assert (
+            result.measurements.arm_manifest_identity
+            != handoffs.arm_bindings[experiment_id].arm_manifest
+        )
+        assert (
+            result.measurements.arm_manifest_identity
+            == result.repeat_measurements.arm_manifest_identity
+        )
+        assert experiment_id in report.locked_experiment_ids
+
+
+def test_accepted_baseline_binds_locked_predictions_instead_of_validation_manifest(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    accepted = locked.results["accepted-baseline"]
+
+    report = compare_handoffs(handoffs, locked, gold)
+
+    assert accepted.measurements.arm_manifest_identity == accepted.predictions_identity
+    assert accepted.repeat_measurements.arm_manifest_identity == accepted.predictions_identity
+    assert (
+        accepted.measurements.arm_manifest_identity
+        != handoffs.arm_bindings["accepted-baseline"].arm_manifest
+    )
+    assert "accepted-baseline" in report.locked_experiment_ids
+
+
+def test_accepted_baseline_rejects_validation_split_manifest(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["accepted-baseline"]
+    validation_manifest = handoffs.arm_bindings["accepted-baseline"].arm_manifest
+    assert validation_manifest is not None
+    replacement = replace(
+        original,
+        measurements=original.measurements.model_copy(
+            update={"arm_manifest_identity": validation_manifest}
+        ),
+    )
+    results = dict(locked.results)
+    results["accepted-baseline"] = replacement
+
+    with pytest.raises(ComparisonError, match="locked materialized manifest binding mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_requires_prepared_manifest_in_each_resource_inventory(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    resource_path = tmp_path / "page-resources-without-evidence.json"
+    resource_identity = _write_resource_inventory(resource_path)
+    replacement = replace(
+        original,
+        resource_inventory_path=resource_path,
+        measurements=original.measurements.model_copy(
+            update={"resource_inventory_identity": resource_identity}
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="prepared arm manifest inventory mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_requires_identical_first_and_repeat_prepared_manifests(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    binding = handoffs.arm_bindings["conditional-page-ocr"]
+    evidence_path = tmp_path / "different-repeat-page-evidence.jsonl"
+    evidence_identity = _write_page_evidence(
+        evidence_path,
+        "conditional-page-ocr",
+        binding,
+        page_keys=tuple(sorted({(row.document_id, row.page_number) for row in _rows()})),
+        page_extent=101.0,
+    )
+    resource_path = tmp_path / "different-repeat-page-resources.json"
+    resource_identity = _write_resource_inventory(
+        resource_path,
+        cache_files=(evidence_path,),
+    )
+    replacement = replace(
+        original,
+        repeat_resource_inventory_path=resource_path,
+        repeat_measurements=original.repeat_measurements.model_copy(
+            update={
+                "arm_manifest_identity": evidence_identity,
+                "resource_inventory_identity": resource_identity,
+            }
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="repeat prepared arm manifest mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_page_baseline_requires_exact_locked_page_universe(tmp_path: Path) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["conditional-page-ocr"]
+    binding = handoffs.arm_bindings["conditional-page-ocr"]
+    evidence_paths = (
+        tmp_path / "wrong-pages-first.jsonl",
+        tmp_path / "wrong-pages-repeat.jsonl",
+    )
+    identities = tuple(
+        _write_page_evidence(
+            path,
+            "conditional-page-ocr",
+            binding,
+            page_keys=(("c" * 64, 1),),
+        )
+        for path in evidence_paths
+    )
+    assert identities[0] == identities[1]
+    inventory_paths = (
+        tmp_path / "wrong-pages-first-resources.json",
+        tmp_path / "wrong-pages-repeat-resources.json",
+    )
+    inventory_identities = tuple(
+        _write_resource_inventory(path, cache_files=(evidence_path,))
+        for path, evidence_path in zip(inventory_paths, evidence_paths, strict=True)
+    )
+    replacement = replace(
+        original,
+        resource_inventory_path=inventory_paths[0],
+        repeat_resource_inventory_path=inventory_paths[1],
+        measurements=original.measurements.model_copy(
+            update={
+                "arm_manifest_identity": identities[0],
+                "resource_inventory_identity": inventory_identities[0],
+            }
+        ),
+        repeat_measurements=original.repeat_measurements.model_copy(
+            update={
+                "arm_manifest_identity": identities[1],
+                "resource_inventory_identity": inventory_identities[1],
+            }
+        ),
+    )
+    results = dict(locked.results)
+    results["conditional-page-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="prepared arm manifest page membership mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_comparison_rejects_measurement_binding_and_resource_inventory_identity(
     tmp_path: Path,
 ) -> None:
     handoffs, locked, gold = _case(tmp_path)
@@ -585,14 +907,6 @@ def test_comparison_rejects_measurement_binding_and_reused_resource_inventory(
         original,
         measurements=original.measurements.model_copy(
             update={"runtime_identity": _artifact("wrong-runtime")}
-        ),
-    )
-    reused_resources = replace(
-        original,
-        repeat_measurements=original.repeat_measurements.model_copy(
-            update={
-                "resource_inventory_identity": original.measurements.resource_inventory_identity
-            }
         ),
     )
     wrong_resource_type = replace(
@@ -604,13 +918,108 @@ def test_comparison_rejects_measurement_binding_and_reused_resource_inventory(
 
     for replacement, message in (
         (wrong_runtime, "measurement binding mismatch"),
-        (reused_resources, "independent resource inventories"),
         (wrong_resource_type, "measurement binding mismatch"),
     ):
         results = dict(locked.results)
         results["row-ocr"] = replacement
         with pytest.raises(ComparisonError, match=message):
             compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize("field", ["experiment_id", "config_id"])
+def test_comparison_rejects_prediction_records_bound_to_another_arm(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["row-ocr"]
+    predictions = tuple(
+        prediction.model_copy(update={field: "wrong-binding"})
+        for prediction in _predictions(_rows(), "row-ocr")
+    )
+    prediction_identity = write_jsonl(original.predictions_path, predictions)
+    repeat_identity = write_jsonl(original.repeat_predictions_path, predictions)
+    replacement = replace(
+        original,
+        predictions_identity=prediction_identity,
+        repeat_predictions_identity=repeat_identity,
+        measurements=original.measurements.model_copy(
+            update={"predictions_sha256": prediction_identity.sha256}
+        ),
+        repeat_measurements=original.repeat_measurements.model_copy(
+            update={"predictions_sha256": repeat_identity.sha256}
+        ),
+    )
+    results = dict(locked.results)
+    results["row-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="locked prediction binding mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("repeat_resource_inventory_path", "independent resource outputs"),
+        ("repeat_cache_root", "independent cache roots"),
+    ],
+)
+def test_comparison_rejects_reused_independent_run_paths(
+    tmp_path: Path,
+    field: str,
+    message: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["row-ocr"]
+    first_field = field.removeprefix("repeat_")
+    replacement = replace(original, **{field: getattr(original, first_field)})
+    results = dict(locked.results)
+    results["row-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match=message):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+def test_comparison_rejects_resource_inventory_bytes_not_bound_to_measurement(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["row-ocr"]
+    wrong_path = tmp_path / "wrong-resources.json"
+    wrong_path.write_bytes(b"{}\n")
+    replacement = replace(original, resource_inventory_path=wrong_path)
+    results = dict(locked.results)
+    results["row-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match="resource inventory identity mismatch"):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"cache_policy": "reuse-v1"}, "invalid locked measurement"),
+        ({"measurement_protocol": "wrong-protocol"}, "invalid locked measurement"),
+        ({"total_ns": 0}, "invalid locked measurement"),
+        ({"throughput_rows_per_second": Decimal("NaN")}, "invalid locked measurement"),
+    ],
+)
+def test_comparison_defensively_revalidates_locked_measurements(
+    tmp_path: Path,
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    original = locked.results["row-ocr"]
+    replacement = replace(
+        original,
+        measurements=original.measurements.model_copy(update=updates),
+    )
+    results = dict(locked.results)
+    results["row-ocr"] = replacement
+
+    with pytest.raises(ComparisonError, match=message):
+        compare_handoffs(handoffs, replace(locked, results=results), gold)
 
 
 def test_comparison_rejects_stop_reason_on_baseline_evidence(tmp_path: Path) -> None:
@@ -663,6 +1072,16 @@ def test_pareto_uses_complete_accuracy_risk_and_phase_matched_resource_axes(
     assert (
         by_id["row-vision"].measurements.end_to_end_ns < by_id["row-ocr"].measurements.end_to_end_ns
     )
+
+
+def test_pareto_explicitly_excludes_accepted_baseline_even_if_mislabeled(
+    tmp_path: Path,
+) -> None:
+    handoffs, locked, gold = _case(tmp_path)
+    report = compare_handoffs(handoffs, locked, gold)
+    accepted = report.results[0].model_copy(update={"resource_basis": "end-to-end-method"})
+
+    assert "accepted-baseline" not in pareto_front((accepted,))
 
 
 def _legacy_result(
@@ -731,7 +1150,7 @@ def _legacy_results() -> tuple[ExperimentResult, ...]:
 def test_build_comparison_remains_compatible_with_policy_projection() -> None:
     report = build_comparison(_legacy_results())
 
-    assert report.experiment_ids == _RESULT_IDS
+    assert report.experiment_ids == RESULT_IDS
     assert report.validation_stopped_ids == ("row-ocr", "row-text", "row-vision")
 
 
@@ -742,6 +1161,14 @@ def test_build_comparison_rejects_missing_or_duplicate_result() -> None:
         build_comparison(complete[:-1])
     with pytest.raises(ValueError, match="comparison requires exactly seven result IDs"):
         build_comparison((*complete[:-1], complete[0]))
+
+
+def test_build_comparison_requires_materialized_accepted_baseline() -> None:
+    complete = list(_legacy_results())
+    complete[0] = complete[0].model_copy(update={"resource_basis": "end-to-end-method"})
+
+    with pytest.raises(ValueError, match="accepted baseline requires materialized-adapter"):
+        build_comparison(tuple(complete))
 
 
 def test_stopped_result_cannot_claim_locked_resources() -> None:

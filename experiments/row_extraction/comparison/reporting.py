@@ -13,6 +13,12 @@ from experiments.row_extraction.comparison.errors import (
     ErrorCategory,
     ErrorCategoryCount,
 )
+from experiments.row_extraction.comparison.result_catalog import (
+    BASELINE_ID_SET,
+    BASELINE_IDS,
+    PRIMARY_REQUIRED_FIELD_ROLES,
+    RESULT_IDS,
+)
 from experiments.row_extraction.comparison.statistics import PairedInterval
 from experiments.row_extraction.contracts import (
     ArtifactIdentity,
@@ -23,16 +29,6 @@ from experiments.row_extraction.contracts import (
 from experiments.row_extraction.metrics import MetricReport
 from experiments.row_extraction.runner import RunMeasurements
 
-RESULT_IDS = (
-    "accepted-baseline",
-    "conditional-page-ocr",
-    "forced-page-ocr",
-    "row-ocr",
-    "row-profiles",
-    "row-text",
-    "row-vision",
-)
-BASELINE_IDS = frozenset(RESULT_IDS[:3])
 METRIC_FAMILIES = (
     "row_exact",
     "merchant",
@@ -65,7 +61,10 @@ class ResultBasis(StrEnum):
 
 
 def field_errors(metrics: MetricReport) -> int:
-    return sum(metric.eligible_rows - metric.exact_matches for metric in metrics.fields.values())
+    return sum(
+        metrics.fields[role].eligible_rows - metrics.fields[role].exact_matches
+        for role in PRIMARY_REQUIRED_FIELD_ROLES
+    )
 
 
 def omissions(metrics: MetricReport) -> int:
@@ -290,6 +289,7 @@ def pareto_front(results: Sequence[ExperimentResult]) -> tuple[str, ...]:
         result
         for result in results
         if result.result_basis is ResultBasis.LOCKED_TEST
+        and result.experiment_id != "accepted-baseline"
         and result.resource_basis == "end-to-end-method"
         and result.deterministic is True
         and _pareto_axes(result) is not None
@@ -312,11 +312,14 @@ def build_comparison(results: tuple[ExperimentResult, ...]) -> ComparisonReport:
         raise ValueError("comparison requires exactly seven result IDs")
     ordered = tuple(by_id[experiment_id] for experiment_id in RESULT_IDS)
     for result in ordered:
-        if result.experiment_id in BASELINE_IDS:
+        if result.experiment_id in BASELINE_ID_SET:
             if result.disposition is not None or result.result_basis is not ResultBasis.LOCKED_TEST:
                 raise ValueError("baseline must be a locked control result")
         elif result.disposition is None:
             raise ValueError("experiment result requires a lane disposition")
+    accepted = by_id["accepted-baseline"]
+    if accepted.resource_basis != "materialized-adapter":
+        raise ValueError("accepted baseline requires materialized-adapter resource basis")
     locked = tuple(
         result.experiment_id for result in ordered if result.result_basis is ResultBasis.LOCKED_TEST
     )
