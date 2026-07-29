@@ -90,6 +90,12 @@ class RegionSkeleton(_PrivateModel):
         return self
 
 
+def _region_sort_key(
+    region: RegionSkeleton,
+) -> tuple[GridBBox, GridBBox, tuple[int, ...], tuple[GridBand, ...]]:
+    return region.bbox, region.header, region.column_edges, region.row_bands
+
+
 class PageSkeleton(_PrivateModel):
     page_number: int = Field(gt=0)
     size_points: tuple[int, int]
@@ -111,9 +117,7 @@ class PageSkeleton(_PrivateModel):
                 not _valid_grid_bbox(value) for value in values
             ):
                 raise ValueError(f"{label} must be canonical")
-        if self.regions != tuple(
-            sorted(self.regions, key=lambda region: (region.bbox, region.header))
-        ):
+        if self.regions != tuple(sorted(self.regions, key=_region_sort_key)):
             raise ValueError("regions must be canonical")
         return self
 
@@ -645,6 +649,12 @@ def profile_statement_geometry(source: Path, result: StatementResult) -> Documen
                 page_regions = tuple(
                     sorted(regions_by_page[page_number], key=lambda item: item.bbox)
                 )
+                region_skeletons = tuple(
+                    sorted(
+                        (_region_skeleton(region, page_bbox) for region in page_regions),
+                        key=_region_sort_key,
+                    )
+                )
                 pages.append(
                     PageSkeleton(
                         page_number=page_number,
@@ -653,9 +663,7 @@ def profile_statement_geometry(source: Path, result: StatementResult) -> Documen
                         image_area_bucket=image_area_bucket(image_boxes),
                         image_boxes=image_boxes,
                         vector_rule_boxes=_page_rule_boxes(page, page_bbox),
-                        regions=tuple(
-                            _region_skeleton(region, page_bbox) for region in page_regions
-                        ),
+                        regions=region_skeletons,
                     )
                 )
     except GroupingContractError:

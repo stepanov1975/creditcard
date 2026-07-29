@@ -8,7 +8,14 @@ import fitz  # type: ignore[import-untyped]
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from ccparser.models import StatementDiscoverySummary, StatementResult, Status
+from ccparser.models import (
+    DiscoveryRowSummary,
+    DiscoveryTableSchemaSummary,
+    StatementDiscoverySummary,
+    StatementResult,
+    Status,
+    TableRegionSummary,
+)
 from experiments.row_extraction.codecs import _canonical_record_bytes
 from experiments.row_extraction.contracts import ArtifactIdentity, DatasetSplit
 from experiments.row_extraction.grouping import (
@@ -178,6 +185,43 @@ def test_structure_profile_rejects_noncanonical_or_forged_geometry() -> None:
             image_boxes=((3, 3, 4, 4), (1, 1, 2, 2)),
             vector_rule_boxes=(),
             regions=(),
+        )
+
+
+def test_page_skeleton_requires_total_region_order_for_quantized_ties() -> None:
+    first = _region(rows=((20, 24),))
+    second = _region(rows=((26, 30),))
+    canonical = tuple(
+        sorted(
+            (first, second),
+            key=lambda region: (
+                region.bbox,
+                region.header,
+                region.column_edges,
+                region.row_bands,
+            ),
+        )
+    )
+
+    PageSkeleton(
+        page_number=1,
+        size_points=(612, 792),
+        requires_ocr=False,
+        image_area_bucket=0,
+        image_boxes=(),
+        vector_rule_boxes=(),
+        regions=canonical,
+    )
+
+    with pytest.raises(ValidationError, match="regions must be canonical"):
+        PageSkeleton(
+            page_number=1,
+            size_points=(612, 792),
+            requires_ocr=False,
+            image_area_bucket=0,
+            image_boxes=(),
+            vector_rule_boxes=(),
+            regions=tuple(reversed(canonical)),
         )
 
 
@@ -510,6 +554,36 @@ def _empty_discovery_result(source: Path) -> StatementResult:
     )
 
 
+def _table_region(
+    bbox: tuple[float, float, float, float],
+    header_bbox: tuple[float, float, float, float],
+) -> TableRegionSummary:
+    header = DiscoveryRowSummary(
+        page_number=1,
+        bbox=header_bbox,
+        cells=(),
+        confidence=1.0,
+    )
+    return TableRegionSummary(
+        page_number=1,
+        bbox=bbox,
+        header_evidence=(),
+        column_roles=(),
+        row_count=0,
+        header=header,
+        rows=(),
+        table_schema=DiscoveryTableSchemaSummary(
+            page_number=1,
+            bbox=bbox,
+            columns=(),
+            header_cells=(),
+            sample_cells=(),
+            confidence=1.0,
+        ),
+        confidence=1.0,
+    )
+
+
 def test_profile_statement_geometry_uses_page_structure_without_semantic_output(
     tmp_path: Path,
 ) -> None:
@@ -525,6 +599,44 @@ def test_profile_statement_geometry_uses_page_structure_without_semantic_output(
     assert profile.pages[0].size_points == (320, 480)
     assert profile.pages[0].regions == ()
     assert "secret-merchant-and-amount" not in profile.model_dump_json()
+
+
+def test_profile_statement_geometry_sorts_regions_after_grid_quantization(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.pdf"
+    with fitz.open() as document:
+        document.new_page(width=640, height=640)
+        document.save(source)
+    document_id = hashlib.sha256(source.read_bytes()).hexdigest()
+    raw_first_but_canonical_second = _table_region(
+        (10.0, 10.0, 19.0, 110.0),
+        (12.0, 50.0, 18.0, 60.0),
+    )
+    raw_second_but_canonical_first = _table_region(
+        (11.0, 10.0, 18.0, 110.0),
+        (12.0, 20.0, 18.0, 30.0),
+    )
+    result = StatementResult(
+        status=Status.NOT_STATEMENT,
+        transactions=(),
+        groups=(),
+        source_sha256=document_id,
+        discovery=StatementDiscoverySummary(
+            classification="synthetic",
+            table_regions=(
+                raw_first_but_canonical_second,
+                raw_second_but_canonical_first,
+            ),
+            confidence=1.0,
+        ),
+    )
+
+    profile = profile_statement_geometry(source, result)
+
+    assert profile.pages[0].regions == tuple(
+        sorted(profile.pages[0].regions, key=lambda region: (region.bbox, region.header))
+    )
 
 
 def test_profile_documents_orders_by_content_identity_and_collapses_exact_bytes(
