@@ -845,7 +845,7 @@ class RiskTargetCoverage(_FrozenModel):
 
 
 class MetricReport(_FrozenModel):
-    row_count: int = Field(ge=0)
+    row_count: int = Field(gt=0)
     exact_rows: int = Field(ge=0)
     exact_row_rate: Decimal
     row_type_correct: int = Field(ge=0)
@@ -910,8 +910,8 @@ git commit -m "feat: score exact row extraction experiments"
 ```text
 Scope answer: YES
 Program component: shared foundation and baselines
-Measured effect: identical execution, timing, evidence validation, deterministic output, and aggregate reporting for every arm
-Fixed inputs: FrozenRow stream, ExperimentArm protocol, common metrics
+Measured effect: identical execution, same-run phase-separated resource measurement, evidence validation, deterministic output, and aggregate reporting for every arm
+Fixed inputs: FrozenRow stream, measured-arm factory protocol, common metrics, identity-bound resource specification, optional preparation measurements, and typed page-evidence artifacts
 Allowed files: runner, baseline adapter, report, CLI, and focused tests
 Stop condition: stop if the runner exposes private row contents or lets an arm mutate shared inputs
 ```
@@ -927,8 +927,16 @@ Stop condition: stop if the runner exposes private row contents or lets an arm m
 - Test: `tests/experiments/row_extraction/test_cli.py`
 
 **Interfaces:**
-- Consumes: `Iterable[FrozenRow]`, `ExperimentArm`, `PredictionSink`, gold records, optional reviewed `OcrReference` records, and artifact identities.
-- Produces: `RunMeasurements`, `run_arm(rows: Iterable[FrozenRow], arm: ExperimentArm, sink: PredictionSink) -> RunMeasurements`, `AcceptedBaselineArm`, `ConditionalPageOcrArm`, `ForcedPageOcrArm`, `assert_repeated_output(first: Path, second: Path) -> None`, `privacy_safe_report(metrics: MetricReport, run: RunMeasurements) -> dict[str, object]`, and Typer commands `prepare`, `validate`, `run-baseline`, and `score`.
+- Consumes: a nonempty `Iterable[FrozenRow]`, `MeasuredArmFactory`, one-shot two-phase `PredictionSink`, an identity-bound `ResourceSpec`, optional matching `PreparationMeasurements`, gold records, optional reviewed `OcrReference` records, typed page evidence, and artifact identities.
+- Produces: `InventoryRoots`, `ResourceInventoryEntry`, `ResourceInventory`, `build_resource_inventory(...)`, `ResourceSpec`, `PreparationMeasurements`, `RunMeasurements`, `MeasuredArmFactory`, `PredictionSink`, `JsonlPredictionSink`, `run_arm(rows: Iterable[FrozenRow], factory: MeasuredArmFactory, sink: PredictionSink, resource_spec: ResourceSpec, preparation: PreparationMeasurements | None = None) -> RunMeasurements`, `PageWord`, `PageEvidenceRecord`, baseline arm factories, `assert_repeated_output(first: Path, second: Path) -> None`, `ReportContext`, `privacy_safe_report(metrics: MetricReport, run: RunMeasurements, context: ReportContext) -> dict[str, object]`, and Typer commands `prepare`, `prepare-inventory`, `prepare-page-evidence`, `prepare-run-spec`, `validate`, `run-baseline`, and `score`.
+
+The factory and static resource specification are mandatory. `ExperimentArm` exposes only IDs
+and `predict`, so an already-constructed arm cannot truthfully yield isolated cold start or
+bind its artifacts, rows, cache policy, and footprint inventories. `run_arm` constructs and
+executes the arm once inside the measured process, then publishes that same execution's
+predictions and measurements together. A formal repeat uses a second fresh process, factory,
+cache root, preparation record, and sink. Zero is a real measured value, not a placeholder for
+unavailable data.
 
 - [ ] **Step 1: Write failing identity, immutability, and privacy tests**
 
@@ -936,11 +944,11 @@ Stop condition: stop if the runner exposes private row contents or lets an arm m
 def test_runner_rejects_prediction_for_another_row(tmp_path: Path) -> None:
     sink = JsonlPredictionSink(tmp_path / "predictions.jsonl")
     with pytest.raises(RunContractError, match="prediction identity mismatch"):
-        run_arm((frozen_row(),), WrongIdentityArm(), sink)
+        run_arm((frozen_row(),), WrongIdentityArmFactory(), sink, synthetic_resource_spec())
 
 
 def test_privacy_safe_report_contains_no_row_or_field_values() -> None:
-    report = privacy_safe_report(metric_report(), run_measurements())
+    report = privacy_safe_report(metric_report(), run_measurements(), report_context())
     serialized = json.dumps(report, sort_keys=True)
     assert "row_id" not in serialized
     assert "canonical_value" not in serialized
@@ -949,56 +957,358 @@ def test_privacy_safe_report_contains_no_row_or_field_values() -> None:
 
 def test_forced_page_ocr_is_clipped_to_the_fixed_row_and_bands() -> None:
     row = frozen_row()
-    prediction = ForcedPageOcrArm(synthetic_forced_page_words()).predict(row)
+    arm = ForcedPageOcrArm((row,), synthetic_forced_page_evidence(), artifact_identity())
+    prediction = arm.predict(row)
     assert prediction.experiment_id == "forced-page-ocr"
     assert prediction.row_id == row.row_id
-    assert all(row.bbox[0] <= atom.bbox[0] <= atom.bbox[2] <= row.bbox[2] for atom in prediction.evidence_atoms)
+    assert all(
+        row.bbox[0] <= atom.bbox[0] <= atom.bbox[2] <= row.bbox[2]
+        and row.bbox[1] <= atom.bbox[1] <= atom.bbox[3] <= row.bbox[3]
+        for atom in prediction.evidence_atoms
+    )
 ```
+
+The focused RED suite also covers empty and duplicate rows, unstable arm IDs, mismatched
+row/split/arm/runtime/model/dependency/cache identities, reordered predictions, input mutation,
+fresh factory construction, exact subprocess counts, one-shot sink publication
+and abort cleanup, nearest-rank quantiles, and a nonadvancing clock. Baseline tests cover an
+accepted-prediction bijection; missing/duplicate/extra/wrong-mode page records; noncontiguous
+word ordinals; wrong page identity; half-open boundary assignment; overlap collisions;
+both-axis clipping; unique atom ownership; every row-type resolver outcome; and value-free
+errors. Report and CLI tests cover every ID mismatch, absence of hashes/paths/values, required
+output nonexistence/ignored-root checks, optional OCR references, and traceback-cause
+sanitization. Inventory tests cover empty-model roots, forbidden empty dependencies, symlinks,
+overlapping roots/inodes/categories, changed stat/hash values, and canonical ordering.
 
 - [ ] **Step 2: Run runner/report tests to verify RED**
 
-Run: `/root/creditcard/.venv/bin/pytest -q tests/experiments/row_extraction/test_runner.py tests/experiments/row_extraction/test_report.py tests/experiments/row_extraction/test_cli.py`
+Run: `/root/creditcard/.venv/bin/pytest -q tests/experiments/row_extraction/test_runner.py tests/experiments/row_extraction/test_baselines.py tests/experiments/row_extraction/test_report.py tests/experiments/row_extraction/test_cli.py`
 
 Expected: collection fails because runner/report/CLI modules do not exist.
 
 - [ ] **Step 3: Implement bounded execution and accepted baseline projection**
 
-Use this exact public resource schema:
+Use these exact public resource schemas:
 
 ```python
+class InventoryRoots(_FrozenModel):
+    version: Literal["row-resource-roots-v1"]
+    category: Literal["model", "dependency"]
+    roots: tuple[Path, ...]
+
+
+class ResourceInventoryEntry(_FrozenModel):
+    category: Literal["model", "dependency", "cache"]
+    resolved_path: Path
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_size: int = Field(ge=0)
+    device: int = Field(ge=0)
+    inode: int = Field(gt=0)
+
+
+class ResourceInventory(_FrozenModel):
+    version: Literal["row-resource-inventory-v1"]
+    entries: tuple[ResourceInventoryEntry, ...]
+
+
+class ResourceSpec(_FrozenModel):
+    experiment_id: str = Field(min_length=1)
+    config_id: str = Field(min_length=1)
+    row_sequence_identity: ArtifactIdentity
+    expected_row_count: int = Field(gt=0)
+    split: DatasetSplit
+    cache_policy: Literal["new-empty-v1"]
+    resource_basis: Literal["end-to-end-method", "materialized-adapter"]
+    worker_count: Literal[1]
+    runtime_identity: ArtifactIdentity
+    arm_manifest_identity: ArtifactIdentity
+    private_root: Path
+    model_inventory_path: Path
+    model_inventory_identity: ArtifactIdentity
+    dependency_inventory_path: Path
+    dependency_inventory_identity: ArtifactIdentity
+    cache_root: Path
+    resource_inventory_output: Path
+
+
+class PreparationMeasurements(_FrozenModel):
+    experiment_id: str = Field(min_length=1)
+    config_id: str = Field(min_length=1)
+    row_sequence_identity: ArtifactIdentity
+    row_count: int = Field(gt=0)
+    split: DatasetSplit
+    cache_policy: Literal["new-empty-v1"]
+    resource_basis: Literal["end-to-end-method"]
+    preparation_ns: int = Field(gt=0)
+    peak_rss_bytes: int = Field(gt=0)
+    subprocess_count: int = Field(ge=0)
+    worker_count: Literal[1]
+    runtime_identity: ArtifactIdentity
+    arm_manifest_identity: ArtifactIdentity
+    resource_inventory_path: Path
+    resource_inventory_identity: ArtifactIdentity
+
+
 class RunMeasurements(_FrozenModel):
-    row_count: int = Field(ge=0)
-    total_ns: int = Field(ge=0)
-    p50_ns: int = Field(ge=0)
-    p95_ns: int = Field(ge=0)
-    cold_start_ns: int = Field(ge=0)
-    throughput_rows_per_second: Decimal
-    peak_rss_bytes: int = Field(ge=0)
+    experiment_id: str = Field(min_length=1)
+    config_id: str = Field(min_length=1)
+    row_sequence_identity: ArtifactIdentity
+    split: DatasetSplit
+    cache_policy: Literal["new-empty-v1"]
+    resource_basis: Literal["end-to-end-method", "materialized-adapter"]
+    arm_manifest_identity: ArtifactIdentity
+    row_count: int = Field(gt=0)
+    total_ns: int = Field(gt=0)
+    p50_ns: int = Field(gt=0)
+    p95_ns: int = Field(gt=0)
+    preparation_ns: int = Field(ge=0)
+    end_to_end_ns: int = Field(gt=0)
+    cold_start_ns: int = Field(gt=0)
+    throughput_rows_per_second: Decimal = Field(gt=0)
+    peak_rss_bytes: int = Field(gt=0)
     model_bytes: int = Field(ge=0)
-    dependency_bytes: int = Field(ge=0)
+    dependency_bytes: int = Field(gt=0)
     cache_bytes: int = Field(ge=0)
     subprocess_count: int = Field(ge=0)
-    worker_count: int = Field(ge=1)
+    worker_count: Literal[1]
+    measurement_protocol: Literal["row-resource-measurement-v1"]
+    runtime_identity: ArtifactIdentity
+    model_inventory_identity: ArtifactIdentity
+    dependency_inventory_identity: ArtifactIdentity
+    resource_inventory_identity: ArtifactIdentity
     predictions_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReportContext(_FrozenModel):
+    experiment_id: str = Field(min_length=1)
+    config_id: str = Field(min_length=1)
+    measurement_protocol: Literal["row-resource-measurement-v1"]
+    runtime_identity: ArtifactIdentity
+    python_version: str = Field(min_length=1)
+    public_runtime_versions: tuple[tuple[str, str], ...]
 ```
 
-The runner deep-compares the immutable input before/after prediction, validates identity and
-evidence references, measures `perf_counter_ns`, counts calls, streams canonical predictions,
-and records process peak RSS without emitting values. `AcceptedBaselineArm` converts the
-private accepted-anchor baseline observation into the same evidence-grounded proposal format.
-`ConditionalPageOcrArm` deterministically reassigns the accepted page evidence to the frozen
-row and column bands. `ForcedPageOcrArm` consumes one private, pinned whole-page Tesseract word
-stream, selects words by fixed row/column geometry, and uses the same deterministic field
-resolver. Neither page-OCR arm may redetect rows or columns. Their public experiment IDs are
-exactly `conditional-page-ocr` and `forced-page-ocr`.
-The report includes only aggregate counts, ratios, resource measures, experiment/config IDs,
-and public runtime versions.
+`ResourceSpec` is static input, never an observation from another run. It pins the exact ordered
+row sequence/split, new-empty-cache policy, worker/runtime/arm identities, input model and
+dependency inventory identities, private root, new cache root, and new combined-inventory
+output. `MeasuredArmFactory` exposes stable `experiment_id`, `config_id`,
+`row_sequence_identity`, `expected_row_count`, `split`, `arm_manifest_identity`,
+`runtime_identity`, `model_inventory_identity`,
+`dependency_inventory_identity`, `cache_root`, `resource_basis`, `worker_count`,
+`subprocess_count`, and
+`build() -> ExperimentArm`. Every static property must equal `ResourceSpec` before and after
+execution. Its subprocess count is zero before build and counts every external process launched
+during construction or prediction; the lane must inject the counter at its launcher boundary.
 
-The CLI requires explicit private bundle/label/output paths, refuses paths tracked by Git,
-and never defaults outputs into the source tree. `validate` and `score` accept an optional
-explicit `--ocr-references` JSONL path, validate it through `validate_annotations`, and pass
-it unchanged to `score_predictions` together with the exact frozen row stream; when omitted,
-CER/WER remain `None`.
+The row-sequence identity has artifact type `frozen-row-sequence`, version
+`canonical-jsonl-v1`, and hashes the exact canonical records in run order after split filtering;
+its byte size and the spec's positive expected row count are verified while streaming. Every
+row must declare the spec's one split.
+
+`PreparationMeasurements` exists only when recognition/evidence is computed before the fixed-
+row arm, currently the conditional and forced page baselines. It is produced in a fresh process
+with a new empty cache, identifies the exact resulting page-evidence artifact as its arm
+manifest, and is consumed by exactly one matching prediction run. The repeat creates a second
+preparation record from another empty cache. Other arms pass no preparation record and receive
+a measured `preparation_ns == 0`; model training is offline experiment development, not
+inference preparation and is never added to end-to-end latency.
+
+Before union, the runner requires the preparation manifest's model and dependency entry sets
+to equal the spec-pinned model and dependency manifests exactly; only cache-category entries
+may be phase-specific. Preparation experiment/config/row/split/cache/runtime/worker/arm
+identities must also equal the spec and factory.
+
+`run_arm` starts cold timing before `factory.build()` and stops it after the first validated
+prediction. Fixed-row `total_ns` starts at the same point and covers factory construction, all
+prediction/validation, and sink staging, but excludes the independent preparation phase. It sets
+`end_to_end_ns = preparation_ns + total_ns`. It verifies every spec/preparation/factory/row
+identity before publication and computes all resource observations from this same execution.
+Formal comparisons report preparation, fixed-row execution, and end-to-end separately.
+
+Every measurement command runs in a fresh isolated Linux worker. `peak_rss_bytes` has one exact
+cross-lane definition: for each phase, sum fresh-worker `RUSAGE_SELF.ru_maxrss` and waited child
+`RUSAGE_CHILDREN.ru_maxrss` after conversion from KiB to bytes, then take the maximum across
+preparation and fixed-row phases. This is a conservative process-family high-water bound rather
+than a claim of simultaneous sampled RSS. `subprocess_count` sums exact injected launcher
+counts across the phases. Any launcher that cannot provide an exact count is a stop condition.
+
+The private footprint manifest is canonical, pinned by `resource_inventory_identity`, and
+overlap-rejecting. Each entry records one category, resolved local path, SHA-256, byte size,
+device, and inode; the manifest and its identity stay ignored and never enter reports. The
+entries are sorted by category then resolved path then SHA-256, and recorded totals must be
+recomputed from that exact manifest before every run. All spec/inventory/cache/output paths
+are absolute, resolve beneath `private_root`, and are ignored by Git; input documents may
+instead reside outside the worktree. Symlinks, non-regular files, and changed stat/hash values
+fail closed.
+Every inventory identity has artifact type `resource-inventory` and version
+`row-resource-inventory-v1`; identities of another type/version fail closed.
+`model_bytes` sums recognizer or
+learned weight/calibrator artifacts required by the locked arm, including configured
+Tesseract traineddata; `dependency_bytes` sums locked executable/library/environment artifacts
+but excludes model, input, output, and cache entries; and `cache_bytes` sums reusable derived
+evidence/cache artifacts created beneath the new run cache root, including the prepared page
+evidence for page baselines. Every inventory entry is a resolved regular file with a unique
+device/inode identity; duplicates inside one manifest or across categories fail closed. When
+the same model/dependency entry appears identically in preparation and run manifests, the
+combined union counts it once; any metadata/category disagreement fails closed. An accepted baseline
+has measured `model_bytes == 0` because it has no recognizer or learned model, while zero in any
+other category is permitted only when the enumerated inventory is genuinely empty.
+
+`build_resource_inventory(roots: InventoryRoots) -> ResourceInventory` accepts only explicit
+absolute regular-file or directory roots from an ignored private roots manifest. It recursively
+enumerates directory roots without following symlinks, rejects overlapping roots and duplicate
+device/inode identities, and emits sorted entries in the one declared category. An empty roots
+tuple is the only valid way to declare an empty model inventory. No glob, environment search,
+package-manager query, or filename inference may silently expand the footprint.
+
+`PredictionSink` is one-shot and two-phase: `stage(predictions: Iterable[RowPrediction]) ->
+ArtifactIdentity` writes only a sink-owned staging artifact, `commit() -> ArtifactIdentity`
+atomically publishes it after all measurements validate, and `abort() -> None` removes both
+staging and any sink-owned finalized target. `JsonlPredictionSink` requires a nonexistent
+target and delegates canonical record bytes to the shared JSONL codec. It cannot be reused
+after commit or abort. On any row/arm/sink/resource/clock failure, `run_arm` calls `abort` and
+removes its uncommitted combined resource inventory. `predictions_sha256` is exactly the staged
+and committed artifact identity.
+
+The runner rejects an empty run, duplicate input row identities, unstable arm IDs, prediction
+identity or experiment/config mismatch, missing/extra/reordered predictions, non-self-contained
+proposal evidence, and any before/after canonical row snapshot difference. It never deep-
+compares the arm because legitimate measurement counters and caches may change. Measure each
+row with `perf_counter_ns`; p50/p95 are deterministic nearest-rank quantiles over per-row
+prediction-plus-validation time. Throughput divides the nonempty row count by `total_ns` using
+`Decimal` and fails if the clock does not advance. Repeats use newly constructed arms,
+independent sinks and caches, and identical config/runtime/worker identities.
+
+Use these typed baseline evidence contracts:
+
+```python
+class PageWord(_FrozenModel):
+    ordinal: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    bbox: BBox
+    source: Literal["digital", "ocr"]
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class PageEvidenceRecord(_FrozenModel):
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_number: int = Field(gt=0)
+    page_bbox: BBox
+    mode: Literal["conditional-page-ocr", "forced-page-ocr"]
+    evidence_version: Literal["fixed-page-evidence-v1"]
+    config_id: str = Field(min_length=1)
+    runtime_identity: ArtifactIdentity
+    words: tuple[PageWord, ...]
+```
+
+Ordinals are unique and contiguous in provider order. Page bboxes and words use rotated,
+top-left display points. Evidence streams contain exactly one record for every document/page
+that owns a frozen row, no extra page, and are pinned by the JSONL `ArtifactIdentity` supplied
+to the arm. `prepare-page-evidence` creates conditional records from the ordinary conditional
+page evidence provider and forced records by running whole-page Tesseract unconditionally;
+both use new empty cache roots for formal preparation measurement. The command writes the
+page-evidence JSONL, its matching private `PreparationMeasurements`, and no text to stdout.
+The preparation adapter counts one version launch for the first OCR cache-key request, one
+launch for every uncached currency-symbol request, and the exact fixed recognition-pass matrix
+for every uncached page request; it verifies the corresponding new cache artifacts. Any launch
+or cache mismatch fails instead of estimating a count.
+
+All page arms receive the complete frozen-row sequence, the complete typed page stream, and
+its expected artifact identity. A word is eligible for exactly one row only when its center is
+inside exactly one same-document/page row under half-open right/bottom bounds; zero candidates
+are ignored and multiple candidates fail closed. Clip an eligible word bbox to the fixed row,
+then assign it by the same center rule: zero candidate bands are ignored, exactly one is
+assigned, and multiple candidate bands fail closed. Atom IDs hash the page-evidence
+version/config, row ID, word ordinal, text, clipped
+bbox, source, and confidence. No word can appear in two predictions. Neither page arm detects,
+moves, merges, or splits a row or column.
+
+`AcceptedBaselineArm(rows, accepted_predictions, artifact_identity)` consumes the already
+materialized accepted-prediction stream from `prepare_bundle`, requires a bijection with exact
+frozen row identities, and returns those immutable projections without consulting gold.
+`ConditionalPageOcrArm` and `ForcedPageOcrArm` share one deterministic page-word-to-band field
+resolver and copy the accepted baseline row type only as fixed baseline context. A structural
+row emits `IGNORE` with no proposals; an ambiguous row emits `ABSTAIN` with no proposals. For
+a primary or continuation row, collect assigned atoms in canonical word order for every
+nonempty fixed band whose role is not `None`, emit at most one proposal per role, and preserve
+omissions when a band has no atom. Two nonempty bands claiming the same role, a continuation
+without its fixed previous row, or any proposal that fails `resolve_proposal` makes the whole
+row `ABSTAIN` with no proposals. Otherwise, a row with at least one valid proposal is `ACCEPT`
+and a row with none is `ABSTAIN`; every continuation proposal uses exactly
+`FrozenRow.previous_row_id`. Page baselines are uncalibrated, so `exact_row_confidence` is
+`None`, and all decisions use only stable value-free reason codes. Their public experiment IDs
+are exactly `conditional-page-ocr` and `forced-page-ocr`; config IDs include evidence/config
+versions.
+
+`AcceptedBaselineArmFactory`, `ConditionalPageOcrArmFactory`, and
+`ForcedPageOcrArmFactory` each expose the exact input artifact as `arm_manifest_identity`,
+construct a fresh arm, and report zero fixed-row subprocesses. Page OCR subprocesses belong to
+their matching preparation records; counting them again in the geometry/field adapter is
+forbidden.
+
+The accepted control is an accuracy anchor over already-materialized production predictions;
+its measured run is explicitly `resource_basis="materialized-adapter"`, has no preparation
+record, and reports only replay/validation/publication cost. It must never be described as the
+accepted production extractor's latency, memory, or footprint and is excluded from resource
+Pareto dominance. Conditional/forced page baselines and all four experiment lanes use
+`resource_basis="end-to-end-method"` and remain resource-comparable under the declared phase
+boundaries.
+
+`privacy_safe_report` validates matching experiment/config/protocol/runtime identities and
+requires sorted, unique public runtime-version names. It includes only
+aggregate counts, ratios, the split, explicit resource basis, phase-separated resource measures,
+experiment/config IDs, and public runtime versions. It never includes artifact hashes, paths,
+row/atom IDs, field values,
+OCR text, labels, or financial data. Document-macro and stratified slice reporting remain owned
+by the central comparison package; no lane may claim the foundation enforced a slice threshold.
+
+The CLI has these exact explicit path shapes:
+
+- `prepare --private-root DIR --documents DIR --split-manifest FILE --output-dir NEW_DIR` creates
+  `rows.jsonl`, `accepted_predictions.jsonl`, and `crop_index.jsonl` beneath `NEW_DIR`, plus
+  the canonical sidecars `rows.identity.json`, `accepted_predictions.identity.json`, and
+  `crop_index.identity.json`.
+- `prepare-inventory --private-root DIR --roots FILE --output FILE --identity-output FILE`
+  validates `InventoryRoots`, writes its canonical model or dependency inventory and identity,
+  and prints no paths or hashes.
+- `prepare-page-evidence --private-root DIR --rows FILE --split train|validation
+  --mode conditional-page-ocr|forced-page-ocr
+  --runtime-identity FILE --cache-dir NEW_DIR --output FILE --identity-output FILE
+  --model-inventory FILE --dependency-inventory FILE --inventory-output FILE
+  --preparation-output FILE` creates a pinned page stream, its canonical identity sidecar, its
+  private canonical resource inventory, and its isolated preparation record. It requires
+  `output` and `identity-output` beneath the new `cache-dir`, so prepared evidence is included
+  in cache bytes. This foundation command refuses `test`; the central comparison invokes the
+  same library operation only after its locked-access gate.
+- `prepare-run-spec --private-root DIR --rows FILE --split train|validation
+  --mode accepted-baseline|conditional-page-ocr|forced-page-ocr
+  --arm-manifest-identity FILE --runtime-identity FILE --model-inventory FILE
+  --dependency-inventory FILE --cache-root NEW_DIR --inventory-output FILE --output FILE`
+  computes the exact split-filtered row-sequence identity and writes static `ResourceSpec`.
+  It fixes accepted mode to `materialized-adapter` and both page modes to
+  `end-to-end-method`; callers cannot override the basis.
+  This foundation command refuses `test`; the central comparison constructs the same typed
+  spec only after its locked-access gate.
+- `validate --private-root DIR --rows FILE --labels FILE [--ocr-references FILE]` validates
+  annotations.
+- `run-baseline --private-root DIR
+  --mode accepted-baseline|conditional-page-ocr|forced-page-ocr --rows FILE --split
+  train|validation --baseline-input FILE --baseline-identity FILE --resource-spec FILE
+  [--preparation FILE] --predictions-output FILE --run-output FILE` runs exactly one measured
+  arm. Page modes require their matching `PreparationMeasurements`; accepted mode forbids it.
+  Page modes consume `PageEvidenceRecord`, accepted mode consumes `RowPrediction`, and this
+  foundation command refuses `test`.
+- `score --private-root DIR --rows FILE --labels FILE --predictions FILE
+  [--ocr-references FILE]
+  --context FILE --run FILE --output FILE` validates annotations, calls the corrected shared
+  scorer, and writes the privacy-safe report.
+
+Every output/cache directory must be new and beneath an explicitly configured ignored private
+root. Inputs containing document or derived financial data must be ignored or outside the Git
+worktree; merely being currently untracked is insufficient. Catch internal annotation/scoring
+exceptions before Typer renders them because internal messages can include private IDs. CLI
+stdout/stderr contain only stable aggregate codes/counts, never chained exception payloads.
+When OCR references are omitted, CER/WER remain `None`.
 
 - [ ] **Step 4: Run all foundation tests and mypy**
 
@@ -1049,22 +1359,90 @@ Document commands using shell variables whose values point only to ignored local
 ```bash
 PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
   experiments.row_extraction.cli prepare \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
   --documents "$ROW_EXPERIMENT_DOCUMENTS" \
   --split-manifest "$ROW_EXPERIMENT_PRIVATE/splits.json" \
-  --output "$ROW_EXPERIMENT_PRIVATE/rows.jsonl"
+  --output-dir "$ROW_EXPERIMENT_PRIVATE/bundle"
 
 PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
   experiments.row_extraction.cli validate \
-  --rows "$ROW_EXPERIMENT_PRIVATE/rows.jsonl" \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --rows "$ROW_EXPERIMENT_PRIVATE/bundle/rows.jsonl" \
   --labels "$ROW_EXPERIMENT_PRIVATE/gold.jsonl" \
   --ocr-references "$ROW_EXPERIMENT_PRIVATE/ocr-references.jsonl"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.cli prepare-inventory \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --roots "$ROW_EXPERIMENT_PRIVATE/empty-model-roots.json" \
+  --output "$ROW_EXPERIMENT_PRIVATE/empty-model-inventory.json" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/empty-model-inventory.identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.cli prepare-inventory \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --roots "$ROW_EXPERIMENT_PRIVATE/tesseract-model-roots.json" \
+  --output "$ROW_EXPERIMENT_PRIVATE/tesseract-model-inventory.json" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/tesseract-model-inventory.identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.cli prepare-inventory \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --roots "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-roots.json" \
+  --output "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.json" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.identity.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.cli prepare-page-evidence \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --rows "$ROW_EXPERIMENT_PRIVATE/bundle/rows.jsonl" \
+  --split validation \
+  --mode conditional-page-ocr \
+  --runtime-identity "$ROW_EXPERIMENT_PRIVATE/runtime-identity.json" \
+  --cache-dir "$ROW_EXPERIMENT_PRIVATE/conditional-page-cache.run-1" \
+  --output "$ROW_EXPERIMENT_PRIVATE/conditional-page-cache.run-1/page-evidence.jsonl" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/conditional-page-cache.run-1/page-evidence.identity.json" \
+  --model-inventory "$ROW_EXPERIMENT_PRIVATE/tesseract-model-inventory.json" \
+  --dependency-inventory "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.json" \
+  --inventory-output "$ROW_EXPERIMENT_PRIVATE/conditional-page-preparation.run-1.inventory.json" \
+  --preparation-output "$ROW_EXPERIMENT_PRIVATE/conditional-page-preparation.run-1.json"
+
+PYTHONPATH="$PWD/src:$PWD" /root/creditcard/.venv/bin/python -m \
+  experiments.row_extraction.cli prepare-page-evidence \
+  --private-root "$ROW_EXPERIMENT_PRIVATE" \
+  --rows "$ROW_EXPERIMENT_PRIVATE/bundle/rows.jsonl" \
+  --split validation \
+  --mode forced-page-ocr \
+  --runtime-identity "$ROW_EXPERIMENT_PRIVATE/runtime-identity.json" \
+  --cache-dir "$ROW_EXPERIMENT_PRIVATE/forced-page-cache.run-1" \
+  --output "$ROW_EXPERIMENT_PRIVATE/forced-page-cache.run-1/page-evidence.jsonl" \
+  --identity-output "$ROW_EXPERIMENT_PRIVATE/forced-page-cache.run-1/page-evidence.identity.json" \
+  --model-inventory "$ROW_EXPERIMENT_PRIVATE/tesseract-model-inventory.json" \
+  --dependency-inventory "$ROW_EXPERIMENT_PRIVATE/baseline-dependency-inventory.json" \
+  --inventory-output "$ROW_EXPERIMENT_PRIVATE/forced-page-preparation.run-1.inventory.json" \
+  --preparation-output "$ROW_EXPERIMENT_PRIVATE/forced-page-preparation.run-1.json"
 ```
 
-Require two independent reviewers for the predeclared sample, a clean annotation validation,
-one accepted baseline run, byte-identical repeated baseline predictions, and no private path
-or value in Git status/diff. If no reviewed verbatim OCR references exist, omit the optional
-flag and require the report to show CER/WER as unavailable rather than substituting another
-target.
+Repeat both page-preparation commands with every `run-1` path replaced by a distinct `run-2`
+path. The two canonical page-evidence identities must match even though the private cache and
+resource-inventory identities may differ.
+
+For each mode in `accepted-baseline`, `conditional-page-ocr`, and `forced-page-ocr`, document
+two exact `prepare-run-spec` invocations with identical row/split/runtime/arm/model/dependency
+identities but distinct new cache roots, combined-inventory outputs, and spec outputs. Then
+document two exact `run-baseline` invocations using those specs, fresh factories, independent
+nonexistent prediction/run outputs, and, for page modes, the corresponding run-1/run-2
+preparation record; an exact `assert_repeated_output` check; and `score` using a `ReportContext`
+with matching IDs. The accepted mode consumes `bundle/accepted_predictions.jsonl` and its
+identity sidecar, the empty model inventory, and no preparation record. Page modes consume the corresponding typed
+page-evidence JSONL and identity sidecar. Reopen the row and gold streams for every score; never
+reuse an exhausted iterator.
+
+Require two independent reviewers for the predeclared sample, clean annotation validation,
+truthful phase-separated resources, byte-identical repeated predictions for all three shared
+baselines, and no private path or value in Git status/diff. If no reviewed verbatim OCR
+references exist, omit the optional flag and require the report to show CER/WER as unavailable
+rather than substituting another target.
 
 - [ ] **Step 2: Run the complete tracked verification**
 
@@ -1083,9 +1461,9 @@ sandbox-only controller tests fail, record them as inherited and do not investig
 - [ ] **Step 3: Run private preparation and baseline validation**
 
 Run the runbook commands from a clean committed candidate. Capture normal output privately.
-Report only privacy-safe aggregate status, runtime/resource measurements, and whether the two
-canonical baseline prediction files are byte-identical. Do not claim field accuracy or corpus
-acceptance.
+Report only privacy-safe aggregate status, phase-separated runtime/resource measurements, and
+whether each of the three pairs of canonical baseline prediction files is byte-identical. Do
+not claim field accuracy or corpus acceptance.
 
 - [ ] **Step 4: Verify the branch is a valid experiment foundation**
 

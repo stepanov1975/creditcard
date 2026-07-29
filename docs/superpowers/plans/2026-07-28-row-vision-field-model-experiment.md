@@ -53,13 +53,14 @@ from experiments.row_extraction.contracts import (
 )
 from experiments.row_extraction.contracts import FeatureSchema, FeatureVector
 from experiments.row_extraction.metrics import MetricReport, score_predictions
-from experiments.row_extraction.runner import RunMeasurements, run_arm
+from experiments.row_extraction.runner import ResourceSpec, RunMeasurements, run_arm
 ```
 
 `ExperimentArm` has read-only `experiment_id: str`, `config_id: str`, and
-`predict(row: FrozenRow) -> RowPrediction`. `runner.run_arm(rows, arm, sink) ->
-RunMeasurements`; `metrics.score_predictions(rows, gold, predictions) -> MetricReport`; shared
-JSONL codecs stream records.
+`predict(row: FrozenRow) -> RowPrediction`. `resources.py` creates one static identity-bound
+`ResourceSpec` per fresh run; `runner.run_arm(rows, factory, sink, resource_spec) ->
+RunMeasurements` measures and publishes the same execution; `metrics.score_predictions(rows,
+gold, predictions) -> MetricReport`; shared JSONL codecs stream records.
 
 The lane additionally assumes these immutable field shapes, which Task 1 must verify before
 any environment setup or code continues:
@@ -865,7 +866,7 @@ Stop condition: stop if a proposal cannot resolve to one nonempty contiguous fix
 
 **Interfaces:**
 - Consumes: `FrozenRow`, `ModelOutput`, `LabelVocabulary`, `RowVisionModel`, `PrivateCropStore`, `VisionFeatureProvider`, and a `ConfidenceCalibrator`.
-- Produces: `GroundedDecode`, `decode_grounded(...) -> GroundedDecode`, `ConfidenceCalibrator.calibrate(raw_score: float) -> float`, and `VisionArm` implementing `ExperimentArm`.
+- Produces: `GroundedDecode`, `decode_grounded(...) -> GroundedDecode`, `ConfidenceCalibrator.calibrate(raw_score: float) -> float`, `VisionArm` implementing `ExperimentArm`, and `VisionArmFactory` with a frozen-arm manifest identity, fresh model loading, and exact zero subprocess count.
 
 - [ ] **Step 1: Write RED tests for legal decoding and exact support**
 
@@ -1320,14 +1321,18 @@ Stop condition: stop on changed runtime/config/rows between repeats, unbounded l
 - Test: `tests/experiments/row_extraction/arms/vision/test_resources.py`
 
 **Interfaces:**
-- Consumes: frozen `ExperimentArm`, fixed rows, shared `run_arm`, streaming JSONL sink, lane environment/artifact/cache roots.
-- Produces: `ResourceReport`, `measure_resources(...) -> ResourceReport`, and `assert_repeated_predictions(...) -> tuple[RunMeasurements, RunMeasurements]`.
+- Consumes: frozen `VisionArmFactory`, exact row-sequence identity/count and split, shared
+  `run_arm`, streaming JSONL sink, frozen-arm/runtime identities, canonical model/dependency
+  inventories, and distinct lane-private cache/inventory roots.
+- Produces: `build_vision_resource_spec(...) -> ResourceSpec`, a privacy-safe lane
+  `ResourceReport`, `project_resource_report(run: RunMeasurements) -> ResourceReport`, and
+  `assert_repeated_predictions(...) -> tuple[RunMeasurements, RunMeasurements]`.
 
 - [ ] **Step 1: Write RED tests for byte comparison and privacy-safe resource totals**
 
 ```python
-def test_repeatability_compares_canonical_bytes(tmp_path, deterministic_arm, rows) -> None:
-    first, second = assert_repeated_predictions(rows, deterministic_arm, tmp_path)
+def test_repeatability_compares_canonical_bytes(tmp_path, deterministic_arm_factory, rows) -> None:
+    first, second = assert_repeated_predictions(rows, deterministic_arm_factory, tmp_path)
     assert first.row_count == second.row_count
     assert first.predictions_sha256 == second.predictions_sha256
 
@@ -1351,16 +1356,20 @@ Expected: FAIL during collection because `resources.py` does not exist.
 
 - [ ] **Step 3: Implement isolated measurements**
 
-Run cold start in a fresh subprocess and warm per-row inference in one CPU process with
-worker/thread count 1. Use `perf_counter_ns`, Linux `resource.getrusage(RUSAGE_SELF).ru_maxrss
-* 1024`, sorted distribution metadata, `Path.stat().st_size`, and streaming directory-size
-sums. Record p50/p95, total rows/elapsed for throughput, subprocess count, model/config bytes,
-locked environment bytes, crop-cache bytes, and platform/runtime versions. Never report
-individual filenames or private hashes publicly.
+Build a static `ResourceSpec` that binds the exact row sequence/split, frozen-arm/runtime
+identities, disjoint model/dependency inventories, `worker_count=1`, new-empty cache policy,
+and distinct new output paths. Vision has no external subprocess and no separate preparation
+record; it fixes `resource_basis="end-to-end-method"`, and deterministic tensor rendering and
+model inference occur inside the measured arm.
 
-For repeatability, invoke `run_arm(rows, arm, sink)` twice from clean model loads into two
-private files, read both in fixed-size chunks, and fail unless bytes and counts match. A
-mismatch is an experiment failure; do not normalize or rewrite outputs to make them match.
+For repeatability, launch two fresh isolated command processes. Each constructs a new
+`VisionArmFactory`, sink, cache root, combined-inventory output, and resource spec, then invokes
+`run_arm(rows, factory, sink, resource_spec)` once. The shared runner exclusively owns timing,
+cold start, process-family RSS, inventory totals, subprocess count, and publication. Read both
+prediction files in fixed-size chunks and fail unless bytes and counts match. A mismatch is an
+experiment failure; do not normalize or rewrite outputs to make them match. The lane report
+projects aggregate shared fields only and keeps preparation, fixed-row execution, and
+end-to-end duration separate; it never exposes filenames or private hashes.
 
 - [ ] **Step 4: Run GREEN**
 
@@ -1478,9 +1487,10 @@ validation only. No lane-local locked-access marker exists because this lane nev
 the locked split. `freeze` refuses unless Task 7 produced either a passing pixel gate or a
 terminal `STOP_NO_PIXEL_GAIN` validation result.
 
-All prediction commands instantiate `VisionArm`, call shared `run_arm`, write with shared
-streaming JSONL codecs, and call shared `score_predictions`; no lane-local metric replacement
-is allowed. `checkpoint` emits exactly the charter's eight sections and privacy-safe
+All prediction commands instantiate a fresh `VisionArmFactory`, require a matching static
+`ResourceSpec`, call shared `run_arm`, write with shared streaming JSONL codecs, and call shared
+`score_predictions`; no lane-local metric replacement is allowed. `checkpoint`
+emits exactly the charter's eight sections and privacy-safe
 validation aggregates. `handoff` verifies two separately loaded, byte-identical frozen
 validation prediction files and then writes the private immutable handoff. It cannot accept,
 produce, score, measure, or mention a test prediction artifact.

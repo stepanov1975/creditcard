@@ -76,8 +76,18 @@ Stop condition: stop on any identity, row-universe, split, runtime, artifact, or
 - Test: `tests/experiments/row_extraction/comparison/test_handoffs.py`
 
 **Interfaces:**
-- Consumes: `ComparisonManifest`, baseline and lane `ArtifactIdentity` values, frozen validation-prediction JSONL paths, and the locked fixed-row ID set without labels.
-- Produces: `ValidatedHandoffs(foundation_sha: str, dispositions: Mapping[str, LaneDisposition], arm_manifests: Mapping[str, Path], validation_predictions: Mapping[str, Path], locked_row_ids: frozenset[tuple[str, str]])`, and `validate_handoffs(manifest: ComparisonManifest) -> ValidatedHandoffs`, using the shared `LaneDisposition.FROZEN_ELIGIBLE` and `LaneDisposition.VALIDATION_STOPPED` values rather than a comparison-local status enum.
+- Consumes: `ComparisonManifest`, baseline and lane `ArtifactIdentity` values, frozen
+  validation-prediction JSONL paths, exact factory loaders, runtime identities, disjoint
+  model/dependency inventories, worker/cache policies, and the locked fixed-row ID set without
+  labels.
+- Produces: `FrozenRunInputs(arm_manifest, runtime_identity, model_inventory,
+  dependency_inventory, worker_count, factory_loader)`,
+  `ValidatedHandoffs(foundation_sha: str, dispositions: Mapping[str, LaneDisposition],
+  run_inputs: Mapping[str, FrozenRunInputs], validation_predictions: Mapping[str, Path],
+  locked_row_ids: frozenset[tuple[str, str]])`, and
+  `validate_handoffs(manifest: ComparisonManifest) -> ValidatedHandoffs`, using the shared
+  `LaneDisposition.FROZEN_ELIGIBLE` and `LaneDisposition.VALIDATION_STOPPED` values rather than
+  a comparison-local status enum.
 
 - [ ] **Step 1: Write failing missing-lane and row-universe tests**
 
@@ -112,6 +122,10 @@ experiment IDs instead of ignoring them. A validation-stopped lane must carry it
 predeclared stop reason and complete validation metrics; it has no locked arm manifest. Return
 paths and opaque IDs only; never read field values into error messages. No locked prediction
 exists yet at this stage.
+
+For every baseline and frozen-eligible lane, verify that the factory's experiment/config/arm
+identity matches the handoff, the model/dependency inventories are canonical and disjoint, the
+runtime is exact, and `worker_count=1`. A validation-stopped lane has no loadable run inputs.
 
 - [ ] **Step 4: Run handoff tests and mypy**
 
@@ -224,14 +238,25 @@ Stop condition: stop if a summary hides a required field regression, lane dispos
 - Test: `tests/experiments/row_extraction/comparison/test_compare.py`
 
 **Interfaces:**
-- Consumes: `ValidatedHandoffs`, gold JSONL, optional reviewed OCR-reference JSONL, fixed rows, common `MetricReport`, lane `RunMeasurements`, and error assignments.
-- Produces: `ResultBasis(LOCKED_TEST, VALIDATION_STOP)`, `ExperimentResult`, `ComparisonReport`, `compare_handoffs(handoffs, gold, ocr_references=()) -> ComparisonReport`, and `pareto_front(results: Sequence[ExperimentResult]) -> tuple[str, ...]`.
+- Consumes: `ValidatedHandoffs`, typed `LockedResultSet`, gold JSONL, and optional reviewed
+  OCR-reference JSONL.
+- Produces: `LockedArmResult(experiment_id, config_id, predictions_path,
+  predictions_identity, measurements: RunMeasurements, repeat_predictions_path,
+  repeat_predictions_identity, repeat_measurements: RunMeasurements,
+  error_assignments_path, error_assignments_identity)`,
+  `LockedResultSet(rows_path, row_sequence_identity,
+  results: Mapping[str, LockedArmResult])`, `ResultBasis(LOCKED_TEST, VALIDATION_STOP)`,
+  `ExperimentResult`, `ComparisonReport`, `compare_handoffs(handoffs, locked_results, gold,
+  ocr_references=()) -> ComparisonReport`, and
+  `pareto_front(results: Sequence[ExperimentResult]) -> tuple[str, ...]`.
 
 - [ ] **Step 1: Write a failing complete-report test**
 
 ```python
 def test_comparison_requires_every_metric_family_and_lane() -> None:
-    report = compare_handoffs(validated_synthetic_handoffs(), synthetic_gold())
+    report = compare_handoffs(
+        validated_synthetic_handoffs(), synthetic_locked_results(), synthetic_gold()
+    )
     assert set(report.experiment_ids) == {
         "accepted-baseline",
         "conditional-page-ocr",
@@ -263,15 +288,33 @@ Expected: collection fails because `compare.py` does not exist.
 
 Compute each arm through shared `score_predictions`; attach document-macro paired intervals;
 include every required field role separately; report omissions and hallucinations separately;
-include full risk-coverage and resource values; and include error-category counts. Define Pareto
-dominance only across predeclared axes: more exact rows/merchant matches/coverage, fewer wrong
-required fields/hallucinations, lower selective risk, lower latency/RSS/model bytes, and
-deterministic output. Do not collapse axes to one unreviewed weighted score.
+include full risk-coverage and resource values; and include error-category counts. Resource
+comparison must preserve `preparation_ns`, fixed-row `total_ns`, `end_to_end_ns`, cold start,
+p50/p95, throughput, process-tree peak RSS, disjoint model/dependency/cache bytes, subprocess
+and worker counts, measurement protocol, runtime identity, and prediction determinism. Never
+compare a page adapter's extraction-only time with row OCR's end-to-end time under one latency
+label. Define Pareto dominance only across predeclared axes: more exact rows/merchant
+matches/coverage, fewer wrong required fields/hallucinations, lower selective risk, lower
+phase-matched latency/RSS/model bytes, and deterministic output. Do not collapse axes to one
+unreviewed weighted score.
+
+The accepted control remains in every accuracy/error table, but its resource basis is the
+materialized prediction adapter rather than the production extraction phase. Label those
+numbers explicitly and exclude accepted-baseline from every resource-dominance statement and
+Pareto axis. Only results with `resource_basis="end-to-end-method"` may be compared on resource
+axes.
 
 Every `ExperimentResult` records its `ResultBasis`. A validation-stopped lane retains its
 validation metrics and stop reason, has no locked interval, is excluded from the locked Pareto
 front/cascade, and cannot be recommended as a production winner. It remains visible in all
 completeness/error tables so a stopped experiment is never mistaken for a missing one.
+
+`compare_handoffs` requires one locked result for all three baselines and every frozen-eligible
+lane, none for validation-stopped lanes, and no unknown result. It verifies the locked row-
+sequence identity against every `RunMeasurements`, prediction identity, experiment/config,
+runtime/arm/model/dependency binding, byte-identical repeat identity, distinct cache/resource
+inventory outputs, and error-assignment identity before scoring. Reopen the fixed
+row stream per result; never reuse an exhausted iterator.
 
 The tracked report template lists every table and required limitation but contains no private
 counts or values.
@@ -455,7 +498,8 @@ Stop condition: stop on dirty worktree, identity mismatch, missing lane disposit
 - Test: `tests/experiments/row_extraction/comparison/test_cli.py`
 
 **Interfaces:**
-- Consumes: private `ComparisonManifest`, frozen validation predictions, frozen arm loaders/artifacts, fixed locked rows, and private gold labels.
+- Consumes: private `ComparisonManifest`, frozen validation predictions, validated
+  `FrozenRunInputs`, fixed locked rows and row-sequence identity, and private gold labels.
 - Produces: Typer commands `validate-handoffs`, `compare-locked`, `select-cascade-validation`, `evaluate-cascade-locked`, and `recommend`; private detailed JSON/Markdown and privacy-safe aggregate output.
 
 - [ ] **Step 1: Write a failing CLI gate test**
@@ -481,11 +525,17 @@ Expected: collection fails because `comparison/cli.py` does not exist.
 The runbook orders commands exactly: validate clean foundation/lane identities; select the
 cascade only from validation predictions; write and reverify the exclusive private frozen
 policy; from one clean comparison commit load each baseline/frozen arm and stream the fixed
-locked rows through the shared runner; score the resulting three baseline and every
-frozen-eligible experiment prediction file; attach each validation-stopped disposition without
-opening it on locked data; apply the already-frozen cascade over eligible candidates without
-retuning; repeat canonical outputs; then produce reports and the recommendation. No experiment
-lane opens locked data itself. The
+locked rows through the shared runner. For conditional and forced page baselines, create two
+independent locked `PreparationMeasurements` from new empty caches. For each of the three
+baselines and every frozen-eligible lane, construct two static `ResourceSpec` values with the
+same locked row sequence/split, arm/runtime/model/dependency identities and distinct new cache,
+inventory, and prediction outputs; construct two fresh factories; call `run_arm` once per
+factory/spec; and require byte-identical canonical predictions. The first call is the one
+locked measured result and the second is solely its determinism repeat—there is no prior
+resource-only prediction generation. Score the first output, attach each validation-stopped
+disposition without opening it on locked data, and apply the already-frozen cascade over
+eligible candidates without retuning. Then produce reports and the recommendation. No
+experiment lane opens locked data itself. The
 runbook forbids copying detailed reports into Git or logs and states that this is not production
 integration or corpus acceptance.
 

@@ -43,11 +43,11 @@
   )
   from experiments.row_extraction.codecs import read_jsonl, write_jsonl
   from experiments.row_extraction.metrics import MetricReport, score_predictions
-  from experiments.row_extraction.runner import RunMeasurements, run_arm
+  from experiments.row_extraction.runner import ResourceSpec, RunMeasurements, run_arm
   ```
 
-  `ExperimentArm` has read-only `experiment_id: str`, `config_id: str`, and `predict(row: FrozenRow) -> RowPrediction`. `FieldProposal` contains a `FieldRole`, nonempty exact `atom_ids`, optional source region, optional continuation `owner_row_id`, and a raw score. `RowPrediction` contains experiment/config/document/row IDs, predicted type, the complete fixed evidence-atom ledger, proposals, exact-row confidence, decision, and stable reasons. `run_arm(rows, arm, sink) -> RunMeasurements` and `score_predictions(rows, gold, predictions) -> MetricReport` remain the only canonical execution and scoring paths. The row stream is mandatory ownership context and is not an additional feature source. Shared `write_jsonl(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity` and `read_jsonl(path: Path, model: type[T]) -> Iterator[T]` stream records; this lane must not load the private corpus into an additional all-document model.
-- `MetricReport` is consumed without flattening, including `log_loss`, `area_under_risk_coverage`, and `coverage_at_risk`; merchant is exactly `fields[FieldRole.DESCRIPTION]` and billed amount is `fields[FieldRole.BILLED_AMOUNT]`. `RunMeasurements` is consumed without duplication, including `cold_start_ns`, `throughput_rows_per_second`, `dependency_bytes`, `worker_count`, and its canonical prediction SHA-256. The only lane-local resource addition is `dependency_count`; shared fields may not be renamed, copied into parallel fields, or recomputed under different definitions.
+  `ExperimentArm` has read-only `experiment_id: str`, `config_id: str`, and `predict(row: FrozenRow) -> RowPrediction`. `FieldProposal` contains a `FieldRole`, nonempty exact `atom_ids`, optional source region, optional continuation `owner_row_id`, and a raw score. `RowPrediction` contains experiment/config/document/row IDs, predicted type, the complete fixed evidence-atom ledger, proposals, exact-row confidence, decision, and stable reasons. `run_arm(rows, factory, sink, resource_spec) -> RunMeasurements` and `score_predictions(rows, gold, predictions) -> MetricReport` remain the only canonical execution and scoring paths. The row stream is mandatory ownership context and is not an additional feature source. Shared `write_jsonl(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity` and `read_jsonl(path: Path, model: type[T]) -> Iterator[T]` stream records; this lane must not load the private corpus into an additional all-document model.
+- `MetricReport` is consumed without flattening, including `log_loss`, `area_under_risk_coverage`, and `coverage_at_risk`; merchant is exactly `fields[FieldRole.DESCRIPTION]` and billed amount is `fields[FieldRole.BILLED_AMOUNT]`. The frozen handoff writes canonical model/dependency inventories; each fresh measured invocation builds a matching static `ResourceSpec` and `TextExperimentArmFactory`, and the shared runner measures and publishes that same execution. `RunMeasurements` is consumed without duplication, including `preparation_ns`, `total_ns`, `end_to_end_ns`, `cold_start_ns`, `throughput_rows_per_second`, `dependency_bytes`, `worker_count`, `measurement_protocol`, and its canonical prediction SHA-256. The only lane-local resource addition is `dependency_count`; shared fields may not be renamed, copied into parallel fields, recomputed under different definitions, or filled with unavailable-as-zero placeholders.
 - The exact frozen records are those in `docs/superpowers/plans/2026-07-28-row-extraction-shared-foundation.md`: `BBox` is `tuple[float, float, float, float]`; `EvidenceAtom` exposes `atom_id/text/bbox/source/confidence/column_index`; `FrozenRow` exposes `document_id/row_id/split/source_pdf/page_number/bbox/baseline_type/column_bands/atoms/previous_row_id/next_row_id/gap_before/gap_after/render_version`; `GoldField` exposes `role/canonical_value/atom_ids/source_region`; and the remaining constructors match Task 1's exact field-set tests. Any mismatch stops the lane before implementation; reconcile it on the foundation branch and regenerate this plan rather than adding reflection or compatibility branches.
 - `FrozenRow.source_pdf`, `document_id`, `row_id`, `split`, `page_number`, `baseline_type`, `previous_row_id`, `next_row_id`, and `render_version` are forbidden feature inputs. The source and IDs are identity/coordination metadata; `baseline_type` is an accepted-anchor observation, not gold. Tests must prove changing any of them leaves features byte-identical. Adjacency IDs may be copied only into `FieldProposal.owner_row_id` after a model has predicted `RowType.CONTINUATION`; they never enter a model score and are used by shared metrics only to verify ownership correctness.
 - The shared `grouped_folds(rows: Sequence[FrozenRow], manifest: SplitManifest, fold_count: int) -> tuple[Fold, ...]` is the only training fold constructor. Its `Fold.train_document_ids` and `Fold.validation_document_ids` preserve the duplicate/layout atomic units frozen by the shared manifest. This lane consumes that read-only manifest and does not create or accept a second lane-local `group_id`.
@@ -1447,7 +1447,10 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 **Interfaces:**
 
 - Consumes: `LockedTextConfig`, exact shared `ArtifactIdentity` records for the row model/tagger/calibrator, linear row artifact, CRF artifact, exact evidence decoder, sigmoid calibrator, `Decision`, and common contracts.
-- Produces: `TextPredictionTrace`, `TextExperimentArm`, `TextExperimentArm.predict_trace(row) -> TextPredictionTrace`, and exact `ExperimentArm.predict(row) -> RowPrediction` behavior.
+- Produces: `TextPredictionTrace`, `TextExperimentArm`, `TextExperimentArmFactory`,
+  `TextExperimentArm.predict_trace(row) -> TextPredictionTrace`, exact
+  `ExperimentArm.predict(row) -> RowPrediction` behavior, and a factory with the frozen-handoff
+  manifest identity and exact zero subprocess count.
 - The common prediction contains no values. Private trace contains only scores, legality, stable reasons, and artifact/config identities; it contains no raw text or rendered financial data.
 
 - [ ] **Step 1: Write failing accepted/abstained/common-runner tests.**
@@ -1494,13 +1497,24 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 
 
   def test_shared_runner_gets_byte_identical_predictions(
-      trained_text_arm, synthetic_rows, canonical_jsonl_sink_factory
+      trained_text_arm_factory, synthetic_rows, canonical_jsonl_sink_factory,
+      synthetic_resource_spec_factory,
   ) -> None:
       first_sink = canonical_jsonl_sink_factory()
       second_sink = canonical_jsonl_sink_factory()
-      run_arm(synthetic_rows, trained_text_arm, first_sink)
-      run_arm(synthetic_rows, trained_text_arm, second_sink)
-      assert first_sink.bytes() == second_sink.bytes()
+      first = run_arm(
+          synthetic_rows,
+          trained_text_arm_factory(),
+          first_sink,
+          synthetic_resource_spec_factory("run-1"),
+      )
+      second = run_arm(
+          synthetic_rows,
+          trained_text_arm_factory(),
+          second_sink,
+          synthetic_resource_spec_factory("run-2"),
+      )
+      assert first.predictions_sha256 == second.predictions_sha256
   ```
 
 - [ ] **Step 2: Run the focused test and confirm RED.**
@@ -1616,8 +1630,14 @@ Stop condition: stop if the plan requires transformer/generative models, documen
 **Interfaces:**
 
 - Consumes: separately materialized foundation `DatasetSplit.TRAIN` and `DatasetSplit.VALIDATION` row/gold streams, the independently supplied split-manifest SHA-256 (not the manifest contents), fixed candidate matrix, experiment-2 validation predictions, common metrics, grouped OOF calibration, and lane-private output paths.
-- Produces: `CandidateValidation`, `HandoffVerification`, `FrozenHandoff`, `train_candidates(...) -> tuple[CandidateValidation, ...]`, `select_candidate(validations: Sequence[CandidateValidation], risk_target: Decimal) -> CandidateValidation | None`, `freeze_handoff(selection: CandidateValidation | None, validations: Sequence[CandidateValidation], output_dir: Path) -> FrozenHandoff`, and `verify_handoff(handoff: FrozenHandoff) -> HandoffVerification`.
+- Produces: `CandidateValidation`, `HandoffVerification`, `FrozenHandoff`, `train_candidates(...) -> tuple[CandidateValidation, ...]`, `select_candidate(validations: Sequence[CandidateValidation], risk_target: Decimal) -> CandidateValidation | None`, `freeze_handoff(selection: CandidateValidation | None, validations: Sequence[CandidateValidation], output_dir: Path) -> FrozenHandoff`, `verify_handoff(handoff: FrozenHandoff) -> HandoffVerification`, and `build_text_resource_spec(rows_identity, row_count, split, handoff, runtime_identity, private_root, model_inventory, dependency_inventory, cache_root, inventory_output) -> ResourceSpec`.
 - An eligible private `FrozenHandoff` directory contains canonical `locked-config.json`, a frozen-arm manifest, model/tagger/calibrator bytes, `artifact-identity.json`, dependency/runtime identity, validation predictions/metrics, and SHA-256 inventory. A validation-stopped directory omits `locked-config.json` and the frozen-arm manifest but retains the complete validation evidence, stable stop reason, artifact inventory, and checkpoint. Tracked code contains no realized private hash or metric.
+- `freeze_handoff` writes disjoint private model and dependency `ResourceInventory` files. The
+  resource-spec builder validates their identities, exact frozen-arm identity, one split-filtered
+  row-sequence identity/count, `worker_count=1`, and distinct nonexistent cache/inventory paths.
+  It fixes `resource_basis="end-to-end-method"`.
+  Text inference has no external subprocess and no separate preparation phase; the factory
+  count and shared measured `preparation_ns` are exactly zero.
 
 - [ ] **Step 1: Write failing tests for partition isolation, deterministic selection, and a complete handoff.**
 

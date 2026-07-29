@@ -47,6 +47,7 @@ out-of-scope sandbox/controller failures. Any new or changed failure stops the t
 - `experiments/row_extraction/arms/profiles/classifier.py`: deterministic row-type proofs and ambiguity.
 - `experiments/row_extraction/arms/profiles/extractors.py`: primary, continuation, and structural proposal builders.
 - `experiments/row_extraction/arms/profiles/arm.py`: shared-contract adapter and abstention policy.
+- `experiments/row_extraction/arms/profiles/resources.py`: fresh measured-arm factory and static resource-spec construction.
 - `experiments/row_extraction/arms/profiles/freeze.py`: validation-only configuration selection and immutable handoff metadata.
 - `experiments/row_extraction/arms/profiles/checkpoint.py`: exact eight-section privacy-safe lane checkpoint.
 - `tests/experiments/row_extraction/arms/profiles/`: focused synthetic tests for each module.
@@ -307,17 +308,24 @@ Scope answer: YES
 Program component: experiment 2
 Measured effect: common runner can measure exact rows, abstention, evidence failures, latency, and determinism for this lane
 Fixed inputs: shared ExperimentArm contract and Tasks 1-3
-Allowed files: profiles arm adapter and tests
+Allowed files: profiles arm/resource adapters and tests
 Stop condition: stop if an adapter would bypass shared evidence validation or convert ambiguity into acceptance
 ```
 
 **Files:**
 - Create: `experiments/row_extraction/arms/profiles/arm.py`
+- Create: `experiments/row_extraction/arms/profiles/resources.py`
 - Test: `tests/experiments/row_extraction/arms/profiles/test_arm.py`
+- Test: `tests/experiments/row_extraction/arms/profiles/test_resources.py`
 
 **Interfaces:**
-- Consumes: `FrozenRow`, `profile_row`, `classify_profile`, and `extract_for_type`.
-- Produces: `ProfileConfig(version: str, max_continuation_gap: Decimal)`, `ProfileConfig.v1()`, `ProfileConfig.candidates()`, `DeterministicProfileArm`, and exact `ExperimentArm.predict(row: FrozenRow) -> RowPrediction` behavior.
+- Consumes: `FrozenRow`, `profile_row`, `classify_profile`, `extract_for_type`, exact ordered
+  row-sequence identity/count and split, frozen-arm/runtime identities, an empty model
+  inventory, dependency inventory, and distinct private cache/inventory outputs.
+- Produces: `ProfileConfig(version: str, max_continuation_gap: Decimal)`,
+  `ProfileConfig.v1()`, `ProfileConfig.candidates()`, `DeterministicProfileArm`,
+  `DeterministicProfileArmFactory`, exact `ExperimentArm.predict(row: FrozenRow) ->
+  RowPrediction` behavior, and `build_profile_resource_spec(...) -> ResourceSpec`.
 
 - [ ] **Step 1: Write a failing end-to-end arm test**
 
@@ -356,6 +364,13 @@ prediction ledger, set `exact_row_confidence=None` because deterministic proof s
 a calibrated probability, and pass stable reasons through unchanged. Ensure config IDs contain
 only policy versions, never private counts or values.
 
+`DeterministicProfileArmFactory` constructs a fresh arm, binds the exact frozen-arm manifest,
+and reports zero subprocesses. `build_profile_resource_spec` requires the canonical empty model
+inventory (`model_bytes == 0`), exact dependency inventory, `worker_count=1`, new-empty cache
+policy, and one split-filtered row identity/count. The shared runner owns all observations from
+the same published run; the spec fixes `resource_basis="end-to-end-method"`, and this lane has
+no separate preparation phase.
+
 - [ ] **Step 4: Run the complete profiles lane and common runner tests**
 
 Run: `/root/creditcard/.venv/bin/pytest -q tests/experiments/row_extraction/arms/profiles tests/experiments/row_extraction/test_runner.py tests/experiments/row_extraction/test_metrics.py`
@@ -370,7 +385,9 @@ Expected: `Success: no issues found`.
 
 ```bash
 git add experiments/row_extraction/arms/profiles/arm.py \
-  tests/experiments/row_extraction/arms/profiles/test_arm.py
+  experiments/row_extraction/arms/profiles/resources.py \
+  tests/experiments/row_extraction/arms/profiles/test_arm.py \
+  tests/experiments/row_extraction/arms/profiles/test_resources.py
 git commit -m "feat: expose deterministic row profile arm"
 ```
 
@@ -392,8 +409,15 @@ Stop condition: stop before locked-test access, rule addition after errors, or p
 - Test: `tests/experiments/row_extraction/arms/profiles/test_checkpoint.py`
 
 **Interfaces:**
-- Consumes: exactly `ProfileConfig.candidates()`, validation `MetricReport` values, and `ArtifactIdentity` records.
+- Consumes: exactly `ProfileConfig.candidates()`, validation `MetricReport` and same-run
+  `RunMeasurements` values, frozen-arm/runtime identities, canonical empty model and exact
+  dependency inventories, and `ArtifactIdentity` records.
 - Produces: `FrozenProfileHandoff(disposition: LaneDisposition, config: ProfileConfig | None, stop_reason: str | None, validation_predictions: ArtifactIdentity, validation_metrics: ArtifactIdentity, validation_measurements: ArtifactIdentity, determinism: ArtifactIdentity, error_summary: ArtifactIdentity, test_accessed: Literal[False])`, `select_profile_config(candidates: Sequence[ProfileCandidate]) -> FrozenProfileHandoff`, and the charter's exact eight-section privacy-safe checkpoint.
+
+An eligible handoff pins the frozen-arm manifest plus the empty model and dependency inventory
+identities used by `build_profile_resource_spec`; a validation-stopped handoff retains the same
+complete resource evidence but has no loadable frozen arm. No unavailable resource field may
+be encoded as zero.
 
 - [ ] **Step 1: Write a failing deterministic selection test**
 
@@ -458,9 +482,11 @@ Run:
 
 Expected: PASS.
 
-Run the common runner on private train/validation rows only, twice, with outputs in the
-lane-owned ignored directory. Require byte-identical predictions. Do not inspect locked-test
-metrics.
+Run the common runner on private train/validation rows only, twice. Each invocation uses a
+fresh isolated process, `DeterministicProfileArmFactory`, static `ResourceSpec`, new empty cache
+root, combined-inventory output, and prediction sink. Require byte-identical predictions and
+matching row/config/runtime/arm/model/dependency inputs; timing, RSS, byte totals, and prediction
+SHA must come from each same execution. Do not inspect locked-test metrics.
 
 - [ ] **Step 5: Commit selection behavior and return the handoff**
 

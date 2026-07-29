@@ -405,6 +405,33 @@ Uncertainty intervals and comparisons resample documents, not rows. The final re
 uses paired document-level comparisons and reports practical effect sizes alongside
 uncertainty.
 
+### Same-run resource and determinism invariant
+
+Resource observations must describe the exact execution whose canonical prediction artifact
+they accompany. A prior prediction execution may not be measured and attached to a later run.
+Every measured run is bound before execution to the ordered row-sequence identity/count and
+split; frozen arm, runtime, model, and dependency identities; one-worker policy; and a new empty
+cache root. The shared runner constructs a fresh arm, measures cold start, fixed-row execution,
+memory, subprocesses, footprints, and cache growth, and publishes that execution's predictions
+and measurements together.
+
+Recognition or evidence genuinely computed before fixed-row extraction—currently conditional
+and forced page OCR—uses a typed preparation record bound to the exact resulting evidence,
+rows, runtime, inventories, and empty cache. Reports keep preparation, fixed-row execution, and
+end-to-end cost separate. Offline model training is not inference preparation.
+
+The locked comparison performs one measured prediction generation per shared baseline and
+eligible frozen lane, then one fresh independent generation solely to verify deterministic
+canonical bytes. It does not perform a resource-only prediction generation first. Both page
+baseline generations repeat their own preparation from independent empty caches. Validation-
+stopped lanes are not opened on locked data.
+
+The accepted-pipeline control is accuracy-only because the shared bundle contains its already-
+materialized predictions. Any measured replay cost is labeled `materialized-adapter`, is not
+claimed as production extraction cost, and is excluded from resource Pareto dominance. The
+conditional/forced page baselines and all four experiments are labeled `end-to-end-method` and
+remain comparable on resource axes within the phase definitions above.
+
 ## Error Taxonomy
 
 Every wrong or abstained locked-test outcome is assigned one primary cause and optional

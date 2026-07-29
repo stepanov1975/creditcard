@@ -59,7 +59,13 @@ from experiments.row_extraction.contracts import (
     RowType,
 )
 from experiments.row_extraction.metrics import MetricReport, score_predictions
-from experiments.row_extraction.runner import PredictionSink, RunMeasurements, run_arm
+from experiments.row_extraction.runner import (
+    MeasuredArmFactory,
+    PredictionSink,
+    ResourceSpec,
+    RunMeasurements,
+    run_arm,
+)
 ```
 
 Required signatures are:
@@ -77,8 +83,9 @@ class ExperimentArm(Protocol):
 
 def run_arm(
     rows: Iterable[FrozenRow],
-    arm: ExperimentArm,
+    factory: MeasuredArmFactory,
     sink: PredictionSink,
+    resource_spec: ResourceSpec,
 ) -> RunMeasurements: ...
 
 
@@ -99,7 +106,7 @@ The lane also expects the frozen foundation models/codecs to expose the followin
 - `RowPrediction` is `RowPrediction(experiment_id: str, config_id: str, document_id: str, row_id: str, predicted_type: RowType, evidence_atoms: tuple[EvidenceAtom, ...], proposals: tuple[FieldProposal, ...], exact_row_confidence: float | None, decision: Decision, reasons: tuple[str, ...])`. Its evidence ledger is complete support for all proposal IDs; the shared validator rejects missing or duplicate IDs.
 - `Decision` provides `ACCEPT`, `ABSTAIN`, `REJECT`, and `IGNORE`; `DatasetSplit` provides `TRAIN`, `VALIDATION`, and `TEST`; `LaneDisposition` provides `FROZEN_ELIGIBLE` and `VALIDATION_STOPPED`.
 - `ArtifactIdentity` is `ArtifactIdentity(artifact_type: str, sha256: str, version: str, byte_size: int)` and has canonical JSON serialization.
-- `MetricReport` exposes `row_count`, `exact_rows`, `exact_row_rate`, `row_type_correct`, `row_type_accuracy`, `row_type_macro_f1`, `row_types`, `row_type_confusion`, `fields: Mapping[FieldRole, FieldMetric]`, `accepted_rows`, `abstained_rows`, `rejected_rows`, `ignored_rows`, `unsupported_evidence`, `ownership_collisions`, `ocr_cer`, `ocr_wer`, `calibration_bins`, `brier_score`, `log_loss`, `expected_calibration_error`, `risk_coverage`, `area_under_risk_coverage`, and `coverage_at_risk`. `FieldMetric` exposes `role`, `eligible_rows`, `exact_matches`, `normalized_matches`, `omissions`, `hallucinations`, `exact_rate`, `normalized_rate`, `omission_rate`, and `hallucination_rate`. `RunMeasurements` exposes `row_count`, `total_ns`, `p50_ns`, `p95_ns`, `cold_start_ns`, `throughput_rows_per_second`, `peak_rss_bytes`, `model_bytes`, `dependency_bytes`, `cache_bytes`, `subprocess_count`, `worker_count`, and `predictions_sha256`.
+- `MetricReport` exposes `row_count`, `exact_rows`, `exact_row_rate`, `row_type_correct`, `row_type_accuracy`, `row_type_macro_f1`, `row_types`, `row_type_confusion`, `fields: Mapping[FieldRole, FieldMetric]`, `accepted_rows`, `abstained_rows`, `rejected_rows`, `ignored_rows`, `unsupported_evidence`, `ownership_collisions`, `ocr_cer`, `ocr_wer`, `calibration_bins`, `brier_score`, `log_loss`, `expected_calibration_error`, `risk_coverage`, `area_under_risk_coverage`, and `coverage_at_risk`. `FieldMetric` exposes `role`, `eligible_rows`, `exact_matches`, `normalized_matches`, `omissions`, `hallucinations`, `exact_rate`, `normalized_rate`, `omission_rate`, and `hallucination_rate`. `sweep.py` creates the static identity-bound `ResourceSpec`; the shared runner measures the same execution whose predictions it publishes. `RunMeasurements` exposes `experiment_id`, `config_id`, `row_sequence_identity`, `split`, `cache_policy`, `resource_basis`, `arm_manifest_identity`, `row_count`, `total_ns`, `p50_ns`, `p95_ns`, `preparation_ns`, `end_to_end_ns`, `cold_start_ns`, `throughput_rows_per_second`, `peak_rss_bytes`, `model_bytes`, `dependency_bytes`, `cache_bytes`, `subprocess_count`, `worker_count`, `measurement_protocol`, `runtime_identity`, `model_inventory_identity`, `dependency_inventory_identity`, `resource_inventory_identity`, and `predictions_sha256`.
 - `experiments.row_extraction.codecs` provides `write_jsonl(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity` and `read_jsonl(path: Path, model: type[T]) -> Iterator[T]`; the shared runner provides `JsonlPredictionSink`. `score_predictions(rows, gold, predictions)` resolves every proposal through the complete `RowPrediction.evidence_atoms` ledger and uses the rows only for frozen ownership/region validation, so no OCR text sidecar or mutable registry is allowed.
 - Shared synthetic constructors are `tests.experiments.row_extraction.factories.frozen_row()` and `tests.experiments.row_extraction.factories.gold_row()`.
 
@@ -905,7 +912,10 @@ Stop condition: stop if prediction requires gold access, row detection, shared m
 
 **Interfaces:**
 - Consumes: `FrozenRow`, `ExperimentArm`, `RowPrediction`, `Decision`, lane renderer/recognizer/assignment, and the row's fixed `source_pdf`, `page_number`, `render_version`, and `baseline_type`.
-- Produces: `PdfSource.read(source_pdf: Path) -> bytes` protocol, `PrivatePdfSource`, and `OcrExperimentArm.predict(row) -> RowPrediction`.
+- Produces: `PdfSource.read(source_pdf: Path) -> bytes` protocol, `PrivatePdfSource`,
+  `OcrExperimentArm.predict(row) -> RowPrediction`, and `OcrExperimentArmFactory` with the
+  frozen config/artifact-manifest identity, fresh-arm construction, and an exact subprocess
+  counter shared with the lane-owned Tesseract launcher.
 - Emits: a complete immutable `RowPrediction.evidence_atoms` ledger containing every OCR atom referenced by a proposal; no sidecar registry.
 
 - [ ] **Step 1: Write a failing synthetic arm test**
@@ -1004,6 +1014,10 @@ return RowPrediction(
 Expose `OcrExperimentArm.experiment_id` as the constant `row-ocr`; keep every ablation
 identity in `config_id`. Export `OcrConfig` and `OcrExperimentArm` from `__init__.py`. Run:
 
+Every Tesseract launch in `tesseract.py` increments the factory-owned counter exactly once
+before process creation. Cache hits launch nothing. Construction-time version detection and
+all recognition passes use the same counter; a direct uncounted subprocess call is forbidden.
+
 ```bash
 .venv/bin/ruff format experiments/row_extraction/arms/ocr tests/experiments/row_extraction/arms/ocr/test_arm.py
 .venv/bin/pytest -q tests/experiments/row_extraction/arms/ocr/test_arm.py
@@ -1043,9 +1057,23 @@ Stop condition: stop if selection needs locked results, a new ablation family, a
 - Create: `tests/experiments/row_extraction/arms/ocr/test_sweep.py`
 
 **Interfaces:**
-- Consumes: shared `MetricReport`, `RunMeasurements`, `DatasetSplit`; lane `OcrConfig`; pinned traineddata identities from the shared runtime manifest.
-- Produces: `Stage`, `SelectionMetrics`, `CandidateResult`, `project_selection_metrics(report, measurements)`, `stage_candidates(stage, incumbent, best_traineddata)`, `select_development_challenger()`, and `approve_validation_challenger()`.
+- Consumes: shared `MetricReport`, `ResourceSpec`, `RunMeasurements`, `DatasetSplit`; lane
+  `OcrConfig`; exact split-filtered row-sequence identity/count; frozen-arm/runtime identities;
+  pinned traineddata model inventory; dependency inventory; and distinct new private cache and
+  resource-inventory paths per run.
+- Produces: `Stage`, `SelectionMetrics`, `CandidateResult`,
+  `build_ocr_resource_spec(...) -> ResourceSpec`, `project_selection_metrics(report,
+  measurements)`, `stage_candidates(stage, incumbent, best_traineddata)`,
+  `select_development_challenger()`, and `approve_validation_challenger()`.
 - Selection invariant: a challenger must be deterministic, preserve fixed row count/IDs, and not increase omission, hallucination, or ownership-collision counts on the identical evaluation rows. Reconciliation is not a selection feature.
+
+`build_ocr_resource_spec` binds one candidate's config/frozen-arm manifest, the exact ordered
+row sequence and split, the runtime, the disjoint traineddata-model/dependency inventories,
+`worker_count=1`, and one new-empty cache root. Each candidate and repeat gets a distinct spec;
+every OCR spec fixes `resource_basis="end-to-end-method"`;
+the runner, not `sweep.py`, observes cold start, process-family RSS, cache bytes, subprocesses,
+and prediction latency from the same published execution. Row OCR has no separate preparation
+record because crop rendering and recognition occur inside `predict`.
 
 - [ ] **Step 1: Write failing exact-matrix tests**
 
@@ -1258,11 +1286,18 @@ Expected: FAIL during collection because `cli.py` does not exist.
 `run-candidate` must:
 
 1. resolve paths beneath `/root/creditcard/artifacts/row-extraction/experiment-1-ocr/` and reject escape after `Path.resolve()`;
-2. stream only the requested `DatasetSplit` from shared `frozen-rows.jsonl` and `gold-rows.jsonl` with `read_jsonl(path, FrozenRow)` and `read_jsonl(path, GoldRow)`;
+2. verify the candidate's `ResourceSpec` against the exact requested split-filtered sequence in
+   shared `frozen-rows.jsonl`, then open a fresh filtered row iterator for execution;
 3. reject `DatasetSplit.TEST` unconditionally; the central comparison package imports the verified frozen arm and owns the only locked run;
-4. construct `JsonlPredictionSink` inside a new, nonexistent run directory;
-5. call `run_arm(rows, arm, prediction_sink)` exactly once;
-6. reopen predictions with `read_jsonl(path, RowPrediction)`, require every proposal ID to resolve exactly once in its prediction's `evidence_atoms`, and call `score_predictions(rows, gold, predictions)` exactly once;
+4. construct a fresh `OcrExperimentArmFactory` and `JsonlPredictionSink` inside a new,
+   nonexistent run directory;
+5. call `run_arm(rows, factory, prediction_sink, resource_spec)` exactly once in this fresh
+   isolated command process so its returned measurements and prediction digest describe that
+   same execution;
+6. reopen independent filtered row and gold iterators plus predictions with `read_jsonl`,
+   require every proposal ID to resolve exactly once in its prediction's `evidence_atoms`, and
+   call `score_predictions(reopened_rows, reopened_gold, predictions)` exactly once; never
+   reuse the iterator consumed by `run_arm`;
 7. compare emitted row IDs with expected fixed row IDs in streaming sorted order and fail closed on any missing, extra, duplicate, or reordered ID;
 8. write canonical compact sorted JSON with mode `0o600`, atomic rename, and no source names/values;
 9. print only `f"experiment=1 split={split.value} rows={row_count} status=ok"`.
@@ -1450,7 +1485,12 @@ class OcrLaneHandoff:
 
 - [ ] **Step 5: Implement the privacy-safe checkpoint and handoff**
 
-The checkpoint's measurement section contains only aggregate shared metric/resource fields, paired development/validation deltas versus accepted and forced whole-page baselines, row counts, and privacy-safe slice names with minimum reportable sample sizes enforced by the foundation. Error sections contain taxonomy counts, not examples. `next_action_or_stop` is exactly one of `handoff_to_locked_comparison` or `stop_experiment_1` plus stable reasons.
+The checkpoint's measurement section contains only aggregate shared metric/resource fields,
+paired development/validation deltas versus accepted and forced whole-page baselines, row
+counts, and privacy-safe slice names. Minimum reportable sample sizes and all document-macro or
+stratified slice enforcement belong to the central comparison package, not the foundation or
+this lane. Error sections contain taxonomy counts, not examples. `next_action_or_stop` is
+exactly one of `handoff_to_locked_comparison` or `stop_experiment_1` plus stable reasons.
 
 `handoff.json` contains the shared `LaneDisposition`: `FROZEN_ELIGIBLE` when a complete,
 deterministic validation freeze exists, otherwise `VALIDATION_STOPPED` with one stable
@@ -1527,7 +1567,14 @@ Expected: repeat predictions (including evidence ledgers), row-ID sequence, and 
 
 ## Locked-Comparison Handoff Boundary
 
-Experiment 1 ends after Step 8. The common comparison owner—not this lane—may later consume the frozen handoff for the charter's one locked run. That owner must verify the freeze, lane/foundation/runtime/worker identities, execute the already-frozen `OcrConfig` exactly once through `run_arm`, repeat canonical predictions for determinism, and score with the shared metrics beside all baselines and other lanes. Any configuration change, rerun for tuning, added candidate, learned/neural recognizer, production edit, or row/split/label change invalidates the handoff and requires stopping under the charter.
+Experiment 1 ends after Step 8. The common comparison owner—not this lane—may later consume
+the frozen handoff for the charter's one locked measured run plus its sole determinism repeat.
+That owner must verify the freeze and exact row/foundation/runtime/worker/arm/inventory
+identities, construct two fresh factories and static locked `ResourceSpec` values with distinct
+new caches/sinks, invoke `run_arm` once for each, require byte-identical predictions, and score
+the first output beside all baselines and other lanes. Any configuration change, rerun for
+tuning, added candidate, learned/neural recognizer, production edit, or row/split/label change
+invalidates the handoff and requires stopping under the charter.
 
 ## Expected Handoff Contents
 
