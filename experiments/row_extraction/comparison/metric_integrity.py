@@ -108,7 +108,9 @@ def _validate_calibration(report: MetricReport) -> None:
             or bin_.empirical_accuracy is None
             or not _unit_interval(bin_.mean_confidence)
             or not _unit_interval(bin_.empirical_accuracy)
-            or not bin_.lower <= bin_.mean_confidence <= bin_.upper
+            or bin_.mean_confidence < bin_.lower
+            or bin_.mean_confidence > bin_.upper
+            or (index < _CALIBRATION_BIN_COUNT - 1 and bin_.mean_confidence == bin_.upper)
             or not _attainable_rate(bin_.empirical_accuracy, bin_.count)
         ):
             _fail()

@@ -897,6 +897,39 @@ def test_stopped_handoff_rejects_calibration_mean_outside_bin(
         validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
 
 
+def test_stopped_handoff_rejects_nonfinal_calibration_upper_boundary(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, stopped=frozenset({"row-ocr"}))
+    report = MetricReport.model_validate_json(
+        manifest.lanes["row-ocr"].validation_metrics.path.read_bytes()
+    )
+    bins = list(report.calibration_bins)
+    bins[-2] = bins[-2].model_copy(
+        update={
+            "count": 2,
+            "mean_confidence": Decimal("0.9"),
+            "empirical_accuracy": Decimal(1),
+        }
+    )
+    bins[-1] = bins[-1].model_copy(
+        update={
+            "count": 0,
+            "mean_confidence": None,
+            "empirical_accuracy": None,
+        }
+    )
+    incoherent = report.model_copy(
+        update={
+            "calibration_bins": tuple(bins),
+            "expected_calibration_error": Decimal("0.1"),
+        }
+    )
+
+    with pytest.raises(HandoffError, match="validation metrics are incomplete or incoherent"):
+        validate_handoffs(_replace_stopped_metric(tmp_path, manifest, incoherent))
+
+
 def test_stopped_handoff_rejects_unattainable_calibration_accuracy(
     tmp_path: Path,
 ) -> None:
