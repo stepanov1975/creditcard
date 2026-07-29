@@ -20,6 +20,7 @@ from experiments.row_extraction.grouping import (
     grouping_review_digest,
     structure_profile,
 )
+from experiments.row_extraction.runtime import RowRuntimeManifest, runtime_identity
 from tests.experiments.row_extraction.test_runtime import _toolchain
 
 runner = CliRunner()
@@ -489,7 +490,7 @@ def test_prepare_runtime_publication_failure_rolls_back_both_outputs(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(foundation_admin, "LocalToolchainInspector", Inspector)
+    monkeypatch.setattr(foundation_admin, "CleanProcessToolchainInspector", Inspector)
     real_link = foundation_admin.os.link
     calls = 0
 
@@ -512,6 +513,63 @@ def test_prepare_runtime_publication_failure_rolls_back_both_outputs(
     assert result.exit_code == 1
     assert not output.exists()
     assert not identity_output.exists()
+
+
+def test_verify_runtime_uses_and_closes_clean_process_inspector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private = (tmp_path / "private").resolve()
+    private.mkdir()
+    dependency_path = _dependency_identity(private)
+    dependency = ArtifactIdentity(
+        artifact_type="resource-inventory",
+        sha256="a" * 64,
+        version="row-resource-inventory-v1",
+        byte_size=1,
+    )
+    manifest = RowRuntimeManifest(
+        version="row-runtime-manifest-v1",
+        toolchain=_toolchain(),
+        dependency_inventory_identity=dependency,
+    )
+    manifest_path = private / "runtime.json"
+    identity_path = private / "runtime.identity.json"
+    _write_model(manifest_path, manifest)
+    _write_model(identity_path, runtime_identity(manifest))
+    events: list[str] = []
+
+    class Inspector:
+        def __init__(self) -> None:
+            events.append("initialized")
+
+        def fingerprint(self) -> object:
+            events.append("fingerprinted")
+            return _toolchain()
+
+        def close(self) -> None:
+            events.append("closed")
+
+    monkeypatch.setattr(foundation_admin, "CleanProcessToolchainInspector", Inspector)
+
+    result = runner.invoke(
+        app,
+        [
+            "verify-runtime",
+            "--private-root",
+            str(private),
+            "--manifest",
+            str(manifest_path),
+            "--identity",
+            str(identity_path),
+            "--dependency-inventory-identity",
+            str(dependency_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "status=ok command=verify-runtime\n"
+    assert events == ["initialized", "fingerprinted", "closed"]
 
 
 def test_admin_cli_rejects_relative_output_independently(tmp_path: Path) -> None:

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ValidationError
@@ -14,10 +18,64 @@ from experiments.row_extraction.report import ReportContext
 from experiments.row_extraction.runner import RunMeasurements
 
 _RUNTIME_VERSION: Literal["row-runtime-manifest-v1"] = "row-runtime-manifest-v1"
+_WORKTREE = Path(__file__).resolve().parents[2]
+_TOOLCHAIN_PROBE_TIMEOUT_SECONDS = 300.0
+_TOOLCHAIN_PROBE_SOURCE = """\
+import sys
+
+from ccparser.corpus_gate import LocalToolchainInspector
+from ccparser.output import _canonical_json_value_content
+
+inspector = LocalToolchainInspector()
+try:
+    fingerprint = inspector.fingerprint()
+    sys.stdout.buffer.write(
+        _canonical_json_value_content(fingerprint.model_dump(mode="json")) + b"\\n"
+    )
+finally:
+    inspector.close()
+"""
 
 
 class RuntimeContractError(ValueError):
     """Runtime evidence does not bind to the measured extraction run."""
+
+
+class CleanProcessToolchainInspector:
+    """Run the production inspector before experiment modules enter the child process."""
+
+    def fingerprint(self) -> ToolchainFingerprint:
+        """Return the canonical, typed fingerprint emitted by a clean child process."""
+
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = os.pathsep.join((str(_WORKTREE / "src"), str(_WORKTREE)))
+        try:
+            completed = subprocess.run(
+                (sys.executable, "-c", _TOOLCHAIN_PROBE_SOURCE),
+                cwd=_WORKTREE,
+                check=False,
+                env=environment,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=_TOOLCHAIN_PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise RuntimeError("runtime toolchain is unavailable") from None
+        if completed.returncode != 0:
+            raise RuntimeError("runtime toolchain is unavailable")
+        try:
+            fingerprint = ToolchainFingerprint.model_validate_json(completed.stdout)
+            canonical = _canonical_json_value_content(fingerprint.model_dump(mode="json")) + b"\n"
+        except (TypeError, ValidationError, ValueError):
+            raise RuntimeError("runtime toolchain is unavailable") from None
+        if completed.stdout != canonical:
+            raise RuntimeError("runtime toolchain is unavailable")
+        return fingerprint
+
+    def close(self) -> None:
+        """Close the inspector; each probe already owns and closes its child resources."""
 
 
 class RowRuntimeManifest(_FrozenModel):
@@ -152,6 +210,7 @@ def report_context_from_runtime(
 
 
 __all__ = [
+    "CleanProcessToolchainInspector",
     "RowRuntimeManifest",
     "RuntimeContractError",
     "capture_runtime",

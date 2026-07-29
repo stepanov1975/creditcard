@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +15,7 @@ from ccparser.corpus_gate import (
     ToolchainAsset,
     ToolchainFingerprint,
 )
+from experiments.row_extraction import runtime as runtime_module
 from experiments.row_extraction.contracts import ArtifactIdentity, DatasetSplit
 from experiments.row_extraction.report import ReportContext
 from experiments.row_extraction.runner import RunMeasurements
@@ -85,6 +90,91 @@ class _Inspector:
     def fingerprint(self) -> ToolchainFingerprint:
         self.calls += 1
         return self.value
+
+
+def _canonical_toolchain_output(toolchain: ToolchainFingerprint) -> bytes:
+    return corpus_gate_module._canonical_json_value_bytes(toolchain.model_dump(mode="json"))
+
+
+def test_clean_process_inspector_uses_fixed_shell_free_candidate_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _toolchain()
+    invocation: dict[str, object] = {}
+
+    def run_probe(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        invocation["command"] = command
+        invocation.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, _canonical_toolchain_output(expected), b"")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", run_probe)
+
+    actual = runtime_module.CleanProcessToolchainInspector().fingerprint()
+
+    worktree = Path(runtime_module.__file__).resolve().parents[2]
+    assert actual == expected
+    assert invocation["command"] == (
+        sys.executable,
+        "-c",
+        runtime_module._TOOLCHAIN_PROBE_SOURCE,
+    )
+    assert invocation["cwd"] == worktree
+    assert invocation["check"] is False
+    assert invocation["stdin"] is subprocess.DEVNULL
+    assert invocation["stdout"] is subprocess.PIPE
+    assert invocation["stderr"] is subprocess.DEVNULL
+    assert invocation["shell"] is False
+    environment = invocation["env"]
+    assert isinstance(environment, dict)
+    assert environment["PYTHONPATH"] == os.pathsep.join((str(worktree / "src"), str(worktree)))
+
+
+@pytest.mark.parametrize(
+    "completed",
+    (
+        subprocess.CompletedProcess(("probe",), 1, b"", b"private failure"),
+        subprocess.CompletedProcess(("probe",), 0, b"not-json\n", b""),
+        subprocess.CompletedProcess(
+            ("probe",),
+            0,
+            _canonical_toolchain_output(_toolchain()).removesuffix(b"\n"),
+            b"",
+        ),
+    ),
+)
+def test_clean_process_inspector_fails_generically_on_failed_or_noncanonical_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    completed: subprocess.CompletedProcess[bytes],
+) -> None:
+    monkeypatch.setattr(runtime_module.subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime_module.CleanProcessToolchainInspector().fingerprint()
+
+    assert str(failure.value) == "runtime toolchain is unavailable"
+    assert "private failure" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        OSError("private path"),
+        subprocess.TimeoutExpired(("probe",), 1),
+    ),
+)
+def test_clean_process_inspector_fails_generically_when_probe_cannot_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+) -> None:
+    def unavailable(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise error
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", unavailable)
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime_module.CleanProcessToolchainInspector().fingerprint()
+
+    assert str(failure.value) == "runtime toolchain is unavailable"
 
 
 def _run(runtime: ArtifactIdentity, dependency: ArtifactIdentity) -> RunMeasurements:

@@ -16,7 +16,6 @@ from typing import Annotated, Never
 import typer
 from pydantic import BaseModel, ValidationError
 
-from ccparser.corpus_gate import LocalToolchainInspector
 from ccparser.output import _canonical_json_value_content
 from ccparser.paths import iter_regular_pdf_files
 from experiments.row_extraction.codecs import _canonical_record_bytes, read_jsonl
@@ -32,6 +31,7 @@ from experiments.row_extraction.grouping import (
 )
 from experiments.row_extraction.runner import RunMeasurements
 from experiments.row_extraction.runtime import (
+    CleanProcessToolchainInspector,
     RowRuntimeManifest,
     capture_runtime,
     report_context_from_runtime,
@@ -560,7 +560,7 @@ def _prepare_runtime(
     identity_path = _new_file(identity_output, root)
     _require_distinct((dependency_path, runtime_output, identity_path))
     dependency = _read_model(dependency_path, ArtifactIdentity)
-    inspector = LocalToolchainInspector()
+    inspector = CleanProcessToolchainInspector()
     try:
         manifest, identity = capture_runtime(inspector, dependency)
     finally:
@@ -607,7 +607,7 @@ def _verify_runtime(
     dependency_record = _read_model(
         _input_file(dependency_inventory_identity, root), ArtifactIdentity
     )
-    inspector = LocalToolchainInspector()
+    inspector = CleanProcessToolchainInspector()
     try:
         verify_runtime_binding(
             inspector,
