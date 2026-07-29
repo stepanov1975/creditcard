@@ -202,6 +202,55 @@ def test_accepted_baseline_returns_the_exact_materialized_projection(tmp_path: P
     assert arm.predict(row) is prediction
 
 
+def test_accepted_baseline_allows_table_height_fixed_column_bands(tmp_path: Path) -> None:
+    row = _row(
+        bands=(
+            _band(
+                0,
+                FieldRole.DESCRIPTION,
+                (20.0, 0.0, 180.0, 500.0),
+            ),
+        )
+    )
+    prediction = _accepted_prediction(row)
+
+    arm = AcceptedBaselineArm((row,), (prediction,), _manifest(tmp_path, (prediction,)))
+
+    assert arm.predict(row) is prediction
+
+
+def test_accepted_baseline_allows_fixed_columns_without_row_content_overlap(
+    tmp_path: Path,
+) -> None:
+    row = _row(bands=(_band(0, FieldRole.DESCRIPTION, (220.0, 0.0, 260.0, 500.0)),))
+    prediction = _accepted_prediction(row)
+
+    arm = AcceptedBaselineArm((row,), (prediction,), _manifest(tmp_path, (prediction,)))
+
+    assert arm.predict(row) is prediction
+
+
+def test_accepted_baseline_rejects_invalid_fixed_column_geometry(tmp_path: Path) -> None:
+    row = _row(bands=(_band(0, FieldRole.DESCRIPTION, (20.0, 0.0, 20.0, 500.0)),))
+    prediction = _accepted_prediction(row)
+
+    with pytest.raises(BaselineContractError, match="invalid fixed column geometry"):
+        AcceptedBaselineArm((row,), (prediction,), _manifest(tmp_path, (prediction,)))
+
+
+def test_accepted_baseline_rejects_duplicate_fixed_column_indexes(tmp_path: Path) -> None:
+    row = _row(
+        bands=(
+            _band(0, FieldRole.DESCRIPTION, (20.0, 0.0, 100.0, 500.0)),
+            _band(0, FieldRole.BILLED_AMOUNT, (100.0, 0.0, 180.0, 500.0)),
+        )
+    )
+    prediction = _accepted_prediction(row)
+
+    with pytest.raises(BaselineContractError, match="duplicate fixed column index"):
+        AcceptedBaselineArm((row,), (prediction,), _manifest(tmp_path, (prediction,)))
+
+
 def test_accepted_baseline_verifies_complete_artifact_then_selects_requested_split(
     tmp_path: Path,
 ) -> None:
@@ -397,6 +446,17 @@ def test_half_open_band_assignment_chooses_only_the_band_on_the_boundary(tmp_pat
     assert prediction.decision is Decision.ACCEPT
     assert tuple(proposal.role for proposal in prediction.proposals) == (FieldRole.DESCRIPTION,)
     assert prediction.evidence_atoms[0].column_index == 1
+
+
+def test_band_assignment_ignores_independent_vertical_extent(tmp_path: Path) -> None:
+    row = _row(bands=(_band(0, FieldRole.DESCRIPTION, (0.0, 100.0, 200.0, 500.0)),))
+    page = _page((_word(0, "SYNTHETIC", (10.0, 20.0, 100.0, 30.0)),))
+
+    prediction = _page_arm(tmp_path, (row,), (page,)).predict(row)
+
+    assert prediction.decision is Decision.ACCEPT
+    assert tuple(proposal.role for proposal in prediction.proposals) == (FieldRole.DESCRIPTION,)
+    assert prediction.evidence_atoms[0].column_index == 0
 
 
 @pytest.mark.parametrize("collision", ("row", "band"))

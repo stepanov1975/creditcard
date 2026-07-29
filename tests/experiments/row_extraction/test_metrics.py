@@ -13,6 +13,7 @@ from typing import cast
 import pytest
 
 from experiments.row_extraction.contracts import (
+    ColumnBand,
     Decision,
     EvidenceAtom,
     FieldProposal,
@@ -628,6 +629,102 @@ def test_frozen_row_context_must_join_bijectively(case: str) -> None:
 def test_frozen_row_context_is_revalidated_at_scoring_boundary() -> None:
     label = _gold_row(row_id="row-1", row_type=RowType.STRUCTURAL)
     row = _row_context(label).model_copy(update={"bbox": (0.0, 0.0, float("nan"), 10.0)})
+
+    with pytest.raises(ScoringInputError, match=r"^invalid frozen row input$"):
+        _score(
+            rows=(row,),
+            gold=(label,),
+            predictions=(
+                _prediction(
+                    row_id="row-1",
+                    predicted_type=RowType.STRUCTURAL,
+                ),
+            ),
+        )
+
+
+def test_frozen_row_scoring_allows_independent_fixed_column_geometry() -> None:
+    label = _gold_row(row_id="row-1", row_type=RowType.STRUCTURAL)
+    row = _row_context(label).model_copy(
+        update={
+            "column_bands": (
+                ColumnBand(
+                    index=0,
+                    role=FieldRole.DESCRIPTION,
+                    bbox=(220.0, 100.0, 260.0, 500.0),
+                ),
+            )
+        }
+    )
+
+    report = _score(
+        rows=(row,),
+        gold=(label,),
+        predictions=(
+            _prediction(
+                row_id="row-1",
+                predicted_type=RowType.STRUCTURAL,
+            ),
+        ),
+    )
+
+    assert report.exact_rows == 1
+
+
+def test_frozen_row_scoring_rejects_duplicate_fixed_column_indexes() -> None:
+    label = _gold_row(row_id="row-1", row_type=RowType.STRUCTURAL)
+    row = _row_context(label).model_copy(
+        update={
+            "column_bands": (
+                ColumnBand(
+                    index=0,
+                    role=FieldRole.DESCRIPTION,
+                    bbox=(20.0, 0.0, 100.0, 500.0),
+                ),
+                ColumnBand(
+                    index=0,
+                    role=FieldRole.BILLED_AMOUNT,
+                    bbox=(100.0, 0.0, 180.0, 500.0),
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ScoringInputError, match=r"^invalid frozen row input$"):
+        _score(
+            rows=(row,),
+            gold=(label,),
+            predictions=(
+                _prediction(
+                    row_id="row-1",
+                    predicted_type=RowType.STRUCTURAL,
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "band_bbox",
+    (
+        (20.0, 0.0, 20.0, 500.0),
+        (20.0, 0.0, float("nan"), 500.0),
+    ),
+)
+def test_frozen_row_scoring_rejects_invalid_fixed_column_geometry(
+    band_bbox: tuple[float, float, float, float],
+) -> None:
+    label = _gold_row(row_id="row-1", row_type=RowType.STRUCTURAL)
+    row = _row_context(label).model_copy(
+        update={
+            "column_bands": (
+                ColumnBand(
+                    index=0,
+                    role=FieldRole.DESCRIPTION,
+                    bbox=band_bbox,
+                ),
+            )
+        }
+    )
 
     with pytest.raises(ScoringInputError, match=r"^invalid frozen row input$"):
         _score(

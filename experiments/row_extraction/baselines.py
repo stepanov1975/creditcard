@@ -105,6 +105,10 @@ def _center_inside(bbox: BBox, point: tuple[float, float]) -> bool:
     return bbox[0] <= point[0] < bbox[2] and bbox[1] <= point[1] < bbox[3]
 
 
+def _horizontal_center_inside(bbox: BBox, x_center: float) -> bool:
+    return bbox[0] <= x_center < bbox[2]
+
+
 def _clip(bbox: BBox, outer: BBox) -> BBox:
     clipped = (
         max(bbox[0], outer[0]),
@@ -141,7 +145,7 @@ def _validated_rows(rows: Sequence[FrozenRow]) -> tuple[FrozenRow, ...]:
             if band.index in band_indexes:
                 _fail("duplicate fixed column index")
             band_indexes.add(band.index)
-            if not _valid_bbox(band.bbox) or not _contains(row.bbox, band.bbox):
+            if not _valid_bbox(band.bbox):
                 _fail("invalid fixed column geometry")
         validated.append(row)
     if len(splits) != 1:
@@ -387,10 +391,11 @@ class _PageBaselineArm:
                     continue
                 row = candidates[0]
                 clipped_bbox = _clip(word.bbox, row.bbox)
+                clipped_center = _center(clipped_bbox)
                 band_candidates = tuple(
                     band
                     for band in row.column_bands
-                    if _center_inside(band.bbox, _center(clipped_bbox))
+                    if _horizontal_center_inside(band.bbox, clipped_center[0])
                 )
                 if len(band_candidates) > 1:
                     _fail("page word band collision")

@@ -215,18 +215,20 @@ def _validate_gold(record: GoldRow) -> GoldRow:
 def _validate_row(record: FrozenRow) -> FrozenRow:
     validated = _validated(record, FrozenRow, "invalid frozen row input")
     atom_ids = tuple(atom.atom_id for atom in validated.atoms)
+    band_indexes = tuple(band.index for band in validated.column_bands)
     valid_geometry = (
         _bbox_is_valid(validated.bbox)
         and all(
             _bbox_is_valid(atom.bbox) and _bbox_contains(validated.bbox, atom.bbox)
             for atom in validated.atoms
         )
-        and all(
-            _bbox_is_valid(band.bbox) and _bbox_contains(validated.bbox, band.bbox)
-            for band in validated.column_bands
-        )
+        and all(_bbox_is_valid(band.bbox) for band in validated.column_bands)
     )
-    if len(atom_ids) != len(set(atom_ids)) or not valid_geometry:
+    if (
+        len(atom_ids) != len(set(atom_ids))
+        or len(band_indexes) != len(set(band_indexes))
+        or not valid_geometry
+    ):
         raise ScoringInputError("invalid frozen row input")
     return validated
 
