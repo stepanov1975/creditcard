@@ -122,6 +122,15 @@ No experiment branch may perform it.
     disposition.
 12. Production `src/` behavior remains unchanged until the program has issued a measured
     recommendation and a separate integration design has been approved.
+13. A numeric validation or promotion gate requires at least one row that is representable
+    by the frozen output/label contract after ambiguity and supervision masks are applied.
+    Zero eligible rows is a typed `VALIDATION_STOPPED`, non-evaluable outcome; it is not a
+    measured tie, loss, or zero-effect estimate, and uncertainty intervals remain unavailable.
+14. A matched ablation pair must have identical data-tier identity, initialization, schedule,
+    features, head, optimizer, and runtime except for the one declared ablation. Any additional
+    difference invalidates paired promotion evidence even if each artifact is reproducible.
+15. Label encoders must report effective row- and field-supervision eligibility. Successfully
+    constructing a fully masked target does not make that row eligible for field evaluation.
 
 ## Shared Foundation
 
@@ -519,6 +528,8 @@ foundation gate. Each lane uses TDD for deterministic behavior and commits focus
 Gate: each lane produces validation predictions, configuration/artifact identities, resource
 measurements, and an error report through the shared contract. A charter stop condition
 produces a typed terminal-stop handoff with its validation evidence; it does not disappear.
+An empty contract-representable validation cohort is such a stop and must not be converted
+into numeric comparative evidence.
 
 ### Stage 3: Configuration freeze
 
@@ -527,6 +538,8 @@ data. Freeze models, OCR settings, preprocessing, calibrators, thresholds, worke
 runtime identity. Preserve any valid terminal-stop handoff unchanged.
 
 Gate: no lane has inspected locked-test metrics.
+Every learned or matched-ablation handoff also proves a nonempty effective validation cohort
+and exact paired provenance; otherwise it remains validation-stopped.
 
 ### Stage 4: Locked comparison
 
