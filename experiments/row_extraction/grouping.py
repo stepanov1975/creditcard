@@ -504,7 +504,10 @@ def _page_image_boxes(page: fitz.Page, page_bbox: BBox) -> tuple[GridBBox, ...]:
     ):
         bbox = item.get("bbox")
         if bbox is not None:
-            boxes.add(_grid_bbox(_rect_tuple(bbox), page_bbox))
+            geometry = _rect_tuple(bbox)
+            if geometry[2] <= geometry[0] or geometry[3] <= geometry[1]:
+                continue
+            boxes.add(_grid_bbox(geometry, page_bbox))
     return tuple(sorted(boxes))
 
 

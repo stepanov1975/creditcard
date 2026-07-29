@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 
 import fitz  # type: ignore[import-untyped]
 import pytest
@@ -27,6 +28,7 @@ from experiments.row_extraction.grouping import (
     ReviewedGrouping,
     ReviewedPartition,
     ReviewerAttestation,
+    _page_image_boxes,
     candidate_relations,
     freeze_grouping,
     grouping_review_digest,
@@ -286,6 +288,25 @@ def test_page_skeleton_rejects_fine_grained_image_area_bucket() -> None:
 
     with pytest.raises(ValidationError, match="less than or equal to 3"):
         PageSkeleton.model_validate(values)
+
+
+def test_page_image_boxes_ignore_zero_area_image_geometry() -> None:
+    class ImagePage:
+        def get_image_info(self, *, hashes: bool, xrefs: bool) -> tuple[dict[str, object], ...]:
+            assert not hashes
+            assert not xrefs
+            return (
+                {"bbox": (2.0, 2.0, 2.0, 4.0)},
+                {"bbox": (3.0, 3.0, 5.0, 3.0)},
+                {"bbox": (10.0, 10.0, 20.0, 20.0)},
+            )
+
+    boxes = _page_image_boxes(
+        cast(fitz.Page, ImagePage()),
+        (0.0, 0.0, 100.0, 100.0),
+    )
+
+    assert boxes == ((6, 6, 13, 13),)
 
 
 @pytest.mark.parametrize(
