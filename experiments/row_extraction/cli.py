@@ -927,7 +927,7 @@ def _validate_bundle(destination: Path, manifest: SplitManifest) -> None:
         prior = actual.setdefault(row.document_id, row.split)
         if prior is not row.split:
             raise CliContractError("document spans frozen splits")
-    if actual != expected:
+    if any(expected.get(document_id) is not split for document_id, split in actual.items()):
         raise CliContractError("bundle membership mismatch")
 
 

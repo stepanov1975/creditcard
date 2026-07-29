@@ -283,6 +283,54 @@ def test_prepare_writes_all_canonical_identity_sidecars(
         )
 
 
+def test_validate_bundle_allows_frozen_documents_without_detected_rows(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "bundle"
+    crop_root = destination / "crops"
+    crop_root.mkdir(parents=True)
+    row = _structural_row(tmp_path, split=DatasetSplit.TRAIN)
+    prediction = _structural_prediction(row)
+    crop_path = crop_root / "row.ppm"
+    crop_path.write_bytes(b"synthetic-crop")
+    crop = CropRecord(
+        document_id=row.document_id,
+        row_id=row.row_id,
+        row_bbox=row.bbox,
+        relative_path="row.ppm",
+        sha256=hashlib.sha256(crop_path.read_bytes()).hexdigest(),
+        width=1,
+        height=1,
+    )
+    for name, records in (
+        ("rows", (row,)),
+        ("accepted_predictions", (prediction,)),
+        ("crop_index", (crop,)),
+    ):
+        identity = write_jsonl(destination / f"{name}.jsonl", records)
+        _write_identity(destination / f"{name}.identity.json", identity)
+    manifest = SplitManifest(
+        seed="public-seed",
+        version="row-extraction-split-v1",
+        memberships=(
+            DocumentMembership(
+                document_id=row.document_id,
+                split=DatasetSplit.TRAIN,
+                atomic_unit="unit-with-row",
+                stratum="stratum",
+            ),
+            DocumentMembership(
+                document_id="e" * 64,
+                split=DatasetSplit.VALIDATION,
+                atomic_unit="zero-row-unit",
+                stratum="stratum",
+            ),
+        ),
+    )
+
+    cli_module._validate_bundle(destination, manifest)
+
+
 def test_prepare_orders_documents_by_content_identity_not_filename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
