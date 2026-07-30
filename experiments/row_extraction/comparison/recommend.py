@@ -20,21 +20,17 @@ from experiments.row_extraction.contracts import (
     RowType,
 )
 
-_EXPERIMENT_IDS = frozenset({"row-ocr", "row-profiles", "row-text", "row-vision"})
+from .result_catalog import LANE_ID_SET, StopReason
+
 _COMPARISON_IDENTITY_TYPE = "row-extraction-comparison-report"
 _MEASUREMENT_IDENTITY_TYPE = "row-extraction-locked-measurement"
-_ROW_SEQUENCE_IDENTITY_TYPE = "row-extraction-locked-row-sequence"
+_ROW_SEQUENCE_IDENTITY_TYPE = "frozen-row-sequence"
+_ROW_SEQUENCE_IDENTITY_VERSION = "canonical-jsonl-v1"
 _POLICY_IDENTITY_TYPE = "row-extraction-cascade-policy"
 _CASCADE_ID = "row-cascade"
 
 
-class StopReasonCode(StrEnum):
-    """The four predeclared validation-stop reasons."""
-
-    OCR_STAGE_VALIDATION_FAILED = "ocr_stage_validation_failed"
-    NO_PROFILE_CANDIDATE_MET_VALIDATION_GATE = "no_profile_candidate_met_validation_gate"
-    NO_TEXT_CANDIDATE_MET_VALIDATION_GATE = "no_text_candidate_met_validation_gate"
-    NO_PIXEL_GAIN = "no_pixel_gain"
+StopReasonCode = StopReason
 
 
 class MeasurementLimitationCode(StrEnum):
@@ -42,6 +38,7 @@ class MeasurementLimitationCode(StrEnum):
 
     OCR_ERROR_UNAVAILABLE = "ocr_error_unavailable"
     RESOURCE_BASIS_NOT_COMPARABLE = "resource_basis_not_comparable"
+    COVERAGE_NOT_COMPARABLE = "coverage_not_comparable"
     LOW_PROTECTED_SLICE_SUPPORT = "low_protected_slice_support"
 
 
@@ -68,11 +65,11 @@ class RecommendationKind(StrEnum):
     DESIGN_INTEGRATION = "design_integration"
 
 
-def _stop_reason_code(value: str | None) -> StopReasonCode:
+def _stop_reason_code(value: str | None) -> StopReason:
     if value is None:
         raise ValueError("comparison has no closed validation stop reason")
     try:
-        return StopReasonCode(value)
+        return StopReason(value)
     except ValueError:
         raise ValueError("comparison has no closed validation stop reason") from None
 
@@ -100,7 +97,10 @@ class MeasuredCandidateSummary:
             raise ValueError("candidate identity is required")
         if self.measurement_identity.artifact_type != _MEASUREMENT_IDENTITY_TYPE:
             raise ValueError("candidate requires a locked measurement identity")
-        if self.row_sequence_identity.artifact_type != _ROW_SEQUENCE_IDENTITY_TYPE:
+        if (
+            self.row_sequence_identity.artifact_type != _ROW_SEQUENCE_IDENTITY_TYPE
+            or self.row_sequence_identity.version != _ROW_SEQUENCE_IDENTITY_VERSION
+        ):
             raise ValueError("candidate requires a locked row-sequence identity")
         decimals = (
             self.paired_row_exact_effect,
@@ -149,7 +149,10 @@ class MeasuredRecommendationReport:
     def __post_init__(self) -> None:
         if self.comparison_identity.artifact_type != _COMPARISON_IDENTITY_TYPE:
             raise ValueError("recommendation requires a locked comparison identity")
-        if self.locked_row_sequence_identity.artifact_type != _ROW_SEQUENCE_IDENTITY_TYPE:
+        if (
+            self.locked_row_sequence_identity.artifact_type != _ROW_SEQUENCE_IDENTITY_TYPE
+            or self.locked_row_sequence_identity.version != _ROW_SEQUENCE_IDENTITY_VERSION
+        ):
             raise ValueError("recommendation requires a locked row-sequence identity")
         rebuilt = build_comparison(tuple(self.comparison.results))
         if rebuilt != self.comparison:
@@ -180,7 +183,7 @@ class MeasuredRecommendationReport:
                 continue
             candidate_result = results.get(candidate_id)
             if (
-                candidate_id not in _EXPERIMENT_IDS
+                candidate_id not in LANE_ID_SET
                 or candidate_result is None
                 or candidate_result.disposition is not LaneDisposition.FROZEN_ELIGIBLE
                 or candidate_result.result_basis is not ResultBasis.LOCKED_TEST
@@ -235,7 +238,7 @@ class MeasuredRecommendationReport:
             ):
                 raise ValueError("stopped lane cannot enter cascade recommendation")
             if (
-                component_id not in _EXPERIMENT_IDS
+                component_id not in LANE_ID_SET
                 or component is None
                 or component.disposition is not LaneDisposition.FROZEN_ELIGIBLE
                 or component.result_basis is not ResultBasis.LOCKED_TEST
@@ -254,7 +257,7 @@ class RecommendationLimitation:
     """One component-scoped limitation with a closed code."""
 
     component_id: str
-    code: StopReasonCode | MeasurementLimitationCode
+    code: StopReason | MeasurementLimitationCode
 
 
 @dataclass(frozen=True)

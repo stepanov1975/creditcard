@@ -48,6 +48,7 @@ from .handoff_contracts import (
     ValidatedArmBinding,
     ValidatedHandoffs,
     ValidationEvidence,
+    runtime_identity_contract,
 )
 from .measurement_validation import validate_measurements
 from .metric_integrity import validate_metric_report
@@ -120,11 +121,14 @@ def _validate_handoff_identities(handoff: HandoffBinding) -> None:
         version=_SPLIT_VERSION,
     )
     validate_identity(handoff.label_identity, "label")
+    runtime_contract = runtime_identity_contract(handoff.experiment_id)
+    if runtime_contract is None:
+        raise HandoffError("invalid runtime identity")
     validate_identity(
         handoff.runtime_identity,
         "runtime",
-        artifact_type=_RUNTIME_TYPE,
-        version=_RUNTIME_VERSION,
+        artifact_type=runtime_contract.artifact_type,
+        version=runtime_contract.version,
     )
     validate_artifact_file(
         handoff.validation_predictions,

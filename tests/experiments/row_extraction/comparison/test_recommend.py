@@ -31,7 +31,9 @@ def _identity(artifact_type: str, marker: str) -> ArtifactIdentity:
     return ArtifactIdentity(
         artifact_type=artifact_type,
         sha256=marker * 64,
-        version="synthetic-v1",
+        version=(
+            "canonical-jsonl-v1" if artifact_type == "frozen-row-sequence" else "synthetic-v1"
+        ),
         byte_size=100,
     )
 
@@ -145,7 +147,7 @@ def _candidate(
     return MeasuredCandidateSummary(
         candidate_id=candidate_id,
         measurement_identity=_identity("row-extraction-locked-measurement", "b"),
-        row_sequence_identity=_identity("row-extraction-locked-row-sequence", "d"),
+        row_sequence_identity=_identity("frozen-row-sequence", "d"),
         paired_row_exact_effect=paired_effect,
         paired_row_exact_low=paired_low,
         paired_row_exact_high=paired_effect,
@@ -168,7 +170,7 @@ def _report(
     return MeasuredRecommendationReport(
         comparison=comparison,
         comparison_identity=_identity("row-extraction-comparison-report", "a"),
-        locked_row_sequence_identity=_identity("row-extraction-locked-row-sequence", "d"),
+        locked_row_sequence_identity=_identity("frozen-row-sequence", "d"),
         candidates=candidates,
         cascade_policy=cascade_policy,
         cascade_policy_identity=(
@@ -399,8 +401,29 @@ def test_empty_cascade_policy_cannot_claim_incremental_locked_gain() -> None:
 def test_candidate_must_bind_common_locked_row_sequence_identity() -> None:
     mismatched = replace(
         _candidate(),
-        row_sequence_identity=_identity("row-extraction-locked-row-sequence", "e"),
+        row_sequence_identity=_identity("frozen-row-sequence", "e"),
     )
 
     with pytest.raises(ValueError, match="common locked row-sequence identity"):
         _report(_comparison(), mismatched)
+
+
+def test_recommendation_accepts_the_canonical_runner_row_sequence_identity() -> None:
+    identity = _identity("frozen-row-sequence", "d")
+    candidate = replace(_candidate(), row_sequence_identity=identity)
+
+    report = MeasuredRecommendationReport(
+        comparison=_comparison(),
+        comparison_identity=_identity("row-extraction-comparison-report", "a"),
+        locked_row_sequence_identity=identity,
+        candidates=(candidate,),
+    )
+
+    assert report.locked_row_sequence_identity == identity
+
+
+def test_recommendation_rejects_wrong_runner_row_sequence_version() -> None:
+    identity = _identity("frozen-row-sequence", "d").model_copy(update={"version": "wrong-version"})
+
+    with pytest.raises(ValueError, match="locked row-sequence identity"):
+        replace(_candidate(), row_sequence_identity=identity)

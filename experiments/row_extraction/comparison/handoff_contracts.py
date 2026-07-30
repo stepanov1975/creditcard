@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 from pydantic import Field
@@ -19,7 +20,7 @@ from experiments.row_extraction.metrics import MetricReport
 from experiments.row_extraction.runner import MeasuredArmFactory, RunMeasurements
 
 from .errors import ValidationErrorSummary
-from .result_catalog import BASELINE_ID_SET, LANE_ID_SET
+from .result_catalog import BASELINE_ID_SET, LANE_ID_SET, RESULT_IDS
 
 type RowKey = tuple[str, str]
 
@@ -32,6 +33,39 @@ VALIDATION_MEASUREMENT_TYPE = "row-comparison-validation-measurements"
 VALIDATION_MEASUREMENT_VERSION = "row-comparison-validation-measurements-v1"
 VALIDATION_ERROR_TYPE = "row-comparison-error-summary"
 VALIDATION_ERROR_VERSION = "row-comparison-error-summary-v1"
+
+
+@dataclass(frozen=True)
+class RuntimeIdentityContract:
+    """The closed artifact type/version permitted for one comparison arm."""
+
+    artifact_type: str
+    version: str
+
+
+_STANDARD_RUNTIME = RuntimeIdentityContract(
+    artifact_type="row-runtime-manifest",
+    version="row-runtime-manifest-v1",
+)
+RUNTIME_IDENTITY_CONTRACTS: Mapping[str, RuntimeIdentityContract] = MappingProxyType(
+    {
+        result_id: (
+            RuntimeIdentityContract(
+                artifact_type="runtime-lock",
+                version="row-vision-runtime-v1",
+            )
+            if result_id == "row-vision"
+            else _STANDARD_RUNTIME
+        )
+        for result_id in RESULT_IDS
+    }
+)
+
+
+def runtime_identity_contract(experiment_id: str) -> RuntimeIdentityContract | None:
+    """Return the exact runtime contract for a member of the closed result set."""
+
+    return RUNTIME_IDENTITY_CONTRACTS.get(experiment_id)
 
 
 class HandoffError(ValueError):
@@ -176,6 +210,7 @@ class ValidatedHandoffs:
 __all__ = [
     "BASELINE_IDS",
     "EXPERIMENT_IDS",
+    "RUNTIME_IDENTITY_CONTRACTS",
     "VALIDATION_ERROR_TYPE",
     "VALIDATION_ERROR_VERSION",
     "VALIDATION_MEASUREMENT_TYPE",
@@ -193,7 +228,9 @@ __all__ = [
     "LaneHandoff",
     "RowIdentity",
     "RowKey",
+    "RuntimeIdentityContract",
     "ValidatedArmBinding",
     "ValidatedHandoffs",
     "ValidationEvidence",
+    "runtime_identity_contract",
 ]

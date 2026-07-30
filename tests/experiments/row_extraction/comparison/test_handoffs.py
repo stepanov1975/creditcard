@@ -351,6 +351,12 @@ def _manifest(
         version="row-runtime-manifest-v1",
         byte_size=1,
     )
+    vision_runtime = ArtifactIdentity(
+        artifact_type="runtime-lock",
+        sha256="4" * 64,
+        version="row-vision-runtime-v1",
+        byte_size=1,
+    )
     bundle = ArtifactIdentity(
         artifact_type="bundle",
         sha256="6" * 64,
@@ -366,13 +372,14 @@ def _manifest(
     labels = ArtifactIdentity(
         artifact_type="labels",
         sha256="8" * 64,
-        version="synthetic-v1",
+        version="canonical-jsonl-v1",
         byte_size=1,
     )
 
     def handoff(arm_id: str, is_lane: bool) -> BaselineHandoff | LaneHandoff:
         config_id = f"{arm_id}-config"
-        arm_runtime = (runtime_overrides or {}).get(arm_id, runtime)
+        default_runtime = vision_runtime if arm_id == "row-vision" else runtime
+        arm_runtime = (runtime_overrides or {}).get(arm_id, default_runtime)
         model = _inventory(tmp_path, f"{arm_id}-model", "model")
         dependency = _inventory(tmp_path, f"{arm_id}-dependency", "dependency")
         arm_manifest = _write_model(
@@ -1034,13 +1041,13 @@ def test_frozen_loader_binds_each_explicit_cache_root(tmp_path: Path) -> None:
     assert first.cache_root != second.cache_root
 
 
-def test_handoffs_preserve_distinct_valid_per_arm_runtime_identities(
+def test_handoffs_preserve_closed_vision_runtime_identity(
     tmp_path: Path,
 ) -> None:
     vision_runtime = ArtifactIdentity(
-        artifact_type="row-runtime-manifest",
+        artifact_type="runtime-lock",
         sha256="4" * 64,
-        version="row-runtime-manifest-v1",
+        version="row-vision-runtime-v1",
         byte_size=1,
     )
     manifest = _manifest(
@@ -1052,6 +1059,52 @@ def test_handoffs_preserve_distinct_valid_per_arm_runtime_identities(
 
     assert validated.arm_bindings["row-vision"].runtime_identity == vision_runtime
     assert validated.arm_bindings["accepted-baseline"].runtime_identity == manifest.runtime_identity
+
+
+@pytest.mark.parametrize(
+    ("experiment_id", "invalid_runtime"),
+    (
+        (
+            "row-vision",
+            ArtifactIdentity(
+                artifact_type="row-runtime-manifest",
+                sha256="4" * 64,
+                version="row-runtime-manifest-v1",
+                byte_size=1,
+            ),
+        ),
+        (
+            "row-text",
+            ArtifactIdentity(
+                artifact_type="runtime-lock",
+                sha256="4" * 64,
+                version="row-vision-runtime-v1",
+                byte_size=1,
+            ),
+        ),
+        (
+            "row-vision",
+            ArtifactIdentity(
+                artifact_type="runtime-lock",
+                sha256="4" * 64,
+                version="row-runtime-manifest-v1",
+                byte_size=1,
+            ),
+        ),
+    ),
+)
+def test_handoffs_reject_cross_lane_or_mixed_runtime_contracts(
+    tmp_path: Path,
+    experiment_id: str,
+    invalid_runtime: ArtifactIdentity,
+) -> None:
+    manifest = _manifest(
+        tmp_path,
+        runtime_overrides={experiment_id: invalid_runtime},
+    )
+
+    with pytest.raises(HandoffError, match="invalid runtime identity"):
+        validate_handoffs(manifest)
 
 
 def test_handoff_preserves_one_or_two_typed_validation_measurements(
