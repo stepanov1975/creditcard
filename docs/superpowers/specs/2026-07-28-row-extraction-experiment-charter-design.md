@@ -74,6 +74,11 @@ and fields inside those rows are unreliable, especially merchant descriptions.
 
 The program must produce:
 
+The list below preserves the program's end-state design; it is not current work authorization.
+Cascade and locked-test language is preserved historical end-state design and grants no current
+authority. Held-out access requires a measured validation gain plus new explicit user approval and
+a committed charter amendment.
+
 - a reproducible, private, document-disjoint evaluation dataset;
 - independent implementations of all four experiments;
 - common baseline and metric implementations;
@@ -510,6 +515,11 @@ opening locked results merely to make an experiment appear better.
 
 ## Cascade
 
+The cascade and locked-test language in this section is preserved historical end-state design and
+grants no current authority to construct or run the cascade or open the locked test. Held-out
+access requires a measured validation gain plus new explicit user approval and a committed charter
+amendment.
+
 The cascade is a post-comparison consumer of frozen predictions, not a fifth experiment. It
 is designed only after all four experiments have produced frozen validation dispositions and
 every validation-eligible lane has produced its one central locked-test output.
@@ -718,6 +728,10 @@ These notes may suggest later challengers, but a suggestion is not authorization
 charter's four experiment definitions and amendment procedure control execution.
 
 ## Subordinate Execution Plans
+
+The cascade and locked-test language in this section and the linked plans is preserved historical
+end-state design and grants no current authority. Held-out access requires a measured validation
+gain plus new explicit user approval and a committed charter amendment.
 
 The implementation plans below translate this charter into TDD tasks. They are subordinate
 to this charter: if a plan conflicts with the charter, execution stops and the plan is

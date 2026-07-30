@@ -7,7 +7,10 @@
 > [focus-lock authority](../specs/2026-07-30-row-extraction-focus-lock-design.md) and
 > [live program status](../../experiments/row-extraction-program-status.md).
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical executor note (obsolete — DO NOT FOLLOW):** This plan originally directed agentic
+> workers to use superpowers:subagent-driven-development or superpowers:executing-plans for
+> task-by-task implementation. That directive is preserved only as historical context and grants
+> no authority while this plan is suspended.
 
 **Goal:** Compare the accepted baselines and all four required experiment dispositions fairly,
 run every frozen-eligible lane on locked data, preserve every validation-stopped result in the

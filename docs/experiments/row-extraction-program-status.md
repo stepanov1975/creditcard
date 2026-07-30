@@ -28,20 +28,21 @@ are privacy-safe validation outcomes, not held-out measurements and not private-
 
 ## Active phase
 
-**Supervision, overlapping-evidence, and merchant-recognition error analysis.** This is the sole
-active program phase.
+**Supervision and overlapping-evidence error analysis, including testing for a distinct
+merchant-recognition category.** This is the sole active program phase.
 
-**Next allowed task:** Quantify the supervision eligibility, overlapping evidence ownership, and
-merchant-recognition failures already exposed by the frozen development and validation evidence.
+**Next allowed task:** Quantify supervision-eligibility and overlapping-evidence-ownership errors
+in the frozen development and validation evidence, and determine whether that evidence supports a
+distinct merchant-recognition failure category.
 
 **Fixed inputs:** The frozen document-disjoint development and validation rows, labels, evidence,
 accepted baseline, and Round 1 lane outcomes. The held-out partition and all locked-input streams
 are excluded.
 
 **Allowed outputs:** Only privacy-safe counts or rates for effective row and field supervision
-eligibility, overlapping evidence ownership, and merchant-recognition failure categories; a
-supported or falsified extraction hypothesis grounded in those measurements; and one resulting
-extraction task or `STOP`.
+eligibility and overlapping evidence ownership; a merchant-recognition failure category only if
+the measured evidence supports it; a supported or falsified extraction hypothesis grounded in
+those measurements; and one resulting extraction task or `STOP`.
 
 **Stop condition:** Stop without adding support work if the existing frozen inputs cannot produce
 a quantified extraction error category, or if the analysis would require opening the held-out

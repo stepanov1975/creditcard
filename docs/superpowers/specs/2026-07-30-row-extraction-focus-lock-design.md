@@ -1,6 +1,6 @@
 # Row-Extraction Focus Lock Design
 
-**Status:** Approved for implementation by direct user instruction on 2026-07-30.
+**Status:** Implemented on 2026-07-30 and binding.
 
 ## Purpose
 

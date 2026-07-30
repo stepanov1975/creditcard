@@ -1,8 +1,11 @@
 # Row-Extraction Focus Lock Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
-> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
-> checkbox (`- [ ]`) syntax for tracking.
+> **COMPLETED — HISTORICAL ONLY — DO NOT EXECUTE.**
+
+> **Historical executor note (obsolete — DO NOT FOLLOW):** This plan originally directed agentic
+> workers to use superpowers:subagent-driven-development or superpowers:executing-plans for
+> task-by-task implementation. That directive is retained only as historical context; the checked
+> steps below record completed work and authorize no execution.
 
 **Goal:** Make metric-or-stop extraction focus binding for future agents and freeze the completed
 controller/provenance work without adding enforcement code.
@@ -38,20 +41,20 @@ and reviewable; no hook, controller, schema, CLI, or production behavior is adde
 - Produces: the mandatory task contract, metric-or-stop rule, one active phase, and exact frozen
   status for all four lanes.
 
-- [ ] **Step 1: Add the program-specific rule to `AGENTS.md`**
+- [x] **Step 1: Add the program-specific rule to `AGENTS.md`**
 
   Require the exact task fields from the design, whitelist extraction/measurement/error-analysis
   work, freeze controller/provenance/projection work, require explicit user approval for an
   infrastructure exception, and state that repository private-corpus acceptance policy is not an
   experiment task.
 
-- [ ] **Step 2: Amend the charter without redefining the four experiments**
+- [x] **Step 2: Amend the charter without redefining the four experiments**
 
   Add a focus-lock authority banner and binding section. Replace the loose `metric or experimental
   invariant` scope with a named extraction metric or error category, add the metric-or-stop rule,
   suspend Stages 4-6, and make the live status file authoritative for the active phase.
 
-- [ ] **Step 3: Create the live status record**
+- [x] **Step 3: Create the live status record**
 
   Record Round 1 as frozen, the held-out test as unopened, the five exact branch heads from the
   design audit, privacy-safe validation outcomes, the active supervision/merchant error-analysis
@@ -72,7 +75,7 @@ and reviewable; no hook, controller, schema, CLI, or production behavior is adde
     all abstained, zero exact matches; and
   - accepted baseline: zero exact matches with partial acceptance; page-OCR controls abstained.
 
-- [ ] **Step 4: Verify authority and status content**
+- [x] **Step 4: Verify authority and status content**
 
   Run:
 
@@ -86,7 +89,7 @@ and reviewable; no hook, controller, schema, CLI, or production behavior is adde
   Expected: every required focus/freeze concept is present, with exactly one active phase in the
   status file.
 
-- [ ] **Step 5: Run repository verification and commit the focus authority**
+- [x] **Step 5: Run repository verification and commit the focus authority**
 
   Run the four required commands from `AGENTS.md`, then stage only the five files named in this
   task and commit with:
@@ -105,18 +108,18 @@ and reviewable; no hook, controller, schema, CLI, or production behavior is adde
 - Consumes: the focus authority and live status from Task 1.
 - Produces: historical plan/runbook documents that cannot authorize controller continuation.
 
-- [ ] **Step 1: Add a suspension banner to the comparison plan**
+- [x] **Step 1: Add a suspension banner to the comparison plan**
 
   State that unchecked tasks are historical, Task 6 and marker-first projection are not
   authorized, the controller commit is preserved read-only, and only a user-approved charter
   amendment can reactivate locked comparison work.
 
-- [ ] **Step 2: Add a frozen banner to the runbook**
+- [x] **Step 2: Add a frozen banner to the runbook**
 
   State `DO NOT EXECUTE`, held-out unopened, missing test-only streams, and that commands are
   retained solely as historical reproduction documentation.
 
-- [ ] **Step 3: Check links, placeholders, and scope**
+- [x] **Step 3: Check links, placeholders, and scope**
 
   Run:
 
@@ -135,12 +138,12 @@ and reviewable; no hook, controller, schema, CLI, or production behavior is adde
 
   Expected: all commands exit zero and no production or experiment implementation file changed.
 
-- [ ] **Step 4: Run repository-required verification**
+- [x] **Step 4: Run repository-required verification**
 
   Run the four commands from `AGENTS.md`. The full suite must pass outside the sandbox if the five
   known native controller capability tests fail only because of sandbox restrictions.
 
-- [ ] **Step 5: Commit the focus lock**
+- [x] **Step 5: Commit the focus lock**
 
   Stage only the two historical documents named in this task and commit with:
 
