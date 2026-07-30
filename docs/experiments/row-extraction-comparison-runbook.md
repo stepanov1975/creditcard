@@ -1,5 +1,11 @@
 # Locked row-extraction comparison runbook
 
+> **FROZEN — DO NOT EXECUTE.** The held-out test remains unopened, and the required test-only
+> streams are missing. The commands below are retained solely as historical reproduction
+> documentation; they do not authorize comparison, controller, cascade, or locked-test work.
+> See the [focus-lock authority](../superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md)
+> and [live program status](row-extraction-program-status.md).
+
 This runbook executes the reviewed seven-result comparison exactly once. It is a
 private diagnostic experiment, not a corpus-acceptance gate and not authority to
 change production behavior.

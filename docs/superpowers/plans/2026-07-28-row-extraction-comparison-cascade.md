@@ -1,5 +1,12 @@
 # Row Extraction Comparison and Cascade Implementation Plan
 
+> **SUSPENDED — HISTORICAL ONLY.** Unchecked tasks in this plan are historical records, not
+> authorized work. Task 6 and marker-first projection are not authorized. Controller commit
+> `409dbcd7994ba1532fcbe8b165f12ebcc1c37cd4` is preserved read-only. Only a user-approved
+> charter amendment can reactivate locked comparison work; see the
+> [focus-lock authority](../specs/2026-07-30-row-extraction-focus-lock-design.md) and
+> [live program status](../../experiments/row-extraction-program-status.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compare the accepted baselines and all four required experiment dispositions fairly,
