@@ -34,6 +34,64 @@ Run all of the following before committing changes:
 - Add complete type annotations to public and internal functions. Avoid `Any`
   where a concrete protocol, model, or union can express the contract.
 
+## Row-extraction experiment focus lock
+
+The binding scope authority for row-extraction experiment work is
+`docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md`. The
+charter incorporates that authority, and
+`docs/experiments/row-extraction-program-status.md` is authoritative for the
+one active phase and next allowed task.
+
+A row-extraction task may only change one of the four approved extractors, run
+or score a named extraction metric on the frozen document-disjoint development
+or validation data, or quantify a predeclared extraction error category. Before
+work starts, every root task, plan task, and subagent prompt must record exactly:
+
+```text
+Scope answer: YES — <how this changes or measures extraction>
+Experiment: <row-ocr | row-profiles | row-text | row-vision | shared evaluation>
+Extraction hypothesis: <falsifiable statement>
+Measurement: <named metric or predeclared extraction error category>
+Fixed inputs: <rows, split, labels, or frozen artifacts>
+Smallest allowed files: <exact paths>
+Required output: <metric delta, hypothesis result, error count, or runnable extractor>
+Stop condition: <condition that ends this task without adding support work>
+```
+
+`Experimental invariant`, `reproducibility`, `future integration`, or
+`trust hardening` alone are not valid measurements.
+
+Preserve but do not continue locked-comparison controller or CLI architecture,
+provenance envelopes, handoff re-freezing, receipts, replay prevention,
+attestations, path/inode/cache-independence machinery, marker-first or other
+locked-input projection features, cascade execution, locked-test orchestration,
+private-corpus controller redesign, or production integration. Existing branches
+and artifacts are read-only historical evidence, not unfinished tasks.
+
+Shared evaluation changes are allowed only when a named local extraction
+measurement cannot run without the smallest immediate change. They must not
+create a reusable controller, schema family, CLI, receipt chain, or workflow
+subsystem. Any infrastructure exception requires direct user approval followed
+by a committed charter amendment; a general request to continue the experiment
+program is not approval.
+
+### Metric-or-Stop Rule
+
+At task completion, report exactly:
+
+```text
+Scope: YES — <reason>
+Experiment: <arm or shared evaluation>
+Measurement: <metric or error category>
+Result: <delta, supported/falsified hypothesis, quantified finding, or runnable extractor>
+Next extraction task: <one task or STOP>
+```
+
+If one completed task yields none of those required outputs, stop the program
+task. Do not create a second support task to rescue it. The repository private-
+corpus acceptance policy below is a separate production acceptance gate, not a
+row-extraction experiment task or an allowed substitute for extraction progress.
+
 ## Private corpus acceptance policy
 
 The tracked verification gates are necessary but not sufficient for any change

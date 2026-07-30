@@ -8,6 +8,14 @@ program.
 **Accepted comparison anchor:**
 `dee4b071ad65231da13825f2f7c74a488ca96c7c`
 
+> **BINDING FOCUS LOCK:** The
+> [row-extraction focus-lock design](2026-07-30-row-extraction-focus-lock-design.md)
+> narrows the work authorized by this charter. The
+> [live program status](../../experiments/row-extraction-program-status.md) is
+> authoritative for the sole active phase and next allowed task. Stages 4-6 are
+> suspended, the held-out test remains unopened, and marker-first projection,
+> controller, provenance, cascade, and production-integration work is frozen.
+
 ## Authority and Purpose
 
 This document is the single authoritative design for experiments intended to improve
@@ -31,6 +39,33 @@ or experiment branches. Those artifacts remain preserved as historical material,
 do not authorize work. The research notes cited by this charter provide evidence, not scope.
 Repository instructions in `AGENTS.md` and direct user instructions remain higher authority.
 
+## Binding Focus-Lock Authority
+
+The four experiments below remain defined exactly as approved; the focus lock does not add,
+remove, combine, or redefine an experiment. It restricts current work to one of these outcomes:
+
+- a runnable implementation of one of the four approved extraction approaches;
+- a named extraction-metric measurement or delta;
+- a supported or falsified extraction hypothesis; or
+- a quantified extraction error category that determines the next experiment.
+
+A task may change one approved extractor, measure a named extraction metric on frozen
+document-disjoint development or validation data, or analyze a measured extraction error.
+Shared evaluation work is allowed only when an existing local measurement cannot run without
+the smallest immediate change. It must not create a reusable controller, schema family, CLI,
+receipt chain, or workflow subsystem.
+
+Completed locked-comparison controller and CLI architecture, provenance envelopes, handoff
+re-freezing, receipts, replay prevention, attestations, path/inode/cache-independence machinery,
+marker-first or other locked-input projection features, cascade execution, locked-test
+orchestration, private-corpus controller redesign, and production integration are preserved as
+read-only historical evidence. Continuing any of that infrastructure requires direct user
+approval followed by a committed charter amendment; approval may not be inferred from a general
+request to continue the experiment program.
+
+The live program status is the only authority for which phase is active. Historical stage,
+plan, runbook, branch, and artifact state does not authorize a different phase or task.
+
 ## Goal
 
 Measure which general, local approach most reliably extracts exact structured credit-card
@@ -51,28 +86,38 @@ Production integration is not part of the experiment program itself.
 
 ## Mandatory Scope Test
 
-Before starting every task, the worker must answer:
-
-> Does this directly measure or improve transaction-row recognition or field extraction?
-
-A valid `yes` must name the affected experiment or shared comparison component and the
-metric it is expected to change or measure. A bare assertion of relevance is insufficient.
-
-Every task brief, plan task, and subagent prompt must start with this block:
+Before work starts, every root task, plan task, and subagent prompt must record this block:
 
 ```text
-Scope answer: YES
-Program component: <shared foundation | experiment 1 | experiment 2 | experiment 3 |
-  experiment 4 | comparison | cascade>
-Measured effect: <named metric or experimental invariant>
-Fixed inputs: <row identities, split, labels, or other inputs that cannot change>
-Allowed files: <exact directory or file list>
-Stop condition: <condition that ends the task without expanding scope>
+Scope answer: YES — <how this changes or measures extraction>
+Experiment: <row-ocr | row-profiles | row-text | row-vision | shared evaluation>
+Extraction hypothesis: <falsifiable statement>
+Measurement: <named metric or predeclared extraction error category>
+Fixed inputs: <rows, split, labels, or frozen artifacts>
+Smallest allowed files: <exact paths>
+Required output: <metric delta, hypothesis result, error count, or runnable extractor>
+Stop condition: <condition that ends this task without adding support work>
 ```
 
-If this block cannot be completed concretely, the task must not begin. If the answer changes
-to `no` while work is underway, the worker must stop, preserve any in-scope evidence, and
-return to this charter.
+`Experimental invariant`, `reproducibility`, `future integration`, or `trust hardening` alone are
+not valid measurements. If this block cannot be completed concretely, the task must not begin.
+If the answer changes to `no` while work is underway, the worker must stop, preserve any in-scope
+evidence, and return to this charter.
+
+## Metric-or-Stop Rule
+
+At task completion, report:
+
+```text
+Scope: YES — <reason>
+Experiment: <arm or shared evaluation>
+Measurement: <metric or error category>
+Result: <delta, supported/falsified hypothesis, quantified finding, or runnable extractor>
+Next extraction task: <one task or STOP>
+```
+
+If one completed task yields none of the required outputs, stop the program task. Do not create a
+second support task to rescue it.
 
 ## Definitions
 
@@ -541,7 +586,10 @@ Gate: no lane has inspected locked-test metrics.
 Every learned or matched-ablation handoff also proves a nonempty effective validation cohort
 and exact paired provenance; otherwise it remains validation-stopped.
 
-### Stage 4: Locked comparison
+### Stage 4: Locked comparison — SUSPENDED
+
+This historical stage is not authorized by the current focus lock. It may resume only after a
+measured validation gain and the explicit held-out approval recorded in the focus-lock sequence.
 
 Run all shared baselines and every validation-eligible frozen experiment once on the locked
 test under the same runner. Repeat canonical prediction generation to measure determinism.
@@ -553,13 +601,17 @@ Gate: exactly four lane dispositions exist: a complete locked result or a valid 
 handoff with validation measurements. A missing lane cannot be silently removed from the
 comparison, and a stopped lane cannot be described as a locked result.
 
-### Stage 5: Cascade
+### Stage 5: Cascade — SUSPENDED
+
+This historical stage is not authorized while the focus lock is active.
 
 Build and evaluate the confidence-based cascade from eligible frozen candidate outputs and a
 validation-selected policy. Do not include validation-stopped lanes, and do not retrain or
 retune an experiment using cascade or locked-test results.
 
-### Stage 6: Recommendation
+### Stage 6: Recommendation — SUSPENDED
+
+This historical stage is not authorized while the focus lock is active.
 
 Recommend the strongest measured option, a bounded combination, or no production change.
 The recommendation must identify gains, regressions, uncertainty, failure slices, resource
