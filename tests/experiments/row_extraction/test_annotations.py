@@ -9,6 +9,7 @@ from ccparser.models import TransactionKind
 from experiments.row_extraction.annotations import (
     AnnotationError,
     AnnotationSummary,
+    validate_annotation_subset,
     validate_annotations,
 )
 from experiments.row_extraction.contracts import (
@@ -130,6 +131,186 @@ def _error_text(
     with pytest.raises(AnnotationError) as captured:
         validate_annotations(rows, labels, references)
     return str(captured.value)
+
+
+def _subset_error_text(
+    population: tuple[FrozenRow, ...],
+    selected_rows: tuple[FrozenRow, ...],
+    labels: tuple[GoldRow, ...],
+) -> str:
+    with pytest.raises(AnnotationError) as captured:
+        validate_annotation_subset(population, selected_rows, labels)
+    return str(captured.value)
+
+
+def test_annotation_subset_requires_exact_selected_coverage_only() -> None:
+    selected = _primary_row(row_id="row-selected")
+    unselected = _primary_row(row_id="row-unselected")
+
+    summary = validate_annotation_subset(
+        (selected, unselected),
+        (selected,),
+        (_primary_gold(row_id=selected.row_id),),
+    )
+
+    assert summary == AnnotationSummary(
+        row_count=1,
+        label_count=1,
+        field_count=3,
+        primary_row_count=1,
+        continuation_row_count=0,
+        structural_row_count=0,
+        ambiguous_row_count=0,
+        ocr_reference_count=0,
+        ocr_referenced_row_count=0,
+        ocr_referenced_field_count=0,
+    )
+
+
+def test_annotation_subset_rejects_missing_selected_label() -> None:
+    selected = _primary_row(row_id="row-selected")
+
+    error = _subset_error_text((selected,), (selected,), ())
+
+    assert "selected row is missing a gold label" in error
+    assert selected.row_id in error
+
+
+def test_annotation_subset_rejects_duplicate_selected_label() -> None:
+    selected = _primary_row(row_id="row-selected")
+    label = _primary_gold(row_id=selected.row_id)
+
+    error = _subset_error_text((selected,), (selected,), (label, label))
+
+    assert "duplicate gold label identity" in error
+    assert selected.row_id in error
+
+
+def test_annotation_subset_rejects_unknown_selected_identity() -> None:
+    population_row = _primary_row(row_id="row-population")
+    unknown = _primary_row(row_id="row-unknown")
+
+    error = _subset_error_text(
+        (population_row,),
+        (unknown,),
+        (_primary_gold(row_id=unknown.row_id),),
+    )
+
+    assert "selected row is not in frozen population" in error
+    assert unknown.row_id in error
+
+
+def test_annotation_subset_rejects_duplicate_selected_identity() -> None:
+    selected = _primary_row(row_id="row-selected")
+
+    error = _subset_error_text(
+        (selected,),
+        (selected, selected),
+        (_primary_gold(row_id=selected.row_id),),
+    )
+
+    assert "duplicate selected row identity" in error
+    assert selected.row_id in error
+
+
+def test_annotation_subset_requires_the_exact_population_record() -> None:
+    population_row = _primary_row(row_id="row-selected")
+    changed = population_row.model_copy(update={"next_row_id": "different-row"})
+
+    error = _subset_error_text(
+        (population_row,),
+        (changed,),
+        (_primary_gold(row_id=changed.row_id),),
+    )
+
+    assert "selected row differs from frozen population record" in error
+    assert changed.row_id in error
+
+
+def test_annotation_subset_rejects_labels_outside_the_selected_set() -> None:
+    selected = _primary_row(row_id="row-selected")
+    unselected = _primary_row(row_id="row-unselected")
+
+    error = _subset_error_text(
+        (selected, unselected),
+        (selected,),
+        (
+            _primary_gold(row_id=selected.row_id),
+            _primary_gold(row_id=unselected.row_id),
+        ),
+    )
+
+    assert "gold label is outside selected rows" in error
+    assert unselected.row_id in error
+
+
+def test_annotation_subset_reuses_field_support_validation() -> None:
+    selected = _primary_row(row_id="row-selected")
+    label = _primary_gold(
+        row_id=selected.row_id,
+        fields=(
+            *_required_primary_fields(),
+            _field(FieldRole.DESCRIPTION, "SYNTHETIC BOOKSHOP", ("unknown",)),
+        ),
+    )
+
+    assert "gold atom is not present in frozen row" in _subset_error_text(
+        (selected,),
+        (selected,),
+        (label,),
+    )
+
+
+def test_annotation_subset_reuses_canonical_value_validation() -> None:
+    selected = _primary_row(row_id="row-selected")
+    label = _primary_gold(
+        row_id=selected.row_id,
+        fields=(
+            _field(FieldRole.BILLED_AMOUNT, "12.340", ("billed-amount",)),
+            _field(FieldRole.BILLING_CURRENCY, "USD", ("billing-currency",)),
+            _field(FieldRole.KIND, TransactionKind.CHARGE.value, ("billed-amount",)),
+        ),
+    )
+
+    assert "invalid canonical field value" in _subset_error_text(
+        (selected,),
+        (selected,),
+        (label,),
+    )
+
+
+def test_annotation_subset_reuses_field_relationship_validation() -> None:
+    selected = _primary_row(row_id="row-selected")
+    label = _primary_gold(
+        row_id=selected.row_id,
+        fields=(
+            *_required_primary_fields(),
+            _field(FieldRole.ORIGINAL_AMOUNT, "10.2", ("original-amount",)),
+        ),
+    )
+
+    assert "original amount and currency must be paired" in _subset_error_text(
+        (selected,),
+        (selected,),
+        (label,),
+    )
+
+
+def test_annotation_subset_reuses_exact_row_geometry_validation() -> None:
+    selected = _primary_row(row_id="row-selected")
+    atoms = tuple(
+        atom.model_copy(update={"bbox": (100.0, 31.0, 115.0, 40.0)})
+        if atom.atom_id == "billed-amount"
+        else atom
+        for atom in selected.atoms
+    )
+    selected = selected.model_copy(update={"atoms": atoms})
+
+    assert "gold atom is outside the exact fixed row" in _subset_error_text(
+        (selected,),
+        (selected,),
+        (_primary_gold(row_id=selected.row_id),),
+    )
 
 
 def test_valid_annotation_summary_is_immutable_and_contains_only_coverage_counts() -> None:
@@ -764,6 +945,44 @@ def _synthetic_continuation(
         ),
     )
     return row, label
+
+
+def test_annotation_subset_continuation_uses_unlabeled_population_predecessor() -> None:
+    previous, current, _, current_gold = _continuation_pair()
+    previous = previous.model_copy(update={"baseline_type": RowType.STRUCTURAL})
+
+    summary = validate_annotation_subset(
+        (previous, current),
+        (current,),
+        (current_gold,),
+    )
+
+    assert summary.row_count == 1
+    assert summary.label_count == 1
+    assert summary.continuation_row_count == 1
+
+
+def test_annotation_subset_continuation_requires_a_frozen_predecessor() -> None:
+    _, current, _, current_gold = _continuation_pair()
+
+    error = _subset_error_text((current,), (current,), (current_gold,))
+
+    assert "continuation predecessor is not a fixed row" in error
+    assert current.row_id in error
+
+
+def test_annotation_subset_continuation_requires_reciprocal_adjacency() -> None:
+    previous, current, _, current_gold = _continuation_pair()
+    previous = previous.model_copy(update={"next_row_id": "another-row"})
+
+    error = _subset_error_text(
+        (previous, current),
+        (current,),
+        (current_gold,),
+    )
+
+    assert "continuation predecessor is not reciprocal" in error
+    assert current.row_id in error
 
 
 def test_continuation_requires_a_valid_fixed_predecessor() -> None:

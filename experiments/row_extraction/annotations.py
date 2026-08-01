@@ -127,12 +127,16 @@ def _canonical_field(field: GoldField) -> bool:
     return False
 
 
-def _index_rows(rows: Iterable[FrozenRow]) -> dict[_RowIdentity, FrozenRow]:
+def _index_rows(
+    rows: Iterable[FrozenRow],
+    *,
+    duplicate_message: str = "duplicate frozen row identity",
+) -> dict[_RowIdentity, FrozenRow]:
     indexed: dict[_RowIdentity, FrozenRow] = {}
     for row in rows:
         identity = _identity(row)
         if identity in indexed:
-            _fail("duplicate frozen row identity", identity)
+            _fail(duplicate_message, identity)
         if not _finite_ordered_bbox(row.bbox):
             _fail("frozen row bbox is invalid", identity)
         atom_ids = tuple(atom.atom_id for atom in row.atoms)
@@ -145,6 +149,9 @@ def _index_rows(rows: Iterable[FrozenRow]) -> dict[_RowIdentity, FrozenRow]:
 def _index_labels(
     labels: Iterable[GoldRow],
     rows: Mapping[_RowIdentity, FrozenRow],
+    *,
+    unknown_message: str = "gold label has no frozen row",
+    missing_message: str = "frozen row is missing a gold label",
 ) -> dict[_RowIdentity, GoldRow]:
     indexed: dict[_RowIdentity, GoldRow] = {}
     for label in labels:
@@ -152,11 +159,11 @@ def _index_labels(
         if identity in indexed:
             _fail("duplicate gold label identity", identity)
         if identity not in rows:
-            _fail("gold label has no frozen row", identity)
+            _fail(unknown_message, identity)
         indexed[identity] = label
     for identity in rows:
         if identity not in indexed:
-            _fail("frozen row is missing a gold label", identity)
+            _fail(missing_message, identity)
     return indexed
 
 
@@ -164,7 +171,7 @@ def _validate_row_type(
     row: FrozenRow,
     label: GoldRow,
     rows: Mapping[_RowIdentity, FrozenRow],
-    labels: Mapping[_RowIdentity, GoldRow],
+    labels: Mapping[_RowIdentity, GoldRow] | None,
 ) -> None:
     identity = _identity(row)
     is_ambiguous = label.row_type is RowType.AMBIGUOUS
@@ -188,12 +195,13 @@ def _validate_row_type(
         _fail("continuation predecessor is not a fixed row", identity)
     if predecessor.next_row_id != row.row_id:
         _fail("continuation predecessor is not reciprocal", identity)
-    predecessor_label = labels[predecessor_identity]
-    if predecessor_label.row_type not in {
-        RowType.PRIMARY_TRANSACTION,
-        RowType.CONTINUATION,
-    }:
-        _fail("continuation predecessor has no transaction ownership", identity)
+    if labels is not None:
+        predecessor_label = labels[predecessor_identity]
+        if predecessor_label.row_type not in {
+            RowType.PRIMARY_TRANSACTION,
+            RowType.CONTINUATION,
+        }:
+            _fail("continuation predecessor has no transaction ownership", identity)
     if not label.fields:
         _fail("continuation row has no uniquely supported fields", identity)
 
@@ -366,6 +374,60 @@ def _validate_references(
     return count, len(referenced_rows), len(referenced_fields)
 
 
+def _build_summary(
+    rows: Mapping[_RowIdentity, FrozenRow],
+    labels: Mapping[_RowIdentity, GoldRow],
+    reference_counts: tuple[int, int, int] = (0, 0, 0),
+) -> AnnotationSummary:
+    reference_count, referenced_rows, referenced_fields = reference_counts
+    row_types = tuple(label.row_type for label in labels.values())
+    return AnnotationSummary(
+        row_count=len(rows),
+        label_count=len(labels),
+        field_count=sum(len(label.fields) for label in labels.values()),
+        primary_row_count=row_types.count(RowType.PRIMARY_TRANSACTION),
+        continuation_row_count=row_types.count(RowType.CONTINUATION),
+        structural_row_count=row_types.count(RowType.STRUCTURAL),
+        ambiguous_row_count=row_types.count(RowType.AMBIGUOUS),
+        ocr_reference_count=reference_count,
+        ocr_referenced_row_count=referenced_rows,
+        ocr_referenced_field_count=referenced_fields,
+    )
+
+
+def validate_annotation_subset(
+    population: Iterable[FrozenRow],
+    selected_rows: Iterable[FrozenRow],
+    labels: Iterable[GoldRow],
+) -> AnnotationSummary:
+    """Validate labels for exact selected rows against their frozen population."""
+
+    indexed_population = _index_rows(population)
+    indexed_selected = _index_rows(
+        selected_rows,
+        duplicate_message="duplicate selected row identity",
+    )
+    for identity, selected_row in indexed_selected.items():
+        population_row = indexed_population.get(identity)
+        if population_row is None:
+            _fail("selected row is not in frozen population", identity)
+        if selected_row != population_row:
+            _fail("selected row differs from frozen population record", identity)
+
+    indexed_labels = _index_labels(
+        labels,
+        indexed_selected,
+        unknown_message="gold label is outside selected rows",
+        missing_message="selected row is missing a gold label",
+    )
+    for identity, row in indexed_selected.items():
+        label = indexed_labels[identity]
+        _validate_row_type(row, label, indexed_population, None)
+        _validate_field_support(row, label)
+        _validate_field_relationships(row, label)
+    return _build_summary(indexed_selected, indexed_labels)
+
+
 def validate_annotations(
     rows: Iterable[FrozenRow],
     labels: Iterable[GoldRow],
@@ -382,24 +444,17 @@ def validate_annotations(
         _validate_field_relationships(row, label)
     _validate_continuation_ownership(indexed_rows, indexed_labels)
 
-    reference_count, referenced_rows, referenced_fields = _validate_references(
+    reference_counts = _validate_references(
         ocr_references,
         indexed_rows,
         indexed_labels,
     )
-    row_types = tuple(label.row_type for label in indexed_labels.values())
-    return AnnotationSummary(
-        row_count=len(indexed_rows),
-        label_count=len(indexed_labels),
-        field_count=sum(len(label.fields) for label in indexed_labels.values()),
-        primary_row_count=row_types.count(RowType.PRIMARY_TRANSACTION),
-        continuation_row_count=row_types.count(RowType.CONTINUATION),
-        structural_row_count=row_types.count(RowType.STRUCTURAL),
-        ambiguous_row_count=row_types.count(RowType.AMBIGUOUS),
-        ocr_reference_count=reference_count,
-        ocr_referenced_row_count=referenced_rows,
-        ocr_referenced_field_count=referenced_fields,
-    )
+    return _build_summary(indexed_rows, indexed_labels, reference_counts)
 
 
-__all__ = ["AnnotationError", "AnnotationSummary", "validate_annotations"]
+__all__ = [
+    "AnnotationError",
+    "AnnotationSummary",
+    "validate_annotation_subset",
+    "validate_annotations",
+]
