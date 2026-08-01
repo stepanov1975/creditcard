@@ -104,7 +104,7 @@ def test_page_context_renders_exact_source_page_as_150_dpi_rgb_ppm(
     assert record.row_id == row.row_id
     assert record.page_number == 1
     assert record.row_bbox == (10.25, 20.5, 82.25, 44.5)
-    assert record.relative_path == f"dd/{row.document_id}/{row.row_id}.ppm"
+    assert record.relative_path == f"dd/{row.document_id}/{row.row_id}.context.ppm"
     assert (record.width, record.height) == (417, 209)
     assert content.startswith(header)
     assert len(content) == len(header) + (417 * 209 * 3)
@@ -129,6 +129,31 @@ def test_page_context_is_byte_deterministic(tmp_path: Path) -> None:
     assert (first_root / first.relative_path).read_bytes() == (
         second_root / second.relative_path
     ).read_bytes()
+
+
+def test_page_context_does_not_replace_reference_crop_in_same_root(
+    tmp_path: Path,
+) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    row = frozen_row(
+        document_id="f" * 64,
+        row_id="opaque-row-9",
+        source_pdf=source,
+        bbox=(0.0, 0.0, 72.0, 24.0),
+    )
+    artifact_root = tmp_path / "artifacts"
+
+    crop = render_reference_crop(row, artifact_root)
+    crop_path = artifact_root / crop.relative_path
+    original_crop_bytes = crop_path.read_bytes()
+    context = crops.render_page_context(row, artifact_root)
+    context_path = artifact_root / context.relative_path
+
+    assert crop.relative_path != context.relative_path
+    assert crop_path.read_bytes() == original_crop_bytes
+    assert context_path.read_bytes() != original_crop_bytes
+    assert (crop.width, crop.height) == (300, 100)
+    assert (context.width, context.height) == (417, 209)
 
 
 def test_page_context_rejects_absent_source_page(tmp_path: Path) -> None:

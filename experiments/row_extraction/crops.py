@@ -49,7 +49,7 @@ def _relative_crop_path(row: FrozenRow) -> Path:
 
 
 def _relative_page_context_path(row: FrozenRow) -> Path:
-    return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.ppm"
+    return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.context.ppm"
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
