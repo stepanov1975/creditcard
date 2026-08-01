@@ -11,6 +11,7 @@ import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing m
 from experiments.row_extraction.contracts import BBox, FrozenRow, _FrozenModel
 
 _REFERENCE_DPI = 300
+_PAGE_CONTEXT_DPI = 150
 _POINTS_PER_INCH = 72
 
 
@@ -30,7 +31,24 @@ class CropRecord(_FrozenModel):
     height: int
 
 
+class PageContextRecord(_FrozenModel):
+    """Private index entry for one fixed row's source-page context image."""
+
+    document_id: str
+    row_id: str
+    page_number: int
+    row_bbox: BBox
+    relative_path: str
+    sha256: str
+    width: int
+    height: int
+
+
 def _relative_crop_path(row: FrozenRow) -> Path:
+    return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.ppm"
+
+
+def _relative_page_context_path(row: FrozenRow) -> Path:
     return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.ppm"
 
 
@@ -94,4 +112,49 @@ def render_reference_crop(row: FrozenRow, private_root: Path) -> CropRecord:
     )
 
 
-__all__ = ["CropRecord", "CropRenderError", "render_reference_crop"]
+def render_page_context(row: FrozenRow, private_root: Path) -> PageContextRecord:
+    """Render the fixed row's complete source page as a 150-DPI RGB PPM."""
+
+    try:
+        with fitz.open(row.source_pdf) as document:
+            if row.page_number > document.page_count:
+                raise CropRenderError("fixed row page is absent from source PDF")
+            page = document[row.page_number - 1]
+            row_bbox = fitz.Rect(row.bbox)
+            if row_bbox.is_empty or row_bbox.is_infinite or not page.rect.contains(row_bbox):
+                raise CropRenderError("fixed row bbox is outside source page")
+            scale = _PAGE_CONTEXT_DPI / _POINTS_PER_INCH
+            pixmap = page.get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                colorspace=fitz.csRGB,
+                alpha=False,
+            )
+            content = pixmap.tobytes("ppm")
+            width = pixmap.width
+            height = pixmap.height
+    except CropRenderError:
+        raise
+    except Exception:
+        raise CropRenderError("fixed row page context rendering failed") from None
+
+    relative_path = _relative_page_context_path(row)
+    _atomic_write(private_root / relative_path, content)
+    return PageContextRecord(
+        document_id=row.document_id,
+        row_id=row.row_id,
+        page_number=row.page_number,
+        row_bbox=row.bbox,
+        relative_path=relative_path.as_posix(),
+        sha256=hashlib.sha256(content).hexdigest(),
+        width=width,
+        height=height,
+    )
+
+
+__all__ = [
+    "CropRecord",
+    "CropRenderError",
+    "PageContextRecord",
+    "render_page_context",
+    "render_reference_crop",
+]
