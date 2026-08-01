@@ -26,25 +26,25 @@ derived financial value is recorded here.
 Accepted baseline: zero exact matches with partial acceptance; page-OCR controls abstained. These
 are privacy-safe validation outcomes, not held-out measurements and not private-corpus acceptance.
 
-## Active phase
+## Program stop
 
-**Visual-gold v2 100-row training pilot.** This is the sole active program phase.
+**Status:** `STOP` — the visual-gold v2 100-row training pilot failed its binding
+pre-adjudication field-exact agreement gate.
 
-**Next allowed task:** Execute the visual-gold v2 100-row training pilot under the approved design
-and committed protocol.
+**Aggregate result:** annotation validity was 100%; row-type agreement was 98/100 (`0.98`) and
+passed; field-exact agreement was 386/473 (`0.8160676532769556025369978858`) and failed the
+inclusive `0.90` gate. Diagnostic atom-support agreement was 384/414
+(`0.9275362318840579710144927536`), and source-region agreement was 376/414
+(`0.9082125603864734299516908213`).
 
-**Task contract:**
+The binding stop occurred before adjudication and before current-gold inspection. No labels,
+thresholds, prompts, canonicalization, comparison logic, or extractors may be changed to rescue
+this pilot, and no replacement pilot or support task may be launched under the current authority.
 
-```text
-Scope answer: YES — this authorizes and defines a measured 100-row extraction-supervision pilot.
-Experiment: shared evaluation
-Extraction hypothesis: Two independent crop-first visual reviews can agree on row type at least 95% and on exact field values at least 90%, showing that a visually reconstructed candidate is stable enough to measure current-label defects.
-Measurement: pre-adjudication row-type agreement, field exact agreement, evidence-support agreement, and annotation validity
-Fixed inputs: the frozen 2,503-row training split, existing frozen row artifacts, approved visual-gold v2 design, and no validation/test rows
-Smallest allowed files: docs/superpowers/specs/2026-08-01-visual-gold-v2-candidate-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-visual-gold-v2-protocol.md
-Required output: committed charter amendment and runnable written pilot protocol with predeclared gates
-Stop condition: stop if the authority cannot be amended without changing an extractor, opening held-out data, or creating shared workflow infrastructure
-```
+**Next extraction task:** `STOP`.
+
+The aggregate pilot report is
+[`row-extraction-visual-gold-v2-pilot-report.md`](row-extraction-visual-gold-v2-pilot-report.md).
 
 ## Frozen side work
 
