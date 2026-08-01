@@ -763,3 +763,33 @@ The charter is ready for implementation planning only when all of the following 
 - new directions require a user-approved committed amendment;
 - production integration is a separate post-evidence decision; and
 - no private corpus contents or derived financial values are recorded in the charter.
+
+## Proposed charter amendment
+
+**Reason:** The current frozen supervision contains measured RTL/order, segmentation, ambiguity,
+and crop-context concerns that can prevent the four extraction arms from being compared against
+semantically adequate targets.
+
+**Affected experiment:** Shared evaluation only. The four extraction implementations remain frozen.
+
+**Authorized change:** Generate one parallel visual-gold v2 candidate for the 2,503 training rows
+using a 100-row blind dual-review pilot followed, only on passing agreement gates, by blind dual
+review and disagreement adjudication of the remaining rows. Learned visual reviewers may generate
+candidate values under this protocol. Existing gold remains authoritative.
+
+**Measurement:** Pre-adjudication row-type agreement, field exact agreement, evidence-support
+agreement, annotation ambiguity/defect counts, ambiguity rate, and eligible exact-row rate.
+
+**Comparison impact:** Round 1 results remain historical and valid only against their original gold.
+Training scores against the candidate are diagnostic and cannot select a winner. Promotion or
+validation labeling requires separate approval.
+
+**Privacy and dependency impact:** All images, contexts, reviewer outputs, labels, and financial
+content remain in ignored local artifacts. No new package, hosted service, or heavyweight model
+dependency is introduced; review uses the available Codex visual capability in isolated contexts.
+
+**Invalidated results:** None while the artifact remains a candidate. If a later amendment promotes
+visual-gold v2, every score computed against old gold is invalidated and must be rerun under the
+promoted version.
+
+**Held-out boundary:** Validation and held-out data remain unopened by this task.

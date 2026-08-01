@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-07-30
+**Updated:** 2026-08-01
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -28,25 +28,23 @@ are privacy-safe validation outcomes, not held-out measurements and not private-
 
 ## Active phase
 
-**Supervision and overlapping-evidence error analysis, including testing for a distinct
-merchant-recognition category.** This is the sole active program phase.
+**Visual-gold v2 100-row training pilot.** This is the sole active program phase.
 
-**Next allowed task:** Quantify supervision-eligibility and overlapping-evidence-ownership errors
-in the frozen development and validation evidence, and determine whether that evidence supports a
-distinct merchant-recognition failure category.
+**Next allowed task:** Execute the visual-gold v2 100-row training pilot under the approved design
+and committed protocol.
 
-**Fixed inputs:** The frozen document-disjoint development and validation rows, labels, evidence,
-accepted baseline, and Round 1 lane outcomes. The held-out partition and all locked-input streams
-are excluded.
+**Task contract:**
 
-**Allowed outputs:** Only privacy-safe counts or rates for effective row and field supervision
-eligibility and overlapping evidence ownership; a merchant-recognition failure category only if
-the measured evidence supports it; a supported or falsified extraction hypothesis grounded in
-those measurements; and one resulting extraction task or `STOP`.
-
-**Stop condition:** Stop without adding support work if the existing frozen inputs cannot produce
-a quantified extraction error category, or if the analysis would require opening the held-out
-test, changing an experiment implementation, or extending shared infrastructure.
+```text
+Scope answer: YES — this authorizes and defines a measured 100-row extraction-supervision pilot.
+Experiment: shared evaluation
+Extraction hypothesis: Two independent crop-first visual reviews can agree on row type at least 95% and on exact field values at least 90%, showing that a visually reconstructed candidate is stable enough to measure current-label defects.
+Measurement: pre-adjudication row-type agreement, field exact agreement, evidence-support agreement, and annotation validity
+Fixed inputs: the frozen 2,503-row training split, existing frozen row artifacts, approved visual-gold v2 design, and no validation/test rows
+Smallest allowed files: docs/superpowers/specs/2026-08-01-visual-gold-v2-candidate-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-visual-gold-v2-protocol.md
+Required output: committed charter amendment and runnable written pilot protocol with predeclared gates
+Stop condition: stop if the authority cannot be amended without changing an extractor, opening held-out data, or creating shared workflow infrastructure
+```
 
 ## Frozen side work
 
