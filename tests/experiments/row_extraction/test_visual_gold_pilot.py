@@ -3,18 +3,20 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import subprocess
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
 
 import fitz
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 import experiments.row_extraction.visual_gold_pilot as pilot
 from experiments.row_extraction.codecs import read_jsonl
 from experiments.row_extraction.contracts import (
+    ArtifactIdentity,
     ColumnBand,
     DatasetSplit,
     EvidenceAtom,
@@ -23,7 +25,7 @@ from experiments.row_extraction.contracts import (
     GoldRow,
     RowType,
 )
-from experiments.row_extraction.crops import CropRecord, PageContextRecord
+from experiments.row_extraction.crops import CropRecord, CropRenderError, PageContextRecord
 from tests.experiments.row_extraction.factories import evidence_atom, frozen_row
 
 _EXPECTED_POPULATION_SIZE = 2_503
@@ -459,6 +461,23 @@ def test_materializer_rejects_nonprivate_roots_before_selection(
     assert not invalid_root.exists()
 
 
+def test_materializer_rejects_unignored_root_in_an_alternate_checkout(
+    tmp_path: Path,
+) -> None:
+    alternate_checkout = tmp_path / "alternate-checkout"
+    subprocess.run(
+        ("git", "init", "--quiet", str(alternate_checkout)),
+        check=True,
+    )
+    pilot_root = (alternate_checkout / "pilot-v1").resolve()
+
+    with pytest.raises(ValueError, match="not ignored") as exc_info:
+        pilot.materialize_visual_gold_pilot((), pilot_root)
+
+    _assert_error_is_sanitized(exc_info.value)
+    assert not pilot_root.exists()
+
+
 def test_materializer_rejects_nonempty_pilot_directory_without_writing_packets(
     tmp_path: Path,
     materializer_population: tuple[FrozenRow, ...],
@@ -474,3 +493,48 @@ def test_materializer_rejects_nonempty_pilot_directory_without_writing_packets(
     _assert_error_is_sanitized(exc_info.value)
     assert sentinel.read_text() == _SECRET_CANONICAL_VALUE
     assert tuple(pilot_root.iterdir()) == (sentinel,)
+
+
+@pytest.mark.parametrize("failure_point", ("crop", "jsonl"))
+def test_materializer_rolls_back_partial_output_and_allows_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    materializer_population: tuple[FrozenRow, ...],
+    failure_point: Literal["crop", "jsonl"],
+) -> None:
+    pilot_root = (tmp_path / "pilot-v1").resolve()
+    pilot_root.mkdir()
+    real_crop_renderer = pilot.render_reference_crop
+    real_jsonl_writer = pilot.write_jsonl
+    crop_calls = 0
+
+    def failing_crop_renderer(row: FrozenRow, private_root: Path) -> CropRecord:
+        nonlocal crop_calls
+        crop_calls += 1
+        if crop_calls == 2:
+            raise CropRenderError("synthetic render failure")
+        return real_crop_renderer(row, private_root)
+
+    def failing_jsonl_writer(
+        path: Path,
+        records: Iterable[BaseModel],
+    ) -> ArtifactIdentity:
+        del path, records
+        raise OSError("synthetic JSONL failure")
+
+    if failure_point == "crop":
+        monkeypatch.setattr(pilot, "render_reference_crop", failing_crop_renderer)
+        expected_error: type[BaseException] = CropRenderError
+    else:
+        monkeypatch.setattr(pilot, "write_jsonl", failing_jsonl_writer)
+        expected_error = OSError
+
+    with pytest.raises(expected_error):
+        pilot.materialize_visual_gold_pilot(materializer_population, pilot_root)
+
+    assert tuple(pilot_root.iterdir()) == ()
+
+    monkeypatch.setattr(pilot, "render_reference_crop", real_crop_renderer)
+    monkeypatch.setattr(pilot, "write_jsonl", real_jsonl_writer)
+    packets = pilot.materialize_visual_gold_pilot(materializer_population, pilot_root)
+    assert len(packets) == 100

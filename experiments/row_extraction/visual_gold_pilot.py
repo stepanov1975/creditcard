@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -28,7 +29,6 @@ from experiments.row_extraction.crops import (
 PILOT_SELECTOR_VERSION = "visual-gold-v2-pilot-v1"
 _EXPECTED_POPULATION_SIZE = 2_503
 _DOCUMENT_ROW_CAP = 2
-_WORKTREE = Path(__file__).resolve().parents[2]
 
 
 class PilotSelectionError(ValueError):
@@ -259,19 +259,38 @@ def _require_empty_private_pilot_root(private_root: Path) -> Path:
     resolved = private_root.resolve(strict=False)
     if resolved.exists() and (not resolved.is_dir() or any(resolved.iterdir())):
         raise ValueError("pilot output root must be new or empty")
-    if resolved.is_relative_to(_WORKTREE):
-        try:
+    probe = resolved
+    while not probe.exists():
+        probe = probe.parent
+    worktree_marker = next(
+        (
+            candidate
+            for candidate in (resolved, *resolved.parents)
+            if (candidate / ".git").is_file()
+            or (candidate / ".git").is_symlink()
+            or ((candidate / ".git").is_dir() and (candidate / ".git/HEAD").is_file())
+        ),
+        None,
+    )
+    try:
+        discovery = subprocess.run(
+            ("git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"),
+            check=False,
+            capture_output=True,
+        )
+        if discovery.returncode == 0 and discovery.stdout.strip() == b"true":
             completed = subprocess.run(
-                ("git", "check-ignore", "--quiet", str(resolved)),
-                cwd=_WORKTREE,
+                ("git", "-C", str(probe), "check-ignore", "--quiet", str(resolved)),
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except OSError:
-            raise ValueError("pilot output privacy could not be verified") from None
-        if completed.returncode != 0:
-            raise ValueError("pilot output root is not ignored")
+            if completed.returncode != 0:
+                raise ValueError("pilot output root is not ignored")
+        elif worktree_marker is not None:
+            raise ValueError("pilot output privacy could not be verified")
+    except OSError:
+        raise ValueError("pilot output privacy could not be verified") from None
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
 
@@ -280,18 +299,24 @@ def materialize_visual_gold_pilot(
     rows: Sequence[FrozenRow],
     private_root: Path,
 ) -> tuple[VisualReviewPacket, ...]:
-    """Render and atomically record the locked private pilot evidence."""
+    """Render the pilot, restoring an empty private root after write failure."""
 
     pilot_root = _require_empty_private_pilot_root(private_root)
-    selected = select_visual_gold_pilot(rows)
-    packets: list[VisualReviewPacket] = []
-    for row in selected:
-        crop = render_reference_crop(row, pilot_root / "crops")
-        context = render_page_context(row, pilot_root / "page-contexts")
-        packets.append(build_review_packet(row, crop, context))
-    result = tuple(packets)
-    write_jsonl(pilot_root / "packets.jsonl", result)
-    return result
+    try:
+        selected = select_visual_gold_pilot(rows)
+        packets: list[VisualReviewPacket] = []
+        for row in selected:
+            crop = render_reference_crop(row, pilot_root / "crops")
+            context = render_page_context(row, pilot_root / "page-contexts")
+            packets.append(build_review_packet(row, crop, context))
+        result = tuple(packets)
+        write_jsonl(pilot_root / "packets.jsonl", result)
+        return result
+    except BaseException:
+        (pilot_root / "packets.jsonl").unlink(missing_ok=True)
+        shutil.rmtree(pilot_root / "crops", ignore_errors=True)
+        shutil.rmtree(pilot_root / "page-contexts", ignore_errors=True)
+        raise
 
 
 __all__ = [
