@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from experiments.row_extraction.annotations import AnnotationError
 from experiments.row_extraction.contracts import (
     BBox,
+    DatasetSplit,
     FieldRole,
     FrozenRow,
     GoldField,
@@ -21,6 +22,7 @@ from experiments.row_extraction.visual_gold_agreement import (
     CurrentGoldDefect,
     DisagreementKind,
     VisualAgreementSummary,
+    VisualReviewDisagreement,
     compare_visual_reviews,
     summarize_current_gold_defects,
 )
@@ -231,6 +233,41 @@ def test_comparison_summary_is_immutable_and_contains_only_aggregate_data() -> N
         summary.valid = False
 
 
+def test_private_disagreement_contains_only_opaque_identity_and_categories() -> None:
+    rows = _rows()
+    labels_a = tuple(_primary_label(row) for row in rows)
+    labels_b = list(labels_a)
+    labels_b[0] = _primary_label(rows[0], billed_amount="11")
+
+    _, disagreements = compare_visual_reviews(
+        rows,
+        rows,
+        _decisions(labels_a),
+        _decisions(labels_b),
+    )
+
+    assert disagreements == (
+        VisualReviewDisagreement(
+            document_id=rows[0].document_id,
+            row_id=rows[0].row_id,
+            kinds=(DisagreementKind.CANONICAL_VALUE,),
+        ),
+    )
+    disagreement = disagreements[0]
+    assert set(disagreement.model_dump()) == {"document_id", "row_id", "kinds"}
+    serialized = disagreement.model_dump_json()
+    for private_value in (
+        FieldRole.BILLED_AMOUNT.value,
+        "12.34",
+        "11",
+        rows[0].atoms[0].atom_id,
+        str(rows[0].bbox),
+        str(rows[0].source_pdf),
+        _SECRET_TEXT,
+    ):
+        assert private_value not in serialized
+
+
 @pytest.mark.parametrize(
     ("row_mismatches", "expected_rate", "expected_gate"),
     (
@@ -310,6 +347,20 @@ def test_comparison_requires_exactly_100_selected_rows() -> None:
     with pytest.raises(ValueError, match="exactly 100"):
         compare_visual_reviews(
             population,
+            rows,
+            _decisions(labels),
+            _decisions(labels),
+        )
+
+
+@pytest.mark.parametrize("split", (DatasetSplit.VALIDATION, DatasetSplit.TEST))
+def test_comparison_rejects_nontraining_selected_rows(split: DatasetSplit) -> None:
+    rows = tuple(row.model_copy(update={"split": split}) for row in _rows())
+    labels = tuple(_primary_label(row) for row in rows)
+
+    with pytest.raises(ValueError, match="training rows"):
+        compare_visual_reviews(
+            rows,
             rows,
             _decisions(labels),
             _decisions(labels),
@@ -412,6 +463,27 @@ def _defect(
     )
 
 
+def test_private_defect_contains_only_opaque_identity_and_categories() -> None:
+    row = _row(0)
+    defect = _defect(
+        row,
+        AnnotationDefectCategory.CANONICAL_VALUE_OTHER,
+        AnnotationDefectCategory.EVIDENCE_SUPPORT,
+    )
+
+    assert set(defect.model_dump()) == {"document_id", "row_id", "categories"}
+    serialized = defect.model_dump_json()
+    for private_value in (
+        FieldRole.BILLED_AMOUNT.value,
+        "12.34",
+        row.atoms[0].atom_id,
+        str(row.bbox),
+        str(row.source_pdf),
+        _SECRET_TEXT,
+    ):
+        assert private_value not in serialized
+
+
 def test_defect_summary_counts_only_aggregate_classified_differences() -> None:
     rows = _rows()
     current = [_primary_label(row) for row in rows]
@@ -509,6 +581,21 @@ def test_defect_summary_requires_exactly_100_selected_rows() -> None:
         summarize_current_gold_defects(
             population,
             selected_rows,
+            labels,
+            labels,
+            (),
+        )
+
+
+@pytest.mark.parametrize("split", (DatasetSplit.VALIDATION, DatasetSplit.TEST))
+def test_defect_summary_rejects_nontraining_selected_rows(split: DatasetSplit) -> None:
+    rows = tuple(row.model_copy(update={"split": split}) for row in _rows())
+    labels = tuple(_primary_label(row) for row in rows)
+
+    with pytest.raises(ValueError, match="training rows"):
+        summarize_current_gold_defects(
+            rows,
+            rows,
             labels,
             labels,
             (),

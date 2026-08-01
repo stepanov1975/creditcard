@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from experiments.row_extraction.annotations import validate_annotation_subset
 from experiments.row_extraction.contracts import (
+    DatasetSplit,
     FieldRole,
     FrozenRow,
     GoldField,
@@ -116,6 +117,8 @@ def compare_visual_reviews(
 
     if len(selected_rows) != _PILOT_ROW_COUNT:
         raise ValueError("visual-gold pilot requires exactly 100 selected rows")
+    if any(row.split is not DatasetSplit.TRAIN for row in selected_rows):
+        raise ValueError("visual-gold pilot requires training rows")
 
     labels_a = tuple(decision.label for decision in reviewer_a)
     labels_b = tuple(decision.label for decision in reviewer_b)
@@ -262,6 +265,8 @@ def summarize_current_gold_defects(
 
     if len(selected_rows) != _PILOT_ROW_COUNT:
         raise ValueError("visual-gold pilot requires exactly 100 selected rows")
+    if any(row.split is not DatasetSplit.TRAIN for row in selected_rows):
+        raise ValueError("visual-gold pilot requires training rows")
 
     validate_annotation_subset(population, selected_rows, current_gold)
     validate_annotation_subset(population, selected_rows, candidate_gold)
