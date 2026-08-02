@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal, getcontext, localcontext
 
 import pytest
 from pydantic import ValidationError
@@ -281,12 +281,9 @@ def test_row_type_gate_is_inclusive(
     expected_gate: bool,
 ) -> None:
     rows = _rows()
-    labels_a = tuple(_fieldless_label(row, RowType.STRUCTURAL) for row in rows)
+    labels_a = tuple(_primary_label(row) for row in rows)
     labels_b = tuple(
-        _fieldless_label(
-            row,
-            RowType.AMBIGUOUS if index < row_mismatches else RowType.STRUCTURAL,
-        )
+        _fieldless_label(row, RowType.AMBIGUOUS) if index < row_mismatches else _primary_label(row)
         for index, row in enumerate(rows)
     )
 
@@ -299,9 +296,33 @@ def test_row_type_gate_is_inclusive(
 
     assert summary.row_type_agreement == expected_rate
     assert summary.row_type_gate_passed is expected_gate
-    assert summary.field_exact_agreement == Decimal(1)
     assert summary.field_exact_gate_passed is True
     assert summary.pilot_passed is expected_gate
+
+
+def test_zero_eligible_fields_cannot_pass_semantic_or_pilot_gate() -> None:
+    rows = _rows()
+    labels = tuple(_fieldless_label(row, RowType.STRUCTURAL) for row in rows)
+
+    summary, disagreements = compare_visual_reviews(
+        rows,
+        rows,
+        _decisions(labels),
+        _decisions(labels),
+    )
+
+    assert disagreements == ()
+    assert summary.row_type_gate_passed is True
+    assert summary.eligible_field_slots == 0
+    assert summary.exact_field_matches == 0
+    assert summary.field_exact_agreement == Decimal(1)
+    assert summary.joint_field_slots == 0
+    assert summary.atom_support_matches == 0
+    assert summary.atom_support_agreement == Decimal(1)
+    assert summary.source_region_matches == 0
+    assert summary.source_region_agreement == Decimal(1)
+    assert summary.field_exact_gate_passed is False
+    assert summary.pilot_passed is False
 
 
 @pytest.mark.parametrize(
@@ -337,6 +358,35 @@ def test_field_exact_gate_is_inclusive(
     assert summary.field_exact_gate_passed is expected_gate
     assert summary.row_type_gate_passed is True
     assert summary.pilot_passed is expected_gate
+
+
+def test_rates_and_gate_decisions_ignore_ambient_decimal_context() -> None:
+    rows = _rows()
+    labels_a = tuple(_primary_label(row) for row in rows)
+    labels_b = tuple(
+        _primary_label(row, billed_amount="11" if index < 31 else "12.34")
+        for index, row in enumerate(rows)
+    )
+    original_context = getcontext().copy()
+
+    with localcontext() as ambient_context:
+        ambient_context.prec = 2
+        ambient_context.rounding = ROUND_UP
+        summary, _ = compare_visual_reviews(
+            rows,
+            rows,
+            _decisions(labels_a),
+            _decisions(labels_b),
+        )
+
+    assert (getcontext().prec, getcontext().rounding) == (
+        original_context.prec,
+        original_context.rounding,
+    )
+    assert summary.field_exact_agreement == Decimal("0.8966666666666666666666666667")
+    assert '"field_exact_agreement":"0.8966666666666666666666666667"' in (summary.model_dump_json())
+    assert summary.field_exact_gate_passed is False
+    assert summary.pilot_passed is False
 
 
 def test_comparison_requires_exactly_100_selected_rows() -> None:
@@ -673,25 +723,50 @@ def test_defect_summary_requires_exact_deterministic_categories(
         )
 
 
-def test_defect_summary_requires_exactly_one_visual_canonical_category() -> None:
+def test_defect_summary_allows_multiple_distinct_visual_canonical_categories() -> None:
     rows = _rows()
     current = tuple(_primary_label(row) for row in rows)
     candidate = list(current)
     candidate[0] = _primary_label(rows[0], billed_amount="13")
 
-    with pytest.raises(ValueError, match="exactly one canonical defect category"):
+    summary = summarize_current_gold_defects(
+        rows,
+        rows,
+        current,
+        candidate,
+        (
+            _defect(
+                rows[0],
+                AnnotationDefectCategory.RTL_MIXED_ORDER,
+                AnnotationDefectCategory.SEGMENTATION,
+            ),
+        ),
+    )
+
+    assert summary.differing_rows == 1
+    assert summary.rtl_mixed_order_defects == 1
+    assert summary.segmentation_defects == 1
+    assert summary.canonical_value_other_defects == 0
+
+
+def test_defect_summary_requires_a_visual_category_for_canonical_difference() -> None:
+    rows = _rows()
+    current = list(_primary_label(row) for row in rows)
+    candidate = current.copy()
+    current[0] = _primary_label(rows[0], description="Merchant")
+    candidate[0] = _primary_label(
+        rows[0],
+        description="Vendor",
+        description_atom="b",
+    )
+
+    with pytest.raises(ValueError, match="at least one canonical defect category"):
         summarize_current_gold_defects(
             rows,
             rows,
             current,
             candidate,
-            (
-                _defect(
-                    rows[0],
-                    AnnotationDefectCategory.RTL_MIXED_ORDER,
-                    AnnotationDefectCategory.SEGMENTATION,
-                ),
-            ),
+            (_defect(rows[0], AnnotationDefectCategory.EVIDENCE_SUPPORT),),
         )
 
 

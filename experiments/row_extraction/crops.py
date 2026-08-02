@@ -45,11 +45,28 @@ class PageContextRecord(_FrozenModel):
 
 
 def _relative_crop_path(row: FrozenRow) -> Path:
+    _validate_row_id(row.row_id)
     return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.ppm"
 
 
 def _relative_page_context_path(row: FrozenRow) -> Path:
+    _validate_row_id(row.row_id)
     return Path(row.document_id[:2]) / row.document_id / f"{row.row_id}.context.ppm"
+
+
+def _validate_row_id(row_id: str) -> None:
+    if row_id in {".", ".."} or any(separator in row_id for separator in ("/", "\\", "\0")):
+        raise CropRenderError("unsafe private artifact identity")
+
+
+def _private_write_target(private_root: Path, relative_path: Path) -> Path:
+    resolved_root = private_root.resolve()
+    resolved_target = (resolved_root / relative_path).resolve()
+    try:
+        resolved_target.relative_to(resolved_root)
+    except ValueError:
+        raise CropRenderError("private artifact target is outside private artifact root") from None
+    return resolved_target
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -75,6 +92,8 @@ def _atomic_write(path: Path, content: bytes) -> None:
 def render_reference_crop(row: FrozenRow, private_root: Path) -> CropRecord:
     """Render one unpadded, 300-DPI RGB PPM from the exact fixed bbox."""
 
+    relative_path = _relative_crop_path(row)
+    target_path = _private_write_target(private_root, relative_path)
     try:
         with fitz.open(row.source_pdf) as document:
             if row.page_number > document.page_count:
@@ -99,8 +118,7 @@ def render_reference_crop(row: FrozenRow, private_root: Path) -> CropRecord:
     except Exception:
         raise CropRenderError("fixed row crop rendering failed") from None
 
-    relative_path = _relative_crop_path(row)
-    _atomic_write(private_root / relative_path, content)
+    _atomic_write(target_path, content)
     return CropRecord(
         document_id=row.document_id,
         row_id=row.row_id,
@@ -115,6 +133,8 @@ def render_reference_crop(row: FrozenRow, private_root: Path) -> CropRecord:
 def render_page_context(row: FrozenRow, private_root: Path) -> PageContextRecord:
     """Render the fixed row's complete source page as a 150-DPI RGB PPM."""
 
+    relative_path = _relative_page_context_path(row)
+    target_path = _private_write_target(private_root, relative_path)
     try:
         with fitz.open(row.source_pdf) as document:
             if row.page_number > document.page_count:
@@ -137,8 +157,7 @@ def render_page_context(row: FrozenRow, private_root: Path) -> PageContextRecord
     except Exception:
         raise CropRenderError("fixed row page context rendering failed") from None
 
-    relative_path = _relative_page_context_path(row)
-    _atomic_write(private_root / relative_path, content)
+    _atomic_write(target_path, content)
     return PageContextRecord(
         document_id=row.document_id,
         row_id=row.row_id,

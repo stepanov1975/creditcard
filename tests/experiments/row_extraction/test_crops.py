@@ -63,6 +63,27 @@ def test_reference_crop_is_byte_deterministic(tmp_path: Path) -> None:
     ).read_bytes()
 
 
+def test_reference_crop_rejects_absolute_row_identity(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    escaped_stem = tmp_path / "escaped-crop"
+    row = frozen_row(source_pdf=source, row_id=str(escaped_stem))
+
+    with pytest.raises(crops.CropRenderError, match="unsafe private artifact identity"):
+        render_reference_crop(row, tmp_path / "private-crops")
+
+    assert not escaped_stem.with_suffix(".ppm").exists()
+
+
+def test_reference_crop_rejects_traversing_row_identity(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    row = frozen_row(source_pdf=source, row_id="../../../escaped-crop")
+
+    with pytest.raises(crops.CropRenderError, match="unsafe private artifact identity"):
+        render_reference_crop(row, tmp_path / "private-crops")
+
+    assert not (tmp_path / "escaped-crop.ppm").exists()
+
+
 def test_reference_crop_fractional_origin_has_no_device_envelope_padding(
     tmp_path: Path,
 ) -> None:
@@ -129,6 +150,53 @@ def test_page_context_is_byte_deterministic(tmp_path: Path) -> None:
     assert (first_root / first.relative_path).read_bytes() == (
         second_root / second.relative_path
     ).read_bytes()
+
+
+def test_page_context_rejects_absolute_row_identity(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    escaped_stem = tmp_path / "escaped-context"
+    row = frozen_row(source_pdf=source, row_id=str(escaped_stem))
+
+    with pytest.raises(crops.CropRenderError, match="unsafe private artifact identity"):
+        crops.render_page_context(row, tmp_path / "page-contexts")
+
+    assert not escaped_stem.with_suffix(".context.ppm").exists()
+
+
+def test_page_context_rejects_traversing_row_identity(tmp_path: Path) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    row = frozen_row(source_pdf=source, row_id="../../../escaped-context")
+
+    with pytest.raises(crops.CropRenderError, match="unsafe private artifact identity"):
+        crops.render_page_context(row, tmp_path / "page-contexts")
+
+    assert not (tmp_path / "escaped-context.context.ppm").exists()
+
+
+@pytest.mark.parametrize(
+    ("renderer", "suffix"),
+    (
+        (render_reference_crop, ".ppm"),
+        (crops.render_page_context, ".context.ppm"),
+    ),
+)
+def test_visual_evidence_write_rejects_existing_symlink_escape(
+    tmp_path: Path,
+    renderer: object,
+    suffix: str,
+) -> None:
+    source = _synthetic_pdf(tmp_path / "synthetic.pdf")
+    row = frozen_row(source_pdf=source, document_id="a" * 64, row_id="safe-row")
+    private_root = tmp_path / "private"
+    outside_root = tmp_path / "outside"
+    private_root.mkdir()
+    outside_root.mkdir()
+    (private_root / "aa").symlink_to(outside_root, target_is_directory=True)
+
+    with pytest.raises(crops.CropRenderError, match="outside private artifact root"):
+        renderer(row, private_root)  # type: ignore[operator]
+
+    assert not (outside_root / row.document_id / f"{row.row_id}{suffix}").exists()
 
 
 def test_page_context_does_not_replace_reference_crop_in_same_root(

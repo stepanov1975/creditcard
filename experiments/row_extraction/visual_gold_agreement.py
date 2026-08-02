@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from enum import StrEnum
 
 from experiments.row_extraction.annotations import validate_annotation_subset
@@ -22,6 +22,7 @@ type _RowIdentity = tuple[str, str]
 _ROW_TYPE_GATE = Decimal("0.95")
 _FIELD_EXACT_GATE = Decimal("0.90")
 _PILOT_ROW_COUNT = 100
+_RATE_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
 
 
 class DisagreementKind(StrEnum):
@@ -104,7 +105,15 @@ def _field_map(label: GoldRow) -> dict[FieldRole, GoldField]:
 
 
 def _ratio(matches: int, slots: int) -> Decimal:
-    return Decimal(matches) / Decimal(slots) if slots else Decimal(1)
+    if not slots:
+        return Decimal(1)
+    with localcontext(_RATE_CONTEXT):
+        return Decimal(matches) / Decimal(slots)
+
+
+def _gate_passed(matches: int, slots: int, threshold: Decimal) -> bool:
+    threshold_numerator, threshold_denominator = threshold.as_integer_ratio()
+    return slots > 0 and matches * threshold_denominator >= slots * threshold_numerator
 
 
 def compare_visual_reviews(
@@ -199,8 +208,12 @@ def compare_visual_reviews(
     field_exact_agreement = _ratio(exact_field_matches, eligible_field_slots)
     atom_support_agreement = _ratio(atom_support_matches, joint_field_slots)
     source_region_agreement = _ratio(source_region_matches, joint_field_slots)
-    row_type_gate_passed = row_type_agreement >= _ROW_TYPE_GATE
-    field_exact_gate_passed = field_exact_agreement >= _FIELD_EXACT_GATE
+    row_type_gate_passed = _gate_passed(row_type_matches, row_count, _ROW_TYPE_GATE)
+    field_exact_gate_passed = _gate_passed(
+        exact_field_matches,
+        eligible_field_slots,
+        _FIELD_EXACT_GATE,
+    )
     valid = True
     summary = VisualAgreementSummary(
         row_count=row_count,
@@ -331,8 +344,8 @@ def summarize_current_gold_defects(
         if actual_categories & deterministic_categories != expected_deterministic:
             raise ValueError("classification has inconsistent deterministic defect categories")
         canonical_count = len(actual_categories & canonical_categories)
-        if canonical_differs and canonical_count != 1:
-            raise ValueError("canonical difference requires exactly one canonical defect category")
+        if canonical_differs and not canonical_count:
+            raise ValueError("canonical difference requires at least one canonical defect category")
         if not canonical_differs and canonical_count:
             raise ValueError("canonical defect category requires a canonical difference")
 

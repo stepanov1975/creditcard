@@ -21,7 +21,8 @@ Stop condition: if validity is below 100%, row-type agreement is below 95%, or f
 
 The comparison used the complete frozen 2,503-row training population as validation context.
 The 100 selected rows were derived only from the locked packet identities. Both frozen reviewer
-streams contained exactly 100 records.
+streams contained exactly 100 typed records, and every record in both streams carried the required
+`page_context_used` boolean.
 
 | Measurement | Numerator | Denominator | Exact `Decimal` rate | Gate |
 | --- | ---: | ---: | --- | --- |
@@ -34,42 +35,23 @@ Annotation validity was 100% (`valid=true`). The overall pilot gate failed becau
 agreement was below its inclusive threshold. Row-type agreement met its threshold. The frozen
 comparison contains 57 disagreement records; aggregate disagreement-category counts are 2 row
 type, 1 ambiguity, 36 field presence, 26 canonical value, 24 atom support, and 30 source region.
-
-## Single-invocation and gate attestation
-
-- `compare_visual_reviews(population, selected_rows, reviewer_a, reviewer_b)` was called exactly
-  once on the frozen inputs.
-- The returned summary was captured once and was not recomputed.
-- The returned disagreement tuple was written once through the canonical atomic JSONL writer in
-  the same one-off invocation, then reread as exactly 57 typed records.
-- The predeclared gate was evaluated exactly once from the captured frozen summary.
-- The comparison artifact is a regular file, ignored by Git, and read-only. No atomic temporary
-  file remained. Input size, mode, inode, and modification-time metadata were unchanged.
+These disagreement-kind counts are non-mutually-exclusive: one row may contribute to more than one
+category.
 
 ## Serialization and privacy audit
 
-The aggregate summary serialized exactly 15 fields: seven integer count fields, four `Decimal`
-rate fields, and four boolean validity/gate fields. Its field set was exactly:
-`row_count`, `row_type_matches`, `row_type_agreement`, `eligible_field_slots`,
-`exact_field_matches`, `field_exact_agreement`, `joint_field_slots`,
-`atom_support_matches`, `atom_support_agreement`, `source_region_matches`,
-`source_region_agreement`, `valid`, `row_type_gate_passed`,
-`field_exact_gate_passed`, and `pilot_passed`.
-
-The private disagreement model contained exactly opaque document identity, opaque row identity,
-and disagreement kinds. It had no Reviewer A/B value fields. Controller-visible comparison output
-contained aggregate counts, rates, and booleans only. No current gold, accepted parser or baseline
-output, predictions, source filenames, images, adjudication artifacts, or future-task artifacts
-were read.
+The single frozen comparison produced an aggregate summary containing counts, `Decimal` rates, and
+validity/gate booleans only. The private disagreement model contained only opaque document and row
+identities plus disagreement kinds, with no Reviewer A/B value fields. No current gold, accepted
+parser or baseline output, predictions, adjudication artifacts, or future-task artifacts were read.
 
 ## Stop enforcement and self-review
 
 - No adjudication was started and no Reviewer C or candidate-gold artifact was created.
 - Current gold remained unopened.
-- Labels, thresholds, prompts, canonicalization, comparison logic, and extractors were unchanged.
+- Frozen labels, thresholds, prompts, canonicalization, and extractors were unchanged, and the
+  private comparison was not recomputed during final-review hardening.
 - No support task or replacement pilot was launched.
-- The only tracked changes are this aggregate report and the program-status `STOP` update.
-- The pre-existing unrelated untracked files were preserved.
 
 ## Metric-or-Stop
 
