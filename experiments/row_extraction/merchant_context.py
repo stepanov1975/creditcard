@@ -843,13 +843,17 @@ def _is_ordinary_outside_git(repository: subprocess.CompletedProcess[str]) -> bo
 def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
     probe_directory = _nearest_existing_parent(private_root.parent)
     has_repository_marker = _has_repository_marker(probe_directory)
+    git_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    git_environment.update({"LANG": "C", "LANGUAGE": "C", "LC_ALL": "C"})
     try:
         repository = subprocess.run(
             ("git", "-C", str(probe_directory), "rev-parse", "--show-toplevel"),
             check=False,
             capture_output=True,
             text=True,
-            env={**os.environ, "LANG": "C", "LANGUAGE": "C", "LC_ALL": "C"},
+            env=git_environment,
         )
     except OSError:
         raise MerchantContextError("merchant context repository status unavailable") from None
@@ -884,6 +888,7 @@ def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=git_environment,
         )
     except OSError:
         raise MerchantContextError("merchant context repository status unavailable") from None

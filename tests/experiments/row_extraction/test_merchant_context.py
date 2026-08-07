@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import cast
 
 import fitz
 import pytest
@@ -823,6 +824,24 @@ def _install_fast_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(merchant_context, "_render_context_image", render_context_image)
 
 
+def _install_hostile_git_routing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    routed_repository = tmp_path / "hostile-routing-repository"
+    routed_repository.mkdir()
+    subprocess.run(("git", "init", "-q", str(routed_repository)), check=True)
+    hostile_environment = {
+        "GIT_DIR": str(routed_repository / ".git"),
+        "GIT_WORK_TREE": str(routed_repository),
+        "GIT_INDEX_FILE": str(routed_repository / ".git" / "hostile-index"),
+        "GIT_FUTURE_ROUTING_TEST": "sensitive ambient Git state",
+    }
+    for key, value in hostile_environment.items():
+        monkeypatch.setenv(key, value)
+    return routed_repository
+
+
 def test_materialize_writes_six_opaque_batches_and_one_private_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1415,6 +1434,51 @@ def test_markerless_git_discovery_pins_locale_and_preserves_ambient_environment(
     assert environment["LC_ALL"] == "C"
 
 
+def test_materialize_rejects_unignored_root_despite_hostile_git_routing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "actual-repository"
+    repository.mkdir()
+    subprocess.run(("git", "init", "-q", str(repository)), check=True)
+    private_root = repository / "merchant-context-sufficiency-v1"
+    routed_repository = _install_hostile_git_routing(tmp_path, monkeypatch)
+    ambient_key = "MERCHANT_CONTEXT_TEST_AMBIENT"
+    ambient_value = "preserved"
+    monkeypatch.setenv(ambient_key, ambient_value)
+    git_environments: list[dict[str, str]] = []
+    real_run = cast(Callable[..., subprocess.CompletedProcess[str]], subprocess.run)
+
+    def record_git_environment(
+        *args: object,
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        environment = kwargs.get("env")
+        assert isinstance(environment, dict)
+        git_environments.append(cast(dict[str, str], environment))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(merchant_context.subprocess, "run", record_git_environment)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context root must be outside Git or ignored$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+
+    assert str(private_root) not in str(error.value)
+    assert str(routed_repository) not in str(error.value)
+    assert len(git_environments) == 2
+    assert git_environments[0] is git_environments[1]
+    for environment in git_environments:
+        assert not any(key.startswith("GIT_") for key in environment)
+        assert environment[ambient_key] == ambient_value
+        assert environment["LANG"] == "C"
+        assert environment["LANGUAGE"] == "C"
+        assert environment["LC_ALL"] == "C"
+    assert not private_root.exists()
+
+
 def test_materialize_accepts_real_git_ignored_root_before_pilot_validation(
     tmp_path: Path,
 ) -> None:
@@ -1459,9 +1523,11 @@ def test_materialize_accepts_staging_under_git_ignored_artifacts_parent(
     assert not claim_path.exists()
 
 
+@pytest.mark.parametrize("hostile_git_routing", (False, True))
 def test_materialize_rejects_unignored_staging_sibling_for_exact_ignored_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    hostile_git_routing: bool,
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -1470,6 +1536,9 @@ def test_materialize_rejects_unignored_staging_sibling_for_exact_ignored_root(
     population, selected = _high_level_fixture(tmp_path)
     private_root = repository / "merchant-context-sufficiency-v1"
     claim_path = private_root.with_name(f".{private_root.name}.claim")
+    routed_repository = (
+        _install_hostile_git_routing(tmp_path, monkeypatch) if hostile_git_routing else None
+    )
     monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
     _install_fast_renderer(monkeypatch)
 
@@ -1480,6 +1549,8 @@ def test_materialize_rejects_unignored_staging_sibling_for_exact_ignored_root(
         merchant_context.materialize_merchant_contexts(population, selected, private_root)
 
     assert str(private_root) not in str(error.value)
+    if routed_repository is not None:
+        assert str(routed_repository) not in str(error.value)
     assert not private_root.exists()
     assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
     assert not claim_path.exists()
