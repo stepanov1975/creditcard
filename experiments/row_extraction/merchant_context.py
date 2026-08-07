@@ -828,20 +828,22 @@ def score_merchant_context(
         for transaction, score in preliminary_tier_scores.items():
             label = error_by_tier_transaction.get((tier, transaction))
             categories = set() if label is None else {label.primary, *label.secondary}
+            atom_backed_exact = (tier, transaction) in atom_backed_exact_transactions
             unsupported_text = (
                 MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
-                and (tier, transaction) not in atom_backed_exact_transactions
+                and not atom_backed_exact
+            )
+            neighboring_transaction_contamination = (
+                MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION in categories
+                and not atom_backed_exact
             )
             attribution = (
                 score.attribution
                 and not unsupported_text
-                and MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION not in categories
+                and not neighboring_transaction_contamination
             )
             ancillary_substitution = (
                 MerchantErrorCategory.MERCHANT_VERSUS_ANCILLARY in categories and not attribution
-            )
-            neighboring_transaction_contamination = (
-                MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION in categories
             )
             final_scores[tier][transaction] = _TransactionScore(
                 attribution,

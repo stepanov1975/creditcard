@@ -1061,6 +1061,17 @@ def test_scoring_reconciles_label_only_neighbor_contamination_into_ownership(
     assert paired[(tier, ContextTier.C5_FULL_PAGE)].exact_text_losses == 1
 
 
+def test_score_rejects_neighbor_contamination_label_for_exact_atom_backed_assertion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_error(case, tier, 0, MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION)
+
+    with pytest.raises(MerchantContextError, match=r"^merchant error coverage mismatch$"):
+        _score_case(monkeypatch, case)
+
+
 def test_scoring_marks_unsupported_merchant_text_as_hallucination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
