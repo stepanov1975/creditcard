@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import math
+import os
 import shutil
 import stat
 import subprocess
@@ -11,6 +14,7 @@ import tempfile
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
+from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -387,7 +391,10 @@ def validate_merchant_reference(
 
 
 type _ContextPair = tuple[MerchantContextIndex, MerchantContextPacket]
-type _RootClaim = tuple[int, int]
+type _RootClaim = tuple[Path, Path, int]
+
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
 
 
 def _opaque_digest(*parts: str) -> str:
@@ -818,6 +825,22 @@ def _has_repository_marker(path: Path) -> bool:
     return False
 
 
+def _is_ordinary_outside_git(repository: subprocess.CompletedProcess[str]) -> bool:
+    if repository.returncode != 128 or repository.stdout.strip():
+        return False
+    errors = repository.stderr.splitlines()
+    if errors == ["fatal: not a git repository (or any of the parent directories): .git"]:
+        return True
+    mount_prefix = "fatal: not a git repository (or any parent up to mount point "
+    boundary_error = "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
+    if len(errors) != 2 or errors[1] != boundary_error:
+        return False
+    mount_error = errors[0]
+    if not mount_error.startswith(mount_prefix) or not mount_error.endswith(")"):
+        return False
+    return Path(mount_error[len(mount_prefix) : -1]).is_absolute()
+
+
 def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
     probe_directory = _nearest_existing_parent(private_root.parent)
     has_repository_marker = _has_repository_marker(probe_directory)
@@ -825,16 +848,16 @@ def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
         repository = subprocess.run(
             ("git", "-C", str(probe_directory), "rev-parse", "--show-toplevel"),
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
+            env={**os.environ, "LANG": "C", "LANGUAGE": "C", "LC_ALL": "C"},
         )
     except OSError:
         raise MerchantContextError("merchant context repository status unavailable") from None
     if repository.returncode != 0:
-        if has_repository_marker:
-            raise MerchantContextError("merchant context repository status unavailable")
-        return True
+        if not has_repository_marker and _is_ordinary_outside_git(repository):
+            return True
+        raise MerchantContextError("merchant context repository status unavailable")
     try:
         if not repository.stdout.strip():
             raise ValueError
@@ -886,46 +909,95 @@ def _validate_private_root(private_root: Path) -> None:
         raise MerchantContextError("merchant context root already exists")
 
 
-def _remove_claimed_root(private_root: Path, claim: _RootClaim) -> None:
+def _release_root_claim(claim_path: Path, claim_file_descriptor: int) -> None:
     try:
-        root_status = private_root.stat(follow_symlinks=False)
+        claim_status = os.fstat(claim_file_descriptor)
     except OSError:
+        claim_status = None
+    with suppress(OSError):
+        os.close(claim_file_descriptor)
+    if claim_status is None:
         return
-    if not stat.S_ISDIR(root_status.st_mode) or (root_status.st_dev, root_status.st_ino) != claim:
+    try:
+        path_status = claim_path.stat(follow_symlinks=False)
+        if (path_status.st_dev, path_status.st_ino) == (
+            claim_status.st_dev,
+            claim_status.st_ino,
+        ):
+            claim_path.unlink()
+    except OSError:
+        pass
+
+
+def _cleanup_staging_root(staging_root: Path) -> None:
+    shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def _publish_private_root(staging_root: Path, private_root: Path) -> None:
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            _AT_FDCWD,
+            os.fsencode(staging_root),
+            _AT_FDCWD,
+            os.fsencode(private_root),
+            _RENAME_NOREPLACE,
+        )
+    except (AttributeError, OSError):
+        raise MerchantContextError("merchant context root publication failed") from None
+    if result == 0:
         return
-    shutil.rmtree(private_root, ignore_errors=True)
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise MerchantContextError("merchant context root already exists")
+    raise MerchantContextError("merchant context root publication failed")
 
 
 def _claim_private_root(private_root: Path) -> _RootClaim:
-    expected_root = private_root.resolve(strict=False)
-    claim: _RootClaim | None = None
+    claim_path = private_root.with_name(f".{private_root.name}.claim")
+    claim_file_descriptor: int | None = None
+    staging_root: Path | None = None
     try:
         private_root.parent.mkdir(parents=True, exist_ok=True)
-        private_root.mkdir(exist_ok=False)
+        claim_file_descriptor = os.open(
+            claim_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
     except FileExistsError:
         raise MerchantContextError("merchant context root already exists") from None
     except OSError:
         raise MerchantContextError("merchant context root claim failed") from None
 
     try:
-        root_status = private_root.stat(follow_symlinks=False)
-        claim = root_status.st_dev, root_status.st_ino
-        if (
-            not stat.S_ISDIR(root_status.st_mode)
-            or private_root.resolve(strict=True) != expected_root
-        ):
+        _validate_private_root(private_root)
+        staging_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{private_root.name}.",
+                suffix=".staging",
+                dir=private_root.parent,
+            )
+        )
+        _validate_private_root(private_root)
+        if staging_root.parent.resolve(strict=True) != private_root.parent.resolve(strict=True):
             raise MerchantContextError("merchant context root claim failed")
-        for candidate in (private_root, *private_root.parents):
-            if candidate.is_symlink():
-                raise MerchantContextError("merchant context root must not be a symlink")
-        if not _root_is_outside_git_or_ignored(private_root):
-            raise MerchantContextError("merchant context root must be outside Git or ignored")
     except BaseException:
-        if claim is not None:
-            _remove_claimed_root(private_root, claim)
+        if staging_root is not None:
+            _cleanup_staging_root(staging_root)
+        assert claim_file_descriptor is not None
+        _release_root_claim(claim_path, claim_file_descriptor)
         raise
-    assert claim is not None
-    return claim
+    assert claim_file_descriptor is not None
+    assert staging_root is not None
+    return staging_root, claim_path, claim_file_descriptor
 
 
 def _validate_selected_pilot(
@@ -960,7 +1032,7 @@ def materialize_merchant_contexts(
 
     _validate_private_root(private_root)
     selected = _validate_selected_pilot(population, selected_rows)
-    claim = _claim_private_root(private_root)
+    staging_root, claim_path, claim_file_descriptor = _claim_private_root(private_root)
     try:
         pairs = tuple(
             pair
@@ -968,7 +1040,7 @@ def materialize_merchant_contexts(
             for pair in materialize_anchor_contexts(
                 population,
                 anchor,
-                private_root / "images",
+                staging_root / "images",
             )
         )
         ordered = tuple(sorted(pairs, key=lambda pair: (pair[0].batch_id, pair[0].context_id)))
@@ -976,10 +1048,10 @@ def materialize_merchant_contexts(
             {index.context_id for index, _ in ordered}
         ) != len(ordered):
             raise MerchantContextError("merchant context coverage mismatch")
-        packet_root = private_root / "packets"
+        packet_root = staging_root / "packets"
         packet_root.mkdir()
         write_jsonl(
-            private_root / "context-index.jsonl",
+            staging_root / "context-index.jsonl",
             (index for index, _ in ordered),
         )
         batch_ids = tuple(sorted({index.batch_id for index, _ in ordered}))
@@ -990,9 +1062,12 @@ def materialize_merchant_contexts(
             if len(batch_packets) != _PILOT_ANCHOR_COUNT:
                 raise MerchantContextError("merchant context coverage mismatch")
             write_jsonl(packet_root / f"{batch_id}.jsonl", batch_packets)
+        _publish_private_root(staging_root, private_root)
     except BaseException as error:
-        _remove_claimed_root(private_root, claim)
+        _cleanup_staging_root(staging_root)
+        _release_root_claim(claim_path, claim_file_descriptor)
         if isinstance(error, MerchantContextError):
             raise
         raise MerchantContextError("merchant context materialization failed") from None
+    _release_root_claim(claim_path, claim_file_descriptor)
     return ordered

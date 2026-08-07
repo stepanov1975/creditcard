@@ -1014,6 +1014,60 @@ def test_materialize_sanitizes_git_execution_errors_below_repository_marker(
     assert "sensitive" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stderr"),
+    (
+        (1, ""),
+        (2, "fatal: invalid invocation"),
+        (-9, ""),
+        (128, "fatal: ambiguous discovery failure"),
+        (
+            128,
+            "fatal: not a git repository (or any of the parent directories): .git\n"
+            "fatal: secondary discovery failure",
+        ),
+    ),
+)
+def test_materialize_rejects_markerless_abnormal_git_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stderr: str,
+) -> None:
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+
+    def abnormal_git_discovery(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del args, kwargs
+        return subprocess.CompletedProcess((), returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(merchant_context.subprocess, "run", abnormal_git_discovery)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context repository status unavailable$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+    assert str(private_root) not in str(error.value)
+
+
+def test_materialize_accepts_real_git_ignored_root_before_pilot_validation(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".gitignore").write_text("artifacts/\n")
+    subprocess.run(("git", "init", "-q", str(repository)), check=True)
+    private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context pilot membership mismatch$",
+    ):
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+
+    assert not private_root.exists()
+
+
 def test_materialize_exclusively_claims_root_after_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1060,7 +1114,8 @@ def test_failed_materialization_does_not_delete_replacement_root(
         tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
     ]:
         del rows, anchor, image_root
-        shutil.rmtree(private_root)
+        if private_root.exists():
+            shutil.rmtree(private_root)
         private_root.mkdir()
         (private_root / replacement_marker).write_text("replacement")
         raise OSError("synthetic materialization failure")
@@ -1070,6 +1125,52 @@ def test_failed_materialization_does_not_delete_replacement_root(
         "materialize_anchor_contexts",
         replace_root_then_fail,
     )
+
+    with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert (private_root / replacement_marker).read_text() == "replacement"
+
+
+def test_cleanup_does_not_delete_root_substituted_at_deletion_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    replacement_marker = "replacement-at-cleanup"
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    def fail_materialization(
+        rows: object,
+        anchor: FrozenRow,
+        image_root: Path,
+    ) -> tuple[
+        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
+    ]:
+        del rows, anchor, image_root
+        raise OSError("synthetic materialization failure")
+
+    original_rmtree = shutil.rmtree
+    replacement_created = False
+
+    def substitute_before_deletion(
+        path: Path,
+        ignore_errors: bool = False,
+        **kwargs: object,
+    ) -> None:
+        nonlocal replacement_created
+        candidate = Path(path)
+        if not replacement_created:
+            if candidate == private_root:
+                original_rmtree(candidate)
+            private_root.mkdir()
+            (private_root / replacement_marker).write_text("replacement")
+            replacement_created = True
+        original_rmtree(candidate, ignore_errors=ignore_errors, **kwargs)
+
+    monkeypatch.setattr(merchant_context, "materialize_anchor_contexts", fail_materialization)
+    monkeypatch.setattr(merchant_context.shutil, "rmtree", substitute_before_deletion)
 
     with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
         merchant_context.materialize_merchant_contexts(population, selected, private_root)
