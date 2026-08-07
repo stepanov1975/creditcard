@@ -680,6 +680,27 @@ def _replace_error(
     )
 
 
+def _two_transaction_document_case() -> tuple[dict[str, object], tuple[FrozenRow, ...]]:
+    case = _all_exact_scoring_fixture()
+    selected = cast(tuple[FrozenRow, ...], case["selected_rows"])
+    selected = (
+        selected[0],
+        selected[1].model_copy(update={"document_id": selected[0].document_id}),
+        *selected[2:],
+    )
+    references = list(cast(tuple[MerchantReference, ...], case["references"]))
+    references[1] = references[1].model_copy(update={"document_id": selected[0].document_id})
+    case.update(
+        population=selected,
+        selected_rows=selected,
+        references=tuple(references),
+    )
+    for tier in CONTEXT_TIERS:
+        _replace_packet(case, tier, 1, document_id=selected[0].document_id)
+        _replace_assertion(case, tier, 1, document_id=selected[0].document_id)
+    return case, selected
+
+
 def test_scoring_selects_smallest_safe_tier_matching_full_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -843,59 +864,159 @@ def test_scoring_counts_mixed_correct_and_abstained_anchors_only_as_omission(
     assert arm.safe is True
 
 
-@pytest.mark.parametrize("foreign_evidence", (False, True))
-def test_scoring_marks_wrong_owners_and_foreign_merchant_evidence_unsafe(
+def test_scoring_keeps_source_grounded_partial_merchant_span_safe(
     monkeypatch: pytest.MonkeyPatch,
-    foreign_evidence: bool,
 ) -> None:
     case = _all_exact_scoring_fixture()
     selected = cast(tuple[FrozenRow, ...], case["selected_rows"])
+    partial_row = selected[0].model_copy(
+        update={
+            "atoms": (
+                selected[0].atoms[0].model_copy(update={"text": "SECRET"}),
+                selected[0].atoms[1].model_copy(update={"text": "MERCHANT"}),
+            )
+        }
+    )
+    selected = (partial_row, *selected[1:])
+    references = cast(tuple[MerchantReference, ...], case["references"])
+    case.update(
+        population=selected,
+        selected_rows=selected,
+        references=(
+            references[0].model_copy(update={"atom_ids": ("merchant-000", "ancillary-000")}),
+            *references[1:],
+        ),
+    )
+    packet_row = MerchantContextRow(
+        row_id=partial_row.row_id,
+        bbox=partial_row.bbox,
+        atoms=partial_row.atoms,
+    )
+    for context_tier in CONTEXT_TIERS:
+        _replace_packet(case, context_tier, 0, rows=(packet_row,))
+        _replace_assertion(
+            case,
+            context_tier,
+            0,
+            atom_ids=("merchant-000", "ancillary-000"),
+        )
     tier = ContextTier.C3_HEADER_NEIGHBORHOOD
-    if foreign_evidence:
-        selected = (
-            selected[0],
-            selected[1].model_copy(update={"document_id": selected[0].document_id}),
-            *selected[2:],
+    _replace_assertion(
+        case,
+        tier,
+        0,
+        merchant_text="SECRET",
+        atom_ids=("merchant-000",),
+    )
+    _replace_error(case, tier, 0, MerchantErrorCategory.MERCHANT_SPAN_BOUNDARY)
+
+    summary = _score_case(monkeypatch, case)
+    arm = next(item for item in summary.tiers if item.tier is tier)
+
+    assert arm.correct_attributions == 97
+    assert arm.exact_text_matches == 97
+    assert arm.wrong_merchants == 0
+    assert arm.ownership_errors == 0
+    assert arm.safe is True
+
+
+def test_scoring_marks_same_transaction_continuation_owner_as_ownership_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    population, selected, references = _shared_transaction_fixture()
+    case.update(
+        population=population,
+        selected_rows=selected,
+        references=references,
+    )
+    shared_rows = tuple(
+        MerchantContextRow(row_id=row.row_id, bbox=row.bbox, atoms=row.atoms)
+        for row in selected[:2]
+    )
+    for context_tier in CONTEXT_TIERS:
+        _replace_packet(
+            case,
+            context_tier,
+            1,
+            document_id=selected[0].document_id,
+            rows=shared_rows,
         )
-        references = list(cast(tuple[MerchantReference, ...], case["references"]))
-        references[1] = references[1].model_copy(update={"document_id": selected[0].document_id})
-        case.update(
-            population=selected,
-            selected_rows=selected,
-            references=tuple(references),
+        _replace_assertion(
+            case,
+            context_tier,
+            1,
+            document_id=selected[0].document_id,
+            owner_row_id=selected[0].row_id,
+            atom_ids=("merchant-000",),
         )
-        for context_tier in CONTEXT_TIERS:
-            _replace_packet(
-                case,
-                context_tier,
-                1,
-                document_id=selected[0].document_id,
-            )
-            _replace_assertion(
-                case,
-                context_tier,
-                1,
-                document_id=selected[0].document_id,
-            )
-        packet_rows = (
-            MerchantContextRow(
-                row_id=selected[0].row_id,
-                bbox=selected[0].bbox,
-                atoms=selected[0].atoms,
-            ),
-            MerchantContextRow(
-                row_id=selected[1].row_id,
-                bbox=selected[1].bbox,
-                atoms=selected[1].atoms,
-            ),
-        )
-        _replace_packet(case, tier, 0, rows=packet_rows)
-        _replace_assertion(case, tier, 0, atom_ids=("merchant-001",))
-        category = MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION
-    else:
-        _replace_assertion(case, tier, 0, owner_row_id=selected[1].row_id)
-        category = MerchantErrorCategory.CONTINUATION_OWNERSHIP
-    _replace_error(case, tier, 0, category)
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_assertion(case, tier, 0, owner_row_id=selected[1].row_id)
+    _replace_error(case, tier, 0, MerchantErrorCategory.CONTINUATION_OWNERSHIP)
+
+    summary = _score_case(monkeypatch, case)
+    arm = next(item for item in summary.tiers if item.tier is tier)
+
+    assert arm.wrong_merchants == 0
+    assert arm.ownership_errors == 1
+    assert arm.safe is True
+
+
+def test_scoring_marks_unknown_asserted_owner_as_ownership_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_assertion(case, tier, 0, owner_row_id="unknown-owner")
+    _replace_error(case, tier, 0, MerchantErrorCategory.CONTINUATION_OWNERSHIP)
+
+    summary = _score_case(monkeypatch, case)
+    arm = next(item for item in summary.tiers if item.tier is tier)
+
+    assert arm.wrong_merchants == 0
+    assert arm.ownership_errors == 1
+    assert arm.safe is True
+
+
+def test_scoring_marks_different_transaction_owner_wrong_and_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, selected = _two_transaction_document_case()
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_assertion(case, tier, 0, owner_row_id=selected[1].row_id)
+    _replace_error(case, tier, 0, MerchantErrorCategory.CONTINUATION_OWNERSHIP)
+
+    summary = _score_case(monkeypatch, case)
+    arm = next(item for item in summary.tiers if item.tier is tier)
+
+    assert arm.wrong_merchants == 1
+    assert arm.ownership_errors == 1
+    assert arm.safe is False
+
+
+def test_scoring_marks_ancillary_substitution_wrong_and_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary = _score_case(monkeypatch, scoring_fixture())
+    arm = next(item for item in summary.tiers if item.tier is ContextTier.C0_ROW)
+
+    assert arm.wrong_merchants == 1
+    assert arm.ownership_errors == 0
+    assert arm.safe is False
+
+
+def test_scoring_marks_foreign_merchant_evidence_wrong_and_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case, selected = _two_transaction_document_case()
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    packet_rows = tuple(
+        MerchantContextRow(row_id=row.row_id, bbox=row.bbox, atoms=row.atoms)
+        for row in selected[:2]
+    )
+    _replace_packet(case, tier, 0, rows=packet_rows)
+    _replace_assertion(case, tier, 0, atom_ids=("merchant-001",))
+    _replace_error(case, tier, 0, MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION)
 
     summary = _score_case(monkeypatch, case)
     arm = next(item for item in summary.tiers if item.tier is tier)
@@ -1103,14 +1224,16 @@ def test_decision_falsifies_when_every_context_tier_is_unsafe(
         _replace_error(case, tier, 0, MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT)
 
     summary = _score_case(monkeypatch, case)
+    report = render_merchant_context_report(summary)
 
     assert all(not tier.safe for tier in summary.tiers)
     assert summary.recommended_tier is None
     assert summary.hypothesis_supported is False
     assert summary.hypothesis_falsified is True
+    assert "Result: falsified hypothesis;" in report
 
 
-def test_decision_falsifies_without_eligible_transactions(
+def test_decision_stops_validation_without_eligible_transactions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     case = _all_exact_scoring_fixture()
@@ -1133,6 +1256,7 @@ def test_decision_falsifies_without_eligible_transactions(
     )
 
     summary = _score_case(monkeypatch, case)
+    report = render_merchant_context_report(summary)
 
     assert summary.eligible_transaction_count == 0
     assert all(tier.eligible_transactions == 0 for tier in summary.tiers)
@@ -1142,7 +1266,9 @@ def test_decision_falsifies_without_eligible_transactions(
     assert all(tier.exact_text_rate == Decimal(0) for tier in summary.tiers)
     assert summary.recommended_tier is None
     assert summary.hypothesis_supported is False
-    assert summary.hypothesis_falsified is True
+    assert summary.hypothesis_falsified is False
+    assert summary.context_interference is False
+    assert "Result: validation stopped;" in report
 
 
 def test_decision_reports_context_interference_when_smaller_safe_tier_beats_full_page(
@@ -1167,9 +1293,43 @@ def test_decision_reports_context_interference_when_smaller_safe_tier_beats_full
     )
 
     summary = _score_case(monkeypatch, case)
+    report = render_merchant_context_report(summary)
 
     assert summary.recommended_tier is ContextTier.C0_ROW
+    assert summary.hypothesis_supported is False
+    assert summary.hypothesis_falsified is False
     assert summary.context_interference is True
+    assert "Result: context interference;" in report
+
+
+def test_decision_supports_exact_match_even_with_other_context_interference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    for tier in (ContextTier.C3_HEADER_NEIGHBORHOOD, ContextTier.C5_FULL_PAGE):
+        _replace_assertion(
+            case,
+            tier,
+            0,
+            disposition=AssertionDisposition.ABSTAIN,
+            owner_row_id=None,
+            merchant_text=None,
+            atom_ids=(),
+        )
+        _replace_error(
+            case,
+            tier,
+            0,
+            MerchantErrorCategory.INSUFFICIENT_CONTEXT_OR_MISSING_HEADER,
+        )
+
+    summary = _score_case(monkeypatch, case)
+    report = render_merchant_context_report(summary)
+
+    assert summary.hypothesis_supported is True
+    assert summary.hypothesis_falsified is False
+    assert summary.context_interference is True
+    assert "Result: supported hypothesis;" in report
 
 
 def test_decision_fails_closed_for_incomparable_safe_attribution_sets(
@@ -1212,6 +1372,50 @@ def test_decision_fails_closed_for_incomparable_safe_attribution_sets(
 
     assert by_tier[ContextTier.C0_ROW].correct_attributions == 97
     assert by_tier[ContextTier.C1_ADJACENT_ROWS].correct_attributions == 97
+    assert by_tier[ContextTier.C0_ROW].safe is True
+    assert by_tier[ContextTier.C1_ADJACENT_ROWS].safe is True
+    assert all(by_tier[tier].safe is False for tier in CONTEXT_TIERS[2:])
+    assert summary.recommended_tier is None
+
+
+def test_decision_fails_closed_for_incomparable_exact_sets_after_identical_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    for tier, row_index in (
+        (ContextTier.C0_ROW, 0),
+        (ContextTier.C1_ADJACENT_ROWS, 1),
+    ):
+        _replace_assertion(
+            case,
+            tier,
+            row_index,
+            merchant_text="SECRET MERCHANT ANCILLARY",
+            atom_ids=(f"merchant-{row_index:03d}", f"ancillary-{row_index:03d}"),
+        )
+        _replace_error(
+            case,
+            tier,
+            row_index,
+            MerchantErrorCategory.MERCHANT_VERSUS_ANCILLARY,
+        )
+    for tier in CONTEXT_TIERS[2:]:
+        _replace_assertion(
+            case,
+            tier,
+            2,
+            merchant_text="UNSUPPORTED",
+            atom_ids=("merchant-002",),
+        )
+        _replace_error(case, tier, 2, MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT)
+
+    summary = _score_case(monkeypatch, case)
+    by_tier = {item.tier: item for item in summary.tiers}
+
+    assert by_tier[ContextTier.C0_ROW].correct_attributions == 98
+    assert by_tier[ContextTier.C1_ADJACENT_ROWS].correct_attributions == 98
+    assert by_tier[ContextTier.C0_ROW].exact_text_matches == 97
+    assert by_tier[ContextTier.C1_ADJACENT_ROWS].exact_text_matches == 97
     assert by_tier[ContextTier.C0_ROW].safe is True
     assert by_tier[ContextTier.C1_ADJACENT_ROWS].safe is True
     assert all(by_tier[tier].safe is False for tier in CONTEXT_TIERS[2:])

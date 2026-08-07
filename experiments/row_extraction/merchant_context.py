@@ -696,6 +696,12 @@ def score_merchant_context(
                 (reference.document_id, reference.owner_row_id), []
             ).append(reference)
 
+    row_transaction_owners: dict[_RowIdentity, _TransactionIdentity] = {}
+    for transaction, owned_references in transaction_references.items():
+        reference = owned_references[0]
+        for owned_row_id in reference.owned_row_ids:
+            row_transaction_owners[(reference.document_id, owned_row_id)] = transaction
+
     merchant_atom_owners: dict[tuple[str, str], set[_TransactionIdentity]] = {}
     merchant_region_owners: dict[tuple[str, BBox], set[_TransactionIdentity]] = {}
     for transaction, owned_references in transaction_references.items():
@@ -782,17 +788,15 @@ def score_merchant_context(
                 for assertion, packet in assertion_packets
             )
             ownership_error = not owner_correct or foreign_evidence
-            wrong_merchant = foreign_evidence or any(
-                assertion.owner_row_id != reference.owner_row_id
-                or (
-                    _assertion_text_is_source_supported(assertion, packet)
-                    and (
-                        assertion.merchant_text is None
-                        or reference.merchant_text not in assertion.merchant_text
-                    )
+            different_transaction_owner = any(
+                asserted_transaction is not None and asserted_transaction != transaction
+                for assertion, _ in merchant_assertion_packets
+                if assertion.owner_row_id is not None
+                for asserted_transaction in (
+                    row_transaction_owners.get((assertion.document_id, assertion.owner_row_id)),
                 )
-                for assertion, packet in merchant_assertion_packets
             )
+            wrong_merchant = foreign_evidence or different_transaction_owner
             score = _TransactionScore(
                 attribution,
                 exact_text,
@@ -816,11 +820,19 @@ def score_merchant_context(
             categories = set() if label is None else {label.primary, *label.secondary}
             unsupported_text = MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
             attribution = score.attribution and not unsupported_text
+            ancillary_substitution = (
+                MerchantErrorCategory.MERCHANT_VERSUS_ANCILLARY in categories and not attribution
+            )
+            neighboring_transaction_contamination = (
+                MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION in categories
+            )
             final_scores[tier][transaction] = _TransactionScore(
                 attribution,
                 score.exact_text and attribution,
                 score.omission,
-                score.wrong_merchant,
+                score.wrong_merchant
+                or ancillary_substitution
+                or neighboring_transaction_contamination,
                 score.hallucination or unsupported_text,
                 score.ownership_error,
             )
@@ -945,6 +957,17 @@ def score_merchant_context(
         )
         for tier in CONTEXT_TIERS[:-1]
     )
+    hypothesis_falsified = (
+        has_eligible_transactions
+        and not hypothesis_supported
+        and not context_interference
+        and all(
+            tier not in safe_tier_set
+            or bool(full_page_attributions - correct_sets[tier])
+            or bool(full_page_exact - exact_sets[tier])
+            for tier in bounded_tiers
+        )
+    )
     return MerchantContextSummary(
         anchor_count=reference_summary.anchor_count,
         eligible_transaction_count=reference_summary.eligible_transaction_count,
@@ -954,7 +977,7 @@ def score_merchant_context(
         paired_deltas=paired_deltas,
         recommended_tier=recommended_tier,
         hypothesis_supported=hypothesis_supported,
-        hypothesis_falsified=not hypothesis_supported,
+        hypothesis_falsified=hypothesis_falsified,
         context_interference=context_interference,
     )
 
@@ -974,16 +997,19 @@ def render_merchant_context_report(summary: MerchantContextSummary) -> str:
         raise MerchantContextError("merchant context summary contract mismatch") from None
 
     if aggregate.hypothesis_supported:
-        hypothesis = "supported hypothesis"
+        outcome = "supported hypothesis"
+    elif aggregate.hypothesis_falsified:
+        outcome = "falsified hypothesis"
+    elif aggregate.context_interference:
+        outcome = "context interference"
     else:
-        hypothesis = "falsified hypothesis"
+        outcome = "validation stopped"
     recommended = (
         aggregate.recommended_tier.value if aggregate.recommended_tier is not None else "none"
     )
     interference = "true" if aggregate.context_interference else "false"
     result = (
-        f"{hypothesis}; smallest best safe tier: {recommended}; "
-        f"context interference: {interference}"
+        f"{outcome}; smallest best safe tier: {recommended}; context interference: {interference}"
     )
     lines = [
         "# Merchant Context Sufficiency Result",
