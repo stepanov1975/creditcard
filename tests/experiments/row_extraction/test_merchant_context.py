@@ -369,6 +369,40 @@ def test_reference_validation_rejects_shared_rows_with_different_owners(
         validate_merchant_reference(population, selected, references)
 
 
+def test_reference_validation_rejects_nonselected_row_claimed_by_different_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, selected, references = reference_fixture()
+    shared_document = selected[0].document_id
+    selected = (
+        selected[0],
+        selected[1].model_copy(update={"document_id": shared_document}),
+        *selected[2:],
+    )
+    unselected_row = frozen_row(
+        document_id=shared_document,
+        row_id="unselected-owned-row",
+        atoms=(evidence_atom(atom_id="unselected-atom"),),
+    )
+    population = (*selected, unselected_row)
+    references = (
+        references[0].model_copy(
+            update={"owned_row_ids": (selected[0].row_id, unselected_row.row_id)}
+        ),
+        references[1].model_copy(
+            update={
+                "document_id": shared_document,
+                "owned_row_ids": (selected[1].row_id, unselected_row.row_id),
+            }
+        ),
+        *references[2:],
+    )
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    with pytest.raises(MerchantContextError, match=r"^merchant reference ownership mismatch$"):
+        validate_merchant_reference(population, selected, references)
+
+
 def test_reference_validation_rejects_transaction_claiming_nontransaction_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
