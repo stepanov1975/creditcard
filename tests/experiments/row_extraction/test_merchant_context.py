@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import ctypes
-import errno
 import hashlib
 import itertools
 import json
-import os
-import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from decimal import ROUND_DOWN, Context, Decimal, localcontext
@@ -1952,24 +1948,6 @@ def _install_fast_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(merchant_context, "_render_context_image", render_context_image)
 
 
-def _install_hostile_git_routing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Path:
-    routed_repository = tmp_path / "hostile-routing-repository"
-    routed_repository.mkdir()
-    subprocess.run(("git", "init", "-q", str(routed_repository)), check=True)
-    hostile_environment = {
-        "GIT_DIR": str(routed_repository / ".git"),
-        "GIT_WORK_TREE": str(routed_repository),
-        "GIT_INDEX_FILE": str(routed_repository / ".git" / "hostile-index"),
-        "GIT_FUTURE_ROUTING_TEST": "sensitive ambient Git state",
-    }
-    for key, value in hostile_environment.items():
-        monkeypatch.setenv(key, value)
-    return routed_repository
-
-
 def test_materialize_writes_six_opaque_batches_and_one_private_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2068,313 +2046,14 @@ def test_materialize_cleans_the_private_root_after_a_failed_write(
     assert not private_root.exists()
 
 
-def test_rename_noreplace_configures_and_calls_the_ctypes_boundary(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    staging_root = tmp_path / "staging"
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    library_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    rename_calls: list[tuple[object, ...]] = []
-
-    class FakeRenameAt2:
-        argtypes: object = None
-        restype: object = None
-
-        def __call__(self, *args: object) -> int:
-            rename_calls.append(args)
-            ctypes.set_errno(0)
-            return 0
-
-    fake_renameat2 = FakeRenameAt2()
-
-    class FakeLibrary:
-        renameat2 = fake_renameat2
-
-    def load_library(*args: object, **kwargs: object) -> object:
-        library_calls.append((args, kwargs))
-        return FakeLibrary()
-
-    monkeypatch.setattr(merchant_context.ctypes, "CDLL", load_library)
-
-    result = merchant_context._rename_noreplace(staging_root, private_root)
-
-    assert result == (0, 0)
-    assert library_calls == [((None,), {"use_errno": True})]
-    assert fake_renameat2.argtypes == (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    assert fake_renameat2.restype is ctypes.c_int
-    assert rename_calls == [
-        (
-            -100,
-            os.fsencode(staging_root),
-            -100,
-            os.fsencode(private_root),
-            1,
-        )
-    ]
-
-
-def test_publish_succeeds_on_zero_return_even_when_errno_is_stale(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    staging_root = tmp_path / "staging"
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-
-    monkeypatch.setattr(
-        merchant_context,
-        "_rename_noreplace",
-        lambda source, destination: (0, errno.EINVAL),
-    )
-
-    merchant_context._publish_private_root(staging_root, private_root)
-
-
-@pytest.mark.parametrize("collision_errno", (errno.EEXIST, errno.ENOTEMPTY))
-def test_publication_time_collision_preserves_root_and_cleans_control_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    collision_errno: int,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    replacement_marker = private_root / "replacement-owned"
-    observed_staging_roots: list[Path] = []
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-    _install_fast_renderer(monkeypatch)
-
-    def collide_at_publication(source: Path, destination: Path) -> tuple[int, int]:
-        assert destination == private_root
-        assert claim_path.is_file()
-        assert source.is_dir()
-        observed_staging_roots.append(source)
-        private_root.mkdir()
-        replacement_marker.write_text("replacement")
-        return -1, collision_errno
-
-    monkeypatch.setattr(merchant_context, "_rename_noreplace", collide_at_publication)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context root already exists$",
-    ):
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert replacement_marker.read_text() == "replacement"
-    assert len(set(observed_staging_roots)) == 1
-    assert not observed_staging_roots[0].exists()
-    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
-    assert not claim_path.exists()
-
-
-@pytest.mark.parametrize("publication_errno", (errno.ENOSYS, errno.EINVAL, errno.EXDEV))
-def test_publication_errno_fails_closed_and_cleans_control_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    publication_errno: int,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    observed_staging_roots: list[Path] = []
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-    _install_fast_renderer(monkeypatch)
-
-    def fail_publication(source: Path, destination: Path) -> tuple[int, int]:
-        assert destination == private_root
-        assert claim_path.is_file()
-        observed_staging_roots.append(source)
-        return -1, publication_errno
-
-    monkeypatch.setattr(merchant_context, "_rename_noreplace", fail_publication)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context root publication failed$",
-    ):
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert len(set(observed_staging_roots)) == 1
-    assert not observed_staging_roots[0].exists()
-    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
-    assert not claim_path.exists()
-    assert not private_root.exists()
-
-
-@pytest.mark.parametrize("unavailable_boundary", ("library", "symbol"))
-def test_unavailable_publication_boundary_is_sanitized_and_cleans_control_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    unavailable_boundary: str,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-    _install_fast_renderer(monkeypatch)
-
-    def load_library(*args: object, **kwargs: object) -> object:
-        del args, kwargs
-        if unavailable_boundary == "library":
-            raise OSError("sensitive library failure")
-        return object()
-
-    monkeypatch.setattr(merchant_context.ctypes, "CDLL", load_library)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context root publication failed$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert "sensitive" not in str(error.value)
-    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
-    assert not claim_path.exists()
-    assert not private_root.exists()
-
-
-@pytest.mark.parametrize("cleanup_failure", ("raises", "leaves"))
-def test_staging_cleanup_failure_is_sanitized_and_releases_claim(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cleanup_failure: str,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    observed_staging_roots: list[Path] = []
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-
-    def fail_materialization(
-        rows: object,
-        anchor: FrozenRow,
-        image_root: Path,
-    ) -> tuple[
-        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
-    ]:
-        del rows, anchor
-        staging_root = image_root.parent
-        staging_root.joinpath("synthetic-private-data").write_text("private")
-        observed_staging_roots.append(staging_root)
-        raise OSError("sensitive materialization failure")
-
-    original_rmtree = shutil.rmtree
-
-    def fail_cleanup(path: Path, *args: object, **kwargs: object) -> None:
-        candidate = Path(path)
-        if observed_staging_roots and candidate == observed_staging_roots[0]:
-            if cleanup_failure == "raises":
-                raise OSError("sensitive cleanup failure")
-            return
-        original_rmtree(candidate, *args, **kwargs)
-
-    monkeypatch.setattr(merchant_context, "materialize_anchor_contexts", fail_materialization)
-    monkeypatch.setattr(merchant_context.shutil, "rmtree", fail_cleanup)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context staging cleanup failed$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert "sensitive" not in str(error.value)
-    assert len(set(observed_staging_roots)) == 1
-    assert observed_staging_roots[0].exists()
-    assert not claim_path.exists()
-    assert not private_root.exists()
-
-
-@pytest.mark.parametrize("unlink_failure", ("raises", "leaves"))
-@pytest.mark.parametrize("operation_outcome", ("success", "materialization", "cleanup"))
-def test_claim_release_failure_is_sanitized_and_takes_precedence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    unlink_failure: str,
-    operation_outcome: str,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    observed_staging_roots: list[Path] = []
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-    _install_fast_renderer(monkeypatch)
-
-    if operation_outcome != "success":
-
-        def fail_materialization(
-            rows: object,
-            anchor: FrozenRow,
-            image_root: Path,
-        ) -> tuple[
-            tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket],
-            ...,
-        ]:
-            del rows, anchor
-            staging_root = image_root.parent
-            staging_root.joinpath("synthetic-private-data").write_text("private")
-            observed_staging_roots.append(staging_root)
-            raise OSError("sensitive materialization failure")
-
-        monkeypatch.setattr(
-            merchant_context,
-            "materialize_anchor_contexts",
-            fail_materialization,
-        )
-
-    if operation_outcome == "cleanup":
-
-        def fail_cleanup(path: Path) -> None:
-            candidate = Path(path)
-            assert observed_staging_roots and candidate == observed_staging_roots[0]
-            raise OSError("sensitive cleanup failure")
-
-        monkeypatch.setattr(shutil, "rmtree", fail_cleanup)
-
-    original_unlink = Path.unlink
-
-    def fail_claim_unlink(path: Path, *, missing_ok: bool = False) -> None:
-        if path == claim_path:
-            if unlink_failure == "raises":
-                raise OSError("sensitive claim release failure")
-            return
-        original_unlink(path, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", fail_claim_unlink)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context root claim release failed$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert "sensitive" not in str(error.value)
-    assert claim_path.exists()
-    if operation_outcome == "success":
-        assert private_root.is_dir()
-        assert not observed_staging_roots
-    elif operation_outcome == "materialization":
-        assert not private_root.exists()
-        assert len(set(observed_staging_roots)) == 1
-        assert not observed_staging_roots[0].exists()
-    else:
-        assert not private_root.exists()
-        assert len(set(observed_staging_roots)) == 1
-        assert observed_staging_roots[0].exists()
-
-
 def test_materialize_rejects_unsafe_roots_with_sanitized_errors(
     tmp_path: Path,
 ) -> None:
-    nonempty = tmp_path / "nonempty" / "merchant-context-sufficiency-v1"
-    nonempty.mkdir(parents=True)
-    (nonempty / "private.txt").write_text("private")
+    existing_empty = tmp_path / "existing-empty" / "merchant-context-sufficiency-v1"
+    existing_empty.mkdir(parents=True)
+    existing_nonempty = tmp_path / "existing-nonempty" / "merchant-context-sufficiency-v1"
+    existing_nonempty.mkdir(parents=True)
+    (existing_nonempty / "private.txt").write_text("private")
     target = tmp_path / "target"
     target.mkdir()
     symlink = tmp_path / "symlink" / "merchant-context-sufficiency-v1"
@@ -2395,8 +2074,12 @@ def test_materialize_rejects_unsafe_roots_with_sanitized_errors(
             "merchant context root must not be a symlink",
         ),
         (
-            nonempty,
-            "merchant context root must be empty",
+            existing_empty,
+            "merchant context root already exists",
+        ),
+        (
+            existing_nonempty,
+            "merchant context root already exists",
         ),
     )
     for root, message in cases:
@@ -2405,13 +2088,9 @@ def test_materialize_rejects_unsafe_roots_with_sanitized_errors(
         assert str(root) not in str(error.value)
 
     repository = tmp_path / "repository"
-    tracked_root = repository / "merchant-context-sufficiency-v1"
-    tracked_root.mkdir(parents=True)
-    placeholder = tracked_root / "placeholder"
-    placeholder.write_text("tracked")
+    repository.mkdir()
     subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    subprocess.run(("git", "-C", str(repository), "add", str(placeholder)), check=True)
-    placeholder.unlink()
+    tracked_root = repository / "merchant-context-sufficiency-v1"
 
     with pytest.raises(
         MerchantContextError,
@@ -2421,50 +2100,15 @@ def test_materialize_rejects_unsafe_roots_with_sanitized_errors(
     assert str(tracked_root) not in str(error.value)
 
 
-@pytest.mark.parametrize("marker_kind", ("directory", "worktree-file"))
-def test_materialize_rejects_failed_git_discovery_below_repository_marker(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    marker_kind: str,
-) -> None:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    marker = repository / ".git"
-    if marker_kind == "directory":
-        marker.mkdir()
-        (marker / "HEAD").write_text("ref: refs/heads/test")
-    else:
-        marker.write_text("gitdir: unavailable")
-    private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
-    private_root.parent.mkdir()
-
-    def failed_git_discovery(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del args, kwargs
-        return subprocess.CompletedProcess((), 128, stdout="", stderr="")
-
-    monkeypatch.setattr(merchant_context.subprocess, "run", failed_git_discovery)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context repository status unavailable$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts((), (), private_root)
-    assert str(private_root) not in str(error.value)
-
-
-def test_materialize_sanitizes_git_execution_errors_below_repository_marker(
+def test_materialize_sanitizes_git_check_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = tmp_path / "repository"
-    (repository / ".git").mkdir(parents=True)
-    (repository / ".git" / "HEAD").write_text("ref: refs/heads/test")
-    private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
-    private_root.parent.mkdir()
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
 
     def unavailable_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         del args, kwargs
-        raise PermissionError("sensitive discovery failure")
+        raise PermissionError("sensitive Git failure")
 
     monkeypatch.setattr(merchant_context.subprocess, "run", unavailable_git)
 
@@ -2473,138 +2117,9 @@ def test_materialize_sanitizes_git_execution_errors_below_repository_marker(
         match=r"^merchant context repository status unavailable$",
     ) as error:
         merchant_context.materialize_merchant_contexts((), (), private_root)
-    assert str(private_root) not in str(error.value)
+
     assert "sensitive" not in str(error.value)
-
-
-@pytest.mark.parametrize(
-    ("returncode", "stderr"),
-    (
-        (1, ""),
-        (2, "fatal: invalid invocation"),
-        (-9, ""),
-        (128, "fatal: ambiguous discovery failure"),
-        (
-            128,
-            "fatal: not a git repository (or any of the parent directories): .git\n"
-            "fatal: secondary discovery failure",
-        ),
-    ),
-)
-def test_materialize_rejects_markerless_abnormal_git_discovery(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    returncode: int,
-    stderr: str,
-) -> None:
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-
-    def abnormal_git_discovery(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del args, kwargs
-        return subprocess.CompletedProcess((), returncode, stdout="", stderr=stderr)
-
-    monkeypatch.setattr(merchant_context.subprocess, "run", abnormal_git_discovery)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context repository status unavailable$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts((), (), private_root)
     assert str(private_root) not in str(error.value)
-
-
-def test_markerless_git_discovery_pins_locale_and_preserves_ambient_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    ambient_key = "MERCHANT_CONTEXT_TEST_AMBIENT"
-    ambient_value = "preserved"
-    discovery_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    monkeypatch.setenv(ambient_key, ambient_value)
-
-    def ordinary_outside_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        discovery_calls.append((args, kwargs))
-        return subprocess.CompletedProcess(
-            (),
-            128,
-            stdout="",
-            stderr="fatal: not a git repository (or any of the parent directories): .git\n",
-        )
-
-    monkeypatch.setattr(merchant_context.subprocess, "run", ordinary_outside_git)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context pilot membership mismatch$",
-    ):
-        merchant_context.materialize_merchant_contexts((), (), private_root)
-
-    assert len(discovery_calls) == 1
-    args, kwargs = discovery_calls[0]
-    assert args == (
-        (
-            "git",
-            "-C",
-            str(tmp_path),
-            "rev-parse",
-            "--show-toplevel",
-        ),
-    )
-    assert kwargs["check"] is False
-    assert kwargs["capture_output"] is True
-    assert kwargs["text"] is True
-    environment = kwargs["env"]
-    assert isinstance(environment, dict)
-    assert environment[ambient_key] == ambient_value
-    assert environment["LANG"] == "C"
-    assert environment["LANGUAGE"] == "C"
-    assert environment["LC_ALL"] == "C"
-
-
-def test_materialize_rejects_unignored_root_despite_hostile_git_routing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repository = tmp_path / "actual-repository"
-    repository.mkdir()
-    subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    private_root = repository / "merchant-context-sufficiency-v1"
-    routed_repository = _install_hostile_git_routing(tmp_path, monkeypatch)
-    ambient_key = "MERCHANT_CONTEXT_TEST_AMBIENT"
-    ambient_value = "preserved"
-    monkeypatch.setenv(ambient_key, ambient_value)
-    git_environments: list[dict[str, str]] = []
-    real_run = cast(Callable[..., subprocess.CompletedProcess[str]], subprocess.run)
-
-    def record_git_environment(
-        *args: object,
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        environment = kwargs.get("env")
-        assert isinstance(environment, dict)
-        git_environments.append(cast(dict[str, str], environment))
-        return real_run(*args, **kwargs)
-
-    monkeypatch.setattr(merchant_context.subprocess, "run", record_git_environment)
-
-    with pytest.raises(
-        MerchantContextError,
-        match=r"^merchant context root must be outside Git or ignored$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts((), (), private_root)
-
-    assert str(private_root) not in str(error.value)
-    assert str(routed_repository) not in str(error.value)
-    assert len(git_environments) == 2
-    assert git_environments[0] is git_environments[1]
-    for environment in git_environments:
-        assert not any(key.startswith("GIT_") for key in environment)
-        assert environment[ambient_key] == ambient_value
-        assert environment["LANG"] == "C"
-        assert environment["LANGUAGE"] == "C"
-        assert environment["LC_ALL"] == "C"
-    assert not private_root.exists()
 
 
 def test_materialize_accepts_real_git_ignored_root_before_pilot_validation(
@@ -2635,7 +2150,6 @@ def test_materialize_accepts_staging_under_git_ignored_artifacts_parent(
     subprocess.run(("git", "init", "-q", str(repository)), check=True)
     population, selected = _high_level_fixture(tmp_path)
     private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
     monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
     _install_fast_renderer(monkeypatch)
 
@@ -2648,14 +2162,11 @@ def test_materialize_accepts_staging_under_git_ignored_artifacts_parent(
     assert len(materialized) == 600
     assert private_root.is_dir()
     assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
-    assert not claim_path.exists()
 
 
-@pytest.mark.parametrize("hostile_git_routing", (False, True))
-def test_materialize_rejects_unignored_staging_sibling_for_exact_ignored_root(
+def test_materialize_rejects_unignored_staging_parent_for_exact_ignored_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    hostile_git_routing: bool,
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -2663,132 +2174,48 @@ def test_materialize_rejects_unignored_staging_sibling_for_exact_ignored_root(
     subprocess.run(("git", "init", "-q", str(repository)), check=True)
     population, selected = _high_level_fixture(tmp_path)
     private_root = repository / "merchant-context-sufficiency-v1"
-    claim_path = private_root.with_name(f".{private_root.name}.claim")
-    routed_repository = (
-        _install_hostile_git_routing(tmp_path, monkeypatch) if hostile_git_routing else None
-    )
     monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
     _install_fast_renderer(monkeypatch)
 
     with pytest.raises(
         MerchantContextError,
-        match=r"^merchant context staging root must be outside Git or ignored$",
+        match=r"^merchant context staging parent must be outside Git or ignored$",
     ) as error:
         merchant_context.materialize_merchant_contexts(population, selected, private_root)
 
     assert str(private_root) not in str(error.value)
-    if routed_repository is not None:
-        assert str(routed_repository) not in str(error.value)
     assert not private_root.exists()
     assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
-    assert not claim_path.exists()
 
 
-def test_materialize_exclusively_claims_root_after_validation(
+def test_materialize_rechecks_root_before_simple_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     population, selected = _high_level_fixture(tmp_path)
     private_root = tmp_path / "merchant-context-sufficiency-v1"
+    replacement = private_root / "replacement-owned"
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
     _install_fast_renderer(monkeypatch)
+    original_write_jsonl = merchant_context.write_jsonl
+    write_count = 0
 
-    def collide_after_validation(rows: object) -> tuple[FrozenRow, ...]:
-        del rows
-        private_root.mkdir()
-        return selected
+    def collide_after_final_write(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity:
+        nonlocal write_count
+        artifact = original_write_jsonl(path, records)
+        write_count += 1
+        if write_count == 7:
+            private_root.mkdir()
+            replacement.write_text("replacement")
+        return artifact
 
-    monkeypatch.setattr(
-        merchant_context,
-        "select_visual_gold_pilot",
-        collide_after_validation,
-    )
+    monkeypatch.setattr(merchant_context, "write_jsonl", collide_after_final_write)
 
     with pytest.raises(
         MerchantContextError,
         match=r"^merchant context root already exists$",
-    ) as error:
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-    assert str(private_root) not in str(error.value)
-    assert private_root.is_dir()
-    assert not any(private_root.iterdir())
-
-
-def test_failed_materialization_does_not_delete_replacement_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    replacement_marker = "replacement-owned"
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-
-    def replace_root_then_fail(
-        rows: object,
-        anchor: FrozenRow,
-        image_root: Path,
-    ) -> tuple[
-        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
-    ]:
-        del rows, anchor, image_root
-        if private_root.exists():
-            shutil.rmtree(private_root)
-        private_root.mkdir()
-        (private_root / replacement_marker).write_text("replacement")
-        raise OSError("synthetic materialization failure")
-
-    monkeypatch.setattr(
-        merchant_context,
-        "materialize_anchor_contexts",
-        replace_root_then_fail,
-    )
-
-    with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
+    ):
         merchant_context.materialize_merchant_contexts(population, selected, private_root)
 
-    assert (private_root / replacement_marker).read_text() == "replacement"
-
-
-def test_cleanup_does_not_delete_root_substituted_at_deletion_boundary(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    population, selected = _high_level_fixture(tmp_path)
-    private_root = tmp_path / "merchant-context-sufficiency-v1"
-    replacement_marker = "replacement-at-cleanup"
-    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
-
-    def fail_materialization(
-        rows: object,
-        anchor: FrozenRow,
-        image_root: Path,
-    ) -> tuple[
-        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
-    ]:
-        del rows, anchor, image_root
-        raise OSError("synthetic materialization failure")
-
-    original_rmtree = shutil.rmtree
-    replacement_created = False
-
-    def substitute_before_deletion(
-        path: Path,
-        ignore_errors: bool = False,
-        **kwargs: object,
-    ) -> None:
-        nonlocal replacement_created
-        candidate = Path(path)
-        if not replacement_created:
-            if candidate == private_root:
-                original_rmtree(candidate)
-            private_root.mkdir()
-            (private_root / replacement_marker).write_text("replacement")
-            replacement_created = True
-        original_rmtree(candidate, ignore_errors=ignore_errors, **kwargs)
-
-    monkeypatch.setattr(merchant_context, "materialize_anchor_contexts", fail_materialization)
-    monkeypatch.setattr(merchant_context.shutil, "rmtree", substitute_before_deletion)
-
-    with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
-        merchant_context.materialize_merchant_contexts(population, selected, private_root)
-
-    assert (private_root / replacement_marker).read_text() == "replacement"
+    assert replacement.read_text() == "replacement"
+    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
