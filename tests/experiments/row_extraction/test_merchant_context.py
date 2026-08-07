@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -713,6 +714,34 @@ def test_context_renderer_preserves_300_dpi_rgb_pixels_and_marks_only_outside_an
     )
 
 
+def test_anchor_marker_has_identical_page_geometry_across_all_context_tiers(
+    tmp_path: Path,
+) -> None:
+    population, anchor = context_fixture(tmp_path)
+    pairs = merchant_context.materialize_anchor_contexts(population, anchor, tmp_path / "images")
+    matrix = fitz.Matrix(300 / 72, 300 / 72)
+    page_markers: list[frozenset[tuple[int, int]]] = []
+
+    for _, packet in pairs:
+        anchor_image = next(
+            image
+            for image in packet.images
+            if source_regions_cover((image.source_bbox,), (anchor.bbox,))
+        )
+        rendered = fitz.Pixmap(tmp_path / "images" / anchor_image.relative_path)
+        source_pixels = (fitz.Rect(anchor_image.source_bbox) * matrix).irect
+        marker_pixels = frozenset(
+            (source_pixels.x0 + x - 4, source_pixels.y0 + y - 4)
+            for y in range(rendered.height)
+            for x in range(rendered.width)
+            if rendered.pixel(x, y) == (255, 0, 255)
+        )
+        assert marker_pixels
+        page_markers.append(marker_pixels)
+
+    assert len(set(page_markers)) == 1
+
+
 @pytest.mark.parametrize(
     "anchor_update",
     (
@@ -927,3 +956,122 @@ def test_materialize_rejects_unsafe_roots_with_sanitized_errors(
     ) as error:
         merchant_context.materialize_merchant_contexts((), (), tracked_root)
     assert str(tracked_root) not in str(error.value)
+
+
+@pytest.mark.parametrize("marker_kind", ("directory", "worktree-file"))
+def test_materialize_rejects_failed_git_discovery_below_repository_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker_kind: str,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    marker = repository / ".git"
+    if marker_kind == "directory":
+        marker.mkdir()
+        (marker / "HEAD").write_text("ref: refs/heads/test")
+    else:
+        marker.write_text("gitdir: unavailable")
+    private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
+    private_root.parent.mkdir()
+
+    def failed_git_discovery(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del args, kwargs
+        return subprocess.CompletedProcess((), 128, stdout="", stderr="")
+
+    monkeypatch.setattr(merchant_context.subprocess, "run", failed_git_discovery)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context repository status unavailable$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+    assert str(private_root) not in str(error.value)
+
+
+def test_materialize_sanitizes_git_execution_errors_below_repository_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    (repository / ".git").mkdir(parents=True)
+    (repository / ".git" / "HEAD").write_text("ref: refs/heads/test")
+    private_root = repository / "artifacts" / "merchant-context-sufficiency-v1"
+    private_root.parent.mkdir()
+
+    def unavailable_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del args, kwargs
+        raise PermissionError("sensitive discovery failure")
+
+    monkeypatch.setattr(merchant_context.subprocess, "run", unavailable_git)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context repository status unavailable$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+    assert str(private_root) not in str(error.value)
+    assert "sensitive" not in str(error.value)
+
+
+def test_materialize_exclusively_claims_root_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    _install_fast_renderer(monkeypatch)
+
+    def collide_after_validation(rows: object) -> tuple[FrozenRow, ...]:
+        del rows
+        private_root.mkdir()
+        return selected
+
+    monkeypatch.setattr(
+        merchant_context,
+        "select_visual_gold_pilot",
+        collide_after_validation,
+    )
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context root already exists$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+    assert str(private_root) not in str(error.value)
+    assert private_root.is_dir()
+    assert not any(private_root.iterdir())
+
+
+def test_failed_materialization_does_not_delete_replacement_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    replacement_marker = "replacement-owned"
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    def replace_root_then_fail(
+        rows: object,
+        anchor: FrozenRow,
+        image_root: Path,
+    ) -> tuple[
+        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
+    ]:
+        del rows, anchor, image_root
+        shutil.rmtree(private_root)
+        private_root.mkdir()
+        (private_root / replacement_marker).write_text("replacement")
+        raise OSError("synthetic materialization failure")
+
+    monkeypatch.setattr(
+        merchant_context,
+        "materialize_anchor_contexts",
+        replace_root_then_fail,
+    )
+
+    with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert (private_root / replacement_marker).read_text() == "replacement"

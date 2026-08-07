@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import shutil
+import stat
 import subprocess
 import tempfile
 import unicodedata
@@ -14,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Self
 
-import fitz
+import fitz  # type: ignore[import-untyped]  # PyMuPDF does not publish typing metadata.
 from pydantic import ConfigDict, Field, ValidationError, model_validator
 
 from experiments.row_extraction.codecs import write_jsonl
@@ -41,6 +42,7 @@ _PILOT_ANCHOR_COUNT = 100
 _MATERIALIZER_VERSION = "merchant-context-materializer-v1"
 _PRIVATE_ROOT_NAME = "merchant-context-sufficiency-v1"
 _RENDER_DPI = 300
+_RENDER_SCALE = _RENDER_DPI / 72
 _CANVAS_MARGIN = 4
 _CANVAS_NEUTRAL = 238
 _ANCHOR_MARKER = (255, 0, 255)
@@ -385,6 +387,7 @@ def validate_merchant_reference(
 
 
 type _ContextPair = tuple[MerchantContextIndex, MerchantContextPacket]
+type _RootClaim = tuple[int, int]
 
 
 def _opaque_digest(*parts: str) -> str:
@@ -559,9 +562,9 @@ def _context_materials(
     c2_regions = (c2_region,)
 
     schema = _role_free_schema(anchor)
-    c3_regions = c2_regions
+    c3_regions: tuple[BBox, ...] = c2_regions
     c4_rows = c2_rows
-    c4_regions = c3_regions
+    c4_regions: tuple[BBox, ...] = c3_regions
     if schema:
         table_region = _bbox_union(schema)
         c4_rows = tuple(row for row in page_rows if _role_free_schema(row) == schema)
@@ -609,19 +612,18 @@ def _draw_anchor_marker(
     samples: bytearray,
     width: int,
     height: int,
-    source_width: int,
-    source_height: int,
+    source_x: int,
+    source_y: int,
     source_bbox: BBox,
     anchor_bbox: BBox,
 ) -> None:
     if not _bbox_contains(source_bbox, anchor_bbox):
         return
-    scale_x = source_width / (source_bbox[2] - source_bbox[0])
-    scale_y = source_height / (source_bbox[3] - source_bbox[1])
-    anchor_left = _CANVAS_MARGIN + math.floor((anchor_bbox[0] - source_bbox[0]) * scale_x)
-    anchor_top = _CANVAS_MARGIN + math.floor((anchor_bbox[1] - source_bbox[1]) * scale_y)
-    anchor_right = _CANVAS_MARGIN + math.ceil((anchor_bbox[2] - source_bbox[0]) * scale_x)
-    anchor_bottom = _CANVAS_MARGIN + math.ceil((anchor_bbox[3] - source_bbox[1]) * scale_y)
+    anchor_pixels = (fitz.Rect(anchor_bbox) * fitz.Matrix(_RENDER_SCALE, _RENDER_SCALE)).irect
+    anchor_left = _CANVAS_MARGIN + anchor_pixels.x0 - source_x
+    anchor_top = _CANVAS_MARGIN + anchor_pixels.y0 - source_y
+    anchor_right = _CANVAS_MARGIN + anchor_pixels.x1 - source_x
+    anchor_bottom = _CANVAS_MARGIN + anchor_pixels.y1 - source_y
     marker_left = anchor_left - 1
     marker_top = anchor_top - 1
     marker_right = anchor_right
@@ -665,7 +667,7 @@ def _render_context_image(
             ):
                 raise ValueError
             source = page.get_pixmap(
-                dpi=_RENDER_DPI,
+                matrix=fitz.Matrix(_RENDER_SCALE, _RENDER_SCALE),
                 colorspace=fitz.csRGB,
                 clip=fitz.Rect(source_bbox),
                 alpha=False,
@@ -687,8 +689,8 @@ def _render_context_image(
             samples,
             width,
             height,
-            source.width,
-            source.height,
+            source.x,
+            source.y,
             source_bbox,
             anchor_bbox,
         )
@@ -793,29 +795,78 @@ def _nearest_existing_parent(path: Path) -> Path:
     return candidate
 
 
+def _has_repository_marker(path: Path) -> bool:
+    for ancestor in (path, *path.parents):
+        marker = ancestor / ".git"
+        try:
+            marker_status = marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise MerchantContextError("merchant context repository status unavailable") from None
+        if stat.S_ISREG(marker_status.st_mode) or stat.S_ISLNK(marker_status.st_mode):
+            return True
+        if not stat.S_ISDIR(marker_status.st_mode):
+            continue
+        try:
+            (marker / "HEAD").lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise MerchantContextError("merchant context repository status unavailable") from None
+        return True
+    return False
+
+
 def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
     probe_directory = _nearest_existing_parent(private_root.parent)
-    repository = subprocess.run(
-        ("git", "-C", str(probe_directory), "rev-parse", "--show-toplevel"),
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    has_repository_marker = _has_repository_marker(probe_directory)
+    try:
+        repository = subprocess.run(
+            ("git", "-C", str(probe_directory), "rev-parse", "--show-toplevel"),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        raise MerchantContextError("merchant context repository status unavailable") from None
     if repository.returncode != 0:
+        if has_repository_marker:
+            raise MerchantContextError("merchant context repository status unavailable")
         return True
-    repository_root = Path(repository.stdout.strip()).resolve()
+    try:
+        if not repository.stdout.strip():
+            raise ValueError
+        repository_root = Path(repository.stdout.strip()).resolve(strict=True)
+        if not repository_root.is_dir():
+            raise ValueError
+    except (OSError, ValueError):
+        raise MerchantContextError("merchant context repository status unavailable") from None
     resolved_root = private_root.resolve(strict=False)
     try:
         resolved_root.relative_to(repository_root)
     except ValueError:
         return True
-    ignored = subprocess.run(
-        ("git", "-C", str(repository_root), "check-ignore", "--quiet", "--", str(resolved_root)),
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        ignored = subprocess.run(
+            (
+                "git",
+                "-C",
+                str(repository_root),
+                "check-ignore",
+                "--quiet",
+                "--",
+                str(resolved_root),
+            ),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        raise MerchantContextError("merchant context repository status unavailable") from None
+    if ignored.returncode not in {0, 1}:
+        raise MerchantContextError("merchant context repository status unavailable")
     return ignored.returncode == 0
 
 
@@ -827,10 +878,54 @@ def _validate_private_root(private_root: Path) -> None:
     for candidate in (private_root, *private_root.parents):
         if candidate.is_symlink():
             raise MerchantContextError("merchant context root must not be a symlink")
-    if private_root.exists() and (not private_root.is_dir() or any(private_root.iterdir())):
-        raise MerchantContextError("merchant context root must be empty")
     if not _root_is_outside_git_or_ignored(private_root):
         raise MerchantContextError("merchant context root must be outside Git or ignored")
+    if private_root.exists():
+        if not private_root.is_dir() or any(private_root.iterdir()):
+            raise MerchantContextError("merchant context root must be empty")
+        raise MerchantContextError("merchant context root already exists")
+
+
+def _remove_claimed_root(private_root: Path, claim: _RootClaim) -> None:
+    try:
+        root_status = private_root.stat(follow_symlinks=False)
+    except OSError:
+        return
+    if not stat.S_ISDIR(root_status.st_mode) or (root_status.st_dev, root_status.st_ino) != claim:
+        return
+    shutil.rmtree(private_root, ignore_errors=True)
+
+
+def _claim_private_root(private_root: Path) -> _RootClaim:
+    expected_root = private_root.resolve(strict=False)
+    claim: _RootClaim | None = None
+    try:
+        private_root.parent.mkdir(parents=True, exist_ok=True)
+        private_root.mkdir(exist_ok=False)
+    except FileExistsError:
+        raise MerchantContextError("merchant context root already exists") from None
+    except OSError:
+        raise MerchantContextError("merchant context root claim failed") from None
+
+    try:
+        root_status = private_root.stat(follow_symlinks=False)
+        claim = root_status.st_dev, root_status.st_ino
+        if (
+            not stat.S_ISDIR(root_status.st_mode)
+            or private_root.resolve(strict=True) != expected_root
+        ):
+            raise MerchantContextError("merchant context root claim failed")
+        for candidate in (private_root, *private_root.parents):
+            if candidate.is_symlink():
+                raise MerchantContextError("merchant context root must not be a symlink")
+        if not _root_is_outside_git_or_ignored(private_root):
+            raise MerchantContextError("merchant context root must be outside Git or ignored")
+    except BaseException:
+        if claim is not None:
+            _remove_claimed_root(private_root, claim)
+        raise
+    assert claim is not None
+    return claim
 
 
 def _validate_selected_pilot(
@@ -865,7 +960,7 @@ def materialize_merchant_contexts(
 
     _validate_private_root(private_root)
     selected = _validate_selected_pilot(population, selected_rows)
-    private_root.mkdir(parents=True, exist_ok=True)
+    claim = _claim_private_root(private_root)
     try:
         pairs = tuple(
             pair
@@ -896,7 +991,7 @@ def materialize_merchant_contexts(
                 raise MerchantContextError("merchant context coverage mismatch")
             write_jsonl(packet_root / f"{batch_id}.jsonl", batch_packets)
     except BaseException as error:
-        shutil.rmtree(private_root, ignore_errors=True)
+        _remove_claimed_root(private_root, claim)
         if isinstance(error, MerchantContextError):
             raise
         raise MerchantContextError("merchant context materialization failed") from None
