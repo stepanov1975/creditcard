@@ -66,7 +66,14 @@ def test_transaction_reference_rejects_duplicate_or_unowned_support_ids() -> Non
 
     with pytest.raises(ValidationError):
         MerchantReference.model_validate(
-            {**payload, "owned_row_ids": ("continuation", "continuation")}
+            {
+                **payload,
+                "owned_row_ids": ("primary", "continuation", "continuation"),
+            }
+        )
+    with pytest.raises(ValidationError):
+        MerchantReference.model_validate(
+            {**payload, "owned_row_ids": ("continuation", "secondary")}
         )
     with pytest.raises(ValidationError):
         MerchantReference.model_validate({**payload, "atom_ids": ("merchant-1", "merchant-1")})
@@ -342,6 +349,48 @@ def test_reference_validation_rejects_inconsistent_repeated_transactions(
     monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
 
     with pytest.raises(MerchantContextError, match=r"^merchant reference transaction mismatch$"):
+        validate_merchant_reference(population, selected, references)
+
+
+def test_reference_validation_rejects_shared_rows_with_different_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    population, selected, references = _shared_transaction_fixture()
+    references = (
+        references[0],
+        references[1].model_copy(
+            update={"owner_row_id": selected[1].row_id, "atom_ids": ("merchant-001",)}
+        ),
+        *references[2:],
+    )
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    with pytest.raises(MerchantContextError, match=r"^merchant reference ownership mismatch$"):
+        validate_merchant_reference(population, selected, references)
+
+
+def test_reference_validation_rejects_transaction_claiming_nontransaction_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    population, selected, references = _shared_transaction_fixture()
+    references = (
+        references[0],
+        references[1].model_copy(
+            update={
+                "disposition": ReferenceDisposition.NONTRANSACTION,
+                "owner_row_id": None,
+                "owned_row_ids": (),
+                "merchant_text": None,
+                "atom_ids": (),
+                "source_regions": (),
+                "ambiguity_category": None,
+            }
+        ),
+        *references[2:],
+    )
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    with pytest.raises(MerchantContextError, match=r"^merchant reference ownership mismatch$"):
         validate_merchant_reference(population, selected, references)
 
 

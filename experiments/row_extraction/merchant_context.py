@@ -256,9 +256,10 @@ def validate_merchant_reference(
     """Validate one frozen private reference and return aggregate-only counts."""
 
     selected_identities = tuple(_identity(row) for row in selected_rows)
+    selected_identity_set = set(selected_identities)
     if (
         len(selected_rows) != _PILOT_ANCHOR_COUNT
-        or len(set(selected_identities)) != _PILOT_ANCHOR_COUNT
+        or len(selected_identity_set) != _PILOT_ANCHOR_COUNT
     ):
         raise MerchantContextError("merchant reference coverage mismatch")
     if any(row.split is not DatasetSplit.TRAIN for row in selected_rows):
@@ -267,7 +268,7 @@ def validate_merchant_reference(
         expected_identities = {_identity(row) for row in select_visual_gold_pilot(population)}
     except Exception:
         raise MerchantContextError("merchant reference pilot membership mismatch") from None
-    if set(selected_identities) != expected_identities:
+    if selected_identity_set != expected_identities:
         raise MerchantContextError("merchant reference pilot membership mismatch")
 
     validated_references = _validated_references(references)
@@ -275,12 +276,14 @@ def validate_merchant_reference(
     if (
         len(validated_references) != _PILOT_ANCHOR_COUNT
         or len(set(reference_identities)) != _PILOT_ANCHOR_COUNT
-        or set(reference_identities) != set(selected_identities)
+        or set(reference_identities) != selected_identity_set
     ):
         raise MerchantContextError("merchant reference coverage mismatch")
 
     rows_by_document = _row_index(population)
     transaction_payloads: dict[_TransactionIdentity, _TransactionPayload] = {}
+    reference_payloads: dict[_RowIdentity, _TransactionPayload] = {}
+    ownership_claims: dict[_RowIdentity, tuple[_TransactionIdentity, _TransactionPayload]] = {}
     ambiguous_anchor_count = 0
     nontransaction_anchor_count = 0
     for reference in validated_references:
@@ -295,6 +298,24 @@ def validate_merchant_reference(
         previous_payload = transaction_payloads.setdefault(transaction_identity, payload)
         if previous_payload != payload:
             raise MerchantContextError("merchant reference transaction mismatch")
+        reference_payloads[_identity(reference)] = payload
+        claim = transaction_identity, payload
+        for owned_row_id in reference.owned_row_ids:
+            owned_identity = reference.document_id, owned_row_id
+            previous_claim = ownership_claims.setdefault(owned_identity, claim)
+            if previous_claim != claim:
+                raise MerchantContextError("merchant reference ownership mismatch")
+
+    for owned_identity, (transaction_identity, payload) in ownership_claims.items():
+        if owned_identity not in selected_identity_set:
+            continue
+        owned_payload = reference_payloads.get(owned_identity)
+        if (
+            owned_payload is None
+            or (owned_identity[0], owned_payload[0]) != transaction_identity
+            or owned_payload != payload
+        ):
+            raise MerchantContextError("merchant reference ownership mismatch")
 
     return MerchantReferenceSummary(
         anchor_count=len(selected_rows),
