@@ -14,7 +14,6 @@ import tempfile
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
-from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -910,23 +909,46 @@ def _validate_private_root(private_root: Path) -> None:
 
 
 def _release_root_claim(claim_path: Path, claim_file_descriptor: int) -> None:
+    release_failed = False
     try:
         claim_status = os.fstat(claim_file_descriptor)
     except OSError:
         claim_status = None
-    with suppress(OSError):
-        os.close(claim_file_descriptor)
-    if claim_status is None:
-        return
+        release_failed = True
     try:
-        path_status = claim_path.stat(follow_symlinks=False)
-        if (path_status.st_dev, path_status.st_ino) == (
-            claim_status.st_dev,
-            claim_status.st_ino,
-        ):
-            claim_path.unlink()
+        os.close(claim_file_descriptor)
     except OSError:
+        release_failed = True
+    if claim_status is not None:
+        try:
+            path_status = claim_path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            release_failed = True
+        else:
+            if (path_status.st_dev, path_status.st_ino) == (
+                claim_status.st_dev,
+                claim_status.st_ino,
+            ):
+                try:
+                    claim_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    release_failed = True
+            else:
+                release_failed = True
+    try:
+        claim_path.lstat()
+    except FileNotFoundError:
         pass
+    except OSError:
+        release_failed = True
+    else:
+        release_failed = True
+    if release_failed:
+        raise MerchantContextError("merchant context root claim release failed")
 
 
 def _cleanup_staging_root(staging_root: Path) -> None:
@@ -1002,9 +1024,15 @@ def _claim_private_root(private_root: Path) -> _RootClaim:
                 dir=private_root.parent,
             )
         )
+        resolved_staging_root = staging_root.resolve(strict=True)
         _validate_private_root(private_root)
-        if staging_root.parent.resolve(strict=True) != private_root.parent.resolve(strict=True):
+        if resolved_staging_root.parent != private_root.parent.resolve(strict=True):
             raise MerchantContextError("merchant context root claim failed")
+        if not _root_is_outside_git_or_ignored(resolved_staging_root):
+            raise MerchantContextError(
+                "merchant context staging root must be outside Git or ignored"
+            )
+        staging_root = resolved_staging_root
     except BaseException:
         assert claim_file_descriptor is not None
         try:
