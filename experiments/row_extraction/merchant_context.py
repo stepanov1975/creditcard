@@ -712,12 +712,6 @@ def score_merchant_context(
     preliminary_scores: dict[ContextTier, dict[_TransactionIdentity, _TransactionScore]] = {
         tier: {} for tier in CONTEXT_TIERS
     }
-    correct_sets: dict[ContextTier, set[_TransactionIdentity]] = {
-        tier: set() for tier in CONTEXT_TIERS
-    }
-    exact_sets: dict[ContextTier, set[_TransactionIdentity]] = {
-        tier: set() for tier in CONTEXT_TIERS
-    }
     for tier in CONTEXT_TIERS:
         for transaction, owned_references in transaction_references.items():
             reference = owned_references[0]
@@ -747,18 +741,23 @@ def score_merchant_context(
                 _assertion_text_is_source_supported(assertion, packet)
                 for assertion, packet in assertion_packets
             )
+            merchant_assertion_packets = tuple(
+                (assertion, packet)
+                for assertion, packet in assertion_packets
+                if assertion.disposition is AssertionDisposition.MERCHANT
+            )
             all_merchant = all(
                 assertion.disposition is AssertionDisposition.MERCHANT
                 for assertion, _ in assertion_packets
             )
             owner_correct = all(
                 assertion.owner_row_id == reference.owner_row_id
-                for assertion, _ in assertion_packets
+                for assertion, _ in merchant_assertion_packets
             )
             complete_text = all(
                 assertion.merchant_text is not None
                 and reference.merchant_text in assertion.merchant_text
-                for assertion, _ in assertion_packets
+                for assertion, _ in merchant_assertion_packets
             )
             attribution = (
                 all_merchant
@@ -783,13 +782,16 @@ def score_merchant_context(
                 for assertion, packet in assertion_packets
             )
             ownership_error = not owner_correct or foreign_evidence
-            wrong_merchant = (
-                any(
-                    assertion.disposition is AssertionDisposition.MERCHANT
-                    for assertion, _ in assertion_packets
+            wrong_merchant = foreign_evidence or any(
+                assertion.owner_row_id != reference.owner_row_id
+                or (
+                    _assertion_text_is_source_supported(assertion, packet)
+                    and (
+                        assertion.merchant_text is None
+                        or reference.merchant_text not in assertion.merchant_text
+                    )
                 )
-                and not attribution
-                and not hallucination
+                for assertion, packet in merchant_assertion_packets
             )
             score = _TransactionScore(
                 attribution,
@@ -800,18 +802,32 @@ def score_merchant_context(
                 ownership_error,
             )
             preliminary_scores[tier][transaction] = score
-            if score.attribution:
-                correct_sets[tier].add(transaction)
-            if score.exact_text:
-                exact_sets[tier].add(transaction)
 
     validated_errors = _validated_error_labels(error_labels)
     error_by_tier_transaction = {
         (label.tier, (label.document_id, label.owner_row_id)): label for label in validated_errors
     }
+    final_scores: dict[ContextTier, dict[_TransactionIdentity, _TransactionScore]] = {
+        tier: {} for tier in CONTEXT_TIERS
+    }
+    for tier, preliminary_tier_scores in preliminary_scores.items():
+        for transaction, score in preliminary_tier_scores.items():
+            label = error_by_tier_transaction.get((tier, transaction))
+            categories = set() if label is None else {label.primary, *label.secondary}
+            unsupported_text = MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
+            attribution = score.attribution and not unsupported_text
+            final_scores[tier][transaction] = _TransactionScore(
+                attribution,
+                score.exact_text and attribution,
+                score.omission,
+                score.wrong_merchant,
+                score.hallucination or unsupported_text,
+                score.ownership_error,
+            )
+
     expected_error_keys = {
         (tier, transaction)
-        for tier, tier_scores in preliminary_scores.items()
+        for tier, tier_scores in final_scores.items()
         for transaction, score in tier_scores.items()
         if not score.exact_text
     }
@@ -820,6 +836,15 @@ def score_merchant_context(
         or error_by_tier_transaction.keys() != expected_error_keys
     ):
         raise MerchantContextError("merchant error coverage mismatch")
+
+    correct_sets = {
+        tier: {transaction for transaction, score in tier_scores.items() if score.attribution}
+        for tier, tier_scores in final_scores.items()
+    }
+    exact_sets = {
+        tier: {transaction for transaction, score in tier_scores.items() if score.exact_text}
+        for tier, tier_scores in final_scores.items()
+    }
 
     tier_summaries: list[MerchantTierSummary] = []
     for tier in CONTEXT_TIERS:
@@ -831,36 +856,7 @@ def score_merchant_context(
         error_counts = Counter(
             category for label in errors for category in (label.primary, *label.secondary)
         )
-        tier_scores: list[_TransactionScore] = []
-        for transaction, score in preliminary_scores[tier].items():
-            label = error_by_tier_transaction.get((tier, transaction))
-            categories = set() if label is None else {label.primary, *label.secondary}
-            unsupported_text = MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
-            hallucination = score.hallucination or unsupported_text
-            attribution = score.attribution and not unsupported_text
-            exact_text = score.exact_text and attribution
-            if not attribution:
-                correct_sets[tier].discard(transaction)
-            if not exact_text:
-                exact_sets[tier].discard(transaction)
-            ownership_error = score.ownership_error or bool(
-                categories
-                & {
-                    MerchantErrorCategory.CONTINUATION_OWNERSHIP,
-                    MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION,
-                }
-            )
-            wrong_merchant = score.wrong_merchant
-            tier_scores.append(
-                _TransactionScore(
-                    attribution,
-                    exact_text,
-                    score.omission,
-                    wrong_merchant,
-                    hallucination,
-                    ownership_error,
-                )
-            )
+        scores = tuple(final_scores[tier].values())
 
         correct_nontransactions = sum(
             assertions_by_tier_anchor[(tier, _identity(reference))][0].disposition
@@ -869,8 +865,8 @@ def score_merchant_context(
         )
         correct_count = len(correct_sets[tier])
         exact_count = len(exact_sets[tier])
-        wrong_count = sum(score.wrong_merchant for score in tier_scores)
-        hallucination_count = sum(score.hallucination for score in tier_scores)
+        wrong_count = sum(score.wrong_merchant for score in scores)
+        hallucination_count = sum(score.hallucination for score in scores)
         tier_summaries.append(
             MerchantTierSummary(
                 tier=tier,
@@ -881,10 +877,10 @@ def score_merchant_context(
                 ),
                 exact_text_matches=exact_count,
                 exact_text_rate=_rate(exact_count, reference_summary.eligible_transaction_count),
-                omissions=sum(score.omission for score in tier_scores),
+                omissions=sum(score.omission for score in scores),
                 wrong_merchants=wrong_count,
                 hallucinations=hallucination_count,
-                ownership_errors=sum(score.ownership_error for score in tier_scores),
+                ownership_errors=sum(score.ownership_error for score in scores),
                 nontransaction_anchors=reference_summary.nontransaction_anchor_count,
                 correct_nontransaction_anchors=correct_nontransactions,
                 errors=tuple(
@@ -905,15 +901,29 @@ def score_merchant_context(
         for tier in CONTEXT_TIERS[:-1]
     )
     safe_tiers = tuple(summary.tier for summary in tier_summaries if summary.safe)
-    if safe_tiers:
-        best_attribution_count = max(len(correct_sets[tier]) for tier in safe_tiers)
+    has_eligible_transactions = reference_summary.eligible_transaction_count > 0
+    if has_eligible_transactions and safe_tiers:
         attribution_best = tuple(
-            tier for tier in safe_tiers if len(correct_sets[tier]) == best_attribution_count
+            tier
+            for tier in safe_tiers
+            if not any(correct_sets[tier] < correct_sets[other_tier] for other_tier in safe_tiers)
         )
-        best_exact_count = max(len(exact_sets[tier]) for tier in attribution_best)
-        recommended_tier = next(
-            tier for tier in attribution_best if len(exact_sets[tier]) == best_exact_count
-        )
+        if any(
+            correct_sets[tier] != correct_sets[attribution_best[0]] for tier in attribution_best[1:]
+        ):
+            recommended_tier = None
+        else:
+            exact_best = tuple(
+                tier
+                for tier in attribution_best
+                if not any(
+                    exact_sets[tier] < exact_sets[other_tier] for other_tier in attribution_best
+                )
+            )
+            if any(exact_sets[tier] != exact_sets[exact_best[0]] for tier in exact_best[1:]):
+                recommended_tier = None
+            else:
+                recommended_tier = exact_best[0]
     else:
         recommended_tier = None
 
@@ -921,13 +931,13 @@ def score_merchant_context(
     full_page_exact = exact_sets[ContextTier.C5_FULL_PAGE]
     bounded_tiers = CONTEXT_TIERS[: CONTEXT_TIERS.index(ContextTier.C3_HEADER_NEIGHBORHOOD) + 1]
     safe_tier_set = set(safe_tiers)
-    hypothesis_supported = any(
+    hypothesis_supported = has_eligible_transactions and any(
         tier in safe_tier_set
         and correct_sets[tier] == full_page_attributions
         and exact_sets[tier] == full_page_exact
         for tier in bounded_tiers
     )
-    context_interference = any(
+    context_interference = has_eligible_transactions and any(
         tier in safe_tier_set
         and (
             full_page_attributions < correct_sets[tier]
@@ -1001,6 +1011,17 @@ def render_merchant_context_report(summary: MerchantContextSummary) -> str:
             "values, and experiment predictions remain closed"
         ),
         (
+            "Smallest allowed files: CONTEXT.md; "
+            "docs/superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md; "
+            "docs/superpowers/plans/2026-08-07-merchant-context-sufficiency.md; "
+            "docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; "
+            "docs/experiments/row-extraction-program-status.md; "
+            "experiments/row_extraction/merchant_context.py; "
+            "tests/experiments/row_extraction/test_merchant_context.py; "
+            "docs/experiments/row-extraction-merchant-context-report.md; and "
+            "artifacts/merchant-context-sufficiency-v1/** (ignored private artifacts only)"
+        ),
+        (
             "Required output: a supported or falsified context-sufficiency hypothesis and the "
             "smallest context tier attaining the best observed safe merchant accuracy"
         ),
@@ -1010,6 +1031,10 @@ def render_merchant_context_report(summary: MerchantContextSummary) -> str:
             "arm would expose prohibited data, or any declared context is truncated; stop "
             "after the single scoring run"
         ),
+        "",
+        "## Aggregate reference diagnostics",
+        "",
+        f"Reference ambiguity count: {aggregate.reference_ambiguity_count}",
         "",
         "## Aggregate arm results",
         "",
