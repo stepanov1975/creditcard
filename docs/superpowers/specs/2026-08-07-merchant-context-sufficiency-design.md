@@ -43,7 +43,7 @@ Experiment: shared evaluation
 Extraction hypothesis: A bounded transaction neighborhood plus visible table headers matches full-page merchant accuracy, while an isolated row crop does not.
 Measurement: transaction-level merchant-attribution accuracy, exact merchant-bearing-text rate, omission rate, wrong-merchant count, hallucination count, ownership-error count, and paired accuracy delta by context tier
 Fixed inputs: the frozen 100 training pilot row identities and source evidence only; all arms use the same reference cases, model, prompt, and decoding; validation, held-out data, current gold, accepted parser output, and experiment predictions remain closed
-Smallest allowed files: CONTEXT.md; docs/superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/experiments/row-extraction-program-status.md; experiments/row_extraction/merchant_context.py; tests/experiments/row_extraction/test_merchant_context.py; docs/experiments/row-extraction-merchant-context-report.md; and artifacts/merchant-context-sufficiency-v1/** (ignored private artifacts only)
+Smallest allowed files: CONTEXT.md; docs/superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md; docs/superpowers/plans/2026-08-07-merchant-context-sufficiency.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/experiments/row-extraction-program-status.md; experiments/row_extraction/merchant_context.py; tests/experiments/row_extraction/test_merchant_context.py; docs/experiments/row-extraction-merchant-context-report.md; and artifacts/merchant-context-sufficiency-v1/** (ignored private artifacts only)
 Required output: a supported or falsified context-sufficiency hypothesis and the smallest context tier attaining the best observed safe merchant accuracy
 Stop condition: stop before implementation if merchant-bearing evidence is not operationally referenceable, an independent reference cannot be frozen before arm execution, an arm would expose prohibited labels or predictions, or the authority amendments are not committed
 ```
@@ -112,7 +112,7 @@ current gold or either review stream, the experiment stops. The sample is not re
 ## Independent accuracy reference
 
 The transaction reference is frozen before any context-arm output is generated. A source reviewer
-uses original-resolution full-page evidence, the operational merchant rule above, and no current
+uses fixed 300-DPI full-page evidence, the operational merchant rule above, and no current
 gold, parser values, previous reviewer values, or experiment predictions. For each anchor, the
 reference records:
 
@@ -137,20 +137,20 @@ as reference ambiguity; it never licenses a guess.
 
 ## Context arms
 
-All six arms are nested. Every visible region is represented by both original-resolution pixels
-and the corresponding frozen atom text and boxes. Every arm uses the same role-free column
+All six arms are nested. Every visible region is represented by both fixed 300-DPI source pixels
+and the corresponding available frozen atom text and boxes. Every arm uses the same role-free column
 boundaries, opaque anchor marker, rendering scale, model snapshot, extraction prompt, output
 contract, decoding settings, and isolated fresh execution. The only independent variable is the
 spatial extent of source context; no arm is handicapped by losing a modality available to another.
 
 | Arm | Evidence available |
 | --- | --- |
-| `C0 row` | The exact row crop, same-row atoms and boxes, row geometry, and role-free column boundaries. |
+| `C0 row` | The exact row crop at the fixed rendering scale, same-row atoms and boxes, row geometry, and role-free column boundaries. |
 | `C1 adjacent-rows` | `C0` plus the immediately preceding and following frozen rows and their positioned evidence. No row types or semantic roles are shown. |
 | `C2 local-neighborhood` | `C1` plus the second preceding and following rows when present. |
-| `C3 header-neighborhood` | `C2` plus the visible table-header region and its positioned evidence. |
-| `C4 table-region` | `C3` plus the complete detected table region and positioned evidence on the anchor page. |
-| `C5 full-page` | `C4` plus the complete anchor page and all positioned source evidence on that page. |
+| `C3 header-neighborhood` | `C2` plus the visible table-header region and any frozen positioned evidence available in it. |
+| `C4 table-region` | `C3` plus the complete detected table region and all frozen positioned evidence available in it on the anchor page. |
+| `C5 full-page` | `C4` plus the complete anchor page and all frozen positioned evidence available on that page. |
 
 The anchor marker is identical in every arm and cannot cover text. Missing neighbors and headers
 remain missing; an arm does not synthesize them. Context stops at the page boundary. A case needing
@@ -158,10 +158,10 @@ another page to establish one merchant is reference-ambiguous for this experimen
 materializer fails closed rather than truncating, downsampling, or silently dropping an arm's
 declared evidence to fit an execution limit.
 
-Arm execution order is deterministically balanced across cases, and each arm runs in a clean
-context so an earlier arm cannot teach a later arm. Prompts name neither the arm nor the expected
-effect. The extraction output contains only a merchant assertion with exact evidence support,
-`nontransaction`, or `abstain`; ancillary fields and core financial fields are not requested.
+Arm batches are deterministically ordered, and each arm runs in a clean context so an earlier arm
+cannot teach a later arm. Prompts name neither the arm nor the expected effect. The extraction
+output contains only a merchant assertion with exact evidence support, `nontransaction`, or
+`abstain`; ancillary fields and core financial fields are not requested.
 
 ## Measurements
 
@@ -185,8 +185,9 @@ Every arm reports exact integer counts and `Decimal` rates for:
 - **exact merchant-bearing-text rate**: exact canonical merchant text with exact ordered source
   support divided by eligible reference transactions;
 - **omission rate**: eligible transactions answered with no merchant or abstention;
-- **wrong-merchant count**: assertions owned by a different source transaction or contaminated
-  with another transaction's merchant text;
+- **wrong-merchant count**: assertions owned by a different source transaction, contaminated with
+  another transaction's merchant text, or substituting ancillary/non-merchant source text for the
+  reference merchant;
 - **hallucination count**: asserted merchant characters without source support;
 - **ownership-error count**: anchor-to-transaction assignments that disagree with the reference;
 - **reference-ambiguity count** and nontransaction-anchor accuracy as diagnostics; and
@@ -260,7 +261,8 @@ justify a second support task.
 
 Implementation follows repository test-driven development. Focused failing tests must first prove:
 
-- every tier is a strict evidence superset of the preceding tier without semantic labels;
+- every tier is an evidence superset of the preceding tier without semantic labels, never removes
+  evidence, and is strict when the declared additional source evidence exists;
 - prohibited current gold, parser output, previous reviews, and predictions cannot enter material;
 - reference grouping is unavailable to an arm and used only by the scorer;
 - duplicate anchors are scored once at transaction level;

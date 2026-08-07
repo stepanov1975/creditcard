@@ -14,8 +14,8 @@ group, and every other printed financial value required to preserve the transact
 identity and exact reconciliation.
 
 **Merchant attribution**: The association of a transaction with the merchant-bearing evidence
-that belongs to that transaction, without borrowing text from another transaction or inventing
-unsupported text.
+that belongs to that transaction, without borrowing text from another transaction, substituting
+ancillary text for the merchant, or inventing unsupported text.
 
 **Merchant-bearing evidence**: The smallest ordered, source-grounded text span needed to identify
 the merchant for a transaction, assembled across its primary row and owned continuation rows when
