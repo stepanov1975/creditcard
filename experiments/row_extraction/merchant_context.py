@@ -832,7 +832,11 @@ def score_merchant_context(
                 MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
                 and (tier, transaction) not in atom_backed_exact_transactions
             )
-            attribution = score.attribution and not unsupported_text
+            attribution = (
+                score.attribution
+                and not unsupported_text
+                and MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION not in categories
+            )
             ancillary_substitution = (
                 MerchantErrorCategory.MERCHANT_VERSUS_ANCILLARY in categories and not attribution
             )

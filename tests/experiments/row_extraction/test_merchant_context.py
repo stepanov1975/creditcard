@@ -1044,10 +1044,21 @@ def test_scoring_reconciles_label_only_neighbor_contamination_into_ownership(
 
     summary = _score_case(monkeypatch, case)
     arm = next(item for item in summary.tiers if item.tier is tier)
+    paired = {(delta.tier, delta.comparator): delta for delta in summary.paired_deltas}
 
+    assert arm.correct_attributions == 97
+    assert arm.exact_text_matches == 97
     assert arm.wrong_merchants == 1
     assert arm.ownership_errors == 1
     assert arm.safe is False
+    assert paired[(tier, ContextTier.C2_LOCAL_NEIGHBORHOOD)].attribution_gains == 0
+    assert paired[(tier, ContextTier.C2_LOCAL_NEIGHBORHOOD)].attribution_losses == 1
+    assert paired[(tier, ContextTier.C2_LOCAL_NEIGHBORHOOD)].exact_text_gains == 0
+    assert paired[(tier, ContextTier.C2_LOCAL_NEIGHBORHOOD)].exact_text_losses == 1
+    assert paired[(tier, ContextTier.C5_FULL_PAGE)].attribution_gains == 0
+    assert paired[(tier, ContextTier.C5_FULL_PAGE)].attribution_losses == 1
+    assert paired[(tier, ContextTier.C5_FULL_PAGE)].exact_text_gains == 0
+    assert paired[(tier, ContextTier.C5_FULL_PAGE)].exact_text_losses == 1
 
 
 def test_scoring_marks_unsupported_merchant_text_as_hallucination(
