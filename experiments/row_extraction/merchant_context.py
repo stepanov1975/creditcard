@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
+import shutil
+import subprocess
+import tempfile
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from enum import StrEnum
+from pathlib import Path
 from typing import Self
 
+import fitz
 from pydantic import ConfigDict, Field, ValidationError, model_validator
 
+from experiments.row_extraction.codecs import write_jsonl
 from experiments.row_extraction.contracts import (
     BBox,
     DatasetSplit,
+    EvidenceAtom,
     FrozenRow,
     _FrozenModel,
 )
@@ -30,10 +38,20 @@ type _TransactionPayload = tuple[
 ]
 
 _PILOT_ANCHOR_COUNT = 100
+_MATERIALIZER_VERSION = "merchant-context-materializer-v1"
+_PRIVATE_ROOT_NAME = "merchant-context-sufficiency-v1"
+_RENDER_DPI = 300
+_CANVAS_MARGIN = 4
+_CANVAS_NEUTRAL = 238
+_ANCHOR_MARKER = (255, 0, 255)
 
 
 class MerchantContextError(ValueError):
     """A private merchant-context artifact failed content-free validation."""
+
+
+class _PrivateModel(_FrozenModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
 
 class ContextTier(StrEnum):
@@ -46,6 +64,51 @@ class ContextTier(StrEnum):
 
 
 CONTEXT_TIERS = tuple(ContextTier)
+
+
+class ContextImage(_PrivateModel):
+    source_bbox: BBox
+    relative_path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class MerchantContextRow(_PrivateModel):
+    row_id: str = Field(min_length=1)
+    bbox: BBox
+    atoms: tuple[EvidenceAtom, ...]
+
+
+class MerchantContextPacket(_PrivateModel):
+    context_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    anchor_row_id: str = Field(min_length=1)
+    page_number: int = Field(gt=0)
+    anchor_bbox: BBox
+    column_boundaries: tuple[BBox, ...]
+    rows: tuple[MerchantContextRow, ...]
+    images: tuple[ContextImage, ...] = Field(min_length=1)
+
+
+class MerchantContextIndex(_PrivateModel):
+    context_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tier: ContextTier
+    batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+MERCHANT_CONTEXT_PROMPT = (
+    "Identify the merchant for the transaction that owns the highlighted anchor row. "
+    "Use only the supplied pixels and positioned atoms. Return exactly one "
+    "MerchantAssertion JSON object for each packet. Include the complete merchant-bearing "
+    "source text and its exact atom IDs and/or source regions. Do not include category, "
+    "location, processor/reference, exchange-rate, fee, date, amount, currency, or "
+    "installment text unless it is visually inseparable from and necessary to the printed "
+    "merchant identity. Return nontransaction only for source evidence that is not a "
+    "transaction; otherwise abstain when one supported merchant and owner cannot be "
+    "established. Never guess, repair spelling, use a merchant database, or borrow text "
+    "from another transaction."
+)
 
 
 class ReferenceDisposition(StrEnum):
@@ -75,10 +138,6 @@ class MerchantErrorCategory(StrEnum):
 
 def canonical_merchant_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFC", text).split())
-
-
-class _PrivateModel(_FrozenModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
 
 def _ids_are_canonical(values: tuple[str, ...]) -> bool:
@@ -323,3 +382,522 @@ def validate_merchant_reference(
         ambiguous_anchor_count=ambiguous_anchor_count,
         nontransaction_anchor_count=nontransaction_anchor_count,
     )
+
+
+type _ContextPair = tuple[MerchantContextIndex, MerchantContextPacket]
+
+
+def _opaque_digest(*parts: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(_MATERIALIZER_VERSION.encode())
+    for part in parts:
+        encoded = part.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _bbox_is_valid(bbox: BBox) -> bool:
+    x0, y0, x1, y1 = bbox
+    return all(math.isfinite(value) for value in bbox) and x0 < x1 and y0 < y1
+
+
+def _bbox_contains(outer: BBox, inner: BBox) -> bool:
+    return (
+        _bbox_is_valid(outer)
+        and _bbox_is_valid(inner)
+        and outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and inner[2] <= outer[2]
+        and inner[3] <= outer[3]
+    )
+
+
+def _bbox_union(bboxes: Sequence[BBox]) -> BBox:
+    if not bboxes or any(not _bbox_is_valid(bbox) for bbox in bboxes):
+        raise MerchantContextError("merchant context geometry unavailable")
+    return (
+        min(bbox[0] for bbox in bboxes),
+        min(bbox[1] for bbox in bboxes),
+        max(bbox[2] for bbox in bboxes),
+        max(bbox[3] for bbox in bboxes),
+    )
+
+
+def _page_bbox(anchor: FrozenRow) -> BBox:
+    try:
+        if not anchor.source_pdf.is_file():
+            raise OSError
+        with fitz.open(anchor.source_pdf) as document:
+            if anchor.page_number > document.page_count:
+                raise IndexError
+            rect = document[anchor.page_number - 1].rect
+            page_bbox = (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
+    except Exception:
+        raise MerchantContextError("merchant context geometry unavailable") from None
+    if not _bbox_is_valid(page_bbox) or not _bbox_contains(page_bbox, anchor.bbox):
+        raise MerchantContextError("merchant context geometry unavailable")
+    return page_bbox
+
+
+def _row_sort_key(row: FrozenRow) -> tuple[float, float, float, float, str]:
+    return (*row.bbox, row.row_id)
+
+
+def _population_index(
+    population: Sequence[FrozenRow], anchor: FrozenRow
+) -> tuple[dict[tuple[str, str], FrozenRow], tuple[FrozenRow, ...]]:
+    rows_by_identity: dict[tuple[str, str], FrozenRow] = {}
+    for row in population:
+        identity = _identity(row)
+        if identity in rows_by_identity:
+            raise MerchantContextError("merchant context population mismatch")
+        rows_by_identity[identity] = row
+    population_anchor = rows_by_identity.get(_identity(anchor))
+    if population_anchor != anchor:
+        raise MerchantContextError("merchant context population mismatch")
+    document_rows = tuple(row for row in population if row.document_id == anchor.document_id)
+    if any(row.source_pdf != anchor.source_pdf for row in document_rows):
+        raise MerchantContextError("merchant context population mismatch")
+    page_rows = tuple(
+        sorted(
+            (row for row in document_rows if row.page_number == anchor.page_number),
+            key=_row_sort_key,
+        )
+    )
+    return rows_by_identity, page_rows
+
+
+def _reciprocal_neighbor(
+    row: FrozenRow,
+    *,
+    previous: bool,
+    rows_by_identity: dict[tuple[str, str], FrozenRow],
+    anchor: FrozenRow,
+) -> FrozenRow | None:
+    neighbor_id = row.previous_row_id if previous else row.next_row_id
+    if neighbor_id is None:
+        return None
+    neighbor = rows_by_identity.get((row.document_id, neighbor_id))
+    if (
+        neighbor is None
+        or neighbor.page_number != anchor.page_number
+        or neighbor.source_pdf != anchor.source_pdf
+    ):
+        return None
+    reciprocal_id = neighbor.next_row_id if previous else neighbor.previous_row_id
+    if reciprocal_id != row.row_id:
+        return None
+    return neighbor
+
+
+def _neighbor_rows(
+    anchor: FrozenRow,
+    rows_by_identity: dict[tuple[str, str], FrozenRow],
+    distance: int,
+) -> tuple[FrozenRow, ...]:
+    predecessors: list[FrozenRow] = []
+    current = anchor
+    for _ in range(distance):
+        neighbor = _reciprocal_neighbor(
+            current,
+            previous=True,
+            rows_by_identity=rows_by_identity,
+            anchor=anchor,
+        )
+        if neighbor is None:
+            break
+        predecessors.append(neighbor)
+        current = neighbor
+
+    successors: list[FrozenRow] = []
+    current = anchor
+    for _ in range(distance):
+        neighbor = _reciprocal_neighbor(
+            current,
+            previous=False,
+            rows_by_identity=rows_by_identity,
+            anchor=anchor,
+        )
+        if neighbor is None:
+            break
+        successors.append(neighbor)
+        current = neighbor
+
+    return (*reversed(predecessors), anchor, *successors)
+
+
+def _role_free_schema(row: FrozenRow) -> tuple[BBox, ...]:
+    return tuple(band.bbox for band in row.column_bands)
+
+
+def _rows_are_visible(rows: Sequence[FrozenRow], regions: Sequence[BBox], page_bbox: BBox) -> bool:
+    return all(
+        _bbox_contains(page_bbox, row.bbox)
+        and any(_bbox_contains(region, row.bbox) for region in regions)
+        and all(
+            _bbox_contains(page_bbox, atom.bbox)
+            and any(_bbox_contains(region, atom.bbox) for region in regions)
+            for atom in row.atoms
+        )
+        for row in rows
+    )
+
+
+def _context_materials(
+    anchor: FrozenRow,
+    rows_by_identity: dict[tuple[str, str], FrozenRow],
+    page_rows: tuple[FrozenRow, ...],
+    page_bbox: BBox,
+) -> tuple[tuple[tuple[FrozenRow, ...], tuple[BBox, ...]], ...]:
+    c0_rows = (anchor,)
+    c0_regions = (anchor.bbox,)
+    c1_rows = _neighbor_rows(anchor, rows_by_identity, 1)
+    c1_regions = (_bbox_union(tuple(row.bbox for row in c1_rows)),)
+    c2_rows = _neighbor_rows(anchor, rows_by_identity, 2)
+    c2_region = _bbox_union(tuple(row.bbox for row in c2_rows))
+    c2_regions = (c2_region,)
+
+    schema = _role_free_schema(anchor)
+    c3_regions = c2_regions
+    c4_rows = c2_rows
+    c4_regions = c3_regions
+    if schema:
+        table_region = _bbox_union(schema)
+        c4_rows = tuple(row for row in page_rows if _role_free_schema(row) == schema)
+        first_table_row_top = min(row.bbox[1] for row in c4_rows)
+        header_region = (
+            table_region[0],
+            table_region[1],
+            table_region[2],
+            first_table_row_top,
+        )
+        if _bbox_is_valid(header_region):
+            c3_regions = (*c2_regions, header_region)
+        c4_regions = (table_region,)
+        c2_identities = {_identity(row) for row in c2_rows}
+        if not c2_identities <= {_identity(row) for row in c4_rows} or any(
+            not any(_bbox_contains(region, prior) for region in c4_regions) for prior in c3_regions
+        ):
+            raise MerchantContextError("merchant context geometry unavailable")
+
+    materials = (
+        (c0_rows, c0_regions),
+        (c1_rows, c1_regions),
+        (c2_rows, c2_regions),
+        (c2_rows, c3_regions),
+        (c4_rows, c4_regions),
+        (page_rows, (page_bbox,)),
+    )
+    if any(
+        not all(_bbox_contains(page_bbox, region) for region in regions)
+        or not _rows_are_visible(rows, regions, page_bbox)
+        for rows, regions in materials
+    ):
+        raise MerchantContextError("merchant context geometry unavailable")
+    return materials
+
+
+def _set_rgb_pixel(samples: bytearray, width: int, x: int, y: int) -> None:
+    if x < 0 or y < 0 or x >= width or 3 * width * y >= len(samples):
+        return
+    offset = 3 * (width * y + x)
+    samples[offset : offset + 3] = bytes(_ANCHOR_MARKER)
+
+
+def _draw_anchor_marker(
+    samples: bytearray,
+    width: int,
+    height: int,
+    source_width: int,
+    source_height: int,
+    source_bbox: BBox,
+    anchor_bbox: BBox,
+) -> None:
+    if not _bbox_contains(source_bbox, anchor_bbox):
+        return
+    scale_x = source_width / (source_bbox[2] - source_bbox[0])
+    scale_y = source_height / (source_bbox[3] - source_bbox[1])
+    anchor_left = _CANVAS_MARGIN + math.floor((anchor_bbox[0] - source_bbox[0]) * scale_x)
+    anchor_top = _CANVAS_MARGIN + math.floor((anchor_bbox[1] - source_bbox[1]) * scale_y)
+    anchor_right = _CANVAS_MARGIN + math.ceil((anchor_bbox[2] - source_bbox[0]) * scale_x)
+    anchor_bottom = _CANVAS_MARGIN + math.ceil((anchor_bbox[3] - source_bbox[1]) * scale_y)
+    marker_left = anchor_left - 1
+    marker_top = anchor_top - 1
+    marker_right = anchor_right
+    marker_bottom = anchor_bottom
+    for x in range(marker_left, marker_right + 1):
+        _set_rgb_pixel(samples, width, x, marker_top)
+        _set_rgb_pixel(samples, width, x, marker_bottom)
+    for y in range(marker_top, marker_bottom + 1):
+        _set_rgb_pixel(samples, width, marker_left, y)
+        _set_rgb_pixel(samples, width, marker_right, y)
+    if marker_bottom >= height or marker_right >= width:
+        raise MerchantContextError("merchant context geometry unavailable")
+
+
+def _render_context_image(
+    *,
+    source_pdf: Path,
+    page_number: int,
+    source_bbox: BBox,
+    anchor_bbox: BBox,
+    image_root: Path,
+    relative_path: str,
+) -> ContextImage:
+    try:
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError
+        with fitz.open(source_pdf) as document:
+            if page_number > document.page_count:
+                raise IndexError
+            page = document[page_number - 1]
+            page_rect = page.rect
+            page_bbox = (
+                float(page_rect.x0),
+                float(page_rect.y0),
+                float(page_rect.x1),
+                float(page_rect.y1),
+            )
+            if not _bbox_contains(page_bbox, source_bbox) or not _bbox_contains(
+                page_bbox, anchor_bbox
+            ):
+                raise ValueError
+            source = page.get_pixmap(
+                dpi=_RENDER_DPI,
+                colorspace=fitz.csRGB,
+                clip=fitz.Rect(source_bbox),
+                alpha=False,
+            )
+        if source.width <= 0 or source.height <= 0 or source.n != 3:
+            raise ValueError
+        width = source.width + 2 * _CANVAS_MARGIN
+        height = source.height + 2 * _CANVAS_MARGIN
+        samples = bytearray([_CANVAS_NEUTRAL]) * (width * height * 3)
+        source_samples = memoryview(source.samples)
+        source_stride = source.width * 3
+        for y in range(source.height):
+            source_start = y * source_stride
+            target_start = 3 * (width * (y + _CANVAS_MARGIN) + _CANVAS_MARGIN)
+            samples[target_start : target_start + source_stride] = source_samples[
+                source_start : source_start + source_stride
+            ]
+        _draw_anchor_marker(
+            samples,
+            width,
+            height,
+            source.width,
+            source.height,
+            source_bbox,
+            anchor_bbox,
+        )
+        canvas = fitz.Pixmap(fitz.csRGB, width, height, bytes(samples), False)
+        canvas.set_dpi(_RENDER_DPI, _RENDER_DPI)
+        png_bytes = canvas.tobytes("png")
+        destination = image_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(png_bytes)
+            temporary_path.replace(destination)
+        except BaseException:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+    except MerchantContextError:
+        raise
+    except Exception:
+        raise MerchantContextError("merchant context geometry unavailable") from None
+    return ContextImage(
+        source_bbox=source_bbox,
+        relative_path=relative_path,
+        sha256=hashlib.sha256(png_bytes).hexdigest(),
+        width=width,
+        height=height,
+    )
+
+
+def materialize_anchor_contexts(
+    population: Sequence[FrozenRow], anchor: FrozenRow, image_root: Path
+) -> tuple[_ContextPair, ...]:
+    """Materialize all six fixed spatial contexts for one opaque anchor."""
+
+    page_bbox = _page_bbox(anchor)
+    rows_by_identity, page_rows = _population_index(population, anchor)
+    materials = _context_materials(anchor, rows_by_identity, page_rows, page_bbox)
+    column_boundaries = _role_free_schema(anchor)
+    result: list[_ContextPair] = []
+    for tier, (rows, regions) in zip(CONTEXT_TIERS, materials, strict=True):
+        context_id = _opaque_digest("context", anchor.document_id, anchor.row_id, tier.value)
+        batch_id = _opaque_digest("batch", tier.value)
+        images: list[ContextImage] = []
+        for ordinal, region in enumerate(regions):
+            image_id = _opaque_digest(
+                "image",
+                anchor.document_id,
+                anchor.row_id,
+                tier.value,
+                str(ordinal),
+                *(format(value, ".17g") for value in region),
+            )
+            relative_path = f"{context_id}/{image_id}.png"
+            images.append(
+                _render_context_image(
+                    source_pdf=anchor.source_pdf,
+                    page_number=anchor.page_number,
+                    source_bbox=region,
+                    anchor_bbox=anchor.bbox,
+                    image_root=image_root,
+                    relative_path=relative_path,
+                )
+            )
+        packet = MerchantContextPacket(
+            context_id=context_id,
+            document_id=anchor.document_id,
+            anchor_row_id=anchor.row_id,
+            page_number=anchor.page_number,
+            anchor_bbox=anchor.bbox,
+            column_boundaries=column_boundaries,
+            rows=tuple(
+                MerchantContextRow(row_id=row.row_id, bbox=row.bbox, atoms=row.atoms)
+                for row in rows
+            ),
+            images=tuple(images),
+        )
+        result.append(
+            (
+                MerchantContextIndex(
+                    context_id=context_id,
+                    tier=tier,
+                    batch_id=batch_id,
+                ),
+                packet,
+            )
+        )
+    return tuple(result)
+
+
+def _nearest_existing_parent(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def _root_is_outside_git_or_ignored(private_root: Path) -> bool:
+    probe_directory = _nearest_existing_parent(private_root.parent)
+    repository = subprocess.run(
+        ("git", "-C", str(probe_directory), "rev-parse", "--show-toplevel"),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if repository.returncode != 0:
+        return True
+    repository_root = Path(repository.stdout.strip()).resolve()
+    resolved_root = private_root.resolve(strict=False)
+    try:
+        resolved_root.relative_to(repository_root)
+    except ValueError:
+        return True
+    ignored = subprocess.run(
+        ("git", "-C", str(repository_root), "check-ignore", "--quiet", "--", str(resolved_root)),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return ignored.returncode == 0
+
+
+def _validate_private_root(private_root: Path) -> None:
+    if not private_root.is_absolute():
+        raise MerchantContextError("merchant context root must be absolute")
+    if private_root.name != _PRIVATE_ROOT_NAME:
+        raise MerchantContextError("merchant context root name mismatch")
+    for candidate in (private_root, *private_root.parents):
+        if candidate.is_symlink():
+            raise MerchantContextError("merchant context root must not be a symlink")
+    if private_root.exists() and (not private_root.is_dir() or any(private_root.iterdir())):
+        raise MerchantContextError("merchant context root must be empty")
+    if not _root_is_outside_git_or_ignored(private_root):
+        raise MerchantContextError("merchant context root must be outside Git or ignored")
+
+
+def _validate_selected_pilot(
+    population: Sequence[FrozenRow], selected_rows: Sequence[FrozenRow]
+) -> tuple[FrozenRow, ...]:
+    selected = tuple(selected_rows)
+    selected_identities = tuple(_identity(row) for row in selected)
+    if (
+        len(selected) != _PILOT_ANCHOR_COUNT
+        or len(set(selected_identities)) != _PILOT_ANCHOR_COUNT
+        or any(row.split is not DatasetSplit.TRAIN for row in selected)
+    ):
+        raise MerchantContextError("merchant context pilot membership mismatch")
+    try:
+        expected = tuple(select_visual_gold_pilot(population))
+    except Exception:
+        raise MerchantContextError("merchant context pilot membership mismatch") from None
+    if {_identity(row) for row in expected} != set(selected_identities):
+        raise MerchantContextError("merchant context pilot membership mismatch")
+    population_by_identity = {_identity(row): row for row in population}
+    if any(population_by_identity.get(_identity(row)) != row for row in selected):
+        raise MerchantContextError("merchant context pilot membership mismatch")
+    return tuple(sorted(selected, key=_identity))
+
+
+def materialize_merchant_contexts(
+    population: Sequence[FrozenRow],
+    selected_rows: Sequence[FrozenRow],
+    private_root: Path,
+) -> tuple[_ContextPair, ...]:
+    """Write six opaque batches and the private tier index exactly once."""
+
+    _validate_private_root(private_root)
+    selected = _validate_selected_pilot(population, selected_rows)
+    private_root.mkdir(parents=True, exist_ok=True)
+    try:
+        pairs = tuple(
+            pair
+            for anchor in selected
+            for pair in materialize_anchor_contexts(
+                population,
+                anchor,
+                private_root / "images",
+            )
+        )
+        ordered = tuple(sorted(pairs, key=lambda pair: (pair[0].batch_id, pair[0].context_id)))
+        if len(ordered) != len(CONTEXT_TIERS) * _PILOT_ANCHOR_COUNT or len(
+            {index.context_id for index, _ in ordered}
+        ) != len(ordered):
+            raise MerchantContextError("merchant context coverage mismatch")
+        packet_root = private_root / "packets"
+        packet_root.mkdir()
+        write_jsonl(
+            private_root / "context-index.jsonl",
+            (index for index, _ in ordered),
+        )
+        batch_ids = tuple(sorted({index.batch_id for index, _ in ordered}))
+        if len(batch_ids) != len(CONTEXT_TIERS):
+            raise MerchantContextError("merchant context coverage mismatch")
+        for batch_id in batch_ids:
+            batch_packets = tuple(packet for index, packet in ordered if index.batch_id == batch_id)
+            if len(batch_packets) != _PILOT_ANCHOR_COUNT:
+                raise MerchantContextError("merchant context coverage mismatch")
+            write_jsonl(packet_root / f"{batch_id}.jsonl", batch_packets)
+    except BaseException as error:
+        shutil.rmtree(private_root, ignore_errors=True)
+        if isinstance(error, MerchantContextError):
+            raise
+        raise MerchantContextError("merchant context materialization failed") from None
+    return ordered
