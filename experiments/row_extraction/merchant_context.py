@@ -14,6 +14,7 @@ import tempfile
 import unicodedata
 from collections import Counter
 from collections.abc import Sequence
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -234,6 +235,20 @@ class MerchantAssertion(_PrivateModel):
         return self
 
 
+class MerchantErrorLabel(_PrivateModel):
+    tier: ContextTier
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    owner_row_id: str = Field(min_length=1)
+    primary: MerchantErrorCategory
+    secondary: tuple[MerchantErrorCategory, ...] = ()
+
+    @model_validator(mode="after")
+    def has_unique_secondary_categories(self) -> Self:
+        if len(self.secondary) != len(set(self.secondary)) or self.primary in self.secondary:
+            raise ValueError("invalid merchant error categories")
+        return self
+
+
 class MerchantReferenceSummary(_FrozenModel):
     anchor_count: int = Field(ge=0)
     eligible_transaction_count: int = Field(ge=0)
@@ -241,7 +256,51 @@ class MerchantReferenceSummary(_FrozenModel):
     nontransaction_anchor_count: int = Field(ge=0)
 
 
-def _identity(row: FrozenRow | MerchantReference) -> _RowIdentity:
+class MerchantErrorCount(_FrozenModel):
+    category: MerchantErrorCategory
+    count: int = Field(ge=0)
+
+
+class MerchantTierSummary(_FrozenModel):
+    tier: ContextTier
+    eligible_transactions: int = Field(ge=0)
+    correct_attributions: int = Field(ge=0)
+    merchant_accuracy: Decimal
+    exact_text_matches: int = Field(ge=0)
+    exact_text_rate: Decimal
+    omissions: int = Field(ge=0)
+    wrong_merchants: int = Field(ge=0)
+    hallucinations: int = Field(ge=0)
+    ownership_errors: int = Field(ge=0)
+    nontransaction_anchors: int = Field(ge=0)
+    correct_nontransaction_anchors: int = Field(ge=0)
+    errors: tuple[MerchantErrorCount, ...]
+    safe: bool
+
+
+class MerchantPairedDelta(_FrozenModel):
+    tier: ContextTier
+    comparator: ContextTier
+    attribution_gains: int = Field(ge=0)
+    attribution_losses: int = Field(ge=0)
+    exact_text_gains: int = Field(ge=0)
+    exact_text_losses: int = Field(ge=0)
+
+
+class MerchantContextSummary(_FrozenModel):
+    anchor_count: int = Field(ge=0)
+    eligible_transaction_count: int = Field(ge=0)
+    reference_ambiguity_count: int = Field(ge=0)
+    nontransaction_anchor_count: int = Field(ge=0)
+    tiers: tuple[MerchantTierSummary, ...]
+    paired_deltas: tuple[MerchantPairedDelta, ...]
+    recommended_tier: ContextTier | None
+    hypothesis_supported: bool
+    hypothesis_falsified: bool
+    context_interference: bool
+
+
+def _identity(row: FrozenRow | MerchantReference | MerchantAssertion) -> _RowIdentity:
     row_id = row.row_id if isinstance(row, FrozenRow) else row.anchor_row_id
     return row.document_id, row_id
 
@@ -387,6 +446,655 @@ def validate_merchant_reference(
         ambiguous_anchor_count=ambiguous_anchor_count,
         nontransaction_anchor_count=nontransaction_anchor_count,
     )
+
+
+class _TransactionScore(tuple[bool, bool, bool, bool, bool, bool]):
+    """Private tuple-like score kept out of aggregate output models."""
+
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        attribution: bool,
+        exact_text: bool,
+        omission: bool,
+        wrong_merchant: bool,
+        hallucination: bool,
+        ownership_error: bool,
+    ) -> Self:
+        return tuple.__new__(
+            cls,
+            (
+                attribution,
+                exact_text,
+                omission,
+                wrong_merchant,
+                hallucination,
+                ownership_error,
+            ),
+        )
+
+    @property
+    def attribution(self) -> bool:
+        return bool(self[0])
+
+    @property
+    def exact_text(self) -> bool:
+        return bool(self[1])
+
+    @property
+    def omission(self) -> bool:
+        return bool(self[2])
+
+    @property
+    def wrong_merchant(self) -> bool:
+        return bool(self[3])
+
+    @property
+    def hallucination(self) -> bool:
+        return bool(self[4])
+
+    @property
+    def ownership_error(self) -> bool:
+        return bool(self[5])
+
+
+def _validated_packets(
+    packets: Sequence[MerchantContextPacket],
+) -> tuple[MerchantContextPacket, ...]:
+    try:
+        return tuple(
+            MerchantContextPacket.model_validate(packet.model_dump()) for packet in packets
+        )
+    except ValidationError:
+        raise MerchantContextError("merchant context contract mismatch") from None
+
+
+def _validated_index_records(
+    index_records: Sequence[MerchantContextIndex],
+) -> tuple[MerchantContextIndex, ...]:
+    try:
+        return tuple(
+            MerchantContextIndex.model_validate(index.model_dump()) for index in index_records
+        )
+    except ValidationError:
+        raise MerchantContextError("merchant context contract mismatch") from None
+
+
+def _validated_assertions(
+    assertions: Sequence[MerchantAssertion],
+) -> tuple[MerchantAssertion, ...]:
+    try:
+        return tuple(
+            MerchantAssertion.model_validate(assertion.model_dump()) for assertion in assertions
+        )
+    except ValidationError:
+        raise MerchantContextError("merchant assertion contract mismatch") from None
+
+
+def _validated_error_labels(
+    error_labels: Sequence[MerchantErrorLabel],
+) -> tuple[MerchantErrorLabel, ...]:
+    try:
+        return tuple(
+            MerchantErrorLabel.model_validate(label.model_dump()) for label in error_labels
+        )
+    except ValidationError:
+        raise MerchantContextError("merchant error contract mismatch") from None
+
+
+def _packet_atom_texts(packet: MerchantContextPacket) -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
+    for row in packet.rows:
+        for atom in row.atoms:
+            if atom.atom_id in result:
+                result[atom.atom_id] = None
+            else:
+                result[atom.atom_id] = atom.text
+    return result
+
+
+def _assertion_evidence_is_available(
+    assertion: MerchantAssertion, packet: MerchantContextPacket
+) -> bool:
+    atom_texts = _packet_atom_texts(packet)
+    if any(atom_texts.get(atom_id) is None for atom_id in assertion.atom_ids):
+        return False
+    available_regions = (
+        *(row.bbox for row in packet.rows),
+        *(image.source_bbox for image in packet.images),
+    )
+    return all(
+        any(_is_contained(region, available) for available in available_regions)
+        for region in assertion.source_regions
+    )
+
+
+def _assertion_text_is_source_supported(
+    assertion: MerchantAssertion, packet: MerchantContextPacket
+) -> bool:
+    if assertion.disposition is not AssertionDisposition.MERCHANT:
+        return True
+    if assertion.source_regions:
+        return True
+    if assertion.merchant_text is None or not assertion.atom_ids:
+        return False
+    atom_texts = _packet_atom_texts(packet)
+    texts = tuple(atom_texts.get(atom_id) for atom_id in assertion.atom_ids)
+    if any(text is None for text in texts):
+        return False
+    concrete_texts = tuple(text for text in texts if text is not None)
+    return canonical_merchant_text(" ".join(concrete_texts)) == assertion.merchant_text
+
+
+def _regions_overlap(first: BBox, second: BBox) -> bool:
+    return max(first[0], second[0]) < min(first[2], second[2]) and max(first[1], second[1]) < min(
+        first[3], second[3]
+    )
+
+
+def _rate(numerator: int, denominator: int) -> Decimal:
+    with localcontext(Context(prec=28, rounding=ROUND_HALF_EVEN)):
+        if denominator == 0:
+            return Decimal(0)
+        return Decimal(numerator) / Decimal(denominator)
+
+
+def _paired_delta(
+    tier: ContextTier,
+    comparator: ContextTier,
+    attribution_sets: dict[ContextTier, set[_TransactionIdentity]],
+    exact_sets: dict[ContextTier, set[_TransactionIdentity]],
+) -> MerchantPairedDelta:
+    tier_attributions = attribution_sets[tier]
+    comparator_attributions = attribution_sets[comparator]
+    tier_exact = exact_sets[tier]
+    comparator_exact = exact_sets[comparator]
+    return MerchantPairedDelta(
+        tier=tier,
+        comparator=comparator,
+        attribution_gains=len(tier_attributions - comparator_attributions),
+        attribution_losses=len(comparator_attributions - tier_attributions),
+        exact_text_gains=len(tier_exact - comparator_exact),
+        exact_text_losses=len(comparator_exact - tier_exact),
+    )
+
+
+def score_merchant_context(
+    population: Sequence[FrozenRow],
+    selected_rows: Sequence[FrozenRow],
+    packets: Sequence[MerchantContextPacket],
+    index_records: Sequence[MerchantContextIndex],
+    references: Sequence[MerchantReference],
+    assertions: Sequence[MerchantAssertion],
+    error_labels: Sequence[MerchantErrorLabel],
+) -> MerchantContextSummary:
+    """Score all fixed context tiers once and return aggregate-only measurements."""
+
+    reference_summary = validate_merchant_reference(population, selected_rows, references)
+    validated_references = _validated_references(references)
+    validated_packets = _validated_packets(packets)
+    validated_indexes = _validated_index_records(index_records)
+    validated_assertions = _validated_assertions(assertions)
+    expected_count = _PILOT_ANCHOR_COUNT * len(CONTEXT_TIERS)
+
+    if len(validated_packets) != expected_count or len(validated_indexes) != expected_count:
+        raise MerchantContextError("merchant context coverage mismatch")
+    packet_by_context = {packet.context_id: packet for packet in validated_packets}
+    index_by_context = {index.context_id: index for index in validated_indexes}
+    if (
+        len(packet_by_context) != expected_count
+        or len(index_by_context) != expected_count
+        or packet_by_context.keys() != index_by_context.keys()
+    ):
+        raise MerchantContextError("merchant context coverage mismatch")
+
+    selected_identities = {_identity(row) for row in selected_rows}
+    actual_tier_anchors = {
+        (index.tier, (packet.document_id, packet.anchor_row_id))
+        for context_id, index in index_by_context.items()
+        for packet in (packet_by_context[context_id],)
+    }
+    expected_tier_anchors = {
+        (tier, identity) for tier in CONTEXT_TIERS for identity in selected_identities
+    }
+    if len(actual_tier_anchors) != expected_count or actual_tier_anchors != expected_tier_anchors:
+        raise MerchantContextError("merchant context coverage mismatch")
+
+    assertion_by_context = {assertion.context_id: assertion for assertion in validated_assertions}
+    if (
+        len(validated_assertions) != expected_count
+        or len(assertion_by_context) != expected_count
+        or assertion_by_context.keys() != index_by_context.keys()
+    ):
+        raise MerchantContextError("merchant assertion coverage mismatch")
+
+    assertions_by_tier_anchor: dict[
+        tuple[ContextTier, _RowIdentity], tuple[MerchantAssertion, MerchantContextPacket]
+    ] = {}
+    for context_id, index in index_by_context.items():
+        packet = packet_by_context[context_id]
+        assertion = assertion_by_context[context_id]
+        if (
+            assertion.document_id != packet.document_id
+            or assertion.anchor_row_id != packet.anchor_row_id
+        ):
+            raise MerchantContextError("merchant assertion context mismatch")
+        if not _assertion_evidence_is_available(assertion, packet):
+            raise MerchantContextError("merchant assertion evidence mismatch")
+        assertions_by_tier_anchor[(index.tier, _identity(assertion))] = assertion, packet
+
+    transaction_references: dict[_TransactionIdentity, list[MerchantReference]] = {}
+    nontransaction_references: list[MerchantReference] = []
+    for reference in validated_references:
+        if reference.disposition is ReferenceDisposition.NONTRANSACTION:
+            nontransaction_references.append(reference)
+        elif reference.disposition is ReferenceDisposition.TRANSACTION:
+            if reference.owner_row_id is None:
+                raise MerchantContextError("merchant reference contract mismatch")
+            transaction_references.setdefault(
+                (reference.document_id, reference.owner_row_id), []
+            ).append(reference)
+
+    merchant_atom_owners: dict[tuple[str, str], set[_TransactionIdentity]] = {}
+    merchant_region_owners: dict[tuple[str, BBox], set[_TransactionIdentity]] = {}
+    for transaction, owned_references in transaction_references.items():
+        reference = owned_references[0]
+        for atom_id in reference.atom_ids:
+            merchant_atom_owners.setdefault((reference.document_id, atom_id), set()).add(
+                transaction
+            )
+        for region in reference.source_regions:
+            merchant_region_owners.setdefault((reference.document_id, region), set()).add(
+                transaction
+            )
+
+    preliminary_scores: dict[ContextTier, dict[_TransactionIdentity, _TransactionScore]] = {
+        tier: {} for tier in CONTEXT_TIERS
+    }
+    correct_sets: dict[ContextTier, set[_TransactionIdentity]] = {
+        tier: set() for tier in CONTEXT_TIERS
+    }
+    exact_sets: dict[ContextTier, set[_TransactionIdentity]] = {
+        tier: set() for tier in CONTEXT_TIERS
+    }
+    for tier in CONTEXT_TIERS:
+        for transaction, owned_references in transaction_references.items():
+            reference = owned_references[0]
+            if reference.owner_row_id is None or reference.merchant_text is None:
+                raise MerchantContextError("merchant reference contract mismatch")
+            assertion_packets = tuple(
+                assertions_by_tier_anchor[(tier, _identity(owned_reference))]
+                for owned_reference in owned_references
+            )
+            foreign_evidence = False
+            for assertion, _ in assertion_packets:
+                foreign_evidence = foreign_evidence or any(
+                    owners and transaction not in owners
+                    for atom_id in assertion.atom_ids
+                    for owners in (
+                        merchant_atom_owners.get((assertion.document_id, atom_id), set()),
+                    )
+                )
+                foreign_evidence = foreign_evidence or any(
+                    transaction not in owners and _regions_overlap(asserted_region, merchant_region)
+                    for asserted_region in assertion.source_regions
+                    for (document_id, merchant_region), owners in merchant_region_owners.items()
+                    if document_id == assertion.document_id
+                )
+
+            source_supported = all(
+                _assertion_text_is_source_supported(assertion, packet)
+                for assertion, packet in assertion_packets
+            )
+            all_merchant = all(
+                assertion.disposition is AssertionDisposition.MERCHANT
+                for assertion, _ in assertion_packets
+            )
+            owner_correct = all(
+                assertion.owner_row_id == reference.owner_row_id
+                for assertion, _ in assertion_packets
+            )
+            complete_text = all(
+                assertion.merchant_text is not None
+                and reference.merchant_text in assertion.merchant_text
+                for assertion, _ in assertion_packets
+            )
+            attribution = (
+                all_merchant
+                and owner_correct
+                and complete_text
+                and source_supported
+                and not foreign_evidence
+            )
+            exact_text = attribution and all(
+                assertion.merchant_text == reference.merchant_text
+                and assertion.atom_ids == reference.atom_ids
+                and assertion.source_regions == reference.source_regions
+                for assertion, _ in assertion_packets
+            )
+            omission = any(
+                assertion.disposition is not AssertionDisposition.MERCHANT
+                for assertion, _ in assertion_packets
+            )
+            hallucination = any(
+                assertion.disposition is AssertionDisposition.MERCHANT
+                and not _assertion_text_is_source_supported(assertion, packet)
+                for assertion, packet in assertion_packets
+            )
+            ownership_error = not owner_correct or foreign_evidence
+            wrong_merchant = (
+                any(
+                    assertion.disposition is AssertionDisposition.MERCHANT
+                    for assertion, _ in assertion_packets
+                )
+                and not attribution
+                and not hallucination
+            )
+            score = _TransactionScore(
+                attribution,
+                exact_text,
+                omission,
+                wrong_merchant,
+                hallucination,
+                ownership_error,
+            )
+            preliminary_scores[tier][transaction] = score
+            if score.attribution:
+                correct_sets[tier].add(transaction)
+            if score.exact_text:
+                exact_sets[tier].add(transaction)
+
+    validated_errors = _validated_error_labels(error_labels)
+    error_by_tier_transaction = {
+        (label.tier, (label.document_id, label.owner_row_id)): label for label in validated_errors
+    }
+    expected_error_keys = {
+        (tier, transaction)
+        for tier, tier_scores in preliminary_scores.items()
+        for transaction, score in tier_scores.items()
+        if not score.exact_text
+    }
+    if (
+        len(error_by_tier_transaction) != len(validated_errors)
+        or error_by_tier_transaction.keys() != expected_error_keys
+    ):
+        raise MerchantContextError("merchant error coverage mismatch")
+
+    tier_summaries: list[MerchantTierSummary] = []
+    for tier in CONTEXT_TIERS:
+        errors = tuple(
+            label
+            for (label_tier, _), label in error_by_tier_transaction.items()
+            if label_tier is tier
+        )
+        error_counts = Counter(
+            category for label in errors for category in (label.primary, *label.secondary)
+        )
+        tier_scores: list[_TransactionScore] = []
+        for transaction, score in preliminary_scores[tier].items():
+            label = error_by_tier_transaction.get((tier, transaction))
+            categories = set() if label is None else {label.primary, *label.secondary}
+            unsupported_text = MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
+            hallucination = score.hallucination or unsupported_text
+            attribution = score.attribution and not unsupported_text
+            exact_text = score.exact_text and attribution
+            if not attribution:
+                correct_sets[tier].discard(transaction)
+            if not exact_text:
+                exact_sets[tier].discard(transaction)
+            ownership_error = score.ownership_error or bool(
+                categories
+                & {
+                    MerchantErrorCategory.CONTINUATION_OWNERSHIP,
+                    MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION,
+                }
+            )
+            wrong_merchant = score.wrong_merchant
+            tier_scores.append(
+                _TransactionScore(
+                    attribution,
+                    exact_text,
+                    score.omission,
+                    wrong_merchant,
+                    hallucination,
+                    ownership_error,
+                )
+            )
+
+        correct_nontransactions = sum(
+            assertions_by_tier_anchor[(tier, _identity(reference))][0].disposition
+            is AssertionDisposition.NONTRANSACTION
+            for reference in nontransaction_references
+        )
+        correct_count = len(correct_sets[tier])
+        exact_count = len(exact_sets[tier])
+        wrong_count = sum(score.wrong_merchant for score in tier_scores)
+        hallucination_count = sum(score.hallucination for score in tier_scores)
+        tier_summaries.append(
+            MerchantTierSummary(
+                tier=tier,
+                eligible_transactions=reference_summary.eligible_transaction_count,
+                correct_attributions=correct_count,
+                merchant_accuracy=_rate(
+                    correct_count, reference_summary.eligible_transaction_count
+                ),
+                exact_text_matches=exact_count,
+                exact_text_rate=_rate(exact_count, reference_summary.eligible_transaction_count),
+                omissions=sum(score.omission for score in tier_scores),
+                wrong_merchants=wrong_count,
+                hallucinations=hallucination_count,
+                ownership_errors=sum(score.ownership_error for score in tier_scores),
+                nontransaction_anchors=reference_summary.nontransaction_anchor_count,
+                correct_nontransaction_anchors=correct_nontransactions,
+                errors=tuple(
+                    MerchantErrorCount(category=category, count=error_counts[category])
+                    for category in MerchantErrorCategory
+                    if error_counts[category]
+                ),
+                safe=wrong_count == 0 and hallucination_count == 0,
+            )
+        )
+
+    paired_deltas = tuple(
+        _paired_delta(tier, CONTEXT_TIERS[index - 1], correct_sets, exact_sets)
+        for index, tier in enumerate(CONTEXT_TIERS)
+        if index > 0
+    ) + tuple(
+        _paired_delta(tier, ContextTier.C5_FULL_PAGE, correct_sets, exact_sets)
+        for tier in CONTEXT_TIERS[:-1]
+    )
+    safe_tiers = tuple(summary.tier for summary in tier_summaries if summary.safe)
+    if safe_tiers:
+        best_attribution_count = max(len(correct_sets[tier]) for tier in safe_tiers)
+        attribution_best = tuple(
+            tier for tier in safe_tiers if len(correct_sets[tier]) == best_attribution_count
+        )
+        best_exact_count = max(len(exact_sets[tier]) for tier in attribution_best)
+        recommended_tier = next(
+            tier for tier in attribution_best if len(exact_sets[tier]) == best_exact_count
+        )
+    else:
+        recommended_tier = None
+
+    full_page_attributions = correct_sets[ContextTier.C5_FULL_PAGE]
+    full_page_exact = exact_sets[ContextTier.C5_FULL_PAGE]
+    bounded_tiers = CONTEXT_TIERS[: CONTEXT_TIERS.index(ContextTier.C3_HEADER_NEIGHBORHOOD) + 1]
+    safe_tier_set = set(safe_tiers)
+    hypothesis_supported = any(
+        tier in safe_tier_set
+        and correct_sets[tier] == full_page_attributions
+        and exact_sets[tier] == full_page_exact
+        for tier in bounded_tiers
+    )
+    context_interference = any(
+        tier in safe_tier_set
+        and (
+            full_page_attributions < correct_sets[tier]
+            or (full_page_attributions == correct_sets[tier] and full_page_exact < exact_sets[tier])
+        )
+        for tier in CONTEXT_TIERS[:-1]
+    )
+    return MerchantContextSummary(
+        anchor_count=reference_summary.anchor_count,
+        eligible_transaction_count=reference_summary.eligible_transaction_count,
+        reference_ambiguity_count=reference_summary.ambiguous_anchor_count,
+        nontransaction_anchor_count=reference_summary.nontransaction_anchor_count,
+        tiers=tuple(tier_summaries),
+        paired_deltas=paired_deltas,
+        recommended_tier=recommended_tier,
+        hypothesis_supported=hypothesis_supported,
+        hypothesis_falsified=not hypothesis_supported,
+        context_interference=context_interference,
+    )
+
+
+def _decimal_text(value: Decimal) -> str:
+    return format(value, "f")
+
+
+def render_merchant_context_report(summary: MerchantContextSummary) -> str:
+    """Render one privacy-safe aggregate Markdown result."""
+
+    if not isinstance(summary, MerchantContextSummary):
+        raise TypeError("merchant context report requires an aggregate summary")
+    try:
+        aggregate = MerchantContextSummary.model_validate(summary.model_dump())
+    except ValidationError:
+        raise MerchantContextError("merchant context summary contract mismatch") from None
+
+    if aggregate.hypothesis_supported:
+        hypothesis = "supported hypothesis"
+    else:
+        hypothesis = "falsified hypothesis"
+    recommended = (
+        aggregate.recommended_tier.value if aggregate.recommended_tier is not None else "none"
+    )
+    interference = "true" if aggregate.context_interference else "false"
+    result = (
+        f"{hypothesis}; smallest best safe tier: {recommended}; "
+        f"context interference: {interference}"
+    )
+    lines = [
+        "# Merchant Context Sufficiency Result",
+        "",
+        "## Task contract",
+        "",
+        (
+            "Scope answer: YES — this changes or measures how spatial source context affects "
+            "transaction-level merchant attribution."
+        ),
+        "Experiment: shared evaluation",
+        (
+            "Extraction hypothesis: A bounded transaction neighborhood plus visible table "
+            "headers matches full-page merchant accuracy, while an isolated row crop does not."
+        ),
+        (
+            "Measurement: transaction-level merchant-attribution accuracy, exact "
+            "merchant-bearing-text rate, omission rate, wrong-merchant count, hallucination "
+            "count, ownership-error count, and paired accuracy delta by context tier"
+        ),
+        (
+            "Fixed inputs: the frozen 100 training pilot row identities and source evidence "
+            "only; all arms use the same reference cases, model, prompt, and decoding; "
+            "validation, held-out data, current gold, accepted parser output, Reviewer A/B "
+            "values, and experiment predictions remain closed"
+        ),
+        (
+            "Required output: a supported or falsified context-sufficiency hypothesis and the "
+            "smallest context tier attaining the best observed safe merchant accuracy"
+        ),
+        (
+            "Stop condition: stop before arm execution if merchant-bearing evidence is not "
+            "operationally referenceable, an independent reference cannot be frozen first, an "
+            "arm would expose prohibited data, or any declared context is truncated; stop "
+            "after the single scoring run"
+        ),
+        "",
+        "## Aggregate arm results",
+        "",
+        (
+            "| Tier | Eligible | Correct | Accuracy | Exact | Exact rate | Omissions | "
+            "Omission rate | Wrong merchants | Hallucinations | Ownership errors | "
+            "Nontransactions correct/total | Safe | Errors |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|---|",
+    ]
+    for tier in aggregate.tiers:
+        error_text = ", ".join(f"{error.category.value}={error.count}" for error in tier.errors)
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    tier.tier.value,
+                    str(tier.eligible_transactions),
+                    str(tier.correct_attributions),
+                    _decimal_text(tier.merchant_accuracy),
+                    str(tier.exact_text_matches),
+                    _decimal_text(tier.exact_text_rate),
+                    str(tier.omissions),
+                    _decimal_text(_rate(tier.omissions, tier.eligible_transactions)),
+                    str(tier.wrong_merchants),
+                    str(tier.hallucinations),
+                    str(tier.ownership_errors),
+                    (f"{tier.correct_nontransaction_anchors}/{tier.nontransaction_anchors}"),
+                    "yes" if tier.safe else "no",
+                    error_text or "none",
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        (
+            "",
+            "## Paired aggregate deltas",
+            "",
+            (
+                "| Tier | Comparator | Attribution gains | Attribution losses | Exact gains | "
+                "Exact losses |"
+            ),
+            "|---|---|---:|---:|---:|---:|",
+        )
+    )
+    lines.extend(
+        (
+            f"| {delta.tier.value} | {delta.comparator.value} | "
+            f"{delta.attribution_gains} | {delta.attribution_losses} | "
+            f"{delta.exact_text_gains} | {delta.exact_text_losses} |"
+        )
+        for delta in aggregate.paired_deltas
+    )
+    lines.extend(
+        (
+            "",
+            "## Result",
+            "",
+            f"Result: {result}",
+            "",
+            "## Limitations",
+            "",
+            "- This aggregate represents the single frozen scoring run.",
+            "- Ambiguous references are excluded from merchant-accuracy denominators.",
+            "- This experiment measures extraction only and does not change production parsing.",
+            "",
+            "## Metric-or-Stop",
+            "",
+            (
+                "Scope: YES — measured the effect of nested source context on "
+                "transaction-level merchant attribution"
+            ),
+            "Experiment: shared evaluation",
+            (
+                "Measurement: merchant-attribution accuracy, exact merchant-bearing-text rate, "
+                "omission rate, wrong-merchant count, hallucination count, ownership-error "
+                "count, and paired context-tier deltas"
+            ),
+            f"Result: {result}",
+            "Next extraction task: STOP",
+            "",
+        )
+    )
+    return "\n".join(lines)
 
 
 type _ContextPair = tuple[MerchantContextIndex, MerchantContextPacket]
