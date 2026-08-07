@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import itertools
 import json
+import os
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable
@@ -893,8 +896,16 @@ def test_materialize_cleans_the_private_root_after_a_failed_write(
     monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
     _install_fast_renderer(monkeypatch)
     original_write_jsonl = merchant_context.write_jsonl
+    observed_staging_roots: list[Path] = []
 
     def fail_after_write(path: Path, records: Iterable[BaseModel]) -> ArtifactIdentity:
+        observed_staging_roots.extend(
+            candidate
+            for candidate in path.parents
+            if candidate.parent == private_root.parent
+            and candidate.name.startswith(f".{private_root.name}.")
+            and candidate.name.endswith(".staging")
+        )
         original_write_jsonl(path, records)
         raise OSError("synthetic write failure")
 
@@ -903,6 +914,232 @@ def test_materialize_cleans_the_private_root_after_a_failed_write(
     with pytest.raises(MerchantContextError, match=r"^merchant context materialization failed$"):
         merchant_context.materialize_merchant_contexts(population, selected, private_root)
 
+    assert len(set(observed_staging_roots)) == 1
+    assert not observed_staging_roots[0].exists()
+    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
+    assert not private_root.exists()
+
+
+def test_rename_noreplace_configures_and_calls_the_ctypes_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_root = tmp_path / "staging"
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    library_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    rename_calls: list[tuple[object, ...]] = []
+
+    class FakeRenameAt2:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *args: object) -> int:
+            rename_calls.append(args)
+            ctypes.set_errno(0)
+            return 0
+
+    fake_renameat2 = FakeRenameAt2()
+
+    class FakeLibrary:
+        renameat2 = fake_renameat2
+
+    def load_library(*args: object, **kwargs: object) -> object:
+        library_calls.append((args, kwargs))
+        return FakeLibrary()
+
+    monkeypatch.setattr(merchant_context.ctypes, "CDLL", load_library)
+
+    result = merchant_context._rename_noreplace(staging_root, private_root)
+
+    assert result == (0, 0)
+    assert library_calls == [((None,), {"use_errno": True})]
+    assert fake_renameat2.argtypes == (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    assert fake_renameat2.restype is ctypes.c_int
+    assert rename_calls == [
+        (
+            -100,
+            os.fsencode(staging_root),
+            -100,
+            os.fsencode(private_root),
+            1,
+        )
+    ]
+
+
+def test_publish_succeeds_on_zero_return_even_when_errno_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_root = tmp_path / "staging"
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+
+    monkeypatch.setattr(
+        merchant_context,
+        "_rename_noreplace",
+        lambda source, destination: (0, errno.EINVAL),
+    )
+
+    merchant_context._publish_private_root(staging_root, private_root)
+
+
+@pytest.mark.parametrize("collision_errno", (errno.EEXIST, errno.ENOTEMPTY))
+def test_publication_time_collision_preserves_root_and_cleans_control_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    collision_errno: int,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    claim_path = private_root.with_name(f".{private_root.name}.claim")
+    replacement_marker = private_root / "replacement-owned"
+    observed_staging_roots: list[Path] = []
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+    _install_fast_renderer(monkeypatch)
+
+    def collide_at_publication(source: Path, destination: Path) -> tuple[int, int]:
+        assert destination == private_root
+        assert claim_path.is_file()
+        assert source.is_dir()
+        observed_staging_roots.append(source)
+        private_root.mkdir()
+        replacement_marker.write_text("replacement")
+        return -1, collision_errno
+
+    monkeypatch.setattr(merchant_context, "_rename_noreplace", collide_at_publication)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context root already exists$",
+    ):
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert replacement_marker.read_text() == "replacement"
+    assert len(set(observed_staging_roots)) == 1
+    assert not observed_staging_roots[0].exists()
+    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
+    assert not claim_path.exists()
+
+
+@pytest.mark.parametrize("publication_errno", (errno.ENOSYS, errno.EINVAL, errno.EXDEV))
+def test_publication_errno_fails_closed_and_cleans_control_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication_errno: int,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    claim_path = private_root.with_name(f".{private_root.name}.claim")
+    observed_staging_roots: list[Path] = []
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+    _install_fast_renderer(monkeypatch)
+
+    def fail_publication(source: Path, destination: Path) -> tuple[int, int]:
+        assert destination == private_root
+        assert claim_path.is_file()
+        observed_staging_roots.append(source)
+        return -1, publication_errno
+
+    monkeypatch.setattr(merchant_context, "_rename_noreplace", fail_publication)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context root publication failed$",
+    ):
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert len(set(observed_staging_roots)) == 1
+    assert not observed_staging_roots[0].exists()
+    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
+    assert not claim_path.exists()
+    assert not private_root.exists()
+
+
+@pytest.mark.parametrize("unavailable_boundary", ("library", "symbol"))
+def test_unavailable_publication_boundary_is_sanitized_and_cleans_control_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unavailable_boundary: str,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    claim_path = private_root.with_name(f".{private_root.name}.claim")
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+    _install_fast_renderer(monkeypatch)
+
+    def load_library(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        if unavailable_boundary == "library":
+            raise OSError("sensitive library failure")
+        return object()
+
+    monkeypatch.setattr(merchant_context.ctypes, "CDLL", load_library)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context root publication failed$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert "sensitive" not in str(error.value)
+    assert not tuple(private_root.parent.glob(f".{private_root.name}.*.staging"))
+    assert not claim_path.exists()
+    assert not private_root.exists()
+
+
+@pytest.mark.parametrize("cleanup_failure", ("raises", "leaves"))
+def test_staging_cleanup_failure_is_sanitized_and_releases_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_failure: str,
+) -> None:
+    population, selected = _high_level_fixture(tmp_path)
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    claim_path = private_root.with_name(f".{private_root.name}.claim")
+    observed_staging_roots: list[Path] = []
+    monkeypatch.setattr(merchant_context, "select_visual_gold_pilot", lambda rows: selected)
+
+    def fail_materialization(
+        rows: object,
+        anchor: FrozenRow,
+        image_root: Path,
+    ) -> tuple[
+        tuple[merchant_context.MerchantContextIndex, merchant_context.MerchantContextPacket], ...
+    ]:
+        del rows, anchor
+        staging_root = image_root.parent
+        staging_root.joinpath("synthetic-private-data").write_text("private")
+        observed_staging_roots.append(staging_root)
+        raise OSError("sensitive materialization failure")
+
+    original_rmtree = shutil.rmtree
+
+    def fail_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        candidate = Path(path)
+        if observed_staging_roots and candidate == observed_staging_roots[0]:
+            if cleanup_failure == "raises":
+                raise OSError("sensitive cleanup failure")
+            return
+        original_rmtree(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(merchant_context, "materialize_anchor_contexts", fail_materialization)
+    monkeypatch.setattr(merchant_context.shutil, "rmtree", fail_cleanup)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context staging cleanup failed$",
+    ) as error:
+        merchant_context.materialize_merchant_contexts(population, selected, private_root)
+
+    assert "sensitive" not in str(error.value)
+    assert len(set(observed_staging_roots)) == 1
+    assert observed_staging_roots[0].exists()
+    assert not claim_path.exists()
     assert not private_root.exists()
 
 
@@ -1048,6 +1285,55 @@ def test_materialize_rejects_markerless_abnormal_git_discovery(
     ) as error:
         merchant_context.materialize_merchant_contexts((), (), private_root)
     assert str(private_root) not in str(error.value)
+
+
+def test_markerless_git_discovery_pins_locale_and_preserves_ambient_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_root = tmp_path / "merchant-context-sufficiency-v1"
+    ambient_key = "MERCHANT_CONTEXT_TEST_AMBIENT"
+    ambient_value = "preserved"
+    discovery_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setenv(ambient_key, ambient_value)
+
+    def ordinary_outside_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        discovery_calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            (),
+            128,
+            stdout="",
+            stderr="fatal: not a git repository (or any of the parent directories): .git\n",
+        )
+
+    monkeypatch.setattr(merchant_context.subprocess, "run", ordinary_outside_git)
+
+    with pytest.raises(
+        MerchantContextError,
+        match=r"^merchant context pilot membership mismatch$",
+    ):
+        merchant_context.materialize_merchant_contexts((), (), private_root)
+
+    assert len(discovery_calls) == 1
+    args, kwargs = discovery_calls[0]
+    assert args == (
+        (
+            "git",
+            "-C",
+            str(tmp_path),
+            "rev-parse",
+            "--show-toplevel",
+        ),
+    )
+    assert kwargs["check"] is False
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    environment = kwargs["env"]
+    assert isinstance(environment, dict)
+    assert environment[ambient_key] == ambient_value
+    assert environment["LANG"] == "C"
+    assert environment["LANGUAGE"] == "C"
+    assert environment["LC_ALL"] == "C"
 
 
 def test_materialize_accepts_real_git_ignored_root_before_pilot_validation(

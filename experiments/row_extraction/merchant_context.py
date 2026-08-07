@@ -930,32 +930,48 @@ def _release_root_claim(claim_path: Path, claim_file_descriptor: int) -> None:
 
 
 def _cleanup_staging_root(staging_root: Path) -> None:
-    shutil.rmtree(staging_root, ignore_errors=True)
+    try:
+        shutil.rmtree(staging_root)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise MerchantContextError("merchant context staging cleanup failed") from None
+    try:
+        staging_root.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise MerchantContextError("merchant context staging cleanup failed") from None
+    raise MerchantContextError("merchant context staging cleanup failed")
+
+
+def _rename_noreplace(staging_root: Path, private_root: Path) -> tuple[int, int]:
+    renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        _AT_FDCWD,
+        os.fsencode(staging_root),
+        _AT_FDCWD,
+        os.fsencode(private_root),
+        _RENAME_NOREPLACE,
+    )
+    return result, ctypes.get_errno()
 
 
 def _publish_private_root(staging_root: Path, private_root: Path) -> None:
     try:
-        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
-        renameat2.argtypes = (
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        )
-        renameat2.restype = ctypes.c_int
-        result = renameat2(
-            _AT_FDCWD,
-            os.fsencode(staging_root),
-            _AT_FDCWD,
-            os.fsencode(private_root),
-            _RENAME_NOREPLACE,
-        )
+        result, error_number = _rename_noreplace(staging_root, private_root)
     except (AttributeError, OSError):
         raise MerchantContextError("merchant context root publication failed") from None
     if result == 0:
         return
-    error_number = ctypes.get_errno()
     if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
         raise MerchantContextError("merchant context root already exists")
     raise MerchantContextError("merchant context root publication failed")
@@ -990,10 +1006,12 @@ def _claim_private_root(private_root: Path) -> _RootClaim:
         if staging_root.parent.resolve(strict=True) != private_root.parent.resolve(strict=True):
             raise MerchantContextError("merchant context root claim failed")
     except BaseException:
-        if staging_root is not None:
-            _cleanup_staging_root(staging_root)
         assert claim_file_descriptor is not None
-        _release_root_claim(claim_path, claim_file_descriptor)
+        try:
+            if staging_root is not None:
+                _cleanup_staging_root(staging_root)
+        finally:
+            _release_root_claim(claim_path, claim_file_descriptor)
         raise
     assert claim_file_descriptor is not None
     assert staging_root is not None
@@ -1064,8 +1082,10 @@ def materialize_merchant_contexts(
             write_jsonl(packet_root / f"{batch_id}.jsonl", batch_packets)
         _publish_private_root(staging_root, private_root)
     except BaseException as error:
-        _cleanup_staging_root(staging_root)
-        _release_root_claim(claim_path, claim_file_descriptor)
+        try:
+            _cleanup_staging_root(staging_root)
+        finally:
+            _release_root_claim(claim_path, claim_file_descriptor)
         if isinstance(error, MerchantContextError):
             raise
         raise MerchantContextError("merchant context materialization failed") from None
