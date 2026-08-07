@@ -26,10 +26,10 @@ derived financial value is recorded here.
 Accepted baseline: zero exact matches with partial acceptance; page-OCR controls abstained. These
 are privacy-safe validation outcomes, not held-out measurements and not private-corpus acceptance.
 
-## Active phase: merchant context sufficiency
+## Stopped phase: merchant context sufficiency
 
-**Status:** `ACTIVE` — the user approved one training-only shared-evaluation experiment to measure
-the smallest source context that produces the best safe transaction-level merchant attribution.
+**Status:** `STOP` — the first and only materialization attempt failed atomically before an
+independent reference or any extraction arm was created.
 
 The binding design is
 [`2026-08-07-merchant-context-sufficiency-design.md`](../superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md).
@@ -38,19 +38,32 @@ reviewer's labels. An independent transaction reference must be frozen from sour
 any arm runs. Current gold, accepted parser output, previous reviewer values, experiment
 predictions, validation, and held-out data remain closed.
 
-The six nested context arms use identical pixels, positioned atom text and boxes, role-free column
-boundaries, model, prompt, decoding, and output contract. Only spatial context changes from the
-exact anchor row through the full page. Any wrong-merchant or hallucination event makes an arm
-unsafe. Among safe arms, the decision maximizes correct merchant attribution, then exact
-merchant-bearing text, then selects the smallest context tier.
+The committed Task 3 implementation selected a unique frozen training population with
+`population_count=2503`, `selected_count=100`, and `split=train`. The first and only materialization
+attempt stopped with the sanitized error `merchant context geometry unavailable` and left no
+private artifact tree. Aggregate read-only diagnosis found 17 materializable anchors and 83
+anchors with unavailable geometry.
 
-**Measurement:** transaction-level merchant-attribution accuracy, exact merchant-bearing-text
-rate, omission rate, wrong-merchant count, hallucination count, ownership-error count, reference
-ambiguity, and paired gains and losses by context tier.
+Visibility failures were 0 for `C0`, `C1`, `C2`, `C3`, and `C5`. For `C4`, 79 anchors failed
+visibility because row and atom bounds fell outside the declared detected table region, 4 were
+missing required `C2` rows, and 38 were not a superset of `C3`. These categories overlap; their
+union is 83 anchors. Continuing would truncate or omit declared context, so the binding
+fail-closed stop condition applies.
 
-**Next extraction task:** implement and run the single fixed merchant-context sufficiency
-experiment, report the supported or falsified hypothesis and smallest best safe tier, then `STOP`
-unless the user separately authorizes one next extraction task.
+No independent reference was created. No extraction arm ran, no predictions or error labels were
+created, and the scorer invocation count was 0. The merchant-attribution hypothesis result is
+`NOT MEASURED`; the smallest best safe context tier and recommended tier are `NOT MEASURED`.
+
+The aggregate report is
+[`row-extraction-merchant-context-report.md`](row-extraction-merchant-context-report.md).
+
+```text
+Scope: YES — quantified whether the declared nested source contexts could be materialized without truncation for transaction-level merchant attribution
+Experiment: shared evaluation
+Measurement: transaction-level merchant-attribution accuracy, exact merchant-bearing-text rate, omission rate, wrong-merchant count, hallucination count, ownership-error count, and paired accuracy delta by context tier — NOT MEASURED
+Result: Aggregate pre-arm STOP — population_count=2503, selected_count=100, split=train; context-materialization eligibility=17/100, declared-context truncation count=83/100, and geometry unavailable=83/100; no reference, arm, or score was produced, so hypothesis result and smallest/recommended tier are NOT MEASURED
+Next extraction task: STOP
+```
 
 No reusable controller, CLI family, schema family, receipt chain, workflow subsystem, replacement
 pilot, validation run, held-out access, or production integration is authorized.
@@ -70,7 +83,7 @@ The binding stop occurred before adjudication and before current-gold inspection
 thresholds, prompts, canonicalization, comparison logic, or extractors may be changed to rescue
 this pilot, and no replacement pilot or support task may be launched under the current authority.
 
-The pilot remains stopped. The active context-sufficiency experiment does not adjudicate, relabel,
+The pilot remains stopped. The stopped context-sufficiency experiment does not adjudicate, relabel,
 rescue, or continue it.
 
 The aggregate pilot report is
