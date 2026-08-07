@@ -5,6 +5,8 @@ program.
 
 **Authority date:** 2026-07-28
 
+**Last amended:** 2026-08-07
+
 **Accepted comparison anchor:**
 `dee4b071ad65231da13825f2f7c74a488ca96c7c`
 
@@ -793,3 +795,58 @@ visual-gold v2, every score computed against old gold is invalidated and must be
 promoted version.
 
 **Held-out boundary:** Validation and held-out data remain unopened by this task.
+
+## Approved amendment: merchant context sufficiency
+
+**Approval date:** 2026-08-07
+
+**Reason:** The stopped visual-gold pilot measured systematic reviewer policy differences rather
+than merchant accuracy. All core financial roles agreed, while description disagreements were
+concentrated in whether continuation text was merchant-bearing or ancillary. The product goal
+requires correct merchant attribution, so the next measurement must test which source context
+produces the best transaction-level merchant result against an independent reference.
+
+**Affected experiment:** Shared evaluation only. The four extraction implementations and all
+Round 1 results remain frozen.
+
+**Authorized change:** Run exactly one training-only merchant-context sufficiency experiment under
+the approved
+[design](2026-08-07-merchant-context-sufficiency-design.md). Reuse the 100 frozen pilot row
+identities as opaque anchors without reusing or adjudicating either reviewer stream. Freeze an
+independently source-adjudicated transaction reference before arm execution. Compare the six
+nested `C0 row` through `C5 full-page` context tiers using the same model, prompt, decoding, pixel
+representation, positioned-text representation, and output contract; only spatial context may
+change.
+
+**Measurement:** Transaction-level merchant-attribution accuracy, exact merchant-bearing-text
+rate, omission rate, wrong-merchant count, hallucination count, ownership-error count, reference
+ambiguity, and paired gains and losses by context tier. The result must support or falsify the
+predeclared context-sufficiency hypothesis and identify the smallest best safe tier or report that
+no safe tier exists.
+
+**Decision rule:** Any wrong-merchant or hallucination event makes an arm unsafe. Among safe arms,
+maximize the correctly attributed transaction set, then the exact merchant-bearing-text set, then
+choose the smallest tier. Ancillary category, location, processor/reference, exchange-rate, and
+fee text does not become release-critical merchant evidence merely because reviewers classified
+it differently.
+
+**Comparison impact:** The failed visual-gold pilot remains stopped and is not rescued, relabeled,
+adjudicated, or reinterpreted as an accuracy result. This training measurement cannot select a
+production change or justify held-out access. Existing Round 1 comparisons remain historical.
+
+**Privacy and dependency impact:** Source images, atoms, reference values, merchant text, arm
+outputs, and financial data remain ignored and local. Tracked outputs contain aggregate counts and
+rates only. No new package, hosted service, heavyweight model, reusable controller, CLI family,
+schema family, receipt chain, attestation system, or workflow subsystem is authorized.
+
+**Invalidated results:** None. The new result answers a different predeclared question and does
+not alter prior labels, predictions, or scores.
+
+**Stop boundary:** Stop before arm execution if the independent reference cannot be frozen without
+current gold, accepted parser output, previous reviewer values, or experiment predictions. Stop
+after the one frozen scoring run with the Metric-or-Stop report. No failed arm, missing
+convenience, or inconclusive outcome authorizes a rescue task.
+
+**Held-out boundary:** Validation and held-out data remain unopened. Any validation measurement,
+production integration, or production acceptance work requires separate direct user approval and
+a committed amendment.

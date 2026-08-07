@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-08-01
+**Updated:** 2026-08-07
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -26,9 +26,38 @@ derived financial value is recorded here.
 Accepted baseline: zero exact matches with partial acceptance; page-OCR controls abstained. These
 are privacy-safe validation outcomes, not held-out measurements and not private-corpus acceptance.
 
-## Program stop
+## Active phase: merchant context sufficiency
 
-**Status:** `STOP` — the visual-gold v2 100-row training pilot failed its binding
+**Status:** `ACTIVE` — the user approved one training-only shared-evaluation experiment to measure
+the smallest source context that produces the best safe transaction-level merchant attribution.
+
+The binding design is
+[`2026-08-07-merchant-context-sufficiency-design.md`](../superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md).
+It reuses exactly the 100 frozen pilot row identities as opaque anchors without using either
+reviewer's labels. An independent transaction reference must be frozen from source evidence before
+any arm runs. Current gold, accepted parser output, previous reviewer values, experiment
+predictions, validation, and held-out data remain closed.
+
+The six nested context arms use identical pixels, positioned atom text and boxes, role-free column
+boundaries, model, prompt, decoding, and output contract. Only spatial context changes from the
+exact anchor row through the full page. Any wrong-merchant or hallucination event makes an arm
+unsafe. Among safe arms, the decision maximizes correct merchant attribution, then exact
+merchant-bearing text, then selects the smallest context tier.
+
+**Measurement:** transaction-level merchant-attribution accuracy, exact merchant-bearing-text
+rate, omission rate, wrong-merchant count, hallucination count, ownership-error count, reference
+ambiguity, and paired gains and losses by context tier.
+
+**Next extraction task:** implement and run the single fixed merchant-context sufficiency
+experiment, report the supported or falsified hypothesis and smallest best safe tier, then `STOP`
+unless the user separately authorizes one next extraction task.
+
+No reusable controller, CLI family, schema family, receipt chain, workflow subsystem, replacement
+pilot, validation run, held-out access, or production integration is authorized.
+
+## Completed visual-gold pilot stop
+
+**Status:** Historical `STOP` — the visual-gold v2 100-row training pilot failed its binding
 pre-adjudication field-exact agreement gate.
 
 **Aggregate result:** annotation validity was 100%; row-type agreement was 98/100 (`0.98`) and
@@ -41,7 +70,8 @@ The binding stop occurred before adjudication and before current-gold inspection
 thresholds, prompts, canonicalization, comparison logic, or extractors may be changed to rescue
 this pilot, and no replacement pilot or support task may be launched under the current authority.
 
-**Next extraction task:** `STOP`.
+The pilot remains stopped. The active context-sufficiency experiment does not adjudicate, relabel,
+rescue, or continue it.
 
 The aggregate pilot report is
 [`row-extraction-visual-gold-v2-pilot-report.md`](row-extraction-visual-gold-v2-pilot-report.md).
