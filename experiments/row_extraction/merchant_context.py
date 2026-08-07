@@ -570,12 +570,10 @@ def _assertion_evidence_is_available(
     )
 
 
-def _assertion_text_is_source_supported(
+def _assertion_text_is_atom_supported(
     assertion: MerchantAssertion, packet: MerchantContextPacket
 ) -> bool:
     if assertion.disposition is not AssertionDisposition.MERCHANT:
-        return True
-    if assertion.source_regions:
         return True
     if assertion.merchant_text is None or not assertion.atom_ids:
         return False
@@ -585,6 +583,12 @@ def _assertion_text_is_source_supported(
         return False
     concrete_texts = tuple(text for text in texts if text is not None)
     return canonical_merchant_text(" ".join(concrete_texts)) == assertion.merchant_text
+
+
+def _assertion_text_is_source_supported(
+    assertion: MerchantAssertion, packet: MerchantContextPacket
+) -> bool:
+    return bool(assertion.source_regions) or _assertion_text_is_atom_supported(assertion, packet)
 
 
 def _regions_overlap(first: BBox, second: BBox) -> bool:
@@ -718,6 +722,7 @@ def score_merchant_context(
     preliminary_scores: dict[ContextTier, dict[_TransactionIdentity, _TransactionScore]] = {
         tier: {} for tier in CONTEXT_TIERS
     }
+    atom_backed_exact_transactions: set[tuple[ContextTier, _TransactionIdentity]] = set()
     for tier in CONTEXT_TIERS:
         for transaction, owned_references in transaction_references.items():
             reference = owned_references[0]
@@ -778,6 +783,11 @@ def score_merchant_context(
                 and assertion.source_regions == reference.source_regions
                 for assertion, _ in assertion_packets
             )
+            if exact_text and all(
+                _assertion_text_is_atom_supported(assertion, packet)
+                for assertion, packet in assertion_packets
+            ):
+                atom_backed_exact_transactions.add((tier, transaction))
             omission = any(
                 assertion.disposition is not AssertionDisposition.MERCHANT
                 for assertion, _ in assertion_packets
@@ -818,7 +828,10 @@ def score_merchant_context(
         for transaction, score in preliminary_tier_scores.items():
             label = error_by_tier_transaction.get((tier, transaction))
             categories = set() if label is None else {label.primary, *label.secondary}
-            unsupported_text = MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
+            unsupported_text = (
+                MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT in categories
+                and (tier, transaction) not in atom_backed_exact_transactions
+            )
             attribution = score.attribution and not unsupported_text
             ancillary_substitution = (
                 MerchantErrorCategory.MERCHANT_VERSUS_ANCILLARY in categories and not attribution
@@ -834,7 +847,7 @@ def score_merchant_context(
                 or ancillary_substitution
                 or neighboring_transaction_contamination,
                 score.hallucination or unsupported_text,
-                score.ownership_error,
+                score.ownership_error or neighboring_transaction_contamination,
             )
 
     expected_error_keys = {
@@ -960,7 +973,6 @@ def score_merchant_context(
     hypothesis_falsified = (
         has_eligible_transactions
         and not hypothesis_supported
-        and not context_interference
         and all(
             tier not in safe_tier_set
             or bool(full_page_attributions - correct_sets[tier])

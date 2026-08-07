@@ -1026,6 +1026,30 @@ def test_scoring_marks_foreign_merchant_evidence_wrong_and_unsafe(
     assert arm.safe is False
 
 
+def test_scoring_reconciles_label_only_neighbor_contamination_into_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    selected = cast(tuple[FrozenRow, ...], case["selected_rows"])
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_assertion(
+        case,
+        tier,
+        0,
+        merchant_text="SECRET MERCHANT OTHER MERCHANT",
+        atom_ids=(),
+        source_regions=(selected[0].bbox,),
+    )
+    _replace_error(case, tier, 0, MerchantErrorCategory.NEIGHBORING_TRANSACTION_CONTAMINATION)
+
+    summary = _score_case(monkeypatch, case)
+    arm = next(item for item in summary.tiers if item.tier is tier)
+
+    assert arm.wrong_merchants == 1
+    assert arm.ownership_errors == 1
+    assert arm.safe is False
+
+
 def test_scoring_marks_unsupported_merchant_text_as_hallucination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1064,6 +1088,17 @@ def test_score_removes_region_backed_unsupported_text_from_correct_attributions(
     assert arm.hallucinations == 1
     assert arm.wrong_merchants == 0
     assert arm.safe is False
+
+
+def test_score_rejects_unsupported_label_for_exact_atom_backed_assertion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    tier = ContextTier.C3_HEADER_NEIGHBORHOOD
+    _replace_error(case, tier, 0, MerchantErrorCategory.UNSUPPORTED_MERCHANT_TEXT)
+
+    with pytest.raises(MerchantContextError, match=r"^merchant error coverage mismatch$"):
+        _score_case(monkeypatch, case)
 
 
 def test_score_applies_unsupported_label_before_final_exact_coverage(
@@ -1300,6 +1335,51 @@ def test_decision_reports_context_interference_when_smaller_safe_tier_beats_full
     assert summary.hypothesis_falsified is False
     assert summary.context_interference is True
     assert "Result: context interference;" in report
+
+
+def test_decision_falsifies_bounded_hypothesis_despite_c4_only_interference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _all_exact_scoring_fixture()
+    for tier in CONTEXT_TIERS[:4]:
+        _replace_assertion(
+            case,
+            tier,
+            1,
+            disposition=AssertionDisposition.ABSTAIN,
+            owner_row_id=None,
+            merchant_text=None,
+            atom_ids=(),
+        )
+        _replace_error(
+            case,
+            tier,
+            1,
+            MerchantErrorCategory.INSUFFICIENT_CONTEXT_OR_MISSING_HEADER,
+        )
+    _replace_assertion(
+        case,
+        ContextTier.C5_FULL_PAGE,
+        0,
+        disposition=AssertionDisposition.ABSTAIN,
+        owner_row_id=None,
+        merchant_text=None,
+        atom_ids=(),
+    )
+    _replace_error(
+        case,
+        ContextTier.C5_FULL_PAGE,
+        0,
+        MerchantErrorCategory.INSUFFICIENT_CONTEXT_OR_MISSING_HEADER,
+    )
+
+    summary = _score_case(monkeypatch, case)
+    report = render_merchant_context_report(summary)
+
+    assert summary.hypothesis_supported is False
+    assert summary.hypothesis_falsified is True
+    assert summary.context_interference is True
+    assert "Result: falsified hypothesis;" in report
 
 
 def test_decision_supports_exact_match_even_with_other_context_interference(
