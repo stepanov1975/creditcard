@@ -976,7 +976,7 @@ class _BoundDynamicExecutable:
             or directory.st_uid != os.geteuid()
             or stat.S_IMODE(directory.st_mode) != 0o500
             or _stable_file_identity(directory) != _stable_file_identity(named_directory)
-            or tuple(sorted(os.listdir(self.staging_file_descriptor))) != expected_names
+            or tuple(sorted(_list_directory_names(self.staging_file_descriptor))) != expected_names
         ):
             raise RuntimeError("external runtime unavailable")
         for library in self.libraries:
@@ -2460,9 +2460,9 @@ def _validate_tesseract_staging(
         or stat.S_IMODE(tessdata.st_mode) != 0o500
         or stat.S_IMODE(configs.st_mode) != 0o500
         or _stable_file_identity(named_configs) != _stable_file_identity(configs)
-        or tuple(sorted(os.listdir(tessdata_fd)))
+        or tuple(sorted(_list_directory_names(tessdata_fd)))
         != ("configs", "eng.traineddata", "heb.traineddata")
-        or tuple(os.listdir(configs_fd)) != ("tsv",)
+        or _list_directory_names(configs_fd) != ("tsv",)
     ):
         raise RuntimeError("external runtime unavailable")
     for directory_fd, name, capability in (
@@ -3333,6 +3333,18 @@ def _run_paths(work_dir: Path) -> tuple[tuple[Path, Path], ...]:
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _list_directory_names(directory_fd: int) -> tuple[str, ...]:
+    reopened_fd = os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=directory_fd)
+    try:
+        if _stable_file_identity(os.fstat(reopened_fd)) != _stable_file_identity(
+            os.fstat(directory_fd)
+        ):
+            raise RuntimeError("external runtime unavailable")
+        return tuple(os.listdir(reopened_fd))
+    finally:
+        os.close(reopened_fd)
 
 
 def _relative_directory_parts(

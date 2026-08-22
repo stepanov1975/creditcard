@@ -16,6 +16,7 @@ import threading
 import traceback
 import weakref
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
@@ -4881,6 +4882,32 @@ def test_bound_dynamic_executable_uses_only_sealed_native_mappings(
     assert runtime.native_closure.file_count >= 2
 
 
+def test_bound_dynamic_executable_staging_validation_is_thread_safe(
+    tmp_path: Path,
+) -> None:
+    executable_path = shutil.which("git")
+    if executable_path is None:
+        pytest.skip("Git is unavailable")
+    runtime = corpus_gate_module._BoundDynamicExecutable.bind_path(
+        Path(executable_path),
+        staging_parent=tmp_path,
+    )
+    start = threading.Barrier(4)
+
+    def validate_repeatedly() -> None:
+        start.wait()
+        for _ in range(1_000):
+            runtime._validate_staging()
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            validations = tuple(executor.submit(validate_repeatedly) for _ in range(4))
+            for validation in validations:
+                validation.result()
+    finally:
+        runtime.close()
+
+
 def test_script_interpreter_is_part_of_the_native_closure(tmp_path: Path) -> None:
     script = tmp_path / "wrapper"
     script.write_text("#!/bin/sh\nprintf script-interpreter-bound\n", encoding="utf-8")
@@ -5481,6 +5508,54 @@ def test_tesseract_fingerprint_tracks_every_executable_and_data_asset(
     after = corpus_gate_module._tesseract_metadata(commands)
 
     assert before != after
+
+
+def test_tesseract_staging_validation_is_thread_safe(tmp_path: Path) -> None:
+    asset_directory = tmp_path / "assets"
+    asset_directory.mkdir()
+    asset_paths = tuple(asset_directory / name for name in ("tsv", "eng", "heb"))
+    for asset_path in asset_paths:
+        asset_path.write_bytes(asset_path.name.encode())
+    capabilities = tuple(
+        corpus_gate_module._SealedCapability.bind_path(asset_path, executable=False)
+        for asset_path in asset_paths
+    )
+    tsv_config, eng_traineddata, heb_traineddata = capabilities
+    tessdata_directory = tmp_path / "tessdata-runtime"
+    configs_directory = tessdata_directory / "configs"
+    configs_directory.mkdir(parents=True)
+    tessdata_fd = os.open(tessdata_directory, os.O_RDONLY | os.O_DIRECTORY)
+    configs_fd = os.open(configs_directory, os.O_RDONLY | os.O_DIRECTORY)
+    os.symlink(tsv_config.descriptor_path, "tsv", dir_fd=configs_fd)
+    os.symlink(eng_traineddata.descriptor_path, "eng.traineddata", dir_fd=tessdata_fd)
+    os.symlink(heb_traineddata.descriptor_path, "heb.traineddata", dir_fd=tessdata_fd)
+    os.fchmod(configs_fd, 0o500)
+    os.fchmod(tessdata_fd, 0o500)
+    start = threading.Barrier(4)
+
+    def validate_repeatedly() -> None:
+        start.wait()
+        for _ in range(1_000):
+            corpus_gate_module._validate_tesseract_staging(
+                tessdata_fd,
+                configs_fd,
+                tsv_config=tsv_config,
+                eng_traineddata=eng_traineddata,
+                heb_traineddata=heb_traineddata,
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            validations = tuple(executor.submit(validate_repeatedly) for _ in range(4))
+            for validation in validations:
+                validation.result()
+    finally:
+        os.fchmod(configs_fd, 0o700)
+        os.fchmod(tessdata_fd, 0o700)
+        os.close(configs_fd)
+        os.close(tessdata_fd)
+        for capability in capabilities:
+            capability.close()
 
 
 def test_tesseract_execution_uses_fingerprinted_executable_and_assets_after_swaps(
