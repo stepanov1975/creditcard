@@ -17,7 +17,7 @@ dev = [
     "mypy>=1.18,<2",
     "pytest>=9,<10",
     "pytest-cov>=7,<8",
-    "ruff>=0.14,<1",
+    "ruff==0.15.22",
 ]
 
 [tool.pytest.ini_options]
