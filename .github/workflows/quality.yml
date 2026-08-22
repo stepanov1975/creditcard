@@ -42,4 +42,4 @@ jobs:
       - name: Test
         env:
           TMPDIR: /dev/shm
-        run: .venv/bin/pytest -q
+        run: sudo --preserve-env=TMPDIR -- .venv/bin/pytest -q
