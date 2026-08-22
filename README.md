@@ -19,7 +19,7 @@ On Debian or Ubuntu, install the system OCR dependencies with:
 
 ```bash
 sudo apt-get update
-sudo apt-get install tesseract-ocr tesseract-ocr-heb
+sudo apt-get install tesseract-ocr tesseract-ocr-eng tesseract-ocr-heb
 ```
 
 Create the environment and install the project:
