@@ -1819,6 +1819,46 @@ def test_discover_statement_rejects_conflicting_identity_candidates_without_leak
     assert "5678" not in public_diagnostics
 
 
+def test_discover_statement_rejects_conflicting_full_cards_with_same_suffix() -> None:
+    page = _page(
+        1,
+        (
+            _word("Card number", 10.0, 70.0, 2.0),
+            _word("1111111111111234", 80.0, 155.0, 2.0),
+            _word("Card number", 10.0, 70.0, 17.0),
+            _word("2222222222221234", 80.0, 155.0, 17.0),
+            *_table(45.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.card_number is None
+    assert "conflicting_discovered_metadata:card_number" in result.diagnostics
+
+
+def test_discover_statement_accepts_matching_full_card_and_suffix() -> None:
+    page = _page(
+        1,
+        (
+            _word("Card number", 10.0, 70.0, 2.0),
+            _word("1111111111111234", 80.0, 155.0, 2.0),
+            _word("Card ending in 1234", 10.0, 155.0, 17.0),
+            *_table(45.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.card_number is not None
+    assert result.card_number.value == "1111111111111234"
+    assert "conflicting_discovered_metadata:card_number" not in result.diagnostics
+
+
 def test_discover_statement_does_not_treat_table_merchant_as_issuer_brand() -> None:
     table_words = list(_table(20.0, "₪", "10.00", "20.00"))
     table_words[4] = table_words[4].model_copy(update={"text": "MAX BRENNER"})
@@ -1828,6 +1868,22 @@ def test_discover_statement_does_not_treat_table_merchant_as_issuer_brand() -> N
             *table_words,
             _word("Total", 50.0, 95.0, 80.0),
             _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is None
+
+
+def test_discover_statement_requires_explicit_short_latin_brand_evidence() -> None:
+    page = _page(
+        1,
+        (
+            _word("MAX BRENNER rewards", 10.0, 155.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
         ),
     )
 
@@ -1860,7 +1916,7 @@ def test_discover_statement_deduplicates_repeated_identical_identity_evidence() 
         1,
         (
             _word("MAX", 10.0, 50.0, 2.0),
-            _word("MAX", 10.0, 50.0, 5.0),
+            _word("MAX", 10.0, 50.0, 17.0),
             *_table(30.0, "₪", "10.00", "20.00"),
             _word("Total", 50.0, 95.0, 90.0),
             _word("₪30.00", 118.0, 155.0, 90.0),

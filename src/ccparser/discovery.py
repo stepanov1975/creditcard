@@ -330,6 +330,10 @@ _ISSUER_BRAND_ALIASES: dict[str, frozenset[str]] = {
     "cal": frozenset({"cal", "כאל", "ויזה כאל"}),
     "amex": frozenset({"amex", "american express", "אמריקן אקספרס"}),
 }
+_ISSUER_DOMAIN_PHRASES: dict[str, frozenset[str]] = {
+    "max": frozenset({"max co il", "max it"}),
+    "cal": frozenset({"cal co il", "cal online co il"}),
+}
 _CARD_SUFFIX_LABELS = frozenset(
     {
         "card ending in",
@@ -1345,6 +1349,15 @@ def _contains_normalized_phrase(text: str, phrase: str) -> bool:
     return f" {phrase} " in f" {text} "
 
 
+def _issuer_alias_matches(normalized: str, issuer: str, alias: str) -> bool:
+    if alias not in {"max", "cal"}:
+        return _contains_normalized_phrase(normalized, alias)
+    return normalized == alias or any(
+        _contains_normalized_phrase(normalized, domain_phrase)
+        for domain_phrase in _ISSUER_DOMAIN_PHRASES[issuer]
+    )
+
+
 def _canonical_statement_date(value: str) -> str | None:
     match = _METADATA_DATE_VALUE_PATTERN.fullmatch(value)
     if match is None:
@@ -1414,7 +1427,7 @@ def _inline_identity_candidates(
             normalized = _normalized_phrase(cell.text)
             if field_name == "issuer":
                 for issuer, aliases in _ISSUER_BRAND_ALIASES.items():
-                    if any(_contains_normalized_phrase(normalized, alias) for alias in aliases):
+                    if any(_issuer_alias_matches(normalized, issuer, alias) for alias in aliases):
                         candidates.append(
                             DiscoveredField(
                                 field_name=field_name,
@@ -1507,6 +1520,40 @@ def _metadata_source_rows(rows: Sequence[Row], regions: Sequence[TableRegion]) -
     return tuple(row for row in rows if not overlaps_table_row(row))
 
 
+def _select_metadata_candidate(
+    candidates: Sequence[DiscoveredField],
+) -> DiscoveredField:
+    return min(
+        candidates,
+        key=lambda candidate: (
+            -candidate.confidence,
+            candidate.evidence.page_number,
+            candidate.evidence.bbox,
+            candidate.evidence.raw_text,
+        ),
+    )
+
+
+def _card_metadata_field(
+    candidates: Sequence[DiscoveredField],
+) -> tuple[DiscoveredField | None, tuple[str, ...]]:
+    by_digits: dict[str, list[DiscoveredField]] = {}
+    for candidate in candidates:
+        digits = "".join(character for character in candidate.value if character.isdigit())
+        if len(digits) < 4:
+            continue
+        by_digits.setdefault(digits, []).append(candidate)
+    full_cards = {digits for digits in by_digits if len(digits) > 4}
+    suffixes = {digits[-4:] for digits in by_digits}
+    conflict = len(full_cards) > 1 or len(suffixes) > 1
+    if full_cards and suffixes != {next(iter(full_cards))[-4:]}:
+        conflict = True
+    if conflict or not by_digits:
+        return None, ("conflicting_discovered_metadata:card_number",) if conflict else ()
+    selected_digits = next(iter(full_cards)) if full_cards else next(iter(by_digits))
+    return _select_metadata_candidate(by_digits[selected_digits]), ()
+
+
 def _metadata_field(
     rows: Sequence[Row], field_name: str
 ) -> tuple[DiscoveredField | None, tuple[str, ...]]:
@@ -1538,19 +1585,12 @@ def _metadata_field(
             )
     if not candidates:
         return None, ()
+    if field_name == "card_number":
+        return _card_metadata_field(candidates)
     identity_keys = {_metadata_identity_key(candidate) for candidate in candidates}
     if len(identity_keys) != 1:
         return None, (f"conflicting_discovered_metadata:{field_name}",)
-    selected = min(
-        candidates,
-        key=lambda candidate: (
-            -candidate.confidence,
-            candidate.evidence.page_number,
-            candidate.evidence.bbox,
-            candidate.evidence.raw_text,
-        ),
-    )
-    return selected, ()
+    return _select_metadata_candidate(candidates), ()
 
 
 def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
