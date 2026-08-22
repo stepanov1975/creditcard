@@ -40,6 +40,4 @@ jobs:
         run: .venv/bin/mypy src
 
       - name: Test
-        env:
-          TMPDIR: /dev/shm
-        run: sudo --preserve-env=TMPDIR -- .venv/bin/pytest -q
+        run: sudo -- env TMPDIR=/dev/shm .venv/bin/pytest -q
