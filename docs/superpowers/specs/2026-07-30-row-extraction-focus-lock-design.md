@@ -54,6 +54,21 @@ Existing branches and artifacts remain read-only historical evidence. They are n
 tasks. An exception requires a direct user approval followed by a committed charter amendment;
 approval may not be inferred from a general request to continue the experiment program.
 
+## Approved Production-Acceptance Exception
+
+On 2026-08-22, the user explicitly approved one bounded exception needed to complete the first
+stable release: correct the private-corpus gate's concurrent directory-descriptor enumeration
+race. The exception is limited to a focused regression test and the smallest implementation
+change in `tests/test_corpus_gate.py` and `src/ccparser/corpus_gate.py`.
+
+The fix must preserve the gate's existing CLI, protected inputs, pinning, attestation, isolation,
+and acceptance semantics. It may only make directory-entry validation deterministic when several
+OCR workers validate the same sealed runtime concurrently. It must pass the tracked verification
+suite and a fresh formal private-corpus `verify` run before release publication.
+
+This exception is production release acceptance work. It does not reactivate row-extraction
+experiments, authorize controller redesign, or count as extraction progress.
+
 ## Mandatory Task Contract
 
 Before work starts, every root task, plan task, and subagent prompt must record:
