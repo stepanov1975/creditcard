@@ -413,7 +413,7 @@ def test_typed_summary_converters_match_legacy_parser_adapter_snapshots() -> Non
     _assert_legacy_adapter_snapshot(
         actual_rows[0],
         RowNormalizationSummary,
-        "0569c89278f8de927a4b329cfa26941e69c2c4cf080a2ba314ff3e90fc7402e0",
+        "08638e1b6d07edbbea91e55b7cf2371bef2016d26bcdee6f9409f69ab0960bc0",
         "06ef0d86c90c14d1ee49ddd09120d23d240f6cf612e8428577d377540486adc2",
     )
 

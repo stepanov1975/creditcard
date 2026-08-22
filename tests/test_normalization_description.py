@@ -13,6 +13,7 @@ from ccparser.models import EvidenceReference
 from ccparser.normalization_description import (
     _primary_description_cluster,
     _render_selected_description,
+    derive_merchant,
     extract_description,
     is_description_continuation,
 )
@@ -229,6 +230,37 @@ def test_description_uses_complete_digital_cell_text_when_atom_rendering_disagre
     assert _render_selected_description(ledger, cell, frozenset((min(atom_ids),))) == (
         "REGION SERVICEREGION ל"
     )
+
+
+def test_merchant_uses_trusted_digital_continuation_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _cell(
+        "Merchant ל",
+        1,
+        y=30.0,
+        words=(_word("Merchant ל", 50.0, 90.0, y=30.0),),
+    )
+    location = _cell(
+        "IRELAND",
+        1,
+        y=41.0,
+        words=(_word("IRELAND", 50.0, 90.0, y=41.0),),
+    )
+    rows = (_row(base), _row(location))
+    ledger = EvidenceLedger.from_rows(rows)
+    claims = (
+        _claim(SemanticOwner.DESCRIPTION, ledger, base),
+        _claim(SemanticOwner.DESCRIPTION, ledger, location),
+    )
+    monkeypatch.setattr(EvidenceLedger, "render", lambda self, selected: "DNALERI")
+
+    assert derive_merchant(
+        description="Merchant ל IRELAND",
+        rows=rows,
+        ledger=ledger,
+        claims=claims,
+    ) == ("Merchant", ())
 
 
 def test_description_claims_separate_hyphenated_cluster_as_processor_reference() -> None:

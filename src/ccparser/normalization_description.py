@@ -810,6 +810,57 @@ def _render_selected_description(
     return ledger.render(selected_ids)
 
 
+_REVIEWED_LOCATION_CONTINUATIONS = frozenset({"AMSTERDAM", "IRELAND"})
+_LOCATION_RELATION_MARKER = " ל"
+
+
+def derive_merchant(
+    *,
+    description: str | None,
+    rows: Sequence[Row],
+    ledger: EvidenceLedger,
+    claims: Sequence[EvidenceClaim],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Derive a merchant without guessing across unresolved continuation boundaries."""
+
+    if description is None:
+        return None, ()
+    description_atom_ids = frozenset(
+        atom_id
+        for claim in claims
+        if claim.owner is SemanticOwner.DESCRIPTION
+        for atom_id in claim.atom_ids
+    )
+    merchant = normalize_text(description)
+    for row in reversed(rows[1:]):
+        row_atom_ids = frozenset(
+            atom_id for cell in row.cells for atom_id in ledger.atoms_for_cell(cell)
+        )
+        continuation_ids = description_atom_ids & row_atom_ids
+        if not continuation_ids:
+            continue
+        continuation_cells = tuple(
+            cell for cell in row.cells if continuation_ids & ledger.atoms_for_cell(cell)
+        )
+        continuation = _merchant_punctuation(
+            _render_selected_description(ledger, continuation_cells[0], continuation_ids)
+            if len(continuation_cells) == 1
+            else ledger.render(continuation_ids)
+        )
+        suffix = f" {continuation}"
+        if not merchant.endswith(suffix):
+            return None, ("ambiguous_merchant_boundary",)
+        prefix = merchant[: -len(suffix)].rstrip()
+        if not prefix.endswith(_LOCATION_RELATION_MARKER):
+            continue
+        if continuation not in _REVIEWED_LOCATION_CONTINUATIONS:
+            if " " in continuation:
+                return None, ("ambiguous_merchant_boundary",)
+            continue
+        merchant = prefix[: -len(_LOCATION_RELATION_MARKER)].rstrip()
+    return (merchant or None), (() if merchant else ("missing_merchant",))
+
+
 def extract_description(
     rows: Sequence[Row],
     region: TableRegion,

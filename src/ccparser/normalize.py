@@ -49,6 +49,7 @@ from ccparser.normalization_dates import (
     structural_date_column_kinds,
 )
 from ccparser.normalization_description import (
+    derive_merchant,
     extract_description,
     is_description_continuation,
 )
@@ -458,6 +459,13 @@ def _normalize_row(
     )
     semantic_claims = list(semantic_validation.claims)
     diagnostics.extend(semantic_validation.diagnostics)
+    merchant, merchant_diagnostics = derive_merchant(
+        description=description,
+        rows=rows,
+        ledger=ledger,
+        claims=semantic_claims,
+    )
+    diagnostics.extend(merchant_diagnostics)
 
     kind = TransactionKind.CREDIT if billed.amount < 0 else TransactionKind.CHARGE
     category, category_diagnostics = _resolved_category(
@@ -479,7 +487,7 @@ def _normalize_row(
         transaction_date=transaction_date,
         posting_date=posting_date,
         conversion_date=conversion_date,
-        merchant=description,
+        merchant=merchant,
         description=description,
         category=category,
         original_amount=original_amount,

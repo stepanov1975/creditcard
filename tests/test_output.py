@@ -69,6 +69,7 @@ def _batch() -> BatchResult:
         transaction_date=date(2026, 1, 2),
         conversion_date=date(2026, 1, 3),
         description='Café, "שָׁלוֹם"\nsecond line',
+        merchant="Café",
         category=TransactionCategory.PURCHASE,
         ambiguities=("ambiguous_date", "ambiguous_currency", "ambiguous_date"),
         original_amount=Decimal("10.200"),
@@ -231,7 +232,7 @@ _LOCKED_PRE_STREAMING_CSV_BYTES = (
         "foreign_currency_fee_discount_currency,foreign_currency_fee_discount_source_page,"
         "foreign_currency_fee_discount_source_bbox,net_foreign_currency_fee,"
         "net_foreign_currency_fee_currency,net_foreign_currency_fee_derivation,"
-        "net_foreign_currency_fee_source_page,net_foreign_currency_fee_source_bbox\r\n"
+        "net_foreign_currency_fee_source_page,net_foreign_currency_fee_source_bbox,merchant\r\n"
         "nested/statement.pdf,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,"
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,group-0001,"
         "group-0001-p001-r0001,2026-01-02,,2026-01-03,"
@@ -240,11 +241,11 @@ _LOCKED_PRE_STREAMING_CSV_BYTES = (
         "batch_diagnostic|statement_diagnostic|group_diagnostic,1,"
         '"1:10.25,20.5,30.75,40",2.943,1,"1:40,50,70,60",3,1,"1:40,60,70,70",'
         '0.88,ILS,1,"1:40,60,70,70",0.59,ILS,1,"1:40,70,70,80",0.29,ILS,'
-        'gross_fee_minus_discount,1,"1:40,60,70,70;1:40,70,70,80"\r\n'
+        'gross_fee_minus_discount,1,"1:40,60,70,70;1:40,70,70,80",Café\r\n'
         "empty.pdf,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,"
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,"
         ",,,,,,,,,,,,,,unsupported,,batch_diagnostic|empty_diagnostic,"
-        ",,,,,,,,,,,,,,,,,,,,\r\n"
+        ",,,,,,,,,,,,,,,,,,,,,\r\n"
     ).encode()
 )
 
@@ -253,18 +254,18 @@ _LOCKED_NON_STATEMENT_CSV_BYTES = (
     _LOCKED_CSV_HEADER_BYTES
     + b"non-statement.pdf,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,"
     b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,,,,,,,,,,,,,,,"
-    b"not_statement,,documents_not_reconciled:1|not_a_statement,,,,,,,,,,,,,,,,,,,,,\r\n"
+    b"not_statement,,documents_not_reconciled:1|not_a_statement,,,,,,,,,,,,,,,,,,,,,,\r\n"
 )
 _LOCKED_CARRIAGE_RETURN_CSV_BYTES = (
     _LOCKED_CSV_HEADER_BYTES
     + b"multiple.pdf,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,"
     b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,group-1,"
     b'transaction-1,,,,"first\rmerchant",purchase,charge,1.25,ILS,,,,,reconciled,,'
-    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,\r\n"
+    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,,\r\n"
     b"multiple.pdf,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,"
     b"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,group-2,"
     b'transaction-2,,,,"second\r\nmerchant",purchase,charge,2.5,ILS,,,,,reconciled,,'
-    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,\r\n"
+    b"batch_diagnostic,,,,,,,,,,,,,,,,,,,,,,\r\n"
 )
 
 
@@ -509,6 +510,7 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
         "net_foreign_currency_fee_derivation",
         "net_foreign_currency_fee_source_page",
         "net_foreign_currency_fee_source_bbox",
+        "merchant",
     )
     assert len(rows) == 1
     row = rows[0]
@@ -519,6 +521,7 @@ def test_transactions_csv_has_bom_fixed_columns_quoting_money_and_provenance() -
     assert row["original_amount"] == "10.2"
     assert row["conversion_date"] == "2026-01-03"
     assert row["description"] == 'Café, "שָׁלוֹם"\nsecond line'
+    assert row["merchant"] == "Café"
     assert row["ambiguity_codes"] == "ambiguous_date|ambiguous_currency"
     assert row["exchange_rate"] == "2.943"
     assert row["foreign_currency_fee_percentage"] == "3"

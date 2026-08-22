@@ -985,9 +985,15 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_normalize_statement_merges_description_continuation_across_column_boundary() -> None:
-    merchant = _cell("Merchant", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
-    continuation = _cell("IRELAND", 1, 41.0).model_copy(update={"bbox": (60.0, 41.0, 88.0, 51.0)})
+@pytest.mark.parametrize(
+    ("location", "expected_merchant"),
+    (("IRELAND", "Merchant"), ("RUS", "Merchant ל RUS")),
+)
+def test_normalize_statement_handles_location_without_guessing(
+    location: str, expected_merchant: str
+) -> None:
+    merchant = _cell("Merchant ל", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
+    continuation = _cell(location, 1, 41.0).model_copy(update={"bbox": (60.0, 41.0, 88.0, 51.0)})
     region = _region(
         (
             ColumnRole.DATE,
@@ -1009,10 +1015,42 @@ def test_normalize_statement_merges_description_continuation_across_column_bound
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     assert len(result.transactions) == 1
-    assert result.transactions[0].merchant == "Merchant IRELAND"
-    assert result.transactions[0].description == "Merchant IRELAND"
+    assert result.transactions[0].merchant == expected_merchant
+    assert result.transactions[0].description == f"Merchant ל {location}"
     assert result.row_results[1].diagnostics == ("merged_description_continuation",)
     assert result.reconciliation.status is Status.RECONCILED
+
+
+def test_normalize_statement_fails_closed_on_ambiguous_merchant_continuation() -> None:
+    merchant = _cell("Merchant ל", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
+    continuation = _cell("SECOND LINE", 1, 41.0).model_copy(
+        update={"bbox": (60.0, 41.0, 108.0, 51.0)}
+    )
+    region = _region(
+        (
+            ColumnRole.DATE,
+            ColumnRole.ORIGINAL_AMOUNT,
+            ColumnRole.DESCRIPTION,
+            ColumnRole.AMOUNT,
+        ),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("$3.00", 1, 30.0),
+                merchant,
+                _cell("10.00", 3, 30.0),
+            ),
+            _row(continuation),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "10.00", "ILS"))
+
+    transaction = result.transactions[0]
+    assert transaction.merchant is None
+    assert transaction.description == "Merchant ל SECOND LINE"
+    assert "ambiguous_merchant_boundary" in transaction.ambiguities
+    assert result.reconciliation.status is Status.UNRECONCILED
 
 
 def test_normalize_statement_rejects_leading_detail_without_a_proven_previous_owner() -> None:

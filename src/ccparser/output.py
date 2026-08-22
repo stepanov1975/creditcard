@@ -86,7 +86,8 @@ _FX_CSV_COLUMNS = (
     "net_foreign_currency_fee_source_page",
     "net_foreign_currency_fee_source_bbox",
 )
-CSV_COLUMNS = (*_BASE_CSV_COLUMNS, *_FX_CSV_COLUMNS)
+_MERCHANT_CSV_COLUMNS = ("merchant",)
+CSV_COLUMNS = (*_BASE_CSV_COLUMNS, *_FX_CSV_COLUMNS, *_MERCHANT_CSV_COLUMNS)
 
 
 class BinaryWriter(Protocol):
@@ -287,6 +288,7 @@ def _transaction_row(
         "source_page": pages,
         "source_bbox": boxes,
         **_fx_fields(transaction),
+        "merchant": unicodedata.normalize("NFC", transaction.merchant or ""),
     }
 
 

@@ -72,10 +72,14 @@ fee derived exactly as gross fee minus discount has the
 `gross_fee_minus_discount` derivation; directly printed fees use `printed`.
 
 The CSV appends equivalent FX value, currency, derivation, source-page, and
-source-bounding-box columns after the original columns. Existing JSON keys and
-CSV columns retain their meanings and order. Consumers should ignore unknown
-JSON keys and trailing CSV columns so additive schema extensions remain
-compatible.
+source-bounding-box columns after the original columns. Transactions also expose
+a nullable `merchant` separately from the broader reconstructed `description`.
+Only reviewed, source-evidenced location continuations are removed from
+`merchant`; unresolved multi-token boundaries leave `merchant` null and make the
+statement unreconciled. CSV output appends `merchant` as its final column.
+Existing JSON keys and CSV columns retain their meanings and order. Consumers
+should ignore unknown JSON keys and trailing CSV columns so additive schema
+extensions remain compatible.
 
 Document statuses are:
 

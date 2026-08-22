@@ -189,8 +189,8 @@ class Transaction(_ImmutablePublicModel):
     transaction_date: date | None = None
     posting_date: date | None = None
     conversion_date: date | None = None
-    merchant: str | None = None
     description: str | None = None
+    merchant: str | None = None
     category: TransactionCategory = TransactionCategory.UNKNOWN
     original_amount: FiniteDecimal | None = None
     original_currency: str | None = None
