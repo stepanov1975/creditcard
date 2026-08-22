@@ -1,0 +1,43 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install OCR dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes tesseract-ocr tesseract-ocr-eng tesseract-ocr-heb
+
+      - name: Install project
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check --editable '.[dev]'
+
+      - name: Check formatting
+        run: .venv/bin/ruff format --check .
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Type check
+        run: .venv/bin/mypy src
+
+      - name: Test
+        run: .venv/bin/pytest -q
