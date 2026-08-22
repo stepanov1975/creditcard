@@ -479,6 +479,7 @@ def _normalize_row(
         transaction_date=transaction_date,
         posting_date=posting_date,
         conversion_date=conversion_date,
+        merchant=description,
         description=description,
         category=category,
         original_amount=original_amount,

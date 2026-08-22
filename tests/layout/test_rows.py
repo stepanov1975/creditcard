@@ -188,6 +188,21 @@ def test_cluster_rows_confidence_measures_vertical_coherence_within_cluster() ->
     assert 0.0 < incoherent[0].confidence < aligned[0].confidence
 
 
+def test_cluster_rows_confidence_is_robust_to_one_tall_baseline_outlier() -> None:
+    words = (
+        *(
+            _word(text, (index * 30.0, 10.0, index * 30.0 + 20.0, 20.0))
+            for index, text in enumerate(("Date", "Merchant", "Type", "Currency", "Rate", "Fee"))
+        ),
+        _word("Amount", (180.0, 14.0, 205.0, 34.0)),
+    )
+
+    rows = cluster_rows(words, page_number=1)
+
+    assert len(rows) == 1
+    assert rows[0].confidence >= 0.70
+
+
 def test_cluster_rows_does_not_let_tall_side_text_bridge_dense_table_lines() -> None:
     words = (
         _word("sidebar", (0.0, 0.0, 20.0, 40.0)),

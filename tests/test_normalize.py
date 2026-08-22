@@ -506,6 +506,7 @@ def _expected_installment_row(
         reconciliation_group_ids=("group-0001",),
         ambiguities=diagnostics,
         transaction_date=date(2026, 2, 1),
+        merchant="Merchant",
         description="Merchant",
         category=(
             TransactionCategory.INSTALLMENT
@@ -1008,6 +1009,7 @@ def test_normalize_statement_merges_description_continuation_across_column_bound
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     assert len(result.transactions) == 1
+    assert result.transactions[0].merchant == "Merchant IRELAND"
     assert result.transactions[0].description == "Merchant IRELAND"
     assert result.row_results[1].diagnostics == ("merged_description_continuation",)
     assert result.reconciliation.status is Status.RECONCILED

@@ -327,6 +327,7 @@ def test_extended_transaction_fields_are_optional_immutable_and_nfc() -> None:
         transaction_date=date(2026, 2, 1),
         posting_date=date(2026, 2, 2),
         conversion_date=date(2026, 2, 3),
+        merchant=decomposed,
         description=decomposed,
         category=TransactionCategory.PURCHASE,
         original_amount=Decimal("3.25"),
@@ -336,6 +337,7 @@ def test_extended_transaction_fields_are_optional_immutable_and_nfc() -> None:
         evidence=(evidence,),
     )
 
+    assert transaction.merchant == unicodedata.normalize("NFC", decomposed)
     assert transaction.description == unicodedata.normalize("NFC", decomposed)
     assert transaction.category is TransactionCategory.PURCHASE
     assert transaction.conversion_date == date(2026, 2, 3)

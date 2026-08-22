@@ -793,6 +793,23 @@ def _merchant_punctuation(text: str) -> str:
     return f"({marker.group(1)})" if marker is not None else normalized
 
 
+def _render_selected_description(
+    ledger: EvidenceLedger,
+    cell: Cell,
+    selected_ids: frozenset[int],
+) -> str:
+    cell_atom_ids = ledger.atoms_for_cell(cell)
+    logical_word_text = normalize_text(" ".join(word.text for word in cell.words))
+    if (
+        selected_ids == cell_atom_ids
+        and bool(cell.words)
+        and all(word.source == "digital" for word in cell.words)
+        and normalize_text(cell.text) == logical_word_text
+    ):
+        return normalize_text(cell.text)
+    return ledger.render(selected_ids)
+
+
 def extract_description(
     rows: Sequence[Row],
     region: TableRegion,
@@ -917,7 +934,16 @@ def extract_description(
                 claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, ancillary_ids))
         selected_ids.difference_update(excluded_atom_ids)
         processor_ids.difference_update(excluded_atom_ids)
-        rendered = _merchant_punctuation(ledger.render(selected_ids)) if selected_ids else ""
+        selected_frozen = frozenset(selected_ids)
+        complete_source_cells = tuple(
+            cell for cell in row_cells if ledger.atoms_for_cell(cell) == selected_frozen
+        )
+        rendered = (
+            _render_selected_description(ledger, complete_source_cells[0], selected_frozen)
+            if len(complete_source_cells) == 1
+            else ledger.render(selected_frozen)
+        )
+        rendered = _merchant_punctuation(rendered) if rendered else ""
         row_text = normalize_text(" ".join((*fallback_texts, rendered)))
         if row_text:
             texts.append(_merchant_punctuation(row_text))

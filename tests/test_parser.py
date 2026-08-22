@@ -878,7 +878,7 @@ def test_parse_statement_preserves_every_normalization_row_and_unfiltered_transa
     assert result == expected
     assert canonical_bytes == canonical_json_bytes(expected)
     assert hashlib.sha256(canonical_bytes).hexdigest() == (
-        "1be4654d892b2c24543c83977a1e23cc9608d3252cac63491b01345aba07aeb8"
+        "be66cf23383a483878d178630bea6b37ce3736134814c55f085fd9f615a46c60"
     )
     assert result.status is Status.UNRECONCILED
     assert result.transactions == (transaction,)

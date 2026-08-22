@@ -1636,9 +1636,9 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
         (
             _word("Card number", 10.0, 70.0, 5.0),
             _word("1234-5678-9012-3456", 80.0, 155.0, 5.0),
-            *_table(30.0, "₪", "10.00", "20.00"),
-            _word("Total", 50.0, 95.0, 90.0),
-            _word("₪30.00", 118.0, 155.0, 90.0),
+            *_table(20.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
         ),
     )
 
@@ -1650,6 +1650,246 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
     public_diagnostics = " ".join((*result.diagnostics, *result.reason_codes))
     assert "1234" not in public_diagnostics
     assert "3456" not in public_diagnostics
+
+
+@pytest.mark.parametrize(
+    ("issuer_text", "card_text", "date_text", "issuer", "card_number", "statement_date"),
+    (
+        (
+            "MAX",
+            "Card ending in 1234",
+            "Statement date 10/08/2026",
+            "max",
+            "1234",
+            "2026-08-10",
+        ),
+        (
+            "כאל",
+            "הודעה לכרטיס המסתיים ב 5678",
+            "דף חיוב חודשי ל 03/08/2026",
+            "cal",
+            "5678",
+            "2026-08-03",
+        ),
+        (
+            "American Express",
+            "כרטיס שמסתיים בספרות 9012",
+            "סה כ חיוב לתאריך 03/06/2026",
+            "amex",
+            "9012",
+            "2026-06-03",
+        ),
+    ),
+)
+def test_discover_statement_extracts_evidenced_inline_identity_metadata(
+    issuer_text: str,
+    card_text: str,
+    date_text: str,
+    issuer: str,
+    card_number: str,
+    statement_date: str,
+) -> None:
+    page = _page(
+        1,
+        (
+            _word(issuer_text, 10.0, 155.0, 2.0),
+            _word(card_text, 10.0, 155.0, 17.0),
+            _word(date_text, 10.0, 155.0, 32.0),
+            *_table(60.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 120.0),
+            _word("₪30.00", 118.0, 155.0, 120.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is not None
+    assert result.issuer.value == issuer
+    assert result.issuer.evidence.raw_text == issuer_text
+    assert result.card_number is not None
+    assert result.card_number.value == card_number
+    assert result.card_number.evidence.raw_text == card_text
+    assert result.statement_date is not None
+    assert result.statement_date.value == statement_date
+    assert result.statement_date.evidence.raw_text == date_text
+
+
+def test_discover_statement_binds_inline_values_to_their_labels() -> None:
+    page = _page(
+        1,
+        (
+            _word(
+                "Card ending in 1234 Statement date 10/08/2026",
+                10.0,
+                155.0,
+                2.0,
+            ),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.card_number is not None
+    assert result.card_number.value == "1234"
+    assert result.statement_date is not None
+    assert result.statement_date.value == "2026-08-10"
+
+
+def test_discover_statement_uses_first_card_suffix_before_expiry() -> None:
+    page = _page(
+        1,
+        (
+            _word("Card ending in 1 2 3 4 exp 08/26", 10.0, 155.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.card_number is not None
+    assert result.card_number.value == "1234"
+
+
+@pytest.mark.parametrize(
+    "date_text",
+    (
+        "Statement date 99/99/2026",
+        "Statement date ref 02 abc 07 xyz 2026",
+        "Statement date 01/01/1234",
+    ),
+)
+def test_discover_statement_rejects_invalid_labeled_statement_date(date_text: str) -> None:
+    page = _page(
+        1,
+        (
+            _word(date_text, 10.0, 155.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.statement_date is None
+
+
+def test_discover_statement_rejects_non_date_shaped_adjacent_statement_value() -> None:
+    page = _page(
+        1,
+        (
+            _word("Statement date", 10.0, 60.0, 2.0),
+            _word("ref 02 abc 07 xyz 2026", 80.0, 155.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.statement_date is None
+
+
+def test_discover_statement_rejects_conflicting_identity_candidates_without_leaking_values() -> (
+    None
+):
+    page = _page(
+        1,
+        (
+            _word("Card ending in 1234", 10.0, 155.0, 2.0),
+            _word("Card ending in 5678", 10.0, 155.0, 17.0),
+            *_table(45.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.card_number is None
+    assert "conflicting_discovered_metadata:card_number" in result.diagnostics
+    public_diagnostics = " ".join((*result.diagnostics, *result.reason_codes))
+    assert "1234" not in public_diagnostics
+    assert "5678" not in public_diagnostics
+
+
+def test_discover_statement_does_not_treat_table_merchant_as_issuer_brand() -> None:
+    table_words = list(_table(20.0, "₪", "10.00", "20.00"))
+    table_words[4] = table_words[4].model_copy(update={"text": "MAX BRENNER"})
+    page = _page(
+        1,
+        (
+            *table_words,
+            _word("Total", 50.0, 95.0, 80.0),
+            _word("₪30.00", 118.0, 155.0, 80.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is None
+
+
+def test_discover_statement_canonicalizes_labeled_issuer_before_deduplication() -> None:
+    page = _page(
+        1,
+        (
+            _word("Issuer", 10.0, 60.0, 2.0),
+            _word("כאל", 80.0, 120.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is not None
+    assert result.issuer.value == "cal"
+    assert "conflicting_discovered_metadata:issuer" not in result.diagnostics
+
+
+def test_discover_statement_deduplicates_repeated_identical_identity_evidence() -> None:
+    page = _page(
+        1,
+        (
+            _word("MAX", 10.0, 50.0, 2.0),
+            _word("MAX", 10.0, 50.0, 5.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is not None
+    assert result.issuer.value == "max"
+    assert "conflicting_discovered_metadata:issuer" not in result.diagnostics
+
+
+def test_discover_statement_deduplicates_equivalent_statement_date_formats() -> None:
+    page = _page(
+        1,
+        (
+            _word("Statement date 02/07/2026", 10.0, 155.0, 2.0),
+            _word("Statement date 2026-07-02", 10.0, 155.0, 17.0),
+            *_table(45.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.statement_date is not None
+    assert "conflicting_discovered_metadata:statement_date" not in result.diagnostics
 
 
 def test_discover_statement_retains_unique_full_date_year_with_exact_provenance() -> None:

@@ -12,6 +12,7 @@ from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, Tabl
 from ccparser.models import EvidenceReference
 from ccparser.normalization_description import (
     _primary_description_cluster,
+    _render_selected_description,
     extract_description,
     is_description_continuation,
 )
@@ -202,6 +203,31 @@ def test_description_extracts_ordinary_text_with_exact_claim() -> None:
         "Ordinary Merchant",
         (_claim(SemanticOwner.DESCRIPTION, ledger, description),),
         (),
+    )
+
+
+def test_description_uses_complete_digital_cell_text_when_atom_rendering_disagrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    words = (
+        _word("SERVICE", 50.0, 75.0),
+        _word("REGION", 77.0, 100.0),
+        _word("ל", 125.0, 130.0),
+    )
+    cell = _cell(
+        "SERVICE REGION ל",
+        1,
+        bbox=(50.0, 30.0, 130.0, 40.0),
+        words=words,
+    )
+    row = _row(cell)
+    ledger = EvidenceLedger.from_rows((row,))
+    atom_ids = ledger.atoms_for_cell(cell)
+    monkeypatch.setattr(EvidenceLedger, "render", lambda self, selected: "REGION SERVICEREGION ל")
+
+    assert _render_selected_description(ledger, cell, atom_ids) == "SERVICE REGION ל"
+    assert _render_selected_description(ledger, cell, frozenset((min(atom_ids),))) == (
+        "REGION SERVICEREGION ל"
     )
 
 

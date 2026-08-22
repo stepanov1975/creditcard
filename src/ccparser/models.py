@@ -189,6 +189,7 @@ class Transaction(_ImmutablePublicModel):
     transaction_date: date | None = None
     posting_date: date | None = None
     conversion_date: date | None = None
+    merchant: str | None = None
     description: str | None = None
     category: TransactionCategory = TransactionCategory.UNKNOWN
     original_amount: FiniteDecimal | None = None
@@ -202,7 +203,7 @@ class Transaction(_ImmutablePublicModel):
     def serialize_amount(self, value: Decimal | None) -> str | None:
         return plain_decimal_string(value) if value is not None else None
 
-    @field_validator("description")
+    @field_validator("merchant", "description")
     @classmethod
     def normalize_description(cls, value: str | None) -> str | None:
         return unicodedata.normalize("NFC", value) if value is not None else None

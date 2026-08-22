@@ -223,6 +223,7 @@ def _expected_result(
         reconciliation_group_ids=("group-0001",),
         ambiguities=diagnostics,
         transaction_date=transaction_date,
+        merchant=description,
         description=description,
         category=TransactionCategory.UNKNOWN,
         original_amount=original_amount,

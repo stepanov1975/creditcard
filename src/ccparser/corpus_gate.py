@@ -88,6 +88,7 @@ type PresentFieldPath = Literal[
     "category",
     "conversion_date",
     "description",
+    "merchant",
     "foreign_exchange.exchange_rate",
     "foreign_exchange.fee_discount",
     "foreign_exchange.fee_percentage",

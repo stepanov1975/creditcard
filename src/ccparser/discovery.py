@@ -325,6 +325,48 @@ _FIELD_LABELS: dict[str, frozenset[str]] = {
     "card_number": frozenset({"card no", "card number", "credit card number", "מספר כרטיס"}),
     "statement_date": frozenset({"billing date", "statement date", "תאריך דוח", "תאריך חיוב"}),
 }
+_ISSUER_BRAND_ALIASES: dict[str, frozenset[str]] = {
+    "max": frozenset({"max", "מקס", "לאומי קארד"}),
+    "cal": frozenset({"cal", "כאל", "ויזה כאל"}),
+    "amex": frozenset({"amex", "american express", "אמריקן אקספרס"}),
+}
+_CARD_SUFFIX_LABELS = frozenset(
+    {
+        "card ending in",
+        "card ending with",
+        "card ending with digits",
+        "כרטיס שמסתיים ב",
+        "כרטיס שמסתיים בספרות",
+        "לכרטיס שמסתיים ב",
+        "הודעה לכרטיס המסתיים ב",
+    }
+)
+_STATEMENT_DATE_LABELS = frozenset(
+    {
+        *_FIELD_LABELS["statement_date"],
+        "statement for",
+        "billing statement for",
+        "פירוט החיובים בחשבון לתאריך",
+        "דף חיוב חודשי ל",
+        "סה כ חיוב לתאריך",
+    }
+)
+_NORMALIZED_INLINE_DATE_PATTERN = re.compile(
+    r"^(?:\d{4}\s+\d{1,2}\s+\d{1,2}|\d{1,2}\s+\d{1,2}\s+\d{2,4})(?:\s|$)"
+)
+_METADATA_DATE_VALUE_PATTERN = re.compile(
+    r"^\s*(?:(?P<year_first>\d{4})(?:\s*[/.-]\s*|\s+)"
+    r"(?P<month_first>\d{1,2})(?:\s*[/.-]\s*|\s+)(?P<day_first>\d{1,2})|"
+    r"(?P<day_last>\d{1,2})(?:\s*[/.-]\s*|\s+)(?P<month_last>\d{1,2})"
+    r"(?:\s*[/.-]\s*|\s+)(?P<year_last>\d{2,4}))\s*$"
+)
+_INLINE_IDENTITY_LABELS = frozenset(
+    {
+        *_FIELD_LABELS["card_number"],
+        *_CARD_SUFFIX_LABELS,
+        *_STATEMENT_DATE_LABELS,
+    }
+)
 _YEAR_MONTH_TOKEN_PATTERN = re.compile(
     r"(?<!\d)(?P<year>(?:19|20)\d{2})\s*[/\-]\s*"
     r"(?P<month>0?[1-9]|1[0-2])(?!\s*[/\-]\s*\d)(?!\d)"
@@ -1299,28 +1341,216 @@ def _total_from_row(
     )
 
 
-def _metadata_field(rows: Sequence[Row], field_name: str) -> DiscoveredField | None:
+def _contains_normalized_phrase(text: str, phrase: str) -> bool:
+    return f" {phrase} " in f" {text} "
+
+
+def _canonical_statement_date(value: str) -> str | None:
+    match = _METADATA_DATE_VALUE_PATTERN.fullmatch(value)
+    if match is None:
+        return None
+    if match.group("year_first") is not None:
+        year_text = match.group("year_first")
+        month_text = match.group("month_first")
+        day_text = match.group("day_first")
+    else:
+        year_text = match.group("year_last")
+        month_text = match.group("month_last")
+        day_text = match.group("day_last")
+    if year_text is None or month_text is None or day_text is None:
+        return None
+    year = int(year_text)
+    if len(year_text) == 2:
+        year += 2000
+    if not MIN_CONTEXT_YEAR <= year <= MAX_CONTEXT_YEAR:
+        return None
+    try:
+        return date(year, int(month_text), int(day_text)).isoformat()
+    except ValueError:
+        return None
+
+
+def _identity_label_segments(
+    normalized: str, target_labels: frozenset[str]
+) -> tuple[tuple[str, str], ...]:
+    matches: list[tuple[int, int, str]] = []
+    for label in _INLINE_IDENTITY_LABELS:
+        pattern = re.compile(rf"(?<!\S){re.escape(label)}(?!\S)")
+        matches.extend(
+            (match.start(), match.end(), label) for match in pattern.finditer(normalized)
+        )
+    selected: list[tuple[int, int, str]] = []
+    for candidate in sorted(matches, key=lambda item: (item[0], -(item[1] - item[0]))):
+        start, end, _label = candidate
+        if any(start >= kept_start and end <= kept_end for kept_start, kept_end, _ in selected):
+            continue
+        selected.append(candidate)
+    selected.sort()
+    segments: list[tuple[str, str]] = []
+    for index, (_start, end, label) in enumerate(selected):
+        if label not in target_labels:
+            continue
+        next_start = selected[index + 1][0] if index + 1 < len(selected) else len(normalized)
+        segments.append((label, normalized[end:next_start].strip()))
+    return tuple(segments)
+
+
+def _inline_card_value(label: str, segment: str) -> str | None:
+    match = re.match(r"(?:\d+\s*)+", segment)
+    if match is None:
+        return None
+    digits = "".join(character for character in match.group(0) if character.isdigit())
+    if label in _CARD_SUFFIX_LABELS:
+        return digits[:4] if len(digits) >= 4 else None
+    return digits if 4 <= len(digits) <= 19 else None
+
+
+def _inline_identity_candidates(
+    rows: Sequence[Row], field_name: str
+) -> tuple[DiscoveredField, ...]:
+    candidates: list[DiscoveredField] = []
+    for row in rows:
+        for cell in row.cells:
+            normalized = _normalized_phrase(cell.text)
+            if field_name == "issuer":
+                for issuer, aliases in _ISSUER_BRAND_ALIASES.items():
+                    if any(_contains_normalized_phrase(normalized, alias) for alias in aliases):
+                        candidates.append(
+                            DiscoveredField(
+                                field_name=field_name,
+                                value=issuer,
+                                evidence=_evidence(cell),
+                                confidence=cell.confidence,
+                                diagnostics=("issuer_brand_evidence",),
+                            )
+                        )
+                continue
+
+            labels = (
+                _CARD_SUFFIX_LABELS | _FIELD_LABELS["card_number"]
+                if field_name == "card_number"
+                else _STATEMENT_DATE_LABELS
+                if field_name == "statement_date"
+                else frozenset()
+            )
+            for matching_label, segment in _identity_label_segments(normalized, labels):
+                if field_name == "card_number":
+                    value = _inline_card_value(matching_label, segment)
+                elif field_name == "statement_date":
+                    date_match = _NORMALIZED_INLINE_DATE_PATTERN.match(segment)
+                    value = (
+                        _canonical_statement_date(date_match.group(0))
+                        if date_match is not None
+                        else None
+                    )
+                else:
+                    value = None
+                if value is None:
+                    continue
+                candidates.append(
+                    DiscoveredField(
+                        field_name=field_name,
+                        value=value,
+                        evidence=_evidence(cell),
+                        confidence=cell.confidence,
+                        diagnostics=("inline_labeled_metadata",),
+                    )
+                )
+    return tuple(candidates)
+
+
+def _metadata_identity_key(field: DiscoveredField) -> str:
+    if field.field_name == "card_number":
+        digits = "".join(character for character in field.value if character.isdigit())
+        return digits[-4:]
+    if field.field_name == "statement_date":
+        return _canonical_statement_date(field.value) or field.value
+    return _normalized_phrase(field.value)
+
+
+def _canonical_metadata_value(field_name: str, raw_value: str) -> str | None:
+    value = unicodedata.normalize("NFC", raw_value.strip())
+    if field_name == "statement_date":
+        return _canonical_statement_date(value)
+    if field_name == "issuer":
+        normalized = _normalized_phrase(value)
+        matches = {
+            issuer
+            for issuer, aliases in _ISSUER_BRAND_ALIASES.items()
+            if any(_contains_normalized_phrase(normalized, alias) for alias in aliases)
+        }
+        if len(matches) == 1:
+            return matches.pop()
+        if len(matches) > 1:
+            return None
+    return value or None
+
+
+def _metadata_source_rows(rows: Sequence[Row], regions: Sequence[TableRegion]) -> tuple[Row, ...]:
+    table_rows = tuple(row for region in regions for row in region.rows)
+
+    def overlaps_table_row(candidate: Row) -> bool:
+        candidate_height = candidate.bbox[3] - candidate.bbox[1]
+        for table_row in table_rows:
+            if table_row.page_number != candidate.page_number:
+                continue
+            table_height = table_row.bbox[3] - table_row.bbox[1]
+            overlap = max(
+                0.0,
+                min(candidate.bbox[3], table_row.bbox[3])
+                - max(candidate.bbox[1], table_row.bbox[1]),
+            )
+            if overlap >= 0.5 * min(candidate_height, table_height):
+                return True
+        return False
+
+    return tuple(row for row in rows if not overlaps_table_row(row))
+
+
+def _metadata_field(
+    rows: Sequence[Row], field_name: str
+) -> tuple[DiscoveredField | None, tuple[str, ...]]:
+    candidates = list(_inline_identity_candidates(rows, field_name))
     labels = _FIELD_LABELS[field_name]
     for row in rows:
         for label_index, cell in enumerate(row.cells):
             normalized = _normalized_phrase(cell.text)
             if normalized not in labels:
                 continue
-            candidates = tuple(
+            value_cells = tuple(
                 candidate
                 for index, candidate in enumerate(row.cells)
                 if index != label_index and candidate.text.strip()
             )
-            if len(candidates) != 1:
+            if len(value_cells) != 1:
                 continue
-            value_cell = candidates[0]
-            return DiscoveredField(
-                field_name=field_name,
-                value=unicodedata.normalize("NFC", value_cell.text.strip()),
-                evidence=_evidence(value_cell),
-                confidence=min(cell.confidence, value_cell.confidence),
+            value_cell = value_cells[0]
+            value = _canonical_metadata_value(field_name, value_cell.text)
+            if value is None:
+                continue
+            candidates.append(
+                DiscoveredField(
+                    field_name=field_name,
+                    value=value,
+                    evidence=_evidence(value_cell),
+                    confidence=min(cell.confidence, value_cell.confidence),
+                )
             )
-    return None
+    if not candidates:
+        return None, ()
+    identity_keys = {_metadata_identity_key(candidate) for candidate in candidates}
+    if len(identity_keys) != 1:
+        return None, (f"conflicting_discovered_metadata:{field_name}",)
+    selected = min(
+        candidates,
+        key=lambda candidate: (
+            -candidate.confidence,
+            candidate.evidence.page_number,
+            candidate.evidence.bbox,
+            candidate.evidence.raw_text,
+        ),
+    )
+    return selected, ()
 
 
 def _table_date_cells(regions: Sequence[TableRegion]) -> tuple[Cell, ...]:
@@ -2259,7 +2489,17 @@ def discover_statement(evidence: DocumentEvidence) -> StatementDiscovery:
     if any(not any(region is claimed for claimed in claimed_regions) for region in regions):
         diagnostics.append("unclaimed_table_region")
 
-    metadata = {field_name: _metadata_field(page_rows, field_name) for field_name in _FIELD_LABELS}
+    metadata_source_rows = _metadata_source_rows(page_rows, regions)
+    metadata_results = {
+        field_name: _metadata_field(metadata_source_rows, field_name)
+        for field_name in _FIELD_LABELS
+    }
+    metadata = {field_name: result[0] for field_name, result in metadata_results.items()}
+    diagnostics.extend(
+        diagnostic
+        for _, field_diagnostics in metadata_results.values()
+        for diagnostic in field_diagnostics
+    )
     date_year_context = _date_year_context(page_rows, regions, evidence.metadata)
     if _positive_transaction_history_export_evidence(page_rows):
         classification = DocumentClassification.NOT_STATEMENT

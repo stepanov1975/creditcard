@@ -90,7 +90,10 @@ def _vertical_coherence(words: Sequence[Word]) -> float:
     if typical_height <= 0:
         return 0.0
     centers = tuple(bbox_center_y(word.bbox) for word in words)
-    center_coherence = max(0.0, 1.0 - (max(centers) - min(centers)) / typical_height)
+    median_center = statistics.median(centers)
+    center_coherence = statistics.median(
+        max(0.0, 1.0 - abs(center - median_center) / typical_height) for center in centers
+    )
     return min(pairwise_overlap, center_coherence)
 
 

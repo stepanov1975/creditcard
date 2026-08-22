@@ -22,6 +22,7 @@ type PresentFieldPath = Literal[
     "category",
     "conversion_date",
     "description",
+    "merchant",
     "foreign_exchange.exchange_rate",
     "foreign_exchange.fee_discount",
     "foreign_exchange.fee_percentage",
@@ -116,6 +117,8 @@ def _transaction_present_fields(transaction: Transaction) -> tuple[PresentFieldP
         present.append("conversion_date")
     if transaction.description is not None:
         present.append("description")
+    if transaction.merchant is not None:
+        present.append("merchant")
     if transaction.installment_current is not None:
         present.append("installment_current")
     if transaction.installment_total is not None:
