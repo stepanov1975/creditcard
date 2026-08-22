@@ -334,6 +334,9 @@ _ISSUER_DOMAIN_PHRASES: dict[str, frozenset[str]] = {
     "max": frozenset({"max co il", "max it"}),
     "cal": frozenset({"cal co il", "cal online co il"}),
 }
+_ISSUER_CONTEXT_PHRASES: dict[str, frozenset[str]] = {
+    "max": frozenset({"לקוחותינו", "הנפקה"}),
+}
 _CARD_SUFFIX_LABELS = frozenset(
     {
         "card ending in",
@@ -1353,8 +1356,11 @@ def _issuer_alias_matches(normalized: str, issuer: str, alias: str) -> bool:
     if alias not in {"max", "cal"}:
         return _contains_normalized_phrase(normalized, alias)
     return normalized == alias or any(
-        _contains_normalized_phrase(normalized, domain_phrase)
-        for domain_phrase in _ISSUER_DOMAIN_PHRASES[issuer]
+        _contains_normalized_phrase(normalized, phrase)
+        for phrase in (
+            *_ISSUER_DOMAIN_PHRASES[issuer],
+            *_ISSUER_CONTEXT_PHRASES.get(issuer, ()),
+        )
     )
 
 

@@ -1892,6 +1892,24 @@ def test_discover_statement_requires_explicit_short_latin_brand_evidence() -> No
     assert result.issuer is None
 
 
+def test_discover_statement_accepts_max_legal_issuer_context() -> None:
+    page = _page(
+        1,
+        (
+            _word("מידע על לקוחותינו ב max מכוח צווים שיפוטיים", 10.0, 220.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is not None
+    assert result.issuer.value == "max"
+    assert result.issuer.evidence.raw_text == "מידע על לקוחותינו ב max מכוח צווים שיפוטיים"
+
+
 def test_discover_statement_canonicalizes_labeled_issuer_before_deduplication() -> None:
     page = _page(
         1,
