@@ -29,6 +29,17 @@ python3.13 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
+To install a tagged source release:
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/pip install .
+```
+
+See [`SUPPORT.md`](SUPPORT.md) for the stable compatibility contract and
+[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) for the v0.1.0 release
+notes.
+
 ## Parse statements
 
 Parse one PDF:
