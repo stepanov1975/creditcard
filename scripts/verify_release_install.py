@@ -18,6 +18,7 @@ _TIMEOUT_SECONDS: Final = 180.0
 _EXPECTED_UNSUPPORTED: Final = (
     "status=unsupported documents=1 reconciled=0 unreconciled=0 unsupported=1 not_statement=0"
 )
+_ORIGIN_PREFIX: Final = "ccparser_origin="
 _PDF_PROGRAM: Final = """
 import sys
 from pathlib import Path
@@ -99,16 +100,23 @@ def _exercise_cli(candidate: Path, environment: Path, work: Path) -> None:
     run.mkdir(exist_ok=True)
     cache = work / "cache"
     process_environment = _isolated_environment()
-    imported = _run(
+    import_result = _run(
         (
             str(python),
             "-c",
-            "import ccparser; print(ccparser.__file__)",
+            f"import ccparser; print({_ORIGIN_PREFIX!r} + str(ccparser.__file__))",
         ),
         cwd=run,
         environment=process_environment,
-    ).stdout.strip()
-    imported_path = Path(imported).resolve()
+    )
+    imported = tuple(
+        line.removeprefix(_ORIGIN_PREFIX)
+        for line in import_result.stdout.splitlines()
+        if line.startswith(_ORIGIN_PREFIX)
+    )
+    if len(imported) != 1 or not imported[0]:
+        raise RuntimeError("fresh environment did not report one ccparser import")
+    imported_path = Path(imported[0]).resolve()
     if not imported_path.is_relative_to(environment.resolve()) or imported_path.is_relative_to(
         candidate.resolve()
     ):
