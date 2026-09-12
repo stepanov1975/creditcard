@@ -1177,3 +1177,25 @@ categories and its hypothesis result. Preserve all predictions, references,
 alignments, transaction decisions, and the 13/24 score. No tuning, new candidate,
 reference repair, labels, expansion, gold promotion, validation/test access, or
 production integration is authorized.
+
+## Approved amendment: merchant primary/continuation assembly
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to test assembly of primary and explicitly owned continuation
+merchant descriptions on the same 24 references, following the residual analysis.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-continuation-assembly-design.md). Use all 135 saved
+pre-filter predictions and their rows. Assemble only eligible primary/continuation
+description groups using unchanged evidence and the existing page reading order;
+measure exact merchant match, unique-output coverage, and paired gains/losses
+against 13/24. Candidate generation must not read labels or human regions.
+
+**Immediate allowance and stop boundary:** A disposable private assembly helper,
+invented-input tests, and one comparison may write only under ignored
+`artifacts/merchant-continuation-assembly-v1/`. No shared schema, controller, CLI,
+source extraction, OCR, discovery, model call, or frozen-arm modification is
+authorized. Preserve original predictions, evidence, ownership, alignment,
+references, and billing decisions. Stop after one candidate comparison; no tuning,
+new labels, expansion, gold promotion, validation/test access, or production
+integration is authorized. Private data stays local and out of Git.

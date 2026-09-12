@@ -13,13 +13,20 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: merchant primary/continuation assembly
 
-No extraction task is active. The approved residual merchant analysis below is
-complete. Its recommendation for one primary/continuation merchant assembly
-comparison has not been executed or authorized by the completed analysis.
+**Status:** `AUTHORIZED — awaiting authority commit and private comparison`.
+The user's “proceed” on 2026-09-12 approved the concrete recommendation to test
+assembly of merchant descriptions from a primary row and its explicitly owned
+continuations on the same 24 references.
 
-Next extraction task: STOP.
+The [design](../superpowers/specs/2026-09-12-merchant-continuation-assembly-design.md)
+fixes one candidate using unchanged saved evidence and page reading order.
+Generate it without labels, preserve ownership and billing decisions, then measure
+exact merchant match, unique-output coverage, and paired gains/losses against
+13/24. No OCR, source extraction, discovery, or model call is authorized.
+
+Next extraction task: execute this one fixed comparison and stop.
 
 ## Completed phase: residual merchant error analysis
 
