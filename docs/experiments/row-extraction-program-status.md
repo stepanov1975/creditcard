@@ -13,10 +13,11 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: human-reviewed merchant gold seed
+## Completed phase: human-reviewed merchant gold seed
 
-**Status:** `AWAITING_HUMAN_REVIEW` — the user approved the small calibration seed
-on 2026-09-12. Source selection and the private blank review packet are ready.
+**Status:** `COMPLETE — STOP` — the user submitted all 24 confirmed seed entries.
+The private human-reviewed reference is preserved; there is no active extraction
+task and no promotion over existing gold.
 
 The binding [seed design](../superpowers/specs/2026-09-12-merchant-gold-seed-design.md)
 authorizes one new training-only source-page sample: six pages from six documents,
@@ -27,15 +28,21 @@ validation, and held-out data remain closed.
 
 The authority amendment was committed before private materialization. All six
 selected source PDFs were available and identity-matched; all six complete pages
-rendered at 300 DPI. There are 24 blank review slots and zero reviewed labels.
-The [aggregate seed report](row-extraction-merchant-gold-seed-report.md) records
-source eligibility and the verification limits.
+rendered at 300 DPI. All 24 submitted entries pass the existing answer contract
+and contain a human-identified merchant, transaction owner, and valid source
+regions. No merchant is marked absent or ambiguous, and no slot is missing.
+The 20/24 reference-eligibility hypothesis is supported by the user's review;
+independent semantic accuracy and extractor accuracy remain `NOT MEASURED`.
 
-Next allowed action: the user's source review of the first four fixed cases,
-then validation of the locally saved answers. Merchant reference eligibility and
-accuracy are `NOT MEASURED`. No extraction arm, generated label proposal, expanded
-labeling, or support task may run while waiting. The historical phases below stay
-stopped; their STOP entries do not describe this active seed.
+Geometry diagnostics found 7 merchant rectangles intersecting another owner
+rectangle, but every merchant region overlaps its own owner more strongly. These
+are recorded rectangle relationships, not established semantic errors or a new
+rejection gate. The [aggregate seed report](row-extraction-merchant-gold-seed-report.md)
+records the findings and the single-reviewer limitation.
+
+Next extraction task: `STOP`. The bounded seed is complete. Extractor comparisons,
+gold promotion, further labeling, and production integration need a separate
+approved phase. The historical phases below remain stopped.
 
 ## Frozen Round 1 status
 
