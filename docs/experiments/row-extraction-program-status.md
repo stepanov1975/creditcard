@@ -13,6 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant discovery coverage trace
+
+**Status:** `AUTHORIZED — ORIGINAL EVIDENCE REQUIRED`. The user's “proceed” on
+2026-09-12 approved comparing the affected page's original discovery metadata
+with its 38 frozen rows and four unmatched reference regions.
+
+The [design](../superpowers/specs/2026-09-12-merchant-discovery-coverage-design.md)
+requires a retained original snapshot bound to bundle preparation. Separate parser
+runs cannot substitute for it. This is the sole active phase; commit its authority
+before the targeted private availability check.
+
+Next allowed task: measure original-snapshot availability, then compare coverage
+only if original evidence is available. Otherwise report NOT MEASURED and STOP.
+No new extraction, metadata reconstruction, labels, or support infrastructure.
+
 ## Completed phase: merchant alignment-error diagnosis
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
@@ -32,11 +47,9 @@ it does not determine upstream discovery failure versus reference placement.
 No match, label, extraction output, or merchant score changed. The best measured
 merchant comparator remains 10/24.
 
-Next extraction task: `STOP`. There is no active task. The recommended next
-measurement compares the affected page's original discovery rows with the frozen
-rows and four reference regions to locate discovery versus freezing coverage loss.
-It has not begun. No new extraction, rematching, labels, expansion,
-validation/test access, or production integration is authorized.
+This diagnosis is complete. Its recommended discovery coverage trace is separately
+approved as the sole active phase above. No new extraction, rematching, labels,
+expansion, validation/test access, or production integration is authorized.
 
 ## Completed phase: merchant-region OCR experiment
 

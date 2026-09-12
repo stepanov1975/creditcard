@@ -1055,3 +1055,25 @@ coordinate agreement, and transaction/merchant atom support. Preserve original
 labels, rows, matches, predictions, and merchant scores. Stop after this fixed
 diagnosis; no rematching, threshold changes, geometry repair, new labels, sample
 expansion, gold promotion, validation/test access, or production integration.
+
+## Approved amendment: merchant discovery coverage trace
+
+**Approval date:** 2026-09-12. The user's “proceed” approved comparing the affected
+page's original discovery metadata with its 38 frozen rows and four unmatched
+human regions to locate discovery versus freezing coverage loss.
+
+**Authorized measurement:** Execute the [design](2026-09-12-merchant-discovery-coverage-design.md)
+and [plan](../plans/2026-09-12-merchant-discovery-coverage.md). Check for a retained
+original discovery snapshot bound to bundle preparation before measuring missing
+rows and reference coverage. Read historical preparation code as contextual evidence.
+
+**Immediate allowance and stop boundary:** A disposable local availability or
+geometry check may write only under ignored `artifacts/merchant-discovery-coverage-v1/`.
+If original discovery metadata is unavailable, report its 0/1-page availability
+and the historical loss as NOT MEASURED, then stop. Do not substitute a later run,
+reconstruct original evidence, or create archive/controller infrastructure.
+
+Preserve the four reference cases, matches, frozen rows, and merchant scores.
+No new extraction, OCR, rendering, labels, expansion, gold promotion,
+validation/test access, or production integration is authorized. Private evidence
+and identities remain local and out of Git and external tools.
