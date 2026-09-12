@@ -13,21 +13,28 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant-region OCR experiment
+## Completed phase: merchant-region OCR experiment
 
-**Status:** `AUTHORIZED — SETTINGS FIXED`. The user's “proceed” on 2026-09-12
-approved one local OCR comparison focused on extractor-selected merchant regions.
-The [design](../superpowers/specs/2026-09-12-merchant-region-ocr-design.md)
-fixes atom-union crops, existing baseline OCR settings and fusion, and the saved
-reading-order rule, with no human region or text guiding recognition.
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
+approved one merchant-focused local OCR comparison. Authority was committed at
+`edff31a` before private recognition; the [design](../superpowers/specs/2026-09-12-merchant-region-ocr-design.md)
+fixed extractor-selected atom-union crops, baseline OCR settings, and reading order.
 
-This is the sole active phase. Commit its authority before private recognition,
-then score all 24 references against 10/24 and report paired gains/losses, coverage,
-and crop/recognition failures. Apply the candidate to all 108 saved descriptions.
+The [report](row-extraction-merchant-region-ocr-report.md) records **8/24 exact
+merchants versus 10/24**, with **zero gains and two losses**, both on digital
+pages. The positive net-gain hypothesis is falsified. Coverage remains 18/24;
+OCR-page exact matches remain 3/8. Of 108 crops, 106 returned text and two were
+empty; all 20 proposals associated with reviewed owners returned text.
 
-Next allowed extraction task: run and score this fixed private candidate, then
-publish the metric result and STOP. No tuning, new labels, expansion,
-validation/test access, or production integration is authorized.
+Retain the deterministic reading-order descriptions at 10/24 as the best measured
+comparator. Source inputs, human references, alignment, ownership, and original
+transaction decisions were preserved. No OCR tuning or replacement candidate ran.
+
+Next extraction task: `STOP`. There is no active task. The recommended next
+measurement is to quantify the four row-alignment failures, distinguishing
+coordinate/alignment problems from missing row extraction using existing geometry.
+It has not begun. New labels, expansion, validation/test access, and production
+integration remain outside current authority.
 
 ## Completed phase: merchant reading-order experiment
 
@@ -46,9 +53,9 @@ All 127 predictions preserved their original evidence, ownership, classification
 and transaction decisions; only atom order changed. The hypothesis is supported
 on this fixed training seed, with no validation or production accuracy claim.
 
-This experiment is complete. Its recommended merchant-region OCR comparison is
-separately approved as the sole active phase above. New labels, expansion,
-validation/test access, and production integration remain outside that approval.
+This experiment and its separately approved merchant-region OCR comparison above
+are complete. New labels, expansion, validation/test access, and production
+integration remain outside their scope.
 
 ## Completed phase: merchant evidence error analysis
 

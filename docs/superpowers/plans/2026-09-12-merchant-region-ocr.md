@@ -27,16 +27,16 @@ Required output: paired exact-match delta and hypothesis result
 Stop condition: stop after one fixed comparison, without tuning, new labels, or sample expansion
 ```
 
-- [ ] Commit the approved design, charter amendment, and sole active phase after
+- [x] Commit the approved design, charter amendment, and sole active phase after
   the four required repository verification gates pass.
-- [ ] Add focused invented-input tests for union/invalid/rotated/outside boxes,
+- [x] Add focused invented-input tests for union/invalid/rotated/outside boxes,
   OCR evidence replacement, empty results, reading order, and original ownership
   and multi-proposal ambiguity. Confirm expected failure before implementation.
-- [ ] Implement private crop/recognition helpers using the frozen OCR functions
+- [x] Implement private crop/recognition helpers using the frozen OCR functions
   and the existing reading-order rule. Pass focused tests, Ruff, and strict mypy.
-- [ ] Verify source/model/config bindings, apply OCR once to all 108 proposals,
+- [x] Verify source/model/config bindings, apply OCR once to all 108 proposals,
   and save private evidence and failure categories. Recognition reads no references.
-- [ ] Reproduce all saved baseline case outputs/scores, score all 24 candidates,
+- [x] Reproduce all saved baseline case outputs/scores, score all 24 candidates,
   and independently verify scores, paired counts, and unchanged original inputs.
-- [ ] Publish only aggregate results, return the phase to STOP, run the four
+- [x] Publish only aggregate results, return the phase to STOP, run the four
   required gates, and commit only the allowed documentation.
