@@ -1077,3 +1077,29 @@ Preserve the four reference cases, matches, frozen rows, and merchant scores.
 No new extraction, OCR, rendering, labels, expansion, gold promotion,
 validation/test access, or production integration is authorized. Private evidence
 and identities remain local and out of Git and external tools.
+
+## Approved amendment: new one-page merchant discovery diagnostic
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to run one new local page-discovery diagnostic against the four
+fixed unmatched reference regions. This authorization is separate from the
+completed historical trace, which stopped when its original snapshot was absent.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-page-discovery-design.md) and
+[plan](../plans/2026-09-12-merchant-page-discovery.md). Use frozen native PDF
+extraction helpers on only the affected digital training page, followed by the
+frozen logical-row and discovery functions. Score native-evidence, logical-row,
+and discovered-row coverage of the unchanged four regions against zero frozen
+coverage; distinguish all results from historical evidence.
+
+**Immediate allowance:** A disposable private selected-page adapter, geometry
+measurement, and invented-input tests may write only under ignored
+`artifacts/merchant-page-discovery-v1/`. Preserve the source page's geometry and
+number; no other page evidence, rendering, OCR, external service, historical
+source edit, shared infrastructure, or controller is authorized.
+
+**Stop boundary:** Stop after one new native-text diagnostic with covered-case
+counts and its hypothesis result. Preserve all original inputs, matches, labels,
+merchant scores, and transaction decisions. No tuning, rematching, new labels,
+expansion, gold promotion, validation/test access, or production integration.

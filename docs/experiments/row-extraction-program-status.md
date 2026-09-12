@@ -13,6 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: new one-page merchant discovery diagnostic
+
+**Status:** `AUTHORIZED — awaiting authority commit and private execution`. The
+user's “proceed” on 2026-09-12 approved the concrete recommendation for a new
+one-page local run following the unavailable historical-snapshot finding.
+
+The [design](../superpowers/specs/2026-09-12-merchant-page-discovery-design.md) fixes
+one digital training page, four unchanged unmatched regions, 38 frozen comparator
+rows, and the unchanged deterministic checkout. Measure native evidence, logical
+rows, and discovered table rows, with eligible discovered-row coverage out of four
+as the primary metric. This is a new native-text diagnostic with one-page context,
+not a historical replay. No OCR or other source pages are processed.
+
+Next extraction task: execute this single diagnostic and stop. Frozen references,
+alignment, merchant scores, and validation/test boundaries remain unchanged.
+
 ## Completed phase: merchant discovery coverage trace
 
 **Status:** `COMPLETE — STOP: original snapshot unavailable`. The user's
@@ -31,11 +47,10 @@ an earlier discovery/region limitation; this is an inference, not a historical
 row-set measurement. The four references and 38 frozen rows remain unchanged,
 and the best measured merchant comparator stays 10/24.
 
-Next extraction task: `STOP`. There is no active task. A new one-page local
-discovery diagnostic against the four fixed reference regions is recommended,
-explicitly as a new run. It has not begun. No original reconstruction, new
-extraction, labels, expansion, validation/test access, or production integration
-is authorized by this completed trace.
+This historical trace remains complete. The separately approved new one-page
+diagnostic above does not substitute for its missing original snapshot. No
+original reconstruction, labels, expansion, validation/test access, or production
+integration is authorized by this completed trace.
 
 ## Completed phase: merchant alignment-error diagnosis
 
