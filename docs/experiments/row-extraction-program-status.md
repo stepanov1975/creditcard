@@ -13,21 +13,33 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant comparison before future-billing exclusion
+## Completed phase: merchant comparison before future-billing exclusion
 
-**Status:** `AUTHORIZED — awaiting authority commit and private execution`.
-The user's “proceed” on 2026-09-12 approved the recommended merchant comparison
-before the future-billing filter on the same 24 references.
+**Status:** `COMPLETE — STOP`. The user's “proceed” on
+2026-09-12 approved this fixed merchant comparison. Authority was committed at
+`33953e7` before private candidate generation under the
+[design](../superpowers/specs/2026-09-12-merchant-prefilter-comparison-design.md).
 
-The [design](../superpowers/specs/2026-09-12-merchant-prefilter-comparison-design.md)
-fixes the saved eight-row excluded candidate, tight profile classifier,
-pre-financial-rejection description rule, and existing reading-order rule.
-Keep the 127 historical predictions and billing exclusions unchanged. Score the
-additional diagnostic evidence against the saved 10/24 comparator, with a
-separate candidate alignment for the four original null cases.
+The [report](row-extraction-merchant-prefilter-comparison-report.md) records
+**13/24 exact merchants versus 10/24**, with **three gains and zero losses**.
+Candidate alignment covers all 24 references and unique-output coverage rises
+from 18/24 to 22/24. The four previously filtered cases yield three exact
+merchants and one text mismatch. All 20 previously aligned cases are unchanged.
+The positive-net-gain hypothesis is supported on this fixed training seed.
 
-Next extraction task: execute this single comparison and stop. No new source
-extraction, labels, expansion, validation/test access, or production integration.
+The eight additional rows retain billing exclusion. Original rows, predictions,
+references, alignment, and the historical 10/24 score remain unchanged. The best
+measured merchant diagnostic is now 13/24; no production or held-out improvement
+is claimed. Eleven cases remain non-exact: nine text mismatches, one omission,
+and one ambiguous output.
+
+All 3,766 repository tests and eight focused candidate tests pass, alongside
+Ruff and mypy. Next extraction task: `STOP`. There is no active task. The next
+recommendation is a bounded error analysis of those 11 cases against existing
+merchant regions, distinguishing text errors from evidence selection and
+ownership. It has not
+begun. No tuning, new labels, expansion, validation/test access, or production
+integration is authorized by this completed comparison.
 
 ## Completed phase: merchant discovery exclusion trace
 
@@ -49,9 +61,9 @@ finding identifies a comparison-scope mismatch, not incorrect merchant labels.
 All 3,766 repository tests, 11 focused attribution tests, and two frozen
 future-billing regression cases pass, alongside Ruff and mypy.
 
-This trace remains complete. The separately approved merchant comparison above
-is the sole active task. No rule change, label repair, expansion, validation/test
-access, or production integration is authorized by this completed trace.
+This trace and its separately approved merchant comparison above are complete.
+No rule change, label repair, expansion, validation/test access, or production
+integration is authorized by this completed trace.
 
 ## Completed phase: new one-page merchant discovery diagnostic
 

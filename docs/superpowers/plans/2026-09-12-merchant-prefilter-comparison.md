@@ -20,11 +20,15 @@ Required output: paired merchant metric delta and supported or falsified positiv
 Stop condition: score the one fixed candidate on all 24 references and stop; no tuning, alternate candidates, label changes, or support subsystem
 ```
 
-- [ ] Commit the approved design, charter amendment, and sole active phase after
+- [x] Commit the approved design, charter amendment, and sole active phase after
   required repository verification.
-- [ ] Write focused invented-input tests, observe expected failure, implement
+- [x] Write focused invented-input tests, observe expected failure, implement
   the smallest private candidate adapter, and pass focused tests/Ruff/mypy.
-- [ ] Generate proposals for the saved excluded candidate rows without labels,
+- [x] Generate proposals for the saved excluded candidate rows without labels,
   then score all 24 references once against the saved 10/24 comparator.
-- [ ] Verify original inputs and billing exclusions unchanged, publish aggregate
+- [x] Verify original inputs and billing exclusions unchanged, publish aggregate
   results and limitations, return live status to STOP, and commit documentation.
+
+**Outcome:** 13/24 exact versus 10/24, with three gains and zero losses. All 24
+references align in the diagnostic and 22 have a unique description. All eight
+added rows remain excluded from billing; original artifacts are unchanged.
