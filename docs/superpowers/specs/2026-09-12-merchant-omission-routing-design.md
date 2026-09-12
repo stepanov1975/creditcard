@@ -1,8 +1,9 @@
 # Merchant Omission Alignment and Evidence-Routing Trace
 
-**Status:** Approved by the user's “proceed” on 2026-09-12 following the concrete
+**Status:** Complete — STOP. Approved by the user's “proceed” on 2026-09-12 following the concrete
 recommendation to trace the remaining omission through saved alignment and
-classification. Commit this authority before private measurement.
+classification. Authority was committed at `8c253ba` before private measurement;
+see the [result report](../../experiments/row-extraction-merchant-omission-routing-report.md).
 
 ```text
 Scope answer: YES — quantifies why the remaining merchant omission cannot reach retained evidence
@@ -80,12 +81,12 @@ checks may write only under ignored `artifacts/merchant-omission-routing-v1/`.
 Reuse existing geometry, renderer/scorer, contracts, profile, and classifier
 helpers. Do not build a general tracer, schema family, controller, CLI, or workflow.
 
-- [ ] Commit the approved scope and active phase after repository gates.
-- [ ] Observe focused failing invented-input tests, implement the smallest
+- [x] Commit the approved scope and active phase after repository gates.
+- [x] Observe focused failing invented-input tests, implement the smallest
   diagnostic categories, and pass focused tests, Ruff, and strict mypy.
-- [ ] Trace the single omission, reproduce fixed scores/alignment/classification,
+- [x] Trace the single omission, reproduce fixed scores/alignment/classification,
   and report routing counts plus the hypothesis result or measured disagreement.
-- [ ] Check original inputs unchanged, pass repository gates, publish aggregate
+- [x] Check original inputs unchanged, pass repository gates, publish aggregate
   findings, return live status to STOP, and commit documentation.
 
 The merchant score stays 13/24 and unique-output coverage stays 23/24. Stop after

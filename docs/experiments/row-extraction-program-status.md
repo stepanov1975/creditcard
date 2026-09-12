@@ -13,19 +13,38 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant omission alignment and evidence routing
+## Active phase: STOP
 
-**Status:** `AUTHORIZED — awaiting authority commit and private trace`.
-The user's “proceed” on 2026-09-12 approved the concrete recommendation to trace
-the one remaining omission through its saved alignment and classification.
+No extraction task is active. The approved omission trace below is complete.
+Its recommendation for one merchant-region alignment comparison has not been
+executed or authorized by the completed trace.
 
-The [design](../superpowers/specs/2026-09-12-merchant-omission-routing-design.md)
-fixes the omitted reference, its existing regions and training page, saved rows
-and predictions, assembly outputs, and frozen profile rules. Measure alignment
-ranking, retained merchant-evidence routing, classifier proofs, and the saved
-omission gate. Preserve all assignments, predictions, labels, and scores.
+Next extraction task: STOP.
 
-Next extraction task: execute this one fixed omission trace and stop.
+## Completed phase: merchant omission alignment and evidence routing
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
+one-case trace. Authority was committed at `8c253ba` before private measurement
+under the [design](../superpowers/specs/2026-09-12-merchant-omission-routing-design.md).
+
+The [report](row-extraction-merchant-omission-routing-report.md) records **four
+strongly located merchant atoms already selected into another primary owner's
+description**. That row ranks second among seven positive geometric candidates;
+the aligned row ranks first but has no positive classifier proof and no received
+description proposals. The saved `ineligible_row_type` gate agrees with that
+classification. The evidence-routing hypothesis is supported.
+
+All four page assignments, both traced classifier types, and all 24 saved scores
+reproduce. The score remains **13/24 exact**, with **23/24 unique output** and
+one omission. No alternative alignment is scored. The finding identifies an
+alignment/evidence-access mismatch; it does not certify semantic ownership or
+predict an accuracy gain from rematching.
+
+All 3,766 repository tests and 11 focused tests pass, alongside Ruff and mypy.
+Independent geometry/routing checks agree and code review found no actionable
+defects. Original inputs and labels are unchanged. No rematching, new prediction,
+rule change, new labels, expansion, validation/test access, or production
+integration is authorized by this completed trace.
 
 ## Completed phase: merchant primary/continuation assembly
 
