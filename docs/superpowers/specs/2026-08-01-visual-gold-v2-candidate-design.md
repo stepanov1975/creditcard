@@ -1,7 +1,7 @@
 # Visual-Gold v2 Candidate Design
 
-**Status:** Approved for the 100-row pilot on 2026-08-01; promotion and full-review execution
-remain conditional.
+**Status:** Approved conversational design; implementation remains blocked until the user
+reviews this written specification and the charter amendment below is committed.
 
 **Date:** 2026-08-01
 
