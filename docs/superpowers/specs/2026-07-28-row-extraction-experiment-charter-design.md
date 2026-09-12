@@ -850,3 +850,54 @@ convenience, or inconclusive outcome authorizes a rescue task.
 **Held-out boundary:** Validation and held-out data remain unopened. Any validation measurement,
 production integration, or production acceptance work requires separate direct user approval and
 a committed amendment.
+
+## Approved amendment: human-reviewed merchant gold seed
+
+**Approval date:** 2026-09-12. The user approved proceeding with the concrete seed
+recommendation after confirming they can review a small initial set.
+
+**Reason:** Existing measurements show unresolved merchant-definition differences
+and a detected-table context blocker. A human-established reference from complete
+source pages is needed before further extractor comparison.
+
+**Affected experiment:** Shared evaluation only. The four extraction arms and
+both historical stopped pilots remain unchanged.
+
+**Authorized change:** Execute the single bounded task in the
+[seed design](2026-09-12-merchant-gold-seed-design.md) and
+[plan](../plans/2026-09-12-merchant-gold-seed.md): select six training pages from
+six documents, with two OCR and four digital-only pages, and prepare four blank
+transaction review slots per page. Render complete source pages independently of
+detected table geometry. The human establishes transaction ownership, merchant
+text, supporting regions, and ambiguity from source evidence. Keep the new seed
+separate from prior row labels; coincident source-page overlap does not permit
+reading or changing prior reviewer streams.
+
+**Small immediate evaluation exception:** A disposable local HTML worksheet and
+one-off preparation/check scripts may be generated only under ignored
+`artifacts/merchant-gold-seed-v1/` for this fixed packet. They may display source
+pages, collect human evidence regions/text, and import/export answers locally.
+No reusable annotation application, controller, server, new package, cloud service,
+schema family, or production interface is authorized.
+
+**Measurement:** Source availability and complete-page materialization counts;
+after human review, reference eligibility, merchant absence/ambiguity, missing
+slots, and boundary/ownership issue counts. The predeclared hypothesis is at least
+20 supported unambiguous merchant references among 24 fixed slots. Until review,
+reference results are `NOT MEASURED`; packet preparation is not golden-label
+acceptance or extraction accuracy.
+
+**Privacy:** All source copies, images, private identities, worksheets, answers,
+and derived values stay local and ignored. No private content is sent to model
+tools or external services. Public reports contain aggregate counts only.
+
+**Stop boundary:** No relabeling of the failed pilot, no resampling to improve an
+outcome, no generated model labels in the first human pass, and no expansion beyond
+the fixed seed. At handoff the sole active state is `AWAITING_HUMAN_REVIEW`.
+Continue only on the user's source decisions; do not create support work while
+waiting. Missing selected source or an unavailable required measurement ends the
+attempt with its quantified category.
+
+**Future boundary:** Broader annotation, independent reviewer recruitment,
+synthetic generation, context arms, extraction runs, gold promotion, validation,
+held-out evaluation, and production integration need separate direct approval.

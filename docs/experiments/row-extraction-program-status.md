@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-08-07
+**Updated:** 2026-09-12
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -12,6 +12,29 @@ and the
 Round 1 is frozen at the audited branch heads below. The held-out test remains unopened. No
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
+
+## Active phase: human-reviewed merchant gold seed
+
+**Status:** `PREPARING_SOURCE_REVIEW` — the user approved the small calibration
+seed on 2026-09-12 after reviewing the research recommendation and offering to
+review a small seed personally.
+
+The binding [seed design](../superpowers/specs/2026-09-12-merchant-gold-seed-design.md)
+authorizes one new training-only source-page sample: six pages from six documents,
+two with OCR evidence and four with digital-only evidence, with four transaction
+review slots per page. The actual transactions and merchant labels are determined
+by the human from complete page evidence. Prior gold, reviewer labels, predictions,
+validation, and held-out data remain closed.
+
+The only allowed task is source eligibility measurement and preparation of the
+private local review packet, followed by the user's review of its fixed slots.
+No extraction arm or expanded labeling may run. Private materialization starts
+after the authority amendment is committed. The following historical phases stay
+stopped; their STOP entries do not describe the new active seed.
+
+Next allowed action: commit this authority, prepare the source-only packet, report
+aggregate source availability, and hand off to the human reviewer. Merchant
+reference eligibility and accuracy are `NOT MEASURED` until review occurs.
 
 ## Frozen Round 1 status
 
