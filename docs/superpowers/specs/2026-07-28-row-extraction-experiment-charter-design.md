@@ -981,3 +981,27 @@ unselected evidence records, text signatures, and character error rate. Preserve
 all labels, predictions, exact-match outcomes, alignment, source observations,
 and transaction decisions. Stop after the fixed error analysis. Validation/test
 access, sample expansion, gold promotion, and production integration remain closed.
+
+## Approved amendment: merchant reading-order experiment
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to test a general Hebrew/Latin reading-order rule on the same
+merchant evidence and all 24 references, measuring gains and regressions.
+
+**Authorized change:** Execute the single fixed candidate in the
+[design](2026-09-12-merchant-reading-order-design.md) and
+[plan](../plans/2026-09-12-merchant-reading-order.md). Reorder existing description
+atoms using line geometry and Unicode direction, preserving text, membership,
+ownership, all original transaction decisions, and historical source trees.
+
+**Immediate measurement allowance:** A disposable private candidate and
+invented-input tests under ignored `artifacts/merchant-reading-order-v1/` may
+consume saved pre-rejection predictions and reuse the existing renderer/scorer.
+No shared infrastructure, new schema, CLI, controller, library, source extraction,
+OCR, or external content transmission is authorized.
+
+**Measurement and stop boundary:** Report exact-match delta, paired gains/losses,
+coverage, OCR/digital slices, and resolution of the two saved word-order errors.
+Require at least two gains and zero losses to support the hypothesis. Score all
+24 fixed training references once and stop; no answer-driven tuning, sample
+expansion, gold promotion, validation/test access, or production integration.

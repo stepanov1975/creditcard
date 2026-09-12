@@ -13,6 +13,23 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant reading-order experiment
+
+**Status:** `AUTHORIZED — RULE FIXED`. The user's “proceed” on 2026-09-12
+approved testing one general Hebrew/Latin reading-order rule on the same evidence
+and all 24 references, with paired gains and regressions measured.
+
+The [design](../superpowers/specs/2026-09-12-merchant-reading-order-design.md)
+fixes a geometry/Unicode directional-run permutation, preserving atom text and
+membership, proposal ownership, original decisions, and the saved alignment.
+The comparator is 8/24 exact merchants before financial rejection. Support requires
+at least two additional exact matches and zero losses. This is the sole active
+phase; commit its authority before private execution.
+
+Next allowed extraction task: implement and score this one fixed private candidate,
+then publish the metric result and STOP. No tuning, new labels, source extraction,
+validation/test access, or production integration is authorized.
+
 ## Completed phase: merchant evidence error analysis
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
@@ -33,10 +50,9 @@ token multiset in a different order. Spacing/control-character signatures explai
 none. Two cases have four additional unselected in-region evidence records, which
 are possible omissions rather than confirmed omitted words.
 
-Next extraction task: `STOP`. There is no active extraction task. The recommended
-next phase would test a general Hebrew/Latin reading-order rule on the same
-evidence and all 24 references, measuring gains and regressions. No such change,
-new labels, expansion, validation/test access, or production integration has begun.
+This analysis is complete. Its recommended reading-order experiment has been
+separately approved as the sole active phase above. New labels, expansion,
+validation/test access, and production integration remain outside that approval.
 
 ## Completed phase: merchant proposals before row rejection
 
