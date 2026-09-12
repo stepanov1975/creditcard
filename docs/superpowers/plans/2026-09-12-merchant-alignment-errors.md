@@ -26,16 +26,16 @@ Required output: quantified failure categories and hypothesis result
 Stop condition: stop after this fixed diagnosis, without rematching, changing labels, or rerunning extraction
 ```
 
-- [ ] Commit the approved design, charter amendment, and active phase after all
+- [x] Commit the approved design, charter amendment, and active phase after all
   four required repository verification gates pass.
-- [ ] Add invented-input tests for overlap/category precedence, inclusive half
+- [x] Add invented-input tests for overlap/category precedence, inclusive half
   height, coordinate inversion and quarter-turn axes, and in-region atoms outside
   their own row. Confirm expected failure before implementing the new analysis.
-- [ ] Implement the smallest private geometry analysis; pass focused tests,
+- [x] Implement the smallest private geometry analysis; pass focused tests,
   Ruff, and strict mypy before accessing the fixed private measurement inputs.
-- [ ] Freeze the four saved failures, verify the image/page coordinate context,
+- [x] Freeze the four saved failures, verify the image/page coordinate context,
   reproduce all 24 saved alignments, and run the independent inverse calculation.
-- [ ] Quantify the four failure categories and their transaction/merchant atom
+- [x] Quantify the four failure categories and their transaction/merchant atom
   support, verifying all original inputs and saved merchant outcomes are unchanged.
-- [ ] Publish the aggregate result, return the phase to STOP, run the four required
+- [x] Publish the aggregate result, return the phase to STOP, run the four required
   gates, and commit only allowed documentation.

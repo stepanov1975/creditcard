@@ -13,18 +13,30 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant alignment-error diagnosis
+## Completed phase: merchant alignment-error diagnosis
 
-**Status:** `AUTHORIZED — CATEGORIES FIXED`. The user's “proceed” on 2026-09-12
-approved diagnosing the four reviewed transactions without matching frozen rows.
-The [design](../superpowers/specs/2026-09-12-merchant-alignment-errors-design.md)
-fixes coordinate checks, row-box exclusion categories, and frozen-atom support
-measurements. This is the sole active phase; commit its authority before private
-measurement.
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
+approved diagnosing four reviewed transactions without matching frozen rows.
+Authority was committed at `403eeca` before private measurement under the
+[design](../superpowers/specs/2026-09-12-merchant-alignment-errors-design.md).
 
-Next allowed extraction task: quantify the four saved failures using existing
-geometry, publish the finding, and STOP. No changed match, threshold, label,
-extraction run, sample expansion, validation/test access, or production integration.
+The [report](row-extraction-merchant-alignment-errors-report.md) records all four
+failures as **vertical separation from frozen rows**, with **zero overlapping
+transaction or merchant atoms**. The affected digital page has 38 frozen rows and
+411 atom records. The retained-evidence hypothesis is falsified. All 24 saved
+assignments reproduce, independent coordinate checks agree, and all six review
+images have the expected full-page dimensions.
+
+This establishes a gap in frozen evidence under the supplied reference regions;
+it does not determine upstream discovery failure versus reference placement.
+No match, label, extraction output, or merchant score changed. The best measured
+merchant comparator remains 10/24.
+
+Next extraction task: `STOP`. There is no active task. The recommended next
+measurement compares the affected page's original discovery rows with the frozen
+rows and four reference regions to locate discovery versus freezing coverage loss.
+It has not begun. No new extraction, rematching, labels, expansion,
+validation/test access, or production integration is authorized.
 
 ## Completed phase: merchant-region OCR experiment
 
@@ -43,9 +55,9 @@ Retain the deterministic reading-order descriptions at 10/24 as the best measure
 comparator. Source inputs, human references, alignment, ownership, and original
 transaction decisions were preserved. No OCR tuning or replacement candidate ran.
 
-This comparison is complete. Its recommended alignment-error diagnosis is
-separately approved as the sole active phase above. New labels, expansion,
-validation/test access, and production integration remain outside that approval.
+This comparison and its separately approved alignment-error diagnosis above are
+complete. New labels, expansion, validation/test access, and production integration
+remain outside their scope.
 
 ## Completed phase: merchant reading-order experiment
 
