@@ -13,20 +13,29 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant discovery coverage trace
+## Completed phase: merchant discovery coverage trace
 
-**Status:** `AUTHORIZED — ORIGINAL EVIDENCE REQUIRED`. The user's “proceed” on
-2026-09-12 approved comparing the affected page's original discovery metadata
-with its 38 frozen rows and four unmatched reference regions.
+**Status:** `COMPLETE — STOP: original snapshot unavailable`. The user's
+“proceed” on 2026-09-12 approved tracing original discovery coverage for the one
+affected page. Authority was committed at `8675770` before the targeted check
+under the [design](../superpowers/specs/2026-09-12-merchant-discovery-coverage-design.md).
 
-The [design](../superpowers/specs/2026-09-12-merchant-discovery-coverage-design.md)
-requires a retained original snapshot bound to bundle preparation. Separate parser
-runs cannot substitute for it. This is the sole active phase; commit its authority
-before the targeted private availability check.
+The [report](row-extraction-merchant-discovery-coverage-report.md) records **0/1
+required original discovery snapshots available**. The historical builder retains
+rows, predictions, and crops, but not the full discovery result. Eighteen saved
+result files belong to separate control/corpus runs; their payloads were not opened
+or substituted. Historical rows lost during freezing are **NOT MEASURED**.
 
-Next allowed task: measure original-snapshot availability, then compare coverage
-only if original evidence is available. Otherwise report NOT MEASURED and STOP.
-No new extraction, metadata reconstruction, labels, or support infrastructure.
+The code copies all discovered table rows without a selection filter, suggesting
+an earlier discovery/region limitation; this is an inference, not a historical
+row-set measurement. The four references and 38 frozen rows remain unchanged,
+and the best measured merchant comparator stays 10/24.
+
+Next extraction task: `STOP`. There is no active task. A new one-page local
+discovery diagnostic against the four fixed reference regions is recommended,
+explicitly as a new run. It has not begun. No original reconstruction, new
+extraction, labels, expansion, validation/test access, or production integration
+is authorized by this completed trace.
 
 ## Completed phase: merchant alignment-error diagnosis
 
@@ -47,9 +56,9 @@ it does not determine upstream discovery failure versus reference placement.
 No match, label, extraction output, or merchant score changed. The best measured
 merchant comparator remains 10/24.
 
-This diagnosis is complete. Its recommended discovery coverage trace is separately
-approved as the sole active phase above. No new extraction, rematching, labels,
-expansion, validation/test access, or production integration is authorized.
+This diagnosis and its separately approved discovery coverage trace above are
+complete. No new extraction, rematching, labels, expansion, validation/test access,
+or production integration is authorized.
 
 ## Completed phase: merchant-region OCR experiment
 

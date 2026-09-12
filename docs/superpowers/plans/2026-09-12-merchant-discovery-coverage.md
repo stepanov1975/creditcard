@@ -26,14 +26,17 @@ Required output: measured coverage-loss stage or quantified original-discovery u
 Stop condition: stop after the fixed trace; if the original snapshot is unavailable, report no verdict without rerunning extraction
 ```
 
-- [ ] Commit the approved design, charter amendment, and active phase after the
+- [x] Commit the approved design, charter amendment, and active phase after the
   required repository checks pass.
-- [ ] Verify the fixed four failures and affected page's 38 frozen rows, and
+- [x] Verify the fixed four failures and affected page's 38 frozen rows, and
   locate an eligible original discovery snapshot using existing origin evidence.
-- [ ] If available, compare original and frozen row multisets and reference
+- [x] If available, compare original and frozen row multisets and reference
   coverage with focused tests for any new helper. If unavailable, record 0/1
   original snapshots and stop with historical loss NOT MEASURED.
-- [ ] Preserve original references, alignment, rows, and merchant scores; publish
+- [x] Preserve original references, alignment, rows, and merchant scores; publish
   the aggregate finding and distinguish code inference from historical evidence.
-- [ ] Return live status to STOP, run required verification, and commit only the
+- [x] Return live status to STOP, run required verification, and commit only the
   permitted documentation.
+
+**Outcome:** Original discovery availability is 0/1 pages. The conditional row-set
+comparison did not run; the predeclared inventory-only stop applies.
