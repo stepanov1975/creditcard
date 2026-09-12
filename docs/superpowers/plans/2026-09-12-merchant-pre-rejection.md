@@ -43,16 +43,16 @@ profile predictions, references, and alignment.
 **Produces:** Private pre-rejection evidence, exact-match/coverage deltas, proposal
 availability counts, and a privacy-safe report.
 
-- [ ] Commit the approved design, charter amendment, and sole active phase after
+- [x] Commit the approved design, charter amendment, and sole active phase after
   the four repository verification gates pass.
-- [ ] Add invented-input tests for a merchant surviving a financial early exit,
+- [x] Add invented-input tests for a merchant surviving a financial early exit,
   unchanged original decisions, preserved continuation ownership, missing owners,
   ambiguous descriptions and row types, atom order, and multiple-proposal ambiguity.
   Confirm the focused run fails before implementing the small probe.
-- [ ] Implement only the direct description-rule invocation and diagnostic output
+- [x] Implement only the direct description-rule invocation and diagnostic output
   collection. Reuse the previous scorer. Run focused tests, Ruff, and mypy.
-- [ ] Verify the frozen checkout and load the exact saved inputs. Measure all
+- [x] Verify the frozen checkout and load the exact saved inputs. Measure all
   127 rows and score the fixed 24 cases once, preserving original artifacts.
-- [ ] Independently verify case totals, paired deltas, decision preservation, and
+- [x] Independently verify case totals, paired deltas, decision preservation, and
   unchanged reference/alignment bytes. Publish aggregates and set `STOP`.
-- [ ] Run required verification and commit only the permitted documentation.
+- [x] Run required verification and commit only the permitted documentation.

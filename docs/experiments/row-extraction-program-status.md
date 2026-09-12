@@ -13,21 +13,29 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant proposals before row rejection
+## Completed phase: merchant proposals before row rejection
 
-**Status:** `AUTHORIZED — NOT YET MEASURED`. The user's “proceed” on 2026-09-12
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
 approved the concrete next measurement from the seed comparison: inspect merchant
 proposals before the deterministic method rejects a whole row.
 
 The [design](../superpowers/specs/2026-09-12-merchant-pre-rejection-design.md)
-authorizes direct invocation of the existing description helper on the same 127
+authorized direct invocation of the existing description helper on the same 127
 observations, preserving the saved classifications, 24 references, 20/24 alignment,
-merchant rules, and original transaction decisions. Commit authority before the
-private measurement. No extractor tuning, source changes, labels, expansion, or
-validation/test access is authorized.
+merchant rules, and original transaction decisions. Authority was committed at
+`7470f4d` before the private measurement.
 
-Next allowed task: measure pre-rejection merchant exact matches and coverage
-against the frozen profile control, then report and stop.
+The [report](row-extraction-merchant-pre-rejection-report.md) records 8/24 exact
+merchants versus 0/24 in the frozen profile output, with 8 gains and 0 losses.
+Unique-description coverage rose from 1/24 to 18/24. All 19 currency-blocked owners
+had a description proposal under the unchanged merchant rule; eight matched the
+human reference exactly. All original transaction decisions remained unchanged.
+
+Next extraction task: `STOP`. There is no active extraction task. The recommended
+next measurement would compare the ten nonmatching descriptions' evidence with
+the existing human-marked merchant regions, separating evidence-selection from
+text-recognition issues. No such measurement, rule changes, new labels, expansion,
+validation/test access, or production integration has begun.
 
 ## Completed phase: merchant seed comparison
 
@@ -45,10 +53,9 @@ meet the predeclared overlap rule. Text and vision were unavailable for the froz
 comparison, not scored as zero. The training-only improvement hypothesis is
 supported; this is not a validation win or current production-parser accuracy.
 
-This comparison is complete. Its recommended next measurement is now separately
-approved above: 19 of 20 matched owner rows abstained because of nonunique currency
-evidence. Gold promotion, new labels, validation/test access, and production
-integration remain outside the active phase. Historical stopped phases stay stopped.
+This comparison and its separately approved pre-rejection measurement above are
+complete. Gold promotion, new labels, validation/test access, and production
+integration remain outside their scope. Historical stopped phases stay stopped.
 
 ## Completed phase: human-reviewed merchant gold seed
 
