@@ -44,24 +44,24 @@ profile and OCR arms and OCR language packs.
 **Produces:** Private alignment and prediction records, private per-case scores,
 and aggregate merchant metrics with paired gains/losses and availability limits.
 
-- [ ] Record and review the approved design, charter amendment, and sole active
+- [x] Record and review the approved design, charter amendment, and sole active
   phase. Run all four repository gates and commit authority before private runs.
-- [ ] Add focused invented-input checks for the one-off measurement: a perfect
+- [x] Add focused invented-input checks for the one-off measurement: a perfect
   geometric match, disjoint rows, tied best rows, two references claiming one row,
   accepted owned continuations, abstentions carrying proposals, multiple proposals,
   NFC/whitespace equality, case-sensitive inequality, and paired gain/loss counts.
   Confirm the focused tests fail before implementing their measurement functions.
-- [ ] Implement only the geometry, description projection, and score rules in
+- [x] Implement only the geometry, description projection, and score rules in
   the design. Use the existing `FrozenRow` and `RowPrediction` contracts; no new
   shared schema. Run the focused tests before opening the private comparisons.
-- [ ] Verify the historical checkout heads and absence of tracked edits. Read only
+- [x] Verify the historical checkout heads and absence of tracked edits. Read only
   selected training observations, check six source identities, and save the fixed
   alignment privately before invoking methods. Do not tune failed alignment.
-- [ ] Replay accepted projections, invoke the frozen `tight` profile, and invoke
+- [x] Replay accepted projections, invoke the frozen `tight` profile, and invoke
   the existing OCR baseline. Capture all outputs and failure detail privately.
   Record text/vision as unavailable because no eligible frozen candidate exists.
-- [ ] Score the fixed 24 references once under the predeclared rules. Independently
+- [x] Score the fixed 24 references once under the predeclared rules. Independently
   recompute aggregate totals from per-case scores; verify unchanged seed answers.
-- [ ] Write the aggregate report, mark the phase complete with `STOP`, run the
+- [x] Write the aggregate report, mark the phase complete with `STOP`, run the
   four required gates, and commit only the permitted documentation. Report the
   hypothesis result and one recommended next extraction task without starting it.
