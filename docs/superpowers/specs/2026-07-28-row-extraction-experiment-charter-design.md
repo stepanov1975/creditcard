@@ -5,7 +5,7 @@ program.
 
 **Authority date:** 2026-07-28
 
-**Last amended:** 2026-08-07
+**Last amended:** 2026-09-12
 
 **Accepted comparison anchor:**
 `dee4b071ad65231da13825f2f7c74a488ca96c7c`
@@ -901,3 +901,33 @@ attempt with its quantified category.
 **Future boundary:** Broader annotation, independent reviewer recruitment,
 synthetic generation, context arms, extraction runs, gold promotion, validation,
 held-out evaluation, and production integration need separate direct approval.
+
+## Approved amendment: merchant seed comparison
+
+**Approval date:** 2026-09-12. The user explicitly approved the recommendation to
+compare existing extraction methods against the 24 reviewed merchant references
+before expanding the dataset.
+
+**Authorized change:** Execute the one diagnostic training comparison in the
+[comparison design](2026-09-12-merchant-seed-comparison-design.md) and
+[plan](../plans/2026-09-12-merchant-seed-comparison.md). Replay the accepted-anchor
+projection and invoke the existing frozen profile configuration and pre-existing
+OCR baseline on the six selected pages. Record text/vision candidate unavailability
+without training or choosing a rejected model. Historical validation dispositions
+remain unchanged.
+
+**Small immediate evaluation exception:** The existing row-level gold scorer
+cannot consume the new independent transaction-region references. Permit only
+one-off local geometry alignment, evidence rendering, and merchant scoring code,
+its OCR invocation helper, and invented-input checks under ignored
+`artifacts/merchant-seed-comparison-v1/`. This is not permission to extend the
+historical controller, create a reusable workflow, or convert/promote gold.
+
+**Measurement:** Normalized merchant exact matches, coverage, omissions,
+row-alignment failures, lexical mismatch categories, and paired exact-match gains
+and losses relative to the accepted projection. All 24 cases remain visible.
+
+**Privacy and stop boundary:** Sources, reference text, and predictions stay local
+and ignored. No private content enters model tools or external services. Stop
+after the comparison and report. No method tuning, new labels, sample expansion,
+gold promotion, validation/test access, or production integration is authorized.

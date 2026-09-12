@@ -13,11 +13,24 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant seed comparison
+
+**Status:** `AUTHORIZED — NOT YET MEASURED`. On 2026-09-12, the user explicitly
+approved comparing existing extraction methods against the 24 reviewed references.
+The [comparison design](../superpowers/specs/2026-09-12-merchant-seed-comparison-design.md)
+defines the single active task and its fixed methods, geometry alignment, and
+merchant metrics. Commit the design and charter amendment before private runs.
+
+Next allowed action: run the bounded training comparison against the unchanged
+seed. Report method unavailability and row-alignment failures explicitly. No
+extractor changes, new labels, gold promotion, validation/test access, or
+production integration is authorized. Historical stopped phases stay stopped.
+
 ## Completed phase: human-reviewed merchant gold seed
 
 **Status:** `COMPLETE — STOP` — the user submitted all 24 confirmed seed entries.
-The private human-reviewed reference is preserved; there is no active extraction
-task and no promotion over existing gold.
+The private human-reviewed reference is preserved, with no promotion over existing
+gold. The separately approved comparison above is now the sole active task.
 
 The binding [seed design](../superpowers/specs/2026-09-12-merchant-gold-seed-design.md)
 authorizes one new training-only source-page sample: six pages from six documents,
@@ -40,9 +53,9 @@ are recorded rectangle relationships, not established semantic errors or a new
 rejection gate. The [aggregate seed report](row-extraction-merchant-gold-seed-report.md)
 records the findings and the single-reviewer limitation.
 
-Next extraction task: `STOP`. The bounded seed is complete. Extractor comparisons,
-gold promotion, further labeling, and production integration need a separate
-approved phase. The historical phases below remain stopped.
+The bounded seed preparation/review is complete. Only the separately approved
+comparison above is active; gold promotion, further labeling, and production
+integration remain outside its scope. The historical phases below remain stopped.
 
 ## Frozen Round 1 status
 
