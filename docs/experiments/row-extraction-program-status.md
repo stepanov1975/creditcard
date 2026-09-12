@@ -13,21 +13,39 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant-region alignment comparison
+## Active phase: STOP
 
-**Status:** `AUTHORIZED — awaiting authority commit and private comparison`.
-The user's “proceed” on 2026-09-12 approved the fixed merchant-region alignment
-comparison recommended after the omission trace.
+No extraction task is active. The approved merchant-region alignment comparison
+below is complete. Its recommendation for a blind second review of 11 text
+disagreements has not been executed or authorized by the completed comparison.
 
-The [design](../superpowers/specs/2026-09-12-merchant-region-alignment-design.md)
-requires strongly located alphabetic source evidence for candidate eligibility,
-then preserves transaction-overlap ranking and the unique-best/collision rule.
-Compare all 24 unchanged references against the same saved assembly outputs;
-retain the original alignment and denominator. Measure alignment coverage,
-exact merchant match, unique-output coverage, and paired gains/losses against
-13/24. This is a measurement correction, not a recognition change.
+Next extraction task: STOP.
 
-Next extraction task: execute this one fixed comparison and stop.
+## Completed phase: merchant-region alignment comparison
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
+fixed measurement comparison. Authority was committed at `9601a1f` before private
+alignment and scoring under the
+[design](../superpowers/specs/2026-09-12-merchant-region-alignment-design.md).
+
+The [report](row-extraction-merchant-region-alignment-report.md) records
+**13/24 exact merchants versus 13/24**, with **zero gains and zero losses**.
+Unique-output coverage rises from **23/24 to 24/24**. One assignment changes,
+turning the omission into a text mismatch; the other 23 assignments and outputs
+are unchanged. The measured-accuracy hypothesis is falsified. All 24 references
+now have one output, leaving six digital and five OCR text mismatches.
+
+The candidate requires strongly located alphabetic source evidence in the marked
+merchant region and preserves transaction-overlap ranking and collision handling.
+All 24 original scores and assignments reproduce. No label, source evidence,
+prediction, output, explicit ownership, or billing decision changes. This is a
+measurement correction; the best exact score remains **13/24**.
+
+All 3,766 repository tests and 21 focused tests pass, alongside Ruff and mypy.
+Independent geometry and equality checks agree, and code review found no
+actionable defects. No tuning, new candidate, label repair, new labels,
+expansion, validation/test access, or production integration is authorized by
+this completed comparison.
 
 ## Completed phase: merchant omission alignment and evidence routing
 

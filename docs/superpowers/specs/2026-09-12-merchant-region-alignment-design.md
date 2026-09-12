@@ -1,8 +1,9 @@
 # Merchant-Region Alignment Comparison
 
-**Status:** Approved by the user's “proceed” on 2026-09-12 following the concrete
-recommendation in the omission-routing report. Commit this authority before the
-private candidate alignment and scoring.
+**Status:** Complete — STOP. Approved by the user's “proceed” on 2026-09-12 following
+the concrete recommendation in the omission-routing report. Authority was
+committed at `9601a1f` before private alignment and scoring; see the
+[result report](../../experiments/row-extraction-merchant-region-alignment-report.md).
 
 ```text
 Scope answer: YES — measures merchant recognition after correcting a documented alignment mismatch
@@ -79,13 +80,13 @@ immediate independent checks may write only under ignored
 `artifacts/merchant-region-alignment-v1/`. Reuse existing support, scoring, and
 assignment helpers. This must not become a reusable evaluator or annotation tool.
 
-- [ ] Commit the approved scope and active phase after repository gates.
-- [ ] Observe focused failing tests for evidence eligibility, retained ranking,
+- [x] Commit the approved scope and active phase after repository gates.
+- [x] Observe focused failing tests for evidence eligibility, retained ranking,
   boundary/invalid inputs, ties, and collisions; implement the smallest helper
   and pass tests, Ruff, and strict mypy.
-- [ ] Reproduce the fixed baseline, compare the one candidate, and independently
+- [x] Reproduce the fixed baseline, compare the one candidate, and independently
   verify assignments and exact-match outcomes.
-- [ ] Verify original inputs unchanged, pass repository gates, publish aggregate
+- [x] Verify original inputs unchanged, pass repository gates, publish aggregate
   findings, mark the live phase STOP, and commit documentation.
 
 Keep private text, identities, geometry values, and financial data out of Git and
