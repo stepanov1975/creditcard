@@ -41,15 +41,15 @@ Stop condition: stop after the fixed error analysis; do not change labels, predi
 human merchant regions/text, saved alignment, and local source-page geometry.
 **Produces:** Private case-level evidence/text diagnostics and an aggregate report.
 
-- [ ] Commit the approved design, charter amendment, and active status after all
+- [x] Commit the approved design, charter amendment, and active status after all
   four required verification gates pass.
-- [ ] Add focused invented-input tests covering strong/outside/boundary/invalid
+- [x] Add focused invented-input tests covering strong/outside/boundary/invalid
   boxes, 50% support, overlapping reference regions, case-category precedence,
   token-order/spacing/control-character signatures, and insertion/deletion/substitution
   edit distance. Confirm failure before implementing the measurement functions.
-- [ ] Implement the smallest local analysis and pass focused tests, Ruff, and mypy.
-- [ ] Freeze the ten existing mismatch identities, verify their unique saved
+- [x] Implement the smallest local analysis and pass focused tests, Ruff, and mypy.
+- [x] Freeze the ten existing mismatch identities, verify their unique saved
   proposals and input bindings, and run the predeclared analysis once.
-- [ ] Independently verify aggregate totals and unchanged original inputs. Publish
+- [x] Independently verify aggregate totals and unchanged original inputs. Publish
   results, recommend one next extraction task, and return the phase to `STOP`.
-- [ ] Run required verification and commit only the permitted documentation.
+- [x] Run required verification and commit only the permitted documentation.

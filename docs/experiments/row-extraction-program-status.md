@@ -13,20 +13,30 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant evidence error analysis
+## Completed phase: merchant evidence error analysis
 
-**Status:** `AUTHORIZED — NOT YET MEASURED`. The user's “proceed” on 2026-09-12
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
 approved analyzing the ten saved nonmatching merchant descriptions against the
 existing human-marked merchant regions.
 
 The [design](../superpowers/specs/2026-09-12-merchant-evidence-error-design.md)
-fixes the ten-case selection, evidence-location categories, text signatures, and
-character-error measurement. Source-page geometry may be read locally; no new
-prediction, label, OCR, rendering, alignment, or extraction-rule change is allowed.
-Commit authority before the private analysis.
+fixed the ten-case selection, evidence-location categories, text signatures, and
+character-error measurement. Authority was committed at `a2f24b7` before the
+private analysis. No prediction, label, OCR, rendering, alignment, or extraction
+rule was changed.
 
-Next allowed task: run the fixed evidence/text error analysis, publish aggregate
-findings, and stop. Historical phases remain completed or stopped.
+The [report](row-extraction-merchant-evidence-error-report.md) records all 30
+selected atoms across ten cases as strongly supported by the human merchant
+regions, with no outside, boundary-sensitive, or unusable selected evidence. The
+outside-selection hypothesis is falsified. Two digital-page cases have the correct
+token multiset in a different order. Spacing/control-character signatures explain
+none. Two cases have four additional unselected in-region evidence records, which
+are possible omissions rather than confirmed omitted words.
+
+Next extraction task: `STOP`. There is no active extraction task. The recommended
+next phase would test a general Hebrew/Latin reading-order rule on the same
+evidence and all 24 references, measuring gains and regressions. No such change,
+new labels, expansion, validation/test access, or production integration has begun.
 
 ## Completed phase: merchant proposals before row rejection
 
@@ -46,9 +56,9 @@ Unique-description coverage rose from 1/24 to 18/24. All 19 currency-blocked own
 had a description proposal under the unchanged merchant rule; eight matched the
 human reference exactly. All original transaction decisions remained unchanged.
 
-This measurement is complete. Its recommended evidence analysis is now separately
-approved above. Rule changes, new labels, expansion, validation/test access, and
-production integration remain outside that phase.
+This measurement and its separately approved evidence analysis above are complete.
+Rule changes, new labels, expansion, validation/test access, and production
+integration remain outside their scope.
 
 ## Completed phase: merchant seed comparison
 
