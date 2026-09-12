@@ -1103,3 +1103,26 @@ source edit, shared infrastructure, or controller is authorized.
 counts and its hypothesis result. Preserve all original inputs, matches, labels,
 merchant scores, and transaction decisions. No tuning, rematching, new labels,
 expansion, gold promotion, validation/test access, or production integration.
+
+## Approved amendment: merchant discovery exclusion trace
+
+**Approval date:** 2026-09-12. The user's “proceed” approved tracing the discovery
+rule that excludes logical rows covering four fixed unmatched references,
+distinguishing intended filtering from missed transaction regions.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-discovery-exclusion-design.md) and
+[plan](../plans/2026-09-12-merchant-discovery-exclusion.md). Observe one unchanged
+discovery execution on the saved one-page native evidence. Require exact saved
+output parity, then count candidate coverage and the existing exclusion decisions.
+
+**Immediate allowance and stop boundary:** A disposable private observer,
+attribution, and invented-input tests may write only under ignored
+`artifacts/merchant-discovery-exclusion-v1/`. No frozen code edits, changed
+returns or settings, new source extraction/OCR, alternate runs, shared tracing
+library, controller, or workflow subsystem is authorized. Stop after the fixed
+trace with a filter hypothesis result and quantified exclusions or uncertainty.
+
+Preserve all references, original artifacts, matches, merchant scores, and
+transaction decisions. No reference repair, new labels, expansion, gold
+promotion, validation/test access, or production integration is authorized.

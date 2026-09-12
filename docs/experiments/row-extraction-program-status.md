@@ -13,6 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant discovery exclusion trace
+
+**Status:** `AUTHORIZED — awaiting authority commit and private execution`.
+The user's “proceed” on 2026-09-12 approved the concrete recommendation to trace
+why discovery excludes the logical rows covering the four fixed references.
+
+The [design](../superpowers/specs/2026-09-12-merchant-discovery-exclusion-design.md)
+fixes one unchanged discovery execution on the already saved one-page evidence.
+Measure candidate coverage and existing scan/filter decisions, requiring parity
+with the saved output. Distinguish an explicit filtering rule from proof of its
+semantic correctness. No source extraction or rule change is part of this task.
+
+Next extraction task: execute this single trace and stop. Preserve references,
+alignment, the 10/24 merchant score, and closed validation/test boundaries.
+
 ## Completed phase: new one-page merchant discovery diagnostic
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on
@@ -29,12 +44,11 @@ new native-text, one-page diagnostic. It remains unknown whether exclusion is
 intended filtering or a missed transaction region.
 
 No merchant score, label, or match changed; the best comparator remains 10/24.
-Next extraction task: `STOP`. There is no active task. All 3,766 repository tests
-and 20 focused diagnostic tests pass, alongside Ruff and mypy.
-The recommended next measurement is a bounded trace of why discovery excludes
-these logical rows, distinguishing intended filtering from missed transactions.
-It has not begun. No tuning, new labels, expansion, validation/test access, or
-production integration is authorized by this completed diagnostic.
+This diagnostic remains complete; its separately approved exclusion trace above
+is the sole active task. All 3,766 repository tests and 20 focused diagnostic
+tests passed, alongside Ruff and mypy. No tuning, new labels, expansion,
+validation/test access, or production integration is authorized by this
+completed diagnostic.
 
 ## Completed phase: merchant discovery coverage trace
 
