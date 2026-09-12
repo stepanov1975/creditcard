@@ -44,23 +44,23 @@ private locations discovered locally rather than written in tracked documentatio
 **Produces:** private selection, full-page images, source PDF copies, blank local
 review worksheet, and a privacy-safe aggregate report.
 
-- [ ] Record the approved design and charter amendment. Set this phase as the only
+- [x] Record the approved design and charter amendment. Set this phase as the only
   active task in live status. Preserve both previous STOP reports.
-- [ ] Run `.venv/bin/ruff format --check .`, `.venv/bin/ruff check .`,
+- [x] Run `.venv/bin/ruff format --check .`, `.venv/bin/ruff check .`,
   `.venv/bin/mypy src`, and `.venv/bin/pytest -q`; inspect every exit code.
   Commit the reviewed authority documents before private materialization.
-- [ ] Apply the exact metadata selector in the design. Require six distinct
+- [x] Apply the exact metadata selector in the design. Require six distinct
   training documents and matching source identities. Freeze selection privately
   before inspecting/rendering selected page contents.
-- [ ] Render complete source pages using `page.get_pixmap(dpi=300, alpha=False)`;
+- [x] Render complete source pages using `page.get_pixmap(dpi=300, alpha=False)`;
   create opaque local source copies for context. Record only aggregate success
   and failure counts publicly.
-- [ ] Create the fixed local worksheet with blank fields, region marking, and
+- [x] Create the fixed local worksheet with blank fields, region marking, and
   local answer export/import. Verify behavior using invented input only; keep real
   pixels and answers out of model tools. Do not build a reusable application.
-- [ ] Verify all six images have full-page dimensions, 24 blank slots exist, local
+- [x] Verify all six images have full-page dimensions, 24 blank slots exist, local
   links resolve, and the worksheet has no external resources or network calls.
-- [ ] Publish aggregate source eligibility and set live status to
+- [x] Publish aggregate source eligibility and set live status to
   `AWAITING_HUMAN_REVIEW`. Run required checks before the report commit.
-- [ ] Open the local worksheet for the user and hand off the first four cases.
+- [x] Request the local worksheet panel for the user and hand off the first four cases.
   No merchant accuracy or accepted gold is claimed until decisions are available.

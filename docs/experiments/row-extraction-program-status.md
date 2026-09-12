@@ -15,9 +15,8 @@ derived financial value is recorded here.
 
 ## Active phase: human-reviewed merchant gold seed
 
-**Status:** `PREPARING_SOURCE_REVIEW` — the user approved the small calibration
-seed on 2026-09-12 after reviewing the research recommendation and offering to
-review a small seed personally.
+**Status:** `AWAITING_HUMAN_REVIEW` — the user approved the small calibration seed
+on 2026-09-12. Source selection and the private blank review packet are ready.
 
 The binding [seed design](../superpowers/specs/2026-09-12-merchant-gold-seed-design.md)
 authorizes one new training-only source-page sample: six pages from six documents,
@@ -26,15 +25,17 @@ review slots per page. The actual transactions and merchant labels are determine
 by the human from complete page evidence. Prior gold, reviewer labels, predictions,
 validation, and held-out data remain closed.
 
-The only allowed task is source eligibility measurement and preparation of the
-private local review packet, followed by the user's review of its fixed slots.
-No extraction arm or expanded labeling may run. Private materialization starts
-after the authority amendment is committed. The following historical phases stay
-stopped; their STOP entries do not describe the new active seed.
+The authority amendment was committed before private materialization. All six
+selected source PDFs were available and identity-matched; all six complete pages
+rendered at 300 DPI. There are 24 blank review slots and zero reviewed labels.
+The [aggregate seed report](row-extraction-merchant-gold-seed-report.md) records
+source eligibility and the verification limits.
 
-Next allowed action: commit this authority, prepare the source-only packet, report
-aggregate source availability, and hand off to the human reviewer. Merchant
-reference eligibility and accuracy are `NOT MEASURED` until review occurs.
+Next allowed action: the user's source review of the first four fixed cases,
+then validation of the locally saved answers. Merchant reference eligibility and
+accuracy are `NOT MEASURED`. No extraction arm, generated label proposal, expanded
+labeling, or support task may run while waiting. The historical phases below stay
+stopped; their STOP entries do not describe this active seed.
 
 ## Frozen Round 1 status
 
