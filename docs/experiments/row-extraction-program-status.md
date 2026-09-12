@@ -13,6 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant comparison before future-billing exclusion
+
+**Status:** `AUTHORIZED — awaiting authority commit and private execution`.
+The user's “proceed” on 2026-09-12 approved the recommended merchant comparison
+before the future-billing filter on the same 24 references.
+
+The [design](../superpowers/specs/2026-09-12-merchant-prefilter-comparison-design.md)
+fixes the saved eight-row excluded candidate, tight profile classifier,
+pre-financial-rejection description rule, and existing reading-order rule.
+Keep the 127 historical predictions and billing exclusions unchanged. Score the
+additional diagnostic evidence against the saved 10/24 comparator, with a
+separate candidate alignment for the four original null cases.
+
+Next extraction task: execute this single comparison and stop. No new source
+extraction, labels, expansion, validation/test access, or production integration.
+
 ## Completed phase: merchant discovery exclusion trace
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
@@ -33,11 +49,9 @@ finding identifies a comparison-scope mismatch, not incorrect merchant labels.
 All 3,766 repository tests, 11 focused attribution tests, and two frozen
 future-billing regression cases pass, alongside Ruff and mypy.
 
-Next extraction task: `STOP`. There is no active task. The next recommendation is
-one merchant comparison before the future-billing filter on the same 24
-references, preserving production transaction decisions and measuring paired
-changes against 10/24. It has not begun. No rule change, label repair, expansion,
-validation/test access, or production integration is authorized by this trace.
+This trace remains complete. The separately approved merchant comparison above
+is the sole active task. No rule change, label repair, expansion, validation/test
+access, or production integration is authorized by this completed trace.
 
 ## Completed phase: new one-page merchant discovery diagnostic
 

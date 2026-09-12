@@ -1126,3 +1126,29 @@ trace with a filter hypothesis result and quantified exclusions or uncertainty.
 Preserve all references, original artifacts, matches, merchant scores, and
 transaction decisions. No reference repair, new labels, expansion, gold
 promotion, validation/test access, or production integration is authorized.
+
+## Approved amendment: merchant comparison before future-billing exclusion
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to compare merchant recognition before the future-billing filter
+on the same 24 references, keeping production billing decisions unchanged.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-prefilter-comparison-design.md) and
+[plan](../plans/2026-09-12-merchant-prefilter-comparison.md). Apply the frozen tight
+profile classifier, existing description probe, and fixed reading-order rule to
+all eight rows of the saved excluded candidate table. Combine their diagnostic
+merchant proposals with unchanged historical predictions and measure paired
+exact-match/coverage changes against 10/24.
+
+**Immediate allowance:** A disposable private row adapter, scorer, and
+invented-input tests may write only under ignored
+`artifacts/merchant-prefilter-comparison-v1/`. Existing pure summary/atom functions
+and contracts may be reused without invoking bundle preparation, controller,
+handoff, or provenance workflows. A separate diagnostic alignment may cover the
+four original null cases; original alignment, rows, labels, and scores stay fixed.
+
+**Stop boundary:** Score the one fixed candidate on all 24 references and stop.
+No source extraction, discovery rerun, OCR, alternate candidate, rule tuning,
+financial acceptance, new labels, expansion, gold promotion, validation/test
+access, or production integration is authorized. Private data stays local.
