@@ -24,11 +24,15 @@ Required output: covered-reference counts, coverage delta against frozen rows, a
 Stop condition: stop after one fixed one-page discovery diagnostic; no tuning, replacement run, rematching, or support subsystem
 ```
 
-- [ ] Commit approved design, charter amendment, and sole active phase after the
+- [x] Commit approved design, charter amendment, and sole active phase after the
   four required repository gates.
-- [ ] Add invented-input tests; confirm expected failure; implement the smallest
+- [x] Add invented-input tests; confirm expected failure; implement the smallest
   selected-page reader and coverage measurement; pass focused tests and checks.
-- [ ] Run once on the fixed page without reference-guided extraction; measure
+- [x] Run once on the fixed page without reference-guided extraction; measure
   four-case stage coverage and new/frozen row differences.
-- [ ] Verify fixed inputs unchanged, publish aggregate result and limitations,
+- [x] Verify fixed inputs unchanged, publish aggregate result and limitations,
   return live status to STOP, and commit permitted documentation.
+
+**Outcome:** Native evidence and eligible logical rows cover all four references;
+discovered rows cover none. The new 38 row boxes equal the frozen multiset.
+The recovery hypothesis is falsified; stop after this new-run measurement.

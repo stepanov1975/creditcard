@@ -13,21 +13,28 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: new one-page merchant discovery diagnostic
+## Completed phase: new one-page merchant discovery diagnostic
 
-**Status:** `AUTHORIZED — awaiting authority commit and private execution`. The
-user's “proceed” on 2026-09-12 approved the concrete recommendation for a new
-one-page local run following the unavailable historical-snapshot finding.
+**Status:** `COMPLETE — STOP`. The user's “proceed” on
+2026-09-12 approved one new local diagnostic. Authority was committed at `4d8d1a1`
+before source extraction under the
+[design](../superpowers/specs/2026-09-12-merchant-page-discovery-design.md).
 
-The [design](../superpowers/specs/2026-09-12-merchant-page-discovery-design.md) fixes
-one digital training page, four unchanged unmatched regions, 38 frozen comparator
-rows, and the unchanged deterministic checkout. Measure native evidence, logical
-rows, and discovered table rows, with eligible discovered-row coverage out of four
-as the primary metric. This is a new native-text diagnostic with one-page context,
-not a historical replay. No OCR or other source pages are processed.
+The [report](row-extraction-merchant-page-discovery-report.md) records native
+word/glyph evidence and eligible logical rows for **4/4 regions**, but eligible
+discovered rows for **0/4**. The 38 newly discovered row boxes match all 38 frozen
+row boxes, with no difference. The recovery hypothesis is falsified and the
+coverage gap is localized to logical rows becoming discovered table rows in this
+new native-text, one-page diagnostic. It remains unknown whether exclusion is
+intended filtering or a missed transaction region.
 
-Next extraction task: execute this single diagnostic and stop. Frozen references,
-alignment, merchant scores, and validation/test boundaries remain unchanged.
+No merchant score, label, or match changed; the best comparator remains 10/24.
+Next extraction task: `STOP`. There is no active task. All 3,766 repository tests
+and 20 focused diagnostic tests pass, alongside Ruff and mypy.
+The recommended next measurement is a bounded trace of why discovery excludes
+these logical rows, distinguishing intended filtering from missed transactions.
+It has not begun. No tuning, new labels, expansion, validation/test access, or
+production integration is authorized by this completed diagnostic.
 
 ## Completed phase: merchant discovery coverage trace
 
