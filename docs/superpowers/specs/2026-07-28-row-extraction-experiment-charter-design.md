@@ -1199,3 +1199,27 @@ authorized. Preserve original predictions, evidence, ownership, alignment,
 references, and billing decisions. Stop after one candidate comparison; no tuning,
 new labels, expansion, gold promotion, validation/test access, or production
 integration is authorized. Private data stays local and out of Git.
+
+## Approved amendment: merchant omission alignment and evidence routing
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to trace the remaining omission through its saved row alignment
+and classification, following the completed primary/continuation assembly test.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-omission-routing-design.md). Reproduce the saved
+scores and affected page's alignment, then quantify the omission's alignment
+ranking, strongly located merchant-record routing, classifier proofs, and saved
+probe gate. Reconstruct frozen profile/classification evidence only for the
+aligned row, merchant-bearing rows, and their direct owners; require saved-type
+parity. Source access is limited to identity and selected-page geometry.
+
+**Immediate allowance and stop boundary:** A disposable private trace,
+invented-input tests, and immediate checks may write only under ignored
+`artifacts/merchant-omission-routing-v1/`. No new prediction, field extraction,
+rematching, OCR, source-text extraction, model call, generic tracer, shared schema,
+controller, or workflow is authorized. Preserve references, outputs, alignment,
+classification, ownership, and billing decisions. Stop after the one trace with
+a quantified omission finding and hypothesis result or reproduction disagreement.
+No tuning, new labels, expansion, gold promotion, validation/test access, or
+production integration is authorized. Private data stays local and out of Git.

@@ -13,14 +13,19 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: merchant omission alignment and evidence routing
 
-No extraction task is active. The approved primary/continuation merchant assembly
-comparison below is complete. Its recommendation to trace the remaining omission
-through saved alignment and classification has not been executed or authorized
-by the completed comparison.
+**Status:** `AUTHORIZED — awaiting authority commit and private trace`.
+The user's “proceed” on 2026-09-12 approved the concrete recommendation to trace
+the one remaining omission through its saved alignment and classification.
 
-Next extraction task: STOP.
+The [design](../superpowers/specs/2026-09-12-merchant-omission-routing-design.md)
+fixes the omitted reference, its existing regions and training page, saved rows
+and predictions, assembly outputs, and frozen profile rules. Measure alignment
+ranking, retained merchant-evidence routing, classifier proofs, and the saved
+omission gate. Preserve all assignments, predictions, labels, and scores.
+
+Next extraction task: execute this one fixed omission trace and stop.
 
 ## Completed phase: merchant primary/continuation assembly
 
