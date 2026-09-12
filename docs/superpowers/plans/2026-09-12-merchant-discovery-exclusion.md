@@ -20,10 +20,15 @@ Required output: supported or falsified filter hypothesis and quantified exclusi
 Stop condition: stop after one unchanged discovery trace and analysis of its saved decisions; no rule changes, alternate runs, or support subsystem
 ```
 
-- [ ] Commit approved authority and the sole active phase after repository gates.
-- [ ] Add and fail focused attribution tests; implement the minimal observer and
+- [x] Commit approved authority and the sole active phase after repository gates.
+- [x] Add and fail focused attribution tests; implement the minimal observer and
   attribution; pass focused tests, Ruff, and strict mypy.
-- [ ] Trace the unchanged discovery once on saved evidence, require output parity,
+- [x] Trace the unchanged discovery once on saved evidence, require output parity,
   and quantify four-case exclusion decisions without private content in output.
-- [ ] Verify original inputs unchanged, record aggregate findings and limits,
+- [x] Verify original inputs unchanged, record aggregate findings and limits,
   return status to STOP, and commit the permitted documentation.
+
+**Outcome:** All four exclusions are attributable to future-billing filtering.
+Initial tables contain 46 rows; removal of one eight-row table leaves the saved
+38 rows exactly. The filter hypothesis is supported; original labels and scores
+remain unchanged, and the trace is complete.

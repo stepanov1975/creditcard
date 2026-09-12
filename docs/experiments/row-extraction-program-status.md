@@ -13,20 +13,31 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant discovery exclusion trace
+## Completed phase: merchant discovery exclusion trace
 
-**Status:** `AUTHORIZED — awaiting authority commit and private execution`.
-The user's “proceed” on 2026-09-12 approved the concrete recommendation to trace
-why discovery excludes the logical rows covering the four fixed references.
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
+fixed exclusion trace. Authority was committed at `290efb2` before private
+execution under the
+[design](../superpowers/specs/2026-09-12-merchant-discovery-exclusion-design.md).
 
-The [design](../superpowers/specs/2026-09-12-merchant-discovery-exclusion-design.md)
-fixes one unchanged discovery execution on the already saved one-page evidence.
-Measure candidate coverage and existing scan/filter decisions, requiring parity
-with the saved output. Distinguish an explicit filtering rule from proof of its
-semantic correctness. No source extraction or rule change is part of this task.
+The [report](row-extraction-merchant-discovery-exclusion-report.md) attributes
+**4/4 exclusions to the explicit future-billing filter**. Initial discovery has
+two tables and 46 rows; one eight-row candidate contains the four references
+and is filtered, leaving the same 38 final rows. Singleton candidates are also
+filtered. The saved discovery object reproduces exactly and the hypothesis is
+supported. Independent strict-heading checks agree on both initial tables.
 
-Next extraction task: execute this single trace and stop. Preserve references,
-alignment, the 10/24 merchant score, and closed validation/test boundaries.
+The seed instructions did not restrict printed transactions to current-cycle
+billing. Retain all 24 merchant references and the historical 10/24 score; this
+finding identifies a comparison-scope mismatch, not incorrect merchant labels.
+All 3,766 repository tests, 11 focused attribution tests, and two frozen
+future-billing regression cases pass, alongside Ruff and mypy.
+
+Next extraction task: `STOP`. There is no active task. The next recommendation is
+one merchant comparison before the future-billing filter on the same 24
+references, preserving production transaction decisions and measuring paired
+changes against 10/24. It has not begun. No rule change, label repair, expansion,
+validation/test access, or production integration is authorized by this trace.
 
 ## Completed phase: new one-page merchant discovery diagnostic
 
@@ -40,13 +51,13 @@ word/glyph evidence and eligible logical rows for **4/4 regions**, but eligible
 discovered rows for **0/4**. The 38 newly discovered row boxes match all 38 frozen
 row boxes, with no difference. The recovery hypothesis is falsified and the
 coverage gap is localized to logical rows becoming discovered table rows in this
-new native-text, one-page diagnostic. It remains unknown whether exclusion is
-intended filtering or a missed transaction region.
+new native-text, one-page diagnostic. That diagnostic alone did not distinguish
+intended filtering from a missed transaction region; the trace above resolves
+the observed exclusion rule.
 
 No merchant score, label, or match changed; the best comparator remains 10/24.
-This diagnostic remains complete; its separately approved exclusion trace above
-is the sole active task. All 3,766 repository tests and 20 focused diagnostic
-tests passed, alongside Ruff and mypy. No tuning, new labels, expansion,
+This diagnostic and its separately approved exclusion trace above are complete.
+All 3,766 repository tests and 20 focused diagnostic tests passed, alongside Ruff and mypy. No tuning, new labels, expansion,
 validation/test access, or production integration is authorized by this
 completed diagnostic.
 
