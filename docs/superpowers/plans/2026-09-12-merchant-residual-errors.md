@@ -20,10 +20,10 @@ Required output: quantified residual error categories and supported or falsified
 Stop condition: stop after the fixed 11-case analysis; no new prediction, label change, alternate extraction, or support subsystem
 ```
 
-- [ ] Commit the approved scope and sole active phase after repository gates.
-- [ ] Add focused invented-input tests, confirm expected failures, implement the
+- [x] Commit the approved scope and sole active phase after repository gates.
+- [x] Add focused invented-input tests, confirm expected failures, implement the
   smallest private analysis, and pass focused tests/Ruff/mypy.
-- [ ] Reproduce the 24 scores, diagnose only the 11 fixed failures, and quantify
+- [x] Reproduce the 24 scores, diagnose only the 11 fixed failures, and quantify
   geometry, ownership, omission gates, and text signatures without new predictions.
-- [ ] Verify original inputs unchanged, report measured causes and uncertainty,
+- [x] Verify original inputs unchanged, report measured causes and uncertainty,
   return live status to STOP, and commit aggregate documentation.

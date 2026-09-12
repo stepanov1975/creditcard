@@ -13,20 +13,41 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: residual merchant error analysis
+## Active phase: STOP
 
-**Status:** `AUTHORIZED — awaiting authority commit and private measurement`.
-The user's “proceed” on 2026-09-12 approved the recommended analysis of the
-remaining 11 non-exact cases.
+No extraction task is active. The approved residual merchant analysis below is
+complete. Its recommendation for one primary/continuation merchant assembly
+comparison has not been executed or authorized by the completed analysis.
 
-The [design](../superpowers/specs/2026-09-12-merchant-residual-errors-design.md)
-fixes nine text mismatches, one omission, and one ambiguous output from the
-13/24 comparison. Measure selected and retained evidence against existing
-merchant/transaction regions, proposal ownership, saved omission gates, and
-text signatures. All predictions, labels, alignment, and scores remain fixed.
+Next extraction task: STOP.
 
-Next extraction task: execute this single diagnostic and stop. No candidate
-generation, new labels, expansion, validation/test access, or production integration.
+## Completed phase: residual merchant error analysis
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
+analysis of the remaining 11 non-exact cases. Authority was committed at
+`cf781cc` before private measurement under the
+[design](../superpowers/specs/2026-09-12-merchant-residual-errors-design.md).
+
+The [report](row-extraction-merchant-residual-errors-report.md) records **nine
+in-region text mismatches, one multiple-proposal output, and one omission with
+retained alphabetic evidence**. All 35 selected atom occurrences are strongly
+supported by both marked regions. The ambiguous case has two supported
+primary/continuation proposals with no shared positioned observations; neither
+alone is exact. The omission
+is gated by ambiguous row type and has four strongly located alphabetic records
+in other saved rows. The retained-evidence hypothesis is supported.
+
+Among the nine text mismatches, conditional character error rate is 73/160
+(45.625%); one digital case is spacing-only and all other tested text signatures
+count zero. Two text cases retain four unselected strongly located owner-row
+records. Geometry alone does not certify text or reference correctness.
+
+All 24 scores reproduce and the best merchant diagnostic stays **13/24**.
+Predictions, references, alignment, and billing decisions are unchanged.
+All 3,766 repository tests and 28 focused tests pass, alongside Ruff and mypy;
+independent geometry and edit checks agree. No candidate generation, new labels,
+expansion, validation/test access, or production integration is authorized by
+this completed analysis.
 
 ## Completed phase: merchant comparison before future-billing exclusion
 
@@ -49,8 +70,8 @@ is claimed. Eleven cases remain non-exact: nine text mismatches, one omission,
 and one ambiguous output.
 
 All 3,766 repository tests and eight focused candidate tests pass, alongside
-Ruff and mypy. This comparison remains complete; its separately approved
-residual-error analysis above is the sole active task. No tuning, new labels,
+Ruff and mypy. This comparison and its separately approved residual-error
+analysis above are complete. No tuning, new labels,
 expansion, validation/test access, or production integration is authorized by
 this completed comparison.
 

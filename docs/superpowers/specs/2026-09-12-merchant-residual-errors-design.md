@@ -1,8 +1,9 @@
 # Residual Merchant Error Analysis
 
-**Status:** Approved by the user's “proceed” on 2026-09-12 following the concrete
+**Status:** Complete — STOP. Approved by the user's “proceed” on 2026-09-12 following the concrete
 recommendation to analyze the remaining 11 failures using existing merchant
-regions. Commit this authority before private measurement.
+regions. Authority was committed at `cf781cc` before private measurement; see the
+[result report](../../experiments/row-extraction-merchant-residual-errors-report.md).
 
 ```text
 Scope answer: YES — quantifies residual merchant text, selection, and ownership errors on the fixed seed
