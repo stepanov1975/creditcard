@@ -25,14 +25,14 @@ Required output: paired accuracy delta and hypothesis result
 Stop condition: stop after this fixed comparison, without tuning against the answers
 ```
 
-- [ ] Commit the design, charter amendment, and sole active phase after all four
+- [x] Commit the design, charter amendment, and sole active phase after all four
   repository verification gates pass.
-- [ ] Add invented-input tests for LTR, RTL, mixed runs, numbers, neutral atoms,
+- [x] Add invented-input tests for LTR, RTL, mixed runs, numbers, neutral atoms,
   multiline clustering, boundary/tie behavior, duplicate text and invalid boxes,
   and preservation of all non-order prediction fields. Confirm expected failure.
-- [ ] Implement the smallest candidate and pass focused tests, Ruff, and mypy.
-- [ ] Verify fixed input bindings, reproduce the saved comparator, and apply the
+- [x] Implement the smallest candidate and pass focused tests, Ruff, and mypy.
+- [x] Verify fixed input bindings, reproduce the saved comparator, and apply the
   fixed candidate once to all saved descriptions; score all 24 references.
-- [ ] Independently check aggregate scores and unchanged inputs, publish the
+- [x] Independently check aggregate scores and unchanged inputs, publish the
   hypothesis result, and return the phase to STOP without tuning.
-- [ ] Run all four repository verification gates and commit only permitted docs.
+- [x] Run all four repository verification gates and commit only permitted docs.
