@@ -13,6 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant-region OCR experiment
+
+**Status:** `AUTHORIZED — SETTINGS FIXED`. The user's “proceed” on 2026-09-12
+approved one local OCR comparison focused on extractor-selected merchant regions.
+The [design](../superpowers/specs/2026-09-12-merchant-region-ocr-design.md)
+fixes atom-union crops, existing baseline OCR settings and fusion, and the saved
+reading-order rule, with no human region or text guiding recognition.
+
+This is the sole active phase. Commit its authority before private recognition,
+then score all 24 references against 10/24 and report paired gains/losses, coverage,
+and crop/recognition failures. Apply the candidate to all 108 saved descriptions.
+
+Next allowed extraction task: run and score this fixed private candidate, then
+publish the metric result and STOP. No tuning, new labels, expansion,
+validation/test access, or production integration is authorized.
+
 ## Completed phase: merchant reading-order experiment
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
@@ -30,10 +46,9 @@ All 127 predictions preserved their original evidence, ownership, classification
 and transaction decisions; only atom order changed. The hypothesis is supported
 on this fixed training seed, with no validation or production accuracy claim.
 
-Next extraction task: `STOP`. There is no active extraction task. The recommended
-next experiment is local OCR confined to extractor-selected merchant regions,
-compared against 10/24 on the same seed. This has not begun. No new labels,
-expansion, validation/test access, or production integration is authorized.
+This experiment is complete. Its recommended merchant-region OCR comparison is
+separately approved as the sole active phase above. New labels, expansion,
+validation/test access, and production integration remain outside that approval.
 
 ## Completed phase: merchant evidence error analysis
 

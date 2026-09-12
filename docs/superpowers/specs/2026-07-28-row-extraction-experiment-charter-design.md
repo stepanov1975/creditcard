@@ -1005,3 +1005,29 @@ coverage, OCR/digital slices, and resolution of the two saved word-order errors.
 Require at least two gains and zero losses to support the hypothesis. Score all
 24 fixed training references once and stop; no answer-driven tuning, sample
 expansion, gold promotion, validation/test access, or production integration.
+
+## Approved amendment: merchant-region OCR experiment
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to test local OCR confined to extractor-selected merchant regions
+against the improved 10/24 deterministic comparator on the same 24-case seed.
+
+**Authorized change:** Execute the single candidate in the
+[design](2026-09-12-merchant-region-ocr-design.md) and
+[plan](../plans/2026-09-12-merchant-region-ocr.md). Render the union of each saved
+merchant proposal's atom boxes and invoke the existing frozen OCR baseline
+recognizer, then apply the already fixed reading-order rule to the new atoms.
+Human-marked regions and merchant text must not guide prediction.
+
+**Immediate measurement allowance:** Disposable private crop/recognition code,
+a scorer, and invented-input tests under ignored `artifacts/merchant-region-ocr-v1/`
+may invoke existing rendering/OCR helpers and read the six selected local source
+copies. No historical source edit, new model/dependency, reusable controller,
+shared schema, CLI, workflow, or external content transmission is authorized.
+The OCR lane's historical validation stop remains unchanged.
+
+**Measurement and stop boundary:** Score all 24 references against the fixed
+10/24 comparator, report paired gains/losses, coverage, slice outcomes, and crop
+or recognition failures. A positive net exact-match gain supports the hypothesis.
+Stop after one fixed comparison. No tuning, retry with changed settings, new
+labels, expansion, gold promotion, validation/test access, or production integration.
