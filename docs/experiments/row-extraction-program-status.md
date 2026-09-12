@@ -13,20 +13,40 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: merchant primary/continuation assembly
+## Active phase: STOP
 
-**Status:** `AUTHORIZED — awaiting authority commit and private comparison`.
-The user's “proceed” on 2026-09-12 approved the concrete recommendation to test
-assembly of merchant descriptions from a primary row and its explicitly owned
-continuations on the same 24 references.
+No extraction task is active. The approved primary/continuation merchant assembly
+comparison below is complete. Its recommendation to trace the remaining omission
+through saved alignment and classification has not been executed or authorized
+by the completed comparison.
 
-The [design](../superpowers/specs/2026-09-12-merchant-continuation-assembly-design.md)
-fixes one candidate using unchanged saved evidence and page reading order.
-Generate it without labels, preserve ownership and billing decisions, then measure
-exact merchant match, unique-output coverage, and paired gains/losses against
-13/24. No OCR, source extraction, discovery, or model call is authorized.
+Next extraction task: STOP.
 
-Next extraction task: execute this one fixed comparison and stop.
+## Completed phase: merchant primary/continuation assembly
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12 approved the
+fixed assembly comparison. Authority was committed at `4b9a14a` before candidate
+generation under the
+[design](../superpowers/specs/2026-09-12-merchant-continuation-assembly-design.md).
+
+The [report](row-extraction-merchant-continuation-assembly-report.md) records
+**13/24 exact merchants versus 13/24**, with **zero gains and zero losses**.
+Unique-output coverage increases from **22/24 to 23/24**. The ambiguous reviewed
+case becomes a single text mismatch; all other 23 reviewed outputs are unchanged.
+The exact-accuracy hypothesis is falsified. Digital exact matches remain 10/16
+and OCR exact matches remain 3/8.
+
+Across 113 saved owner groups, the candidate assembles three eligible groups and
+preserves 110 singletons. All 15 selected atom occurrences in the three assembled
+groups are retained. Candidate generation precedes reference access. Labels,
+alignment, original predictions, ownership, and billing decisions are unchanged.
+The best exact merchant score remains **13/24**; the assembly candidate records
+23/24 unique-output coverage without an exact-match improvement.
+
+All 3,766 repository tests and 17 focused tests pass, alongside Ruff and mypy.
+Independent score/evidence checks agree and code review found no actionable
+defects. No tuning, new extraction, labels, expansion, validation/test access,
+or production integration is authorized by this completed comparison.
 
 ## Completed phase: residual merchant error analysis
 

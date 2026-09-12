@@ -1,8 +1,9 @@
 # Merchant Primary/Continuation Assembly Experiment
 
-**Status:** Approved by the user's “proceed” on 2026-09-12 following the concrete
-recommendation in the completed residual-error analysis. Commit this authority
-before generating or scoring the private candidate.
+**Status:** Complete — STOP. Approved by the user's “proceed” on 2026-09-12 following
+the concrete recommendation in the completed residual-error analysis. Authority
+was committed at `4b9a14a` before candidate generation; see the
+[result report](../../experiments/row-extraction-merchant-continuation-assembly-report.md).
 
 ```text
 Scope answer: YES — changes merchant assembly from explicitly owned primary and continuation evidence
@@ -74,13 +75,13 @@ ignored `artifacts/merchant-continuation-assembly-v1/`. Reuse frozen contracts,
 renderer, reading-order helper, and scorer. Do not change frozen arms or create
 a shared schema, controller, CLI, workflow, or production integration.
 
-- [ ] Commit this scope and sole active phase after required repository gates.
-- [ ] Observe focused failing tests for assembly, untouched singletons/omissions,
+- [x] Commit this scope and sole active phase after required repository gates.
+- [x] Observe focused failing tests for assembly, untouched singletons/omissions,
   explicit ownership, incompatible sources, overlaps, and invalid geometry; then
   implement the smallest helper and pass tests, Ruff, and strict mypy.
-- [ ] Generate one candidate without labels, compare all 24 fixed references,
+- [x] Generate one candidate without labels, compare all 24 fixed references,
   and independently check exact-match outcomes and evidence preservation.
-- [ ] Verify original inputs unchanged, pass repository gates, publish aggregate
+- [x] Verify original inputs unchanged, pass repository gates, publish aggregate
   findings, mark the live phase STOP, and commit documentation.
 
 All private text, identities, coordinates, and financial values remain local and
