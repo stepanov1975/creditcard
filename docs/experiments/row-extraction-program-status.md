@@ -13,6 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: residual merchant error analysis
+
+**Status:** `AUTHORIZED — awaiting authority commit and private measurement`.
+The user's “proceed” on 2026-09-12 approved the recommended analysis of the
+remaining 11 non-exact cases.
+
+The [design](../superpowers/specs/2026-09-12-merchant-residual-errors-design.md)
+fixes nine text mismatches, one omission, and one ambiguous output from the
+13/24 comparison. Measure selected and retained evidence against existing
+merchant/transaction regions, proposal ownership, saved omission gates, and
+text signatures. All predictions, labels, alignment, and scores remain fixed.
+
+Next extraction task: execute this single diagnostic and stop. No candidate
+generation, new labels, expansion, validation/test access, or production integration.
+
 ## Completed phase: merchant comparison before future-billing exclusion
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on
@@ -34,12 +49,10 @@ is claimed. Eleven cases remain non-exact: nine text mismatches, one omission,
 and one ambiguous output.
 
 All 3,766 repository tests and eight focused candidate tests pass, alongside
-Ruff and mypy. Next extraction task: `STOP`. There is no active task. The next
-recommendation is a bounded error analysis of those 11 cases against existing
-merchant regions, distinguishing text errors from evidence selection and
-ownership. It has not
-begun. No tuning, new labels, expansion, validation/test access, or production
-integration is authorized by this completed comparison.
+Ruff and mypy. This comparison remains complete; its separately approved
+residual-error analysis above is the sole active task. No tuning, new labels,
+expansion, validation/test access, or production integration is authorized by
+this completed comparison.
 
 ## Completed phase: merchant discovery exclusion trace
 

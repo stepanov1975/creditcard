@@ -1152,3 +1152,28 @@ four original null cases; original alignment, rows, labels, and scores stay fixe
 No source extraction, discovery rerun, OCR, alternate candidate, rule tuning,
 financial acceptance, new labels, expansion, gold promotion, validation/test
 access, or production integration is authorized. Private data stays local.
+
+## Approved amendment: residual merchant error analysis
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to analyze the remaining 11 failures against existing merchant
+regions, distinguishing text errors from selection and ownership problems.
+
+**Authorized measurement:** Execute the
+[design](2026-09-12-merchant-residual-errors-design.md) and
+[plan](../plans/2026-09-12-merchant-residual-errors.md). Reproduce the current
+24-case scores, then inspect only the nine text mismatches, one omission, and
+one ambiguous output. Measure proposal/retained-atom region support, ownership
+conflicts, saved omission gates, text signatures, and character error rate.
+
+**Immediate allowance:** Disposable private analysis and invented-input tests
+may write only under ignored `artifacts/merchant-residual-errors-v1/`. Existing
+geometry, renderer, scorer, and text helpers may be reused. Source copies may
+be read only for identity and selected-page geometry. No new extraction,
+rendering, OCR, model call, shared schema/controller, or workflow is authorized.
+
+**Stop boundary:** Stop after the fixed 11-case analysis with quantified error
+categories and its hypothesis result. Preserve all predictions, references,
+alignments, transaction decisions, and the 13/24 score. No tuning, new candidate,
+reference repair, labels, expansion, gold promotion, validation/test access, or
+production integration is authorized.
