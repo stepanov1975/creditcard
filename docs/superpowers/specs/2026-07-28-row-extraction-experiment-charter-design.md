@@ -931,3 +931,30 @@ and losses relative to the accepted projection. All 24 cases remain visible.
 and ignored. No private content enters model tools or external services. Stop
 after the comparison and report. No method tuning, new labels, sample expansion,
 gold promotion, validation/test access, or production integration is authorized.
+
+## Approved amendment: merchant proposals before row rejection
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to measure deterministic merchant extraction before whole-row
+rejection, after currency ambiguity blocked 19 of 20 matched owner rows.
+
+**Authorized change:** Execute the single diagnostic measurement in the
+[design](2026-09-12-merchant-pre-rejection-design.md) and
+[plan](../plans/2026-09-12-merchant-pre-rejection.md). Invoke the frozen profile's
+existing description helper before financial checks, keeping classification,
+ownership, merchant rules, and original transaction decisions unchanged. Reuse
+the same 24 references, saved alignment, 127 observations, and prior scorer.
+
+**Immediate measurement allowance:** A disposable private probe and focused
+invented-input tests under ignored `artifacts/merchant-pre-rejection-v1/` may
+call the existing helper and score diagnostic proposals. No historical or
+production source changes, reusable controller, CLI, or schema family are needed
+or authorized.
+
+**Measurement and stop boundary:** Report exact-match and coverage deltas,
+omissions, ambiguous outputs, and merchant availability on currency-blocked
+owners. More proposals alone do not support the accuracy hypothesis. Stop after
+the fixed measurement. Sources, labels, alignment, model inputs, transaction
+acceptance, sample membership, validation/test access, and production integration
+remain unchanged. Private evidence and results stay local and out of Git and
+external model tools.
