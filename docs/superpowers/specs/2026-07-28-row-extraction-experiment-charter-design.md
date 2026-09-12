@@ -1223,3 +1223,27 @@ classification, ownership, and billing decisions. Stop after the one trace with
 a quantified omission finding and hypothesis result or reproduction disagreement.
 No tuning, new labels, expansion, gold promotion, validation/test access, or
 production integration is authorized. Private data stays local and out of Git.
+
+## Approved amendment: merchant-region alignment comparison
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to compare merchant-region-supported alignment on the same 24
+references after the omission-routing trace.
+
+**Immediate shared-evaluation allowance:** The existing transaction-box matcher
+cannot attribute one reference's merchant recognition to its retained merchant
+evidence. Execute the [design](2026-09-12-merchant-region-alignment-design.md) with
+one disposable source-atom eligibility predicate: require strongly located
+alphabetic evidence in the marked merchant region, then preserve transaction
+overlap ranking, unique-best selection, and collision handling. Apply it to all
+24 references, preserving the original alignment, labels, predictions, and output
+ownership. Score only the unchanged saved assembly outputs.
+
+**Authorized measurement and stop boundary:** Measure alignment coverage, exact
+merchant match, unique-output coverage, and paired gains/losses against 13/24.
+Private helpers, invented-input tests, and immediate checks may write only under
+ignored `artifacts/merchant-region-alignment-v1/`. Source access is limited to
+identity and selected-page geometry. Stop after one fixed comparison. No reusable
+evaluator, schema, controller, CLI, workflow, new prediction, OCR, source extraction,
+rule tuning, reference repair, labels, expansion, gold promotion, validation/test
+access, or production integration is authorized. Private data stays local.

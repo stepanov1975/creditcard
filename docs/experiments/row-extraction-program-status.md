@@ -13,13 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: merchant-region alignment comparison
 
-No extraction task is active. The approved omission trace below is complete.
-Its recommendation for one merchant-region alignment comparison has not been
-executed or authorized by the completed trace.
+**Status:** `AUTHORIZED — awaiting authority commit and private comparison`.
+The user's “proceed” on 2026-09-12 approved the fixed merchant-region alignment
+comparison recommended after the omission trace.
 
-Next extraction task: STOP.
+The [design](../superpowers/specs/2026-09-12-merchant-region-alignment-design.md)
+requires strongly located alphabetic source evidence for candidate eligibility,
+then preserves transaction-overlap ranking and the unique-best/collision rule.
+Compare all 24 unchanged references against the same saved assembly outputs;
+retain the original alignment and denominator. Measure alignment coverage,
+exact merchant match, unique-output coverage, and paired gains/losses against
+13/24. This is a measurement correction, not a recognition change.
+
+Next extraction task: execute this one fixed comparison and stop.
 
 ## Completed phase: merchant omission alignment and evidence routing
 
