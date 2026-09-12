@@ -13,6 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant evidence error analysis
+
+**Status:** `AUTHORIZED — NOT YET MEASURED`. The user's “proceed” on 2026-09-12
+approved analyzing the ten saved nonmatching merchant descriptions against the
+existing human-marked merchant regions.
+
+The [design](../superpowers/specs/2026-09-12-merchant-evidence-error-design.md)
+fixes the ten-case selection, evidence-location categories, text signatures, and
+character-error measurement. Source-page geometry may be read locally; no new
+prediction, label, OCR, rendering, alignment, or extraction-rule change is allowed.
+Commit authority before the private analysis.
+
+Next allowed task: run the fixed evidence/text error analysis, publish aggregate
+findings, and stop. Historical phases remain completed or stopped.
+
 ## Completed phase: merchant proposals before row rejection
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
@@ -31,11 +46,9 @@ Unique-description coverage rose from 1/24 to 18/24. All 19 currency-blocked own
 had a description proposal under the unchanged merchant rule; eight matched the
 human reference exactly. All original transaction decisions remained unchanged.
 
-Next extraction task: `STOP`. There is no active extraction task. The recommended
-next measurement would compare the ten nonmatching descriptions' evidence with
-the existing human-marked merchant regions, separating evidence-selection from
-text-recognition issues. No such measurement, rule changes, new labels, expansion,
-validation/test access, or production integration has begun.
+This measurement is complete. Its recommended evidence analysis is now separately
+approved above. Rule changes, new labels, expansion, validation/test access, and
+production integration remain outside that phase.
 
 ## Completed phase: merchant seed comparison
 

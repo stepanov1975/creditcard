@@ -958,3 +958,26 @@ the fixed measurement. Sources, labels, alignment, model inputs, transaction
 acceptance, sample membership, validation/test access, and production integration
 remain unchanged. Private evidence and results stay local and out of Git and
 external model tools.
+
+## Approved amendment: merchant evidence error analysis
+
+**Approval date:** 2026-09-12. The user approved the concrete recommendation to
+inspect the ten remaining nonmatching descriptions using existing merchant regions.
+
+**Authorized change:** Execute the [design](2026-09-12-merchant-evidence-error-design.md)
+and [plan](../plans/2026-09-12-merchant-evidence-errors.md): analyze only the ten
+saved pre-rejection text mismatches, comparing declared evidence boxes with human
+merchant regions and measuring text-order, spacing, format-control, and character
+edit diagnostics. No new prediction or annotation is generated.
+
+**Immediate measurement allowance:** A disposable analysis script and focused
+invented-input tests under ignored `artifacts/merchant-evidence-errors-v1/` may
+read the existing private artifacts and source PDF page geometry. No rendering,
+new PDF text extraction, OCR, new shared schema, CLI, controller, or external
+content transmission is authorized.
+
+**Measurement and stop boundary:** Report region-support categories, possible
+unselected evidence records, text signatures, and character error rate. Preserve
+all labels, predictions, exact-match outcomes, alignment, source observations,
+and transaction decisions. Stop after the fixed error analysis. Validation/test
+access, sample expansion, gold promotion, and production integration remain closed.
