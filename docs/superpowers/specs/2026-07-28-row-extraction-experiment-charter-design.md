@@ -1031,3 +1031,27 @@ The OCR lane's historical validation stop remains unchanged.
 or recognition failures. A positive net exact-match gain supports the hypothesis.
 Stop after one fixed comparison. No tuning, retry with changed settings, new
 labels, expansion, gold promotion, validation/test access, or production integration.
+
+## Approved amendment: merchant alignment-error diagnosis
+
+**Approval date:** 2026-09-12. The user's “proceed” approved the concrete
+recommendation to investigate the four reviewed transactions with no matching
+frozen row, distinguishing coordinate/alignment failure from missing row coverage.
+
+**Authorized measurement:** Execute the single diagnostic in the
+[design](2026-09-12-merchant-alignment-errors-design.md) and
+[plan](../plans/2026-09-12-merchant-alignment-errors.md). Reproduce saved alignment,
+check its coordinate calculation independently, and quantify row-box exclusion
+and in-region atom evidence for the four saved failures.
+
+**Immediate measurement allowance:** Disposable geometry analysis and invented
+input tests under ignored `artifacts/merchant-alignment-errors-v1/` may read the
+existing reference regions, selected row/atom boxes, six source-page geometries,
+and review-image headers. No new rendering, text extraction, OCR, external content
+transmission, historical code edits, or reusable shared infrastructure is authorized.
+
+**Measurement and stop boundary:** Report alignment-failure categories,
+coordinate agreement, and transaction/merchant atom support. Preserve original
+labels, rows, matches, predictions, and merchant scores. Stop after this fixed
+diagnosis; no rematching, threshold changes, geometry repair, new labels, sample
+expansion, gold promotion, validation/test access, or production integration.

@@ -13,6 +13,19 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Active phase: merchant alignment-error diagnosis
+
+**Status:** `AUTHORIZED — CATEGORIES FIXED`. The user's “proceed” on 2026-09-12
+approved diagnosing the four reviewed transactions without matching frozen rows.
+The [design](../superpowers/specs/2026-09-12-merchant-alignment-errors-design.md)
+fixes coordinate checks, row-box exclusion categories, and frozen-atom support
+measurements. This is the sole active phase; commit its authority before private
+measurement.
+
+Next allowed extraction task: quantify the four saved failures using existing
+geometry, publish the finding, and STOP. No changed match, threshold, label,
+extraction run, sample expansion, validation/test access, or production integration.
+
 ## Completed phase: merchant-region OCR experiment
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-12
@@ -30,11 +43,9 @@ Retain the deterministic reading-order descriptions at 10/24 as the best measure
 comparator. Source inputs, human references, alignment, ownership, and original
 transaction decisions were preserved. No OCR tuning or replacement candidate ran.
 
-Next extraction task: `STOP`. There is no active task. The recommended next
-measurement is to quantify the four row-alignment failures, distinguishing
-coordinate/alignment problems from missing row extraction using existing geometry.
-It has not begun. New labels, expansion, validation/test access, and production
-integration remain outside current authority.
+This comparison is complete. Its recommended alignment-error diagnosis is
+separately approved as the sole active phase above. New labels, expansion,
+validation/test access, and production integration remain outside that approval.
 
 ## Completed phase: merchant reading-order experiment
 
