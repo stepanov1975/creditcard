@@ -13,13 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: six-case merchant source adjudication
 
-No extraction task is active. The blind merchant repeat-transcription audit is
-complete. Its recommendation for a six-case source adjudication has not begun
-and is not authorized by this completed measurement.
+**Status:** `PREPARING_HUMAN_ADJUDICATION`. The user's “proceed” separately
+approves source adjudication of the six cases with changed text or regions in
+the completed repeat audit. The
+[design](../superpowers/specs/2026-09-13-merchant-adjudication-design.md) fixes
+five OCR and one digital training case, both human submissions, and existing
+source pages. No model output or new prediction is involved.
 
-Next extraction task: STOP.
+Prepare the local comparison worksheet, then pause for six human decisions.
+Resolved-reference and uncertainty counts remain **NOT MEASURED**. Preserve all
+existing labels and the 13/24 extraction score; no reference promotion, expansion,
+or other extraction experiment is active.
+
+Next extraction task: complete this fixed human adjudication and resolution
+measurement, then STOP.
 
 ## Completed phase: blind merchant repeat-transcription audit
 

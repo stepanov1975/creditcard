@@ -1270,3 +1270,25 @@ measurement and stop when they arrive. No automated transcription, new source
 rendering, reference replacement, expansion, gold promotion, extraction tuning,
 validation/test access, or production integration is authorized. All private
 data stays local and out of Git.
+
+## Approved amendment: six-case merchant source adjudication
+
+**Approval date:** 2026-09-13. The user's “proceed” approves the concrete
+recommendation to adjudicate the six cases with changed text or regions after
+the completed blind repeat-transcription audit.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-13-merchant-adjudication-design.md). Adapt the existing disposable
+local worksheet to show both human readings and their regions with the existing
+source pages. Leave final decisions unselected and model outputs hidden. Permit
+editable draft copying, explicit source-check confirmation, and a reason for
+each human decision. This minimum adaptation and its checks may write only under
+ignored `artifacts/merchant-adjudication-v1/`; no reusable workflow is authorized.
+
+**Authorized measurement and stop boundary:** Measure resolved references,
+unresolved ambiguity, and adjudicated text/region agreement with each previous
+reading for the fixed six training cases. Preserve both original submissions,
+references, source images, and predictions. Pause for human decisions, retain
+them separately, then measure resolution and stop. No automated adjudication,
+reference promotion, source rendering, OCR, model call, prediction rescoring,
+expansion, validation/test access, or production integration is authorized.
