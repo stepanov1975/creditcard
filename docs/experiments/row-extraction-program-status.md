@@ -13,9 +13,17 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: blind merchant repeat-transcription audit
+## Active phase: STOP
 
-**Status:** `AWAITING_HUMAN_REVIEW`. The user's “proceed” on 2026-09-13
+No extraction task is active. The blind merchant repeat-transcription audit is
+complete. Its recommendation for a six-case source adjudication has not begun
+and is not authorized by this completed measurement.
+
+Next extraction task: STOP.
+
+## Completed phase: blind merchant repeat-transcription audit
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” on 2026-09-13
 separately approves the completed comparison's recommendation for a blind second
 transcription of its 11 text disagreements. The
 [design](../superpowers/specs/2026-09-13-merchant-blind-review-design.md) fixes
@@ -26,15 +34,19 @@ Authority was committed at `c149fcd` before preparation. The private worksheet
 contains 11 blank entries using five existing source-page images, with prior
 answers and model suggestions excluded. Selection and original-region checks
 agree for all 11 cases; all 24 saved exact/nonexact outcomes reproduce. The
-[handoff report](row-extraction-merchant-blind-review-report.md) records the checks.
+[report](row-extraction-merchant-blind-review-report.md) records the checks.
 
-Pause for human answers. Measure repeat-transcription agreement and reference
-uncertainty only after their return. These measurements are **NOT MEASURED**.
-Original labels and the 13/24 extraction score remain unchanged. A same-reviewer
-second pass is not independent gold validation.
+The user returned all 11 confirmed readings: **7/11 exact repeats (63.6%)** and
+**four changed transcriptions**, with no absent, ambiguous, missing, or unreviewed
+cases and no reported source issues. Digital agreement is **5/6**; OCR agreement
+is **2/5**. All five OCR cases have changed merchant and transaction regions;
+no digital region changes occur. The union of text or region changes is six cases.
 
-Next extraction task: complete this fixed human review and consistency measurement;
-no new extractor, label replacement, expansion, or other experiment is active.
+The reference-inconsistency hypothesis is supported. These differences do not
+establish which reading or region is correct. Both submissions and all original
+labels remain preserved; the original extraction score stays **13/24**. A
+same-reviewer second pass is not independent gold validation. No adjudication,
+label replacement, new extraction, expansion, or production integration ran.
 
 ## Completed phase: merchant-region alignment comparison
 

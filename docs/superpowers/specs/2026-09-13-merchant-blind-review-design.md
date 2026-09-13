@@ -1,6 +1,9 @@
 # Merchant Blind Repeat-Transcription Design
 
-**Status:** AWAITING_HUMAN_REVIEW — private packet prepared; human answers pending.
+**Status:** COMPLETE — STOP. All 11 confirmed second readings were submitted
+and measured. Seven repeat exactly; four differ. The reference-inconsistency
+hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-blind-review-report.md).
 
 The user's “proceed” on 2026-09-13 approves the preceding recommendation for a
 blind second transcription of the 11 merchant disagreements. This is one bounded
