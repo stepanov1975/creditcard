@@ -1,6 +1,6 @@
 # Merchant Blind Repeat-Transcription Design
 
-**Status:** Approved — preparation authorized; human answers pending.
+**Status:** AWAITING_HUMAN_REVIEW — private packet prepared; human answers pending.
 
 The user's “proceed” on 2026-09-13 approves the preceding recommendation for a
 blind second transcription of the 11 merchant disagreements. This is one bounded

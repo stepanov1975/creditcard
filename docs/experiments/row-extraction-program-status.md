@@ -15,18 +15,23 @@ derived financial value is recorded here.
 
 ## Active phase: blind merchant repeat-transcription audit
 
-**Status:** `PREPARING_HUMAN_REVIEW`. The user's “proceed” on 2026-09-13
+**Status:** `AWAITING_HUMAN_REVIEW`. The user's “proceed” on 2026-09-13
 separately approves the completed comparison's recommendation for a blind second
 transcription of its 11 text disagreements. The
 [design](../superpowers/specs/2026-09-13-merchant-blind-review-design.md) fixes
 the same six digital and five OCR training cases, unchanged original references,
 and existing source-page images and marked regions.
 
-Prepare the private worksheet with blank transcriptions and no prior answers or
-model suggestions, then pause for human answers. Measure repeat-transcription
-agreement and reference uncertainty only after their return. These measurements
-are currently **NOT MEASURED**. Original labels and the 13/24 extraction score
-remain unchanged. A same-reviewer second pass is not independent gold validation.
+Authority was committed at `c149fcd` before preparation. The private worksheet
+contains 11 blank entries using five existing source-page images, with prior
+answers and model suggestions excluded. Selection and original-region checks
+agree for all 11 cases; all 24 saved exact/nonexact outcomes reproduce. The
+[handoff report](row-extraction-merchant-blind-review-report.md) records the checks.
+
+Pause for human answers. Measure repeat-transcription agreement and reference
+uncertainty only after their return. These measurements are **NOT MEASURED**.
+Original labels and the 13/24 extraction score remain unchanged. A same-reviewer
+second pass is not independent gold validation.
 
 Next extraction task: complete this fixed human review and consistency measurement;
 no new extractor, label replacement, expansion, or other experiment is active.
