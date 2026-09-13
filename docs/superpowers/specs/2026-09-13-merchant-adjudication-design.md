@@ -1,6 +1,6 @@
 # Merchant Source-Adjudication Design
 
-**Status:** Approved — preparation authorized; human decisions pending.
+**Status:** AWAITING_HUMAN_ADJUDICATION — private worksheet prepared; decisions pending.
 
 The user's “proceed” approves the preceding recommendation to adjudicate the six
 cases with changed merchant text or source regions in the completed repeat-reading
