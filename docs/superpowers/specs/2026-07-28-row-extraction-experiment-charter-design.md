@@ -1247,3 +1247,26 @@ identity and selected-page geometry. Stop after one fixed comparison. No reusabl
 evaluator, schema, controller, CLI, workflow, new prediction, OCR, source extraction,
 rule tuning, reference repair, labels, expansion, gold promotion, validation/test
 access, or production integration is authorized. Private data stays local.
+
+## Approved amendment: blind merchant repeat-transcription audit
+
+**Approval date:** 2026-09-13. The user's “proceed” approves the concrete
+recommendation for a blind second transcription of the 11 remaining merchant
+disagreements, following the completed merchant-region alignment comparison.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-13-merchant-blind-review-design.md). Reuse the existing seed
+worksheet and source-page images to collect a second source reading with previous
+answers and model suggestions hidden. A disposable local worksheet adaptation,
+private case mapping, and immediate checks may write only under ignored
+`artifacts/merchant-blind-review-v1/`. This allowance is necessary to measure
+reference inconsistency; it does not authorize a reusable annotation subsystem.
+
+**Authorized measurement and stop boundary:** Measure repeat-transcription exact
+agreement, changed-reference count, ambiguity, and ownership/boundary issues on
+the fixed 11 training cases. Preserve original labels, images, predictions,
+alignment, and outputs. Pause at handoff for the human answers; report the
+measurement and stop when they arrive. No automated transcription, new source
+rendering, reference replacement, expansion, gold promotion, extraction tuning,
+validation/test access, or production integration is authorized. All private
+data stays local and out of Git.

@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-09-12
+**Updated:** 2026-09-13
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -13,13 +13,23 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: blind merchant repeat-transcription audit
 
-No extraction task is active. The approved merchant-region alignment comparison
-below is complete. Its recommendation for a blind second review of 11 text
-disagreements has not been executed or authorized by the completed comparison.
+**Status:** `PREPARING_HUMAN_REVIEW`. The user's “proceed” on 2026-09-13
+separately approves the completed comparison's recommendation for a blind second
+transcription of its 11 text disagreements. The
+[design](../superpowers/specs/2026-09-13-merchant-blind-review-design.md) fixes
+the same six digital and five OCR training cases, unchanged original references,
+and existing source-page images and marked regions.
 
-Next extraction task: STOP.
+Prepare the private worksheet with blank transcriptions and no prior answers or
+model suggestions, then pause for human answers. Measure repeat-transcription
+agreement and reference uncertainty only after their return. These measurements
+are currently **NOT MEASURED**. Original labels and the 13/24 extraction score
+remain unchanged. A same-reviewer second pass is not independent gold validation.
+
+Next extraction task: complete this fixed human review and consistency measurement;
+no new extractor, label replacement, expansion, or other experiment is active.
 
 ## Completed phase: merchant-region alignment comparison
 
