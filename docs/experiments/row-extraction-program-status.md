@@ -13,20 +13,32 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant v3 residual error analysis
+## Current disposition: STOP — merchant v3 residual error analysis complete
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 v3 comparison's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-v3-error-analysis-design.md).
 
-Reproduce all 24 saved v3 scores and diagnose exactly seven mismatches: five
-digital and two OCR. Count selection/assembly failures, source-text mismatches,
-missing source evidence and unresolved attribution using the unchanged saved
-rows, proposals, assembly order, merchant regions and fixed witness rules.
-Stop after the error count or a baseline reproduction failure. No extractor
-changes, new predictions, label updates, expansion or held-out access are active.
+Authority was committed at `c70ed3b` before measurement. All 24 v3 scores and
+saved output strings reproduce. The [report](row-extraction-merchant-v3-error-analysis-report.md)
+records **two OCR source-text mismatches and five unresolved digital cases**,
+with zero missing-source-evidence cases and zero exact-witness selection/assembly
+failures. Two digital failures have spacing-only signatures. All 29 selected
+atom records have strong merchant-region support. The bounded exact-witness
+hypothesis is falsified; broader recoverability is not ruled out.
 
-Next extraction task: quantify the seven fixed merchant mismatches against v3.
+Independent checks agree on seven classifications, 189 whole-atom span queries,
+2,230 point-space atom checks and all three aggregate slices. Eleven focused
+tests and all 3,766 repository tests pass alongside Ruff and mypy. The score
+remains **17/24 exact**, with 24/24 aligned unique outputs. No source, label,
+prediction, assignment, assembly decision or frozen checkout changed.
+
+The recommended next task is one general geometry-based merchant spacing
+candidate in row-profiles, generated without reference text and scored on all
+24 v3 cases for gains and regressions. It has not been authorized or started.
+No further diagnostic, extractor change, expansion or held-out access is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: fully reviewed merchant reference v3 comparison
 

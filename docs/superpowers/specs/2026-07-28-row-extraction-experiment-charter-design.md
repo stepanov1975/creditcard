@@ -1413,7 +1413,11 @@ authorized. All private contents remain local and out of Git.
 
 ## Approved amendment: merchant v3 residual error analysis
 
-**Disposition:** APPROVED — preparing the fixed measurement.
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-v3-error-analysis-report.md)
+records two OCR source-text mismatches and five unresolved digital cases,
+including two spacing-only signatures. No exact witness was found; the saved
+score stays 17/24. The allowance below is exhausted.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed v3
 comparison's concrete recommendation to diagnose seven residual merchant errors.

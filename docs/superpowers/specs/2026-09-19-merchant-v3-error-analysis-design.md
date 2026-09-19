@@ -1,6 +1,7 @@
 # Merchant v3 Residual Error Analysis
 
-**Status:** APPROVED — preparing the fixed measurement.
+**Status:** COMPLETE — STOP. Results are recorded in the
+[report](../../experiments/row-extraction-merchant-v3-error-analysis-report.md).
 
 The user's “proceed” approves the completed v3 comparison's recommendation to
 diagnose its seven remaining mismatches using saved evidence.
