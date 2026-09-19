@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant spacing retention-reason measurement
+## Current phase: merchant punctuation attachment and geometry measurement
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+retention-reason report's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-punctuation-geometry-design.md).
+
+Compare the six incorrect punctuation boundaries with the three required
+punctuation-bearing controls. Reproduce the saved scores and selection, measure
+attachment categories and evaluate the existing geometry thresholds with
+direction inferred from nearby strong letters. No new candidate or thresholds,
+source extraction, label changes or broader selection are active.
+
+Next extraction task: quantify the fixed punctuation attachment and geometry comparison.
+
+## Completed phase: merchant spacing retention-reason measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 location report's recommendation under the
@@ -36,12 +50,8 @@ comparison boundaries and all source slices. Twenty-eight focused tests and all
 3,766 repository tests pass alongside Ruff and mypy. Sixteen protected inputs
 and the frozen checkout remain unchanged; no source documents were read.
 
-The unexecuted recommendation is to quantify punctuation attachment and geometry
-at the six errors versus the three punctuation-bearing required controls. No
-follow-on phase, candidate, threshold tuning, new source extraction, label update
-or held-out access is active.
-
-Next extraction task: STOP.
+This reason comparison is complete. Its separately approved punctuation and
+geometry comparison is the sole active phase above.
 
 ## Completed phase: merchant whitespace location measurement
 

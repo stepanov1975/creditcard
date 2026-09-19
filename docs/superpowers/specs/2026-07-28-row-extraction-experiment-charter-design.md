@@ -1514,3 +1514,23 @@ boundary and case counts, digital/OCR slices and the declared hypothesis. Stop
 after this comparison or failure to reproduce saved results. No candidate, new
 threshold, source extraction/OCR/model, label change, review, expansion, held-out
 access, reusable infrastructure or production integration is authorized.
+
+## Approved amendment: merchant punctuation attachment and geometry measurement
+
+**Disposition:** APPROVED — preparing the fixed nine-boundary comparison.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the retention-reason
+report's recommendation to compare punctuation attachment and geometry at six
+incorrect boundaries and three required punctuation-bearing controls.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-19-merchant-punctuation-geometry-design.md), using saved atoms,
+unchanged order, existing 80% line-overlap and 20% character-width thresholds,
+and direction inferred from nearest strong letters on either side. Publish
+attachment/geometry category counts and the declared hypothesis result only.
+Keep private scripts and results in `artifacts/merchant-punctuation-geometry-v1/`.
+
+**Stop boundary:** Stop after the nine-boundary comparison or saved-result
+reproduction failure. No changed predictions, threshold tuning, new source
+extraction/OCR/models, label changes, wider selection, held-out access, reusable
+infrastructure or production integration are authorized.
