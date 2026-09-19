@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant punctuation attachment and geometry measurement
+## Current phase: merchant punctuation-aware spacing candidate
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+punctuation-geometry report's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-punctuation-spacing-design.md).
+
+Generate one candidate using nearest strong-letter context at punctuation
+boundaries and unchanged geometry thresholds. Preserve source characters and
+recorded order, generate across all comparable saved owner groups before labels,
+then compare all 24 v3 seed cases against both saved prior views. No threshold
+tuning, label changes, wider sample or production integration is active.
+
+Next extraction task: generate and score the one punctuation-aware spacing candidate.
+
+## Completed phase: merchant punctuation attachment and geometry measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 retention-reason report's recommendation under the
@@ -36,12 +50,8 @@ boundaries and both cohort summaries. Fifteen focused tests and all 3,766
 repository tests pass alongside Ruff and mypy. Twenty saved inputs and the
 frozen checkout remain unchanged. No source documents were read.
 
-The unexecuted recommendation is one punctuation-aware spacing candidate using
-inferred context direction and the existing thresholds, evaluated across the
-24 frozen seed cases. No follow-on phase, candidate, threshold tuning, new source
-extraction, label update, held-out evaluation or production integration is active.
-
-Next extraction task: STOP.
+This geometry measurement is complete. Its separately approved spacing candidate
+is the sole active phase above.
 
 ## Completed phase: merchant spacing retention-reason measurement
 

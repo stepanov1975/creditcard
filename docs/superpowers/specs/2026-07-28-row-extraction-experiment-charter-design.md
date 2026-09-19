@@ -1539,3 +1539,25 @@ Keep private scripts and results in `artifacts/merchant-punctuation-geometry-v1/
 reproduction failure. No changed predictions, threshold tuning, new source
 extraction/OCR/models, label changes, wider selection, held-out access, reusable
 infrastructure or production integration are authorized.
+
+## Approved amendment: merchant punctuation-aware spacing candidate
+
+**Disposition:** APPROVED — preparing one candidate and fixed comparison.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed
+punctuation-geometry report's candidate recommendation.
+
+**Bounded extraction-change allowance:** Execute the
+[design](2026-09-19-merchant-punctuation-spacing-design.md). Extend the existing
+spacing rule at punctuation boundaries using nearest strong-letter context and
+the unchanged 80% overlap / 20% character-width thresholds. Preserve source text,
+selection, order, ownership and multiplicity. Generate across all comparable
+saved owner groups before opening labels; reproduce 48 prior scores and evaluate
+all 24 v3 seed cases. Publish exact-match deltas, paired gains/losses, coverage,
+spacing-error counts and the declared hypothesis result.
+
+**Stop boundary:** Private scripts/results stay in
+`artifacts/merchant-punctuation-spacing-v1/`. Stop after one comparison or saved
+result reproduction failure. No tuning, second candidate, new source extraction,
+OCR/model access, label changes, review, expansion, held-out access, reusable
+infrastructure or production integration is authorized.
