@@ -13,20 +13,37 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant whitespace location measurement
+## Current disposition: STOP — merchant whitespace location measurement complete
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 spacing experiment's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-spacing-location-design.md).
 
-Reproduce all 48 baseline/candidate scores, then locate whitespace discrepancies
-in exactly two spacing-only digital cases using saved source strings, atom order
-and separator decisions. Count within-atom versus between-atom locations, origins,
-unresolved cases and separator-only repairability in both views. Stop after this
-fixed measurement or baseline failure. No candidate, tuning, new source extraction,
-label update, expansion or held-out access is active.
+Authority was committed at `ef8e597` before measurement. The
+[report](row-extraction-merchant-spacing-location-report.md) records **six extra
+inserted separators between atoms** across the two spacing-only digital cases.
+There are **zero within-atom, source-whitespace or unresolved discrepancies**.
+Both cases are separator-only repairable in principle, conditional on the v3
+reference. The within-atom hypothesis is falsified.
 
-Next extraction task: quantify the two fixed whitespace discrepancies.
+All six discrepant gap positions remain unchanged in the saved spacing candidate:
+zero removed and zero introduced. All 48 saved scores reproduce and four selected
+output strings reconstruct from recorded atoms/separators. The score remains
+**17/24 exact** in both views, with 24 aligned unique outputs. No corrected output
+or new prediction was generated.
+
+Independent checks agree on 12 gap records across the two views, all categories,
+origins, repairability and transition counts. Seventeen focused tests and all
+3,766 repository tests pass alongside Ruff and mypy. No source documents were
+read, and all prior artifacts and the frozen checkout remain unchanged.
+
+The recommended next task is to quantify the recorded rule conditions retaining
+these six incorrect separators and compare them with the 17 exact control cases,
+using saved decisions and evidence without tuning or new outputs. It has not
+been authorized or started. No further diagnostic, candidate, label change,
+source extraction, expansion or held-out access is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant geometry spacing comparison
 

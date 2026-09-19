@@ -1,6 +1,7 @@
 # Merchant Whitespace Location Measurement
 
-**Status:** APPROVED — preparing the fixed two-case measurement.
+**Status:** COMPLETE — STOP. Results are recorded in the
+[report](../../experiments/row-extraction-merchant-spacing-location-report.md).
 
 The user's “proceed” approves the spacing experiment's recommendation to locate
 the two remaining spacing-only digital discrepancies in saved atom text.

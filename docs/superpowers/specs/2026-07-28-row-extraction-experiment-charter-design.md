@@ -1467,7 +1467,11 @@ or production integration is authorized. All private data stays local.
 
 ## Approved amendment: merchant whitespace location measurement
 
-**Disposition:** APPROVED — preparing the fixed two-case measurement.
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-spacing-location-report.md)
+records six extra inserted separators between atoms across two cases, with zero
+within-atom or unresolved discrepancies. Both cases are separator-only repairable
+in principle; the score remains 17/24. The allowance below is exhausted.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed spacing
 experiment's concrete recommendation to locate its two remaining whitespace errors.
