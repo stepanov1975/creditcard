@@ -13,7 +13,26 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — remaining merchant seed repeat reading complete
+## Active phase: remaining merchant seed source adjudication
+
+**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+the completed repeat audit's recommendation for adjudication of four changed
+cases under the
+[design](../superpowers/specs/2026-09-19-merchant-remaining-adjudication-design.md).
+
+Select exactly three OCR cases and one digital case from the completed 13-case
+review. One has changed text and regions; three have changed regions only.
+Show both human readings, region sets and notes alongside the existing source
+page, with model outputs excluded. Final decisions start blank and require a
+source check and reason. Resolution and hypothesis are **NOT MEASURED**.
+
+Both references, prior submissions, review-depth metadata and the saved 17/24
+score remain unchanged. No tuning, reference update, sample expansion, held-out
+access, accepted-gold promotion or production integration is active.
+
+Next extraction task: prepare the fixed adjudication and await four human decisions.
+
+## Completed phase: remaining merchant seed repeat reading
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 the preceding recommendation for a blind second reading of the remaining
@@ -44,11 +63,8 @@ The original and v2 references, earlier submissions, review-depth mapping, and
 saved 17/24 score remain unchanged. No tuning, expansion, held-out access,
 accepted-gold promotion, or production integration is active.
 
-The recommended next task is source adjudication of these four changed cases,
-with both readings, region sets and human notes visible and model outputs hidden.
-It has not been authorized or prepared.
-
-Next extraction task: STOP.
+This repeat-reading measurement is complete. Its separately approved four-case
+adjudication recommendation is the sole active phase above.
 
 ## Completed phase: adjudicated merchant reference v2 comparison
 

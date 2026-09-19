@@ -1351,3 +1351,26 @@ No prediction access, new extraction, OCR, source rendering, hosted service,
 reusable review infrastructure, adjudication, reference replacement, expansion,
 validation/test access, accepted-gold promotion, or production integration is
 authorized. All private contents remain local and out of Git.
+
+## Approved amendment: remaining merchant seed source adjudication
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed
+remaining-case repeat audit's recommendation to adjudicate its four cases with
+changed text or regions, with both human readings, regions and notes visible.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-remaining-adjudication-design.md). Use exactly three
+OCR cases and one digital case from the completed 13-case audit. Adapt the existing
+disposable adjudication form to display the prior human notes as text and reuse
+the existing source-page images. Preparation, checks and returned decisions may
+write only under ignored `artifacts/merchant-remaining-adjudication-v1/`.
+
+**Authorized measurement and pause/stop boundary:** Measure resolved-reference
+counts, unresolved ambiguity, and final text/region agreement with both prior
+readings. Pause for four human decisions, retain them separately, then measure
+and stop. Preserve both reference versions, existing review-depth metadata, all
+earlier submissions and the saved 17/24 score. No prediction access, new extraction,
+OCR, source rendering, hosted service, reusable review infrastructure, automatic
+adjudication, reference replacement, sample expansion, further review, held-out
+access, accepted-gold promotion or production integration is authorized. All
+private contents remain local and out of Git.
