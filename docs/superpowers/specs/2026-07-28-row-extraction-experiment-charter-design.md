@@ -1517,7 +1517,12 @@ access, reusable infrastructure or production integration is authorized.
 
 ## Approved amendment: merchant punctuation attachment and geometry measurement
 
-**Disposition:** APPROVED — preparing the fixed nine-boundary comparison.
+**Disposition:** COMPLETE — STOP. Authority was committed at `0aaec40` before
+measurement. All six erroneous punctuation boundaries pass the fixed geometry
+checks and none of the three required controls passes. The hypothesis is
+supported on this sample; no changed predictions were generated. See the
+[report](../../experiments/row-extraction-merchant-punctuation-geometry-report.md).
+No follow-on phase is active.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the retention-reason
 report's recommendation to compare punctuation attachment and geometry at six

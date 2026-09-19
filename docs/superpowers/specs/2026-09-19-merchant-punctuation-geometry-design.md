@@ -1,6 +1,11 @@
 # Merchant Punctuation Attachment and Geometry Measurement
 
-**Status:** APPROVED — preparing the fixed nine-boundary comparison.
+**Status:** COMPLETE — STOP; the fixed-geometry hypothesis is supported.
+
+Authority was committed at `0aaec40` before measurement. All six incorrect
+punctuation boundaries pass the unchanged geometry checks; all three required
+controls have wide gaps, with zero unresolved boundaries. No changed prediction
+was generated. See the [report](../../experiments/row-extraction-merchant-punctuation-geometry-report.md).
 
 The user's “proceed” approves the completed retention-reason report's
 recommendation to compare punctuation attachment and geometry using saved atoms.

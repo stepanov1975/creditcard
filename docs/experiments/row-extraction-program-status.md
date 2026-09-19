@@ -15,17 +15,33 @@ derived financial value is recorded here.
 
 ## Current phase: merchant punctuation attachment and geometry measurement
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 retention-reason report's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-punctuation-geometry-design.md).
 
-Compare the six incorrect punctuation boundaries with the three required
-punctuation-bearing controls. Reproduce the saved scores and selection, measure
-attachment categories and evaluate the existing geometry thresholds with
-direction inferred from nearby strong letters. No new candidate or thresholds,
-source extraction, label changes or broader selection are active.
+Authority was committed at `0aaec40` before measurement. The
+[report](row-extraction-merchant-punctuation-geometry-report.md) records **6/6
+incorrect punctuation spaces passing the existing geometry checks and 0/3
+required controls passing**. All three controls have wide gaps; no boundary is
+unresolved. The fixed-geometry hypothesis is supported on this sample.
 
-Next extraction task: quantify the fixed punctuation attachment and geometry comparison.
+Errors surround punctuation-only atoms and have RTL context; controls contain
+punctuation attached to text and have LTR context. These correlated differences
+limit generalization. All 48 saved scores reproduce, and ten saved outputs for
+five selected cases reconstruct. No changed output was generated; accuracy
+remains **17/24 exact**, with 24 aligned unique outputs.
+
+Independent rational arithmetic and reference-gap checks agree on all nine
+boundaries and both cohort summaries. Fifteen focused tests and all 3,766
+repository tests pass alongside Ruff and mypy. Twenty saved inputs and the
+frozen checkout remain unchanged. No source documents were read.
+
+The unexecuted recommendation is one punctuation-aware spacing candidate using
+inferred context direction and the existing thresholds, evaluated across the
+24 frozen seed cases. No follow-on phase, candidate, threshold tuning, new source
+extraction, label update, held-out evaluation or production integration is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant spacing retention-reason measurement
 
@@ -50,8 +66,8 @@ comparison boundaries and all source slices. Twenty-eight focused tests and all
 3,766 repository tests pass alongside Ruff and mypy. Sixteen protected inputs
 and the frozen checkout remain unchanged; no source documents were read.
 
-This reason comparison is complete. Its separately approved punctuation and
-geometry comparison is the sole active phase above.
+This reason comparison and its separately approved punctuation/geometry
+measurement are complete. The latest phase above is stopped.
 
 ## Completed phase: merchant whitespace location measurement
 
