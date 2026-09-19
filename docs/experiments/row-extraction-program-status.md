@@ -13,24 +13,33 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: adjudicated merchant reference v2 comparison
+## Current disposition: STOP — adjudicated reference comparison complete
 
-**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 creating a new 24-case training reference from the six confirmed adjudications
 and re-scoring the saved assembly outputs under the
 [design](../superpowers/specs/2026-09-19-merchant-reference-v2-design.md).
 
-Preserve v1 and the other 18 reference records. Record review depths and compare
-three fixed views: original text/alignment, v2 text with original alignment,
-and v2 text with alignment recomputed by the unchanged merchant-region matcher.
-This separates text-reference effects from the conditional region/alignment
-effect while leaving extraction outputs unchanged.
+Authority was committed at `87a9c69` before materialization. The separate local
+v2 reference incorporates six adjudications and preserves the other 18 record
+lines byte for byte. Its review depths are 13 single readings, five agreeing
+repeat readings, and six source adjudications. V1 and all answer files remain
+unchanged. This remains a same-reviewer training seed.
 
-The starting score is 13/24 exact with 24/24 unique-output coverage. The new
-metrics are **NOT MEASURED**. No new prediction, tuning, expansion, held-out
-access, accepted-gold promotion, or production integration is active.
+The [report](row-extraction-merchant-reference-v2-report.md) records **17/24 exact
+against v2 versus 13/24 against v1**. All four gains come from corrected text,
+with zero losses. Recomputed alignment changes no assignments or outcomes.
+All three views retain 24/24 alignment and unique-output coverage. Digital exact
+matches rise from 10/16 to 11/16; OCR rises from 3/8 to 6/8. Seven text mismatches
+remain. The reference-update hypothesis is supported; no extractor improved or
+new prediction ran.
 
-Next extraction task: complete this fixed reference-update comparison, then STOP.
+The recommended next task is a blind second reading of the remaining 13
+single-read training cases. It has not been authorized or prepared. No tuning,
+expansion, held-out access, accepted-gold promotion, or production integration
+is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: six-case merchant source adjudication
 

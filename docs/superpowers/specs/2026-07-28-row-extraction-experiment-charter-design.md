@@ -1295,6 +1295,11 @@ expansion, validation/test access, or production integration is authorized.
 
 ## Approved amendment: adjudicated merchant reference v2 comparison
 
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-reference-v2-report.md) records
+17/24 exact against v2 versus 13/24 against v1, with four text-reference gains,
+zero losses, and no assignment changes. The allowance below is exhausted.
+
 **Approval date:** 2026-09-19. The user's “proceed” approves the concrete
 recommendation to create a separate adjudicated 24-case training reference and
 re-score the same saved merchant outputs after the six-case adjudication.

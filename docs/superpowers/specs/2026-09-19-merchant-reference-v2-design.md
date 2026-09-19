@@ -1,6 +1,7 @@
 # Adjudicated Merchant Reference v2 Comparison
 
-**Status:** Approved — one fixed reference update and saved-output comparison.
+**Status:** COMPLETE — STOP. The separate reference and fixed comparison are
+recorded in the [report](../../experiments/row-extraction-merchant-reference-v2-report.md).
 
 The user's “proceed” approves the recommendation to create a separate 24-case
 training reference using the six source adjudications and re-score the same
