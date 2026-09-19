@@ -1354,6 +1354,12 @@ authorized. All private contents remain local and out of Git.
 
 ## Approved amendment: remaining merchant seed source adjudication
 
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-remaining-adjudication-report.md)
+records four resolved-present references, all matching the first merchant text,
+with zero unresolved cases. No reference replacement occurred. The allowance
+is exhausted.
+
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed
 remaining-case repeat audit's recommendation to adjudicate its four cases with
 changed text or regions, with both human readings, regions and notes visible.

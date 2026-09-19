@@ -1,7 +1,8 @@
 # Remaining Merchant Seed Source-Adjudication Design
 
-**Status:** AWAITING_HUMAN_ADJUDICATION — the four-case worksheet is prepared
-and checked. Resolution and hypothesis remain NOT MEASURED. See the
+**Status:** COMPLETE — STOP. All four source-checked decisions resolve a present
+merchant and owner; all final text matches the first reading. The all-four
+resolution hypothesis is supported. See the
 [report](../../experiments/row-extraction-merchant-remaining-adjudication-report.md).
 
 The user's “proceed” approves the completed remaining-case repeat audit's concrete

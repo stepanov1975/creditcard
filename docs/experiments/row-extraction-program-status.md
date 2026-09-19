@@ -13,9 +13,9 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: remaining merchant seed source adjudication
+## Current disposition: STOP — remaining merchant seed adjudication complete
 
-**Status:** `AWAITING_HUMAN_ADJUDICATION`. The user's “proceed” separately approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 the completed repeat audit's recommendation for adjudication of four changed
 cases under the
 [design](../superpowers/specs/2026-09-19-merchant-remaining-adjudication-design.md).
@@ -24,19 +24,31 @@ Authority was committed at `4a2393c` before preparation. The local worksheet
 contains exactly three OCR cases and one digital case from the completed 13-case
 review: one with changed text and regions and three with changed regions only.
 It shows eight prior human readings, their region sets and notes, reusing two
-source-page images. Model outputs are excluded. All four final decisions start
-blank and require a source check and reason. The
+source-page images. Model outputs are excluded. All four final decisions started
+blank and required a source check and reason. The
 [report](row-extraction-merchant-remaining-adjudication-report.md) records the
 selection, projection, image, form and packet checks.
 
-The worksheet exports `merchant-remaining-adjudication-answers.json`. Resolution
-and hypothesis are **NOT MEASURED** pending the fixed human decisions.
+The user submitted **4/4 confirmed, source-checked present decisions**, each with
+a reason. There are zero absent, ambiguous, missing or unreviewed cases, and all
+source-issue fields are `none`. The all-four-resolution hypothesis is supported.
+
+All four final merchant texts match the first readings; three also match the
+second. Merchant regions match the second reading in all four cases and the first
+in three. Transaction regions match the second in three and neither prior version
+in one OCR case; all four differ from the first. No new merchant text is supplied.
+An independent computation agrees on eight text-pair and 16 region-pair checks
+and all aggregate fields for the overall, digital and OCR slices.
 
 Both references, prior submissions, review-depth metadata and the saved 17/24
 score remain unchanged. No tuning, reference update, sample expansion, held-out
 access, accepted-gold promotion or production integration is active.
 
-Next extraction task: receive and measure the four human decisions, then STOP.
+The recommended next task is a separate fully reviewed v3 reference incorporating
+these four decisions, with review-depth metadata updated for all 24 cases, followed
+by rescoring the same saved outputs. It has not been authorized or materialized.
+
+Next extraction task: STOP.
 
 ## Completed phase: remaining merchant seed repeat reading
 
