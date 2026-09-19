@@ -15,17 +15,33 @@ derived financial value is recorded here.
 
 ## Current phase: merchant spacing retention-reason measurement
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 location report's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-spacing-reasons-design.md).
 
-Compare the unchanged spacing reasons at six known erroneous separators with
-all boundaries in 17 exact control cases. Reproduce all 48 scores, distinguish
-required versus redundant control separators, retain unresolved attribution and
-report reason overlap with digital/OCR slices. No candidate, threshold changes,
-new source extraction, label updates or held-out access are active.
+Authority was committed at `f1f6b18` before measurement. The
+[report](row-extraction-merchant-spacing-reasons-report.md) records **six incorrect
+spaces sharing `unsupported_direction` with four required control spaces**.
+All six errors and three of those controls involve punctuation. The reason-only
+separation hypothesis is **falsified**; blanket punctuation joining would also
+remove required spaces.
 
-Next extraction task: quantify the fixed retention-reason error/control overlap.
+The 17 exact controls contain 30 boundaries, all required separators: 20 in 11
+digital cases and 10 in six OCR cases. None are redundant or unresolved. All
+48 scores reproduce and 38 selected saved outputs reconstruct. Exact match
+remains **17/24**, with 24 aligned unique outputs. No new prediction was made.
+
+Independent checks agree on 40 recorded boundary mappings/reasons, the 36
+comparison boundaries and all source slices. Twenty-eight focused tests and all
+3,766 repository tests pass alongside Ruff and mypy. Sixteen protected inputs
+and the frozen checkout remain unchanged; no source documents were read.
+
+The unexecuted recommendation is to quantify punctuation attachment and geometry
+at the six errors versus the three punctuation-bearing required controls. No
+follow-on phase, candidate, threshold tuning, new source extraction, label update
+or held-out access is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant whitespace location measurement
 
@@ -51,8 +67,8 @@ origins, repairability and transition counts. Seventeen focused tests and all
 3,766 repository tests pass alongside Ruff and mypy. No source documents were
 read, and all prior artifacts and the frozen checkout remain unchanged.
 
-This location measurement is complete. Its separately approved retention-reason
-comparison is the sole active phase above.
+This location measurement and its separately approved retention-reason comparison
+are complete. The latest phase above is stopped.
 
 ## Completed phase: merchant geometry spacing comparison
 

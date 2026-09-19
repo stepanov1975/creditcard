@@ -1,6 +1,11 @@
 # Merchant Spacing Retention-Reason Measurement
 
-**Status:** APPROVED — preparing the fixed error/control comparison.
+**Status:** COMPLETE — STOP; the reason-separation hypothesis is falsified.
+
+Authority was committed at `f1f6b18` before measurement. All six incorrect
+separators share `unsupported_direction` with four required control separators;
+six errors and three of those controls involve punctuation. All 48 scores
+reproduce. See the [result report](../../experiments/row-extraction-merchant-spacing-reasons-report.md).
 
 The user's “proceed” approves the whitespace-location report's recommendation
 to compare the recorded spacing reasons at six errors with 17 exact controls.

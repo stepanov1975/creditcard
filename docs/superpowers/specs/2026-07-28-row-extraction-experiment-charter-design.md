@@ -1492,7 +1492,11 @@ integration is authorized. All private data stays local.
 
 ## Approved amendment: merchant spacing retention-reason measurement
 
-**Disposition:** APPROVED — preparing the fixed error/control comparison.
+**Disposition:** COMPLETE — STOP. Authority was committed at `f1f6b18` before
+measurement. All six errors share a recorded reason with four required control
+separators; the reason-separation hypothesis is falsified. See the
+[result report](../../experiments/row-extraction-merchant-spacing-reasons-report.md).
+No follow-on task is active.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the location report's
 recommendation to compare reasons for six retained erroneous separators with
