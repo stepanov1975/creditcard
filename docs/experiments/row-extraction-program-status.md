@@ -13,14 +13,24 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: STOP
+## Active phase: adjudicated merchant reference v2 comparison
 
-No extraction task is active. The six-case source adjudication is complete. Its
-recommendation to create a separate adjudicated 24-case reference version and
-re-score the saved outputs has not begun and is not authorized by this completed
-measurement.
+**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+creating a new 24-case training reference from the six confirmed adjudications
+and re-scoring the saved assembly outputs under the
+[design](../superpowers/specs/2026-09-19-merchant-reference-v2-design.md).
 
-Next extraction task: STOP.
+Preserve v1 and the other 18 reference records. Record review depths and compare
+three fixed views: original text/alignment, v2 text with original alignment,
+and v2 text with alignment recomputed by the unchanged merchant-region matcher.
+This separates text-reference effects from the conditional region/alignment
+effect while leaving extraction outputs unchanged.
+
+The starting score is 13/24 exact with 24/24 unique-output coverage. The new
+metrics are **NOT MEASURED**. No new prediction, tuning, expansion, held-out
+access, accepted-gold promotion, or production integration is active.
+
+Next extraction task: complete this fixed reference-update comparison, then STOP.
 
 ## Completed phase: six-case merchant source adjudication
 

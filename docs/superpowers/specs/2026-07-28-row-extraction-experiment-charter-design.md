@@ -1292,3 +1292,28 @@ references, source images, and predictions. Pause for human decisions, retain
 them separately, then measure resolution and stop. No automated adjudication,
 reference promotion, source rendering, OCR, model call, prediction rescoring,
 expansion, validation/test access, or production integration is authorized.
+
+## Approved amendment: adjudicated merchant reference v2 comparison
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the concrete
+recommendation to create a separate adjudicated 24-case training reference and
+re-score the same saved merchant outputs after the six-case adjudication.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-reference-v2-design.md). Project the six confirmed
+human decisions into a separate existing-shape reference file, preserving the
+other 18 records and v1. Record the existing review-depth distinctions privately.
+Use the unchanged scorer and merchant-region matcher for three views: original
+reference/alignment, updated text with original alignment, and updated reference
+with alignment recomputed from corrected regions. This is the minimum local
+measurement needed to distinguish text and region effects on the saved outputs.
+
+**Authorized measurement and stop boundary:** Measure exact merchant match,
+alignment coverage, unique-output coverage, and paired gains/losses on the fixed
+24 training cases and 135 saved rows. Private projection, immediate checks, and
+comparison artifacts may write only under ignored `artifacts/merchant-gold-seed-v2/`.
+Preserve original labels, predictions, outputs, billing decisions, and frozen
+branches. Stop after this comparison; no new extraction, OCR, model call,
+reusable evaluator/controller/schema/CLI, reference tuning, new labels, expansion,
+validation/test access, accepted-gold promotion, or production integration is
+authorized. All private contents remain local and out of Git.
