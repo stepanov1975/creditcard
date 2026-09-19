@@ -1,6 +1,8 @@
 # Remaining Merchant Seed Blind Repeat-Reading Design
 
-**Status:** Approved — one fixed 13-case human repeat-consistency measurement.
+**Status:** AWAITING_HUMAN_REVIEW — the fixed 13-case worksheet is prepared and
+checked. Agreement and hypothesis remain NOT MEASURED. See the
+[report](../../experiments/row-extraction-merchant-remaining-blind-review-report.md).
 
 The user's “proceed” approves the completed v2 reference comparison's concrete
 recommendation: a blind second reading of the remaining 13 single-read training

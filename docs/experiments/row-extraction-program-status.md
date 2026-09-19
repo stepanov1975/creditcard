@@ -15,22 +15,28 @@ derived financial value is recorded here.
 
 ## Active phase: remaining merchant seed blind repeat reading
 
-**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+**Status:** `AWAITING_HUMAN_REVIEW`. The user's “proceed” separately approves
 the preceding recommendation for a blind second reading of the remaining
 13 single-read training cases under the
 [design](../superpowers/specs/2026-09-19-merchant-remaining-blind-review-design.md).
 
-Select exactly the 13 entries in the existing v2 review-depth mapping and verify
-that they complement the previous 11-case audit. Reuse the existing local review
-form and source-page images; hide all prior answers and extraction outputs.
-Pause for the human response, then measure repeat consistency without replacing
-labels or rescoring predictions. Agreement and hypothesis are **NOT MEASURED**.
+Authority was committed at `b66c7e7` before preparation. The local worksheet
+contains exactly 13 cases from the existing v2 review-depth mapping: ten digital
+and three OCR. Its selection complements the previous 11-case audit with zero
+overlap. Five source-page images are reused; all answers are blank and all cases
+unconfirmed. Prior answers and extraction outputs are hidden. The
+[report](row-extraction-merchant-remaining-blind-review-report.md) records the
+selection, source, form and packet checks.
+
+The worksheet exports `merchant-remaining-blind-review-answers.json`. Pause for
+that human response, then measure repeat consistency without replacing labels
+or rescoring predictions. Agreement and hypothesis are **NOT MEASURED**.
 
 The original and v2 references, earlier submissions, review-depth mapping, and
 saved 17/24 score remain unchanged. No tuning, expansion, held-out access,
 accepted-gold promotion, or production integration is active.
 
-Next extraction task: prepare this fixed review and await the 13 human answers.
+Next extraction task: receive and measure the fixed 13 human answers, then STOP.
 
 ## Completed phase: adjudicated merchant reference v2 comparison
 
