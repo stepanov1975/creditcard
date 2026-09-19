@@ -1410,3 +1410,25 @@ reproduction failure. No extractor tuning, new predictions, OCR, models, source
 rendering, reusable evaluation infrastructure, new labels, expansion, further
 review, held-out access, accepted-gold promotion or production integration is
 authorized. All private contents remain local and out of Git.
+
+## Approved amendment: merchant v3 residual error analysis
+
+**Disposition:** APPROVED — preparing the fixed measurement.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed v3
+comparison's concrete recommendation to diagnose seven residual merchant errors.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-v3-error-analysis-design.md). Reproduce 24 v3 scores,
+then classify the seven failures using fixed saved evidence, regions, proposals
+and assembly order. The smallest disposable diagnostic may search exact
+whole-atom witnesses and count character availability under the predeclared
+rules; it must not create predictions or alter scoring.
+
+**Authorized measurement and stop boundary:** Count selection/assembly failures,
+source-text mismatches, missing source evidence and unresolved attribution, with
+digital/OCR slices. Private writes are limited to ignored
+`artifacts/merchant-v3-errors-v1/`. Stop after the counts or a baseline failure.
+No extractor tuning, new predictions, OCR, models, rendering, label changes,
+review, expansion, held-out access, reusable evaluation infrastructure, gold
+promotion or production integration is authorized. All private data stays local.

@@ -13,7 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — fully reviewed merchant reference v3 complete
+## Current phase: merchant v3 residual error analysis
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+v3 comparison's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-v3-error-analysis-design.md).
+
+Reproduce all 24 saved v3 scores and diagnose exactly seven mismatches: five
+digital and two OCR. Count selection/assembly failures, source-text mismatches,
+missing source evidence and unresolved attribution using the unchanged saved
+rows, proposals, assembly order, merchant regions and fixed witness rules.
+Stop after the error count or a baseline reproduction failure. No extractor
+changes, new predictions, label updates, expansion or held-out access are active.
+
+Next extraction task: quantify the seven fixed merchant mismatches against v3.
+
+## Completed phase: fully reviewed merchant reference v3 comparison
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 remaining-adjudication report's recommendation under the
@@ -38,11 +53,8 @@ review-depth snapshots, human submissions and saved outputs remain preserved.
 This is a fully reviewed same-reviewer training seed, not independent or held-out
 gold. No new extraction, expansion, held-out access or production work is active.
 
-The recommended next task is to quantify the seven residual merchant errors
-against v3 using saved evidence, separating source-text errors from selection or
-assembly errors where supported. That task has not been authorized or started.
-
-Next extraction task: STOP.
+This comparison is complete. Its separately approved residual-error analysis
+recommendation is the sole active phase above.
 
 ## Completed phase: remaining merchant seed adjudication
 
