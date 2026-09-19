@@ -1,6 +1,8 @@
 # Remaining Merchant Seed Source-Adjudication Design
 
-**Status:** Approved — one fixed four-case human reference-resolution measurement.
+**Status:** AWAITING_HUMAN_ADJUDICATION — the four-case worksheet is prepared
+and checked. Resolution and hypothesis remain NOT MEASURED. See the
+[report](../../experiments/row-extraction-merchant-remaining-adjudication-report.md).
 
 The user's “proceed” approves the completed remaining-case repeat audit's concrete
 recommendation to adjudicate its four cases with changed text or regions. Reuse

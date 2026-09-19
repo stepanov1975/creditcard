@@ -15,22 +15,28 @@ derived financial value is recorded here.
 
 ## Active phase: remaining merchant seed source adjudication
 
-**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+**Status:** `AWAITING_HUMAN_ADJUDICATION`. The user's “proceed” separately approves
 the completed repeat audit's recommendation for adjudication of four changed
 cases under the
 [design](../superpowers/specs/2026-09-19-merchant-remaining-adjudication-design.md).
 
-Select exactly three OCR cases and one digital case from the completed 13-case
-review. One has changed text and regions; three have changed regions only.
-Show both human readings, region sets and notes alongside the existing source
-page, with model outputs excluded. Final decisions start blank and require a
-source check and reason. Resolution and hypothesis are **NOT MEASURED**.
+Authority was committed at `4a2393c` before preparation. The local worksheet
+contains exactly three OCR cases and one digital case from the completed 13-case
+review: one with changed text and regions and three with changed regions only.
+It shows eight prior human readings, their region sets and notes, reusing two
+source-page images. Model outputs are excluded. All four final decisions start
+blank and require a source check and reason. The
+[report](row-extraction-merchant-remaining-adjudication-report.md) records the
+selection, projection, image, form and packet checks.
+
+The worksheet exports `merchant-remaining-adjudication-answers.json`. Resolution
+and hypothesis are **NOT MEASURED** pending the fixed human decisions.
 
 Both references, prior submissions, review-depth metadata and the saved 17/24
 score remain unchanged. No tuning, reference update, sample expansion, held-out
 access, accepted-gold promotion or production integration is active.
 
-Next extraction task: prepare the fixed adjudication and await four human decisions.
+Next extraction task: receive and measure the four human decisions, then STOP.
 
 ## Completed phase: remaining merchant seed repeat reading
 
