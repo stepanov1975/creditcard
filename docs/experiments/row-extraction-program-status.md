@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — merchant whitespace location measurement complete
+## Current phase: merchant spacing retention-reason measurement
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+location report's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-spacing-reasons-design.md).
+
+Compare the unchanged spacing reasons at six known erroneous separators with
+all boundaries in 17 exact control cases. Reproduce all 48 scores, distinguish
+required versus redundant control separators, retain unresolved attribution and
+report reason overlap with digital/OCR slices. No candidate, threshold changes,
+new source extraction, label updates or held-out access are active.
+
+Next extraction task: quantify the fixed retention-reason error/control overlap.
+
+## Completed phase: merchant whitespace location measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 spacing experiment's recommendation under the
@@ -37,13 +51,8 @@ origins, repairability and transition counts. Seventeen focused tests and all
 3,766 repository tests pass alongside Ruff and mypy. No source documents were
 read, and all prior artifacts and the frozen checkout remain unchanged.
 
-The recommended next task is to quantify the recorded rule conditions retaining
-these six incorrect separators and compare them with the 17 exact control cases,
-using saved decisions and evidence without tuning or new outputs. It has not
-been authorized or started. No further diagnostic, candidate, label change,
-source extraction, expansion or held-out access is active.
-
-Next extraction task: STOP.
+This location measurement is complete. Its separately approved retention-reason
+comparison is the sole active phase above.
 
 ## Completed phase: merchant geometry spacing comparison
 

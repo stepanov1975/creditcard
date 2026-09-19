@@ -1489,3 +1489,24 @@ ignored `artifacts/merchant-spacing-location-v1/`. Stop after the count or basel
 failure. No tuning, second candidate, new source extraction/OCR/models, label
 changes, review, expansion, held-out access, reusable infrastructure or production
 integration is authorized. All private data stays local.
+
+## Approved amendment: merchant spacing retention-reason measurement
+
+**Disposition:** APPROVED — preparing the fixed error/control comparison.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the location report's
+recommendation to compare reasons for six retained erroneous separators with
+boundaries in 17 exact controls.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-19-merchant-spacing-reasons-design.md). Map the six saved gap
+errors and the exact controls to existing atom boundaries; quantify required,
+redundant and unresolved control separators by the unchanged saved reason codes.
+The fixed Unicode edge-category breakdown is diagnostic only. Write private
+scripts/results only under ignored `artifacts/merchant-spacing-reasons-v1/`.
+
+**Authorized measurement and stop boundary:** Report error/control reason overlap,
+boundary and case counts, digital/OCR slices and the declared hypothesis. Stop
+after this comparison or failure to reproduce saved results. No candidate, new
+threshold, source extraction/OCR/model, label change, review, expansion, held-out
+access, reusable infrastructure or production integration is authorized.
