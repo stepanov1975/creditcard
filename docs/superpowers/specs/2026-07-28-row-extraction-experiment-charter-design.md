@@ -1322,3 +1322,27 @@ branches. Stop after this comparison; no new extraction, OCR, model call,
 reusable evaluator/controller/schema/CLI, reference tuning, new labels, expansion,
 validation/test access, accepted-gold promotion, or production integration is
 authorized. All private contents remain local and out of Git.
+
+## Approved amendment: remaining merchant seed blind repeat reading
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed v2
+reference comparison's concrete recommendation to repeat-read the remaining
+13 single-read cases, with prior answers and extraction outputs hidden.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-remaining-blind-review-design.md). Select the exact
+13 single-read cases from the existing 24-case training reference, verifying
+the complement of the earlier 11-case audit. Adapt the existing disposable local
+blind-review form and reuse source-page images and target regions. Preparation,
+checks and eventual answers may write only under ignored
+`artifacts/merchant-remaining-blind-review-v1/`.
+
+**Authorized measurement and pause/stop boundary:** Measure repeat-transcription
+exact agreement, changed-reference counts, uncertainty, explicit boundary/ownership
+issues, and region changes for those 13 cases. Pause for human answers, retain
+them separately, then measure and stop. Preserve both references, all prior
+submissions, review-depth metadata, predictions, and the saved 17/24 score.
+No prediction access, new extraction, OCR, source rendering, hosted service,
+reusable review infrastructure, adjudication, reference replacement, expansion,
+validation/test access, accepted-gold promotion, or production integration is
+authorized. All private contents remain local and out of Git.

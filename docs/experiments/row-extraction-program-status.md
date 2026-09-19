@@ -13,7 +13,26 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — adjudicated reference comparison complete
+## Active phase: remaining merchant seed blind repeat reading
+
+**Status:** `AUTHORIZED — PREPARING`. The user's “proceed” separately approves
+the preceding recommendation for a blind second reading of the remaining
+13 single-read training cases under the
+[design](../superpowers/specs/2026-09-19-merchant-remaining-blind-review-design.md).
+
+Select exactly the 13 entries in the existing v2 review-depth mapping and verify
+that they complement the previous 11-case audit. Reuse the existing local review
+form and source-page images; hide all prior answers and extraction outputs.
+Pause for the human response, then measure repeat consistency without replacing
+labels or rescoring predictions. Agreement and hypothesis are **NOT MEASURED**.
+
+The original and v2 references, earlier submissions, review-depth mapping, and
+saved 17/24 score remain unchanged. No tuning, expansion, held-out access,
+accepted-gold promotion, or production integration is active.
+
+Next extraction task: prepare this fixed review and await the 13 human answers.
+
+## Completed phase: adjudicated merchant reference v2 comparison
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 creating a new 24-case training reference from the six confirmed adjudications
@@ -34,12 +53,8 @@ matches rise from 10/16 to 11/16; OCR rises from 3/8 to 6/8. Seven text mismatch
 remain. The reference-update hypothesis is supported; no extractor improved or
 new prediction ran.
 
-The recommended next task is a blind second reading of the remaining 13
-single-read training cases. It has not been authorized or prepared. No tuning,
-expansion, held-out access, accepted-gold promotion, or production integration
-is active.
-
-Next extraction task: STOP.
+This comparison is complete. Its separately approved repeat-reading
+recommendation is the sole active phase above.
 
 ## Completed phase: six-case merchant source adjudication
 
