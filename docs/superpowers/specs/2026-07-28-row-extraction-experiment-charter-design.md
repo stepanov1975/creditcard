@@ -1383,7 +1383,11 @@ private contents remain local and out of Git.
 
 ## Approved amendment: fully reviewed merchant reference v3 comparison
 
-**Disposition:** APPROVED — preparing the fixed comparison.
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-reference-v3-report.md) records
+17/24 exact in all three views, with zero gains/losses or assignment changes.
+Review depth is complete: 14 agreeing repeats and ten adjudications. The allowance
+below is exhausted.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed
 remaining-adjudication report's concrete recommendation for a separate fully

@@ -1,6 +1,7 @@
 # Fully Reviewed Merchant Reference v3 Comparison
 
-**Status:** APPROVED — preparing the fixed comparison.
+**Status:** COMPLETE — STOP. The separate reference and fixed comparison are
+recorded in the [report](../../experiments/row-extraction-merchant-reference-v3-report.md).
 
 The user's “proceed” approves the completed remaining-adjudication report's
 recommendation to create a separate v3 reference and rescore the same outputs.

@@ -13,21 +13,36 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: fully reviewed merchant reference v3 comparison
+## Current disposition: STOP — fully reviewed merchant reference v3 complete
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 remaining-adjudication report's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-reference-v3-design.md).
 
-Create a separate 24-case reference by applying the four final decisions to v2,
-preserving the other 20 record lines. Update review depth to 14 agreeing repeats
-and ten source adjudications; zero cases remain single-read. Reproduce the saved
-17/24 baseline, then rescore unchanged outputs with text-first and conditional
-alignment attribution using the same 135 rows and matcher. Stop after the fixed
-comparison or a baseline reproduction failure. This remains a same-reviewer
-training seed; no new extraction, expansion or held-out access is active.
+Authority was committed at `c8afa7d` before materialization. The separate v3
+reference applies four final decisions to v2 and preserves the other 20 record
+lines byte for byte. Review depth is now **14 agreeing repeats and ten source
+adjudications**, with **zero single readings**. Both repeat audits partition all
+24 cases, and the two adjudication sets cover every changed text or region set.
 
-Next extraction task: materialize v3 and measure the fixed three-view comparison.
+The [report](row-extraction-merchant-reference-v3-report.md) records **17/24 exact
+in all three scoring views**, with zero text-reference or conditional alignment
+gains/losses and zero changed assignments. All 24 saved v2 assignments and scores
+reproduce; all views retain 24/24 aligned unique outputs. Digital remains 11/16
+exact and OCR 6/8. Seven mismatches remain: two partial texts and five other
+mismatches. The reference-update hypothesis is falsified.
+
+Independent checks agree on the projections, review depths, 48 assignments and
+72 scores. All 3,766 repository tests pass alongside Ruff and mypy. V1, v2, prior
+review-depth snapshots, human submissions and saved outputs remain preserved.
+This is a fully reviewed same-reviewer training seed, not independent or held-out
+gold. No new extraction, expansion, held-out access or production work is active.
+
+The recommended next task is to quantify the seven residual merchant errors
+against v3 using saved evidence, separating source-text errors from selection or
+assembly errors where supported. That task has not been authorized or started.
+
+Next extraction task: STOP.
 
 ## Completed phase: remaining merchant seed adjudication
 
