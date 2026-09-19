@@ -1436,3 +1436,27 @@ digital/OCR slices. Private writes are limited to ignored
 No extractor tuning, new predictions, OCR, models, rendering, label changes,
 review, expansion, held-out access, reusable evaluation infrastructure, gold
 promotion or production integration is authorized. All private data stays local.
+
+## Approved amendment: merchant geometry spacing candidate
+
+**Disposition:** APPROVED — preparing one fixed candidate.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed v3
+error report's recommendation to test a general geometry-based merchant spacing
+rule in the row-profiles arm.
+
+**Bounded extractor allowance:** Execute the
+[design](2026-09-19-merchant-spacing-design.md). Use the fixed narrow-gap rule
+to remove only inserted separators between recorded selected atoms. Generate
+all owner outputs before reading references; preserve text content, selections,
+order, ownership, output multiplicity and every uncertain boundary. The small
+private renderer and immediate comparison may write only under ignored
+`artifacts/merchant-spacing-v1/`.
+
+**Authorized measurement and stop boundary:** Reproduce the 17/24 v3 baseline
+and measure one candidate on all 24 fixed cases using unchanged alignment and
+scoring. Report exact match, gains/losses, coverage, spacing signatures and
+digital/OCR slices. Stop after comparison or baseline failure. No threshold
+tuning, second candidate, new OCR/models/source extraction, label changes,
+review, expansion, held-out access, reusable infrastructure, frozen-branch edits
+or production integration is authorized. All private data stays local.

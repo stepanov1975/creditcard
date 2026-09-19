@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — merchant v3 residual error analysis complete
+## Current phase: merchant geometry spacing candidate
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+v3 error analysis's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-spacing-design.md).
+
+Test one row-profiles merchant spacing rule using recorded atom selections and
+order. Fix the geometry thresholds before private generation; save outputs before
+reading labels. Reproduce the 17/24 baseline, then score all 24 v3 cases for exact
+gains/losses, coverage and spacing-only signatures. Stop after the comparison or
+baseline failure. No tuning, label changes, expansion or production work is active.
+
+Next extraction task: generate and score the one fixed merchant spacing candidate.
+
+## Completed phase: merchant v3 residual error analysis
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 v3 comparison's recommendation under the
@@ -33,12 +47,8 @@ tests and all 3,766 repository tests pass alongside Ruff and mypy. The score
 remains **17/24 exact**, with 24/24 aligned unique outputs. No source, label,
 prediction, assignment, assembly decision or frozen checkout changed.
 
-The recommended next task is one general geometry-based merchant spacing
-candidate in row-profiles, generated without reference text and scored on all
-24 v3 cases for gains and regressions. It has not been authorized or started.
-No further diagnostic, extractor change, expansion or held-out access is active.
-
-Next extraction task: STOP.
+This error measurement is complete. Its separately approved spacing candidate
+recommendation is the sole active phase above.
 
 ## Completed phase: fully reviewed merchant reference v3 comparison
 
