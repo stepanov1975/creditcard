@@ -1,7 +1,8 @@
 # Remaining Merchant Seed Blind Repeat-Reading Design
 
-**Status:** AWAITING_HUMAN_REVIEW — the fixed 13-case worksheet is prepared and
-checked. Agreement and hypothesis remain NOT MEASURED. See the
+**Status:** COMPLETE — STOP. All 13 confirmed readings were measured: 12 exact
+repeats, one changed OCR transcription, and four cases with changed regions.
+The reference-inconsistency hypothesis is supported. See the
 [report](../../experiments/row-extraction-merchant-remaining-blind-review-report.md).
 
 The user's “proceed” approves the completed v2 reference comparison's concrete

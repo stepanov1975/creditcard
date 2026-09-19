@@ -13,9 +13,9 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: remaining merchant seed blind repeat reading
+## Current disposition: STOP — remaining merchant seed repeat reading complete
 
-**Status:** `AWAITING_HUMAN_REVIEW`. The user's “proceed” separately approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 the preceding recommendation for a blind second reading of the remaining
 13 single-read training cases under the
 [design](../superpowers/specs/2026-09-19-merchant-remaining-blind-review-design.md).
@@ -23,20 +23,32 @@ the preceding recommendation for a blind second reading of the remaining
 Authority was committed at `b66c7e7` before preparation. The local worksheet
 contains exactly 13 cases from the existing v2 review-depth mapping: ten digital
 and three OCR. Its selection complements the previous 11-case audit with zero
-overlap. Five source-page images are reused; all answers are blank and all cases
-unconfirmed. Prior answers and extraction outputs are hidden. The
+overlap. Five source-page images were reused; at handoff all answers were blank
+and all cases unconfirmed. Prior answers and extraction outputs were hidden. The
 [report](row-extraction-merchant-remaining-blind-review-report.md) records the
 selection, source, form and packet checks.
 
-The worksheet exports `merchant-remaining-blind-review-answers.json`. Pause for
-that human response, then measure repeat consistency without replacing labels
-or rescoring predictions. Agreement and hypothesis are **NOT MEASURED**.
+The user submitted all **13 confirmed present readings**. **12/13 repeat exactly
+(92.3%)**: ten of ten digital and two of three OCR. One OCR transcription changes.
+Four cases have changed regions: one merchant-region set and four transaction-
+region sets. The changed text is among those cases, so the union is four: three
+OCR and one digital. All source-issue fields are `none`; no absence, ambiguity,
+missing target or unreviewed case is reported. Four private human notes are retained.
+
+The reference-inconsistency hypothesis is supported by the changed transcription.
+All 13 text and 26 region comparisons pass an independent check. Together with
+the prior 11-case audit, all 24 seed cases now have a second reading recorded;
+this remains same-reviewer evidence, not independent semantic certification.
 
 The original and v2 references, earlier submissions, review-depth mapping, and
 saved 17/24 score remain unchanged. No tuning, expansion, held-out access,
 accepted-gold promotion, or production integration is active.
 
-Next extraction task: receive and measure the fixed 13 human answers, then STOP.
+The recommended next task is source adjudication of these four changed cases,
+with both readings, region sets and human notes visible and model outputs hidden.
+It has not been authorized or prepared.
+
+Next extraction task: STOP.
 
 ## Completed phase: adjudicated merchant reference v2 comparison
 

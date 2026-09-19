@@ -1325,6 +1325,11 @@ authorized. All private contents remain local and out of Git.
 
 ## Approved amendment: remaining merchant seed blind repeat reading
 
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-remaining-blind-review-report.md)
+records 12/13 exact repeats, one changed OCR transcription, and four cases with
+changed regions. No reference replacement occurred. The allowance is exhausted.
+
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed v2
 reference comparison's concrete recommendation to repeat-read the remaining
 13 single-read cases, with prior answers and extraction outputs hidden.
