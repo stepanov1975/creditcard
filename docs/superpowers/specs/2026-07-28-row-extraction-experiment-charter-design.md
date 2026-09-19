@@ -5,7 +5,7 @@ program.
 
 **Authority date:** 2026-07-28
 
-**Last amended:** 2026-09-12
+**Last amended:** 2026-09-19
 
 **Accepted comparison anchor:**
 `dee4b071ad65231da13825f2f7c74a488ca96c7c`
@@ -1380,3 +1380,29 @@ OCR, source rendering, hosted service, reusable review infrastructure, automatic
 adjudication, reference replacement, sample expansion, further review, held-out
 access, accepted-gold promotion or production integration is authorized. All
 private contents remain local and out of Git.
+
+## Approved amendment: fully reviewed merchant reference v3 comparison
+
+**Disposition:** APPROVED — preparing the fixed comparison.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed
+remaining-adjudication report's concrete recommendation for a separate fully
+reviewed v3 reference and rescoring of the same saved outputs.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-reference-v3-design.md). Project the four remaining
+human adjudications into a separate existing-shape reference; preserve the
+other 20 v2 lines and all older versions. Update the existing private review-depth
+mapping to 14 agreeing repeats and ten adjudications. This is the smallest local
+update needed to measure the completed review's effect on saved extraction.
+
+**Authorized measurement and stop boundary:** Reproduce the saved 17/24 v2
+baseline, then measure v3 text with fixed v2 alignment and v3 text with recomputed
+alignment. Use the unchanged scorer, matcher, 24 training cases, 135 saved rows
+and assembly outputs. Report exact match, alignment and unique-output coverage,
+paired gains/losses and digital/OCR slices. Private writes are limited to ignored
+`artifacts/merchant-gold-seed-v3/`. Stop after the comparison or a baseline
+reproduction failure. No extractor tuning, new predictions, OCR, models, source
+rendering, reusable evaluation infrastructure, new labels, expansion, further
+review, held-out access, accepted-gold promotion or production integration is
+authorized. All private contents remain local and out of Git.

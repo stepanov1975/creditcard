@@ -13,7 +13,23 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — remaining merchant seed adjudication complete
+## Current phase: fully reviewed merchant reference v3 comparison
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+remaining-adjudication report's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-reference-v3-design.md).
+
+Create a separate 24-case reference by applying the four final decisions to v2,
+preserving the other 20 record lines. Update review depth to 14 agreeing repeats
+and ten source adjudications; zero cases remain single-read. Reproduce the saved
+17/24 baseline, then rescore unchanged outputs with text-first and conditional
+alignment attribution using the same 135 rows and matcher. Stop after the fixed
+comparison or a baseline reproduction failure. This remains a same-reviewer
+training seed; no new extraction, expansion or held-out access is active.
+
+Next extraction task: materialize v3 and measure the fixed three-view comparison.
+
+## Completed phase: remaining merchant seed adjudication
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” separately approved
 the completed repeat audit's recommendation for adjudication of four changed
@@ -44,11 +60,8 @@ Both references, prior submissions, review-depth metadata and the saved 17/24
 score remain unchanged. No tuning, reference update, sample expansion, held-out
 access, accepted-gold promotion or production integration is active.
 
-The recommended next task is a separate fully reviewed v3 reference incorporating
-these four decisions, with review-depth metadata updated for all 24 cases, followed
-by rescoring the same saved outputs. It has not been authorized or materialized.
-
-Next extraction task: STOP.
+This adjudication is complete. Its separately approved v3 comparison
+recommendation is the sole active phase above.
 
 ## Completed phase: remaining merchant seed repeat reading
 
