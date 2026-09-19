@@ -1542,7 +1542,11 @@ infrastructure or production integration are authorized.
 
 ## Approved amendment: merchant punctuation-aware spacing candidate
 
-**Disposition:** APPROVED — preparing one candidate and fixed comparison.
+**Disposition:** COMPLETE — STOP. Authority was committed at `3b2eca1` before
+generation. Exact merchant matches increase from 17/24 to 19/24 with two gains,
+zero losses and full coverage. The hypothesis is supported on the fixed seed.
+See the [report](../../experiments/row-extraction-merchant-punctuation-spacing-report.md).
+No follow-on phase is active.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed
 punctuation-geometry report's candidate recommendation.

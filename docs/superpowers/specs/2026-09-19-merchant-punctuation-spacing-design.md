@@ -1,6 +1,11 @@
 # Merchant Punctuation-Aware Spacing Experiment
 
-**Status:** APPROVED — preparing one candidate and fixed comparison.
+**Status:** COMPLETE — STOP; the gain-without-loss hypothesis is supported.
+
+Authority was committed at `3b2eca1` before generation. Exact merchant matches
+increase from 17/24 to 19/24, with two gains, zero losses and unchanged 24/24
+coverage. Both spacing-only errors become exact. See the
+[report](../../experiments/row-extraction-merchant-punctuation-spacing-report.md).
 
 The user's “proceed” approves the completed punctuation-geometry report's
 recommendation to test one spacing candidate across all 24 frozen seed cases.

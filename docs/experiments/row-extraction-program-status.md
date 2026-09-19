@@ -15,17 +15,34 @@ derived financial value is recorded here.
 
 ## Current phase: merchant punctuation-aware spacing candidate
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 punctuation-geometry report's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-punctuation-spacing-design.md).
 
-Generate one candidate using nearest strong-letter context at punctuation
-boundaries and unchanged geometry thresholds. Preserve source characters and
-recorded order, generate across all comparable saved owner groups before labels,
-then compare all 24 v3 seed cases against both saved prior views. No threshold
-tuning, label changes, wider sample or production integration is active.
+Authority was committed at `3b2eca1` before generation. The
+[report](row-extraction-merchant-punctuation-spacing-report.md) records **17/24 to
+19/24 exact merchant matches**, with **two gains and zero losses** against both
+saved prior views. All 17 existing exact cases remain exact; both spacing-only
+errors are corrected. Digital improves from 11/16 to 13/16; OCR remains 6/8.
+Alignment and unique-output coverage remain 24/24. The hypothesis is supported
+on this training seed, without a validation or production acceptance claim.
 
-Next extraction task: generate and score the one punctuation-aware spacing candidate.
+The generator reconstructed all 113 saved owner outputs before reading labels
+and applied the same rule to each comparable group. It removes 22 punctuation
+separators across all generated groups; six of these affect the two corrected
+reviewed cases. No source characters, labels or frozen branch code changed.
+
+All 48 prior scores reproduce. Independent checks agree on 260 boundary
+decisions, 113 output groups, 373 source-atom occurrences, 72 scores and all
+three source slices. Nineteen focused tests and all 3,766 repository tests pass
+alongside Ruff and mypy. No source PDFs, pixels, new extraction or models were used.
+
+The unexecuted recommendation is to quantify character-order versus missing/
+extra-character mismatches in the three remaining digital cases. No follow-on
+phase, tuning, wider sample, new labels, held-out access or production integration
+is active. The candidate remains experimental.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant punctuation attachment and geometry measurement
 
@@ -50,8 +67,8 @@ boundaries and both cohort summaries. Fifteen focused tests and all 3,766
 repository tests pass alongside Ruff and mypy. Twenty saved inputs and the
 frozen checkout remain unchanged. No source documents were read.
 
-This geometry measurement is complete. Its separately approved spacing candidate
-is the sole active phase above.
+This geometry measurement and its separately approved spacing candidate are
+complete. The latest phase above is stopped.
 
 ## Completed phase: merchant spacing retention-reason measurement
 
