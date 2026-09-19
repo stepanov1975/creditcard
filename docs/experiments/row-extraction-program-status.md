@@ -13,7 +13,22 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current disposition: STOP — merchant geometry spacing comparison complete
+## Current phase: merchant whitespace location measurement
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+spacing experiment's recommendation under the
+[design](../superpowers/specs/2026-09-19-merchant-spacing-location-design.md).
+
+Reproduce all 48 baseline/candidate scores, then locate whitespace discrepancies
+in exactly two spacing-only digital cases using saved source strings, atom order
+and separator decisions. Count within-atom versus between-atom locations, origins,
+unresolved cases and separator-only repairability in both views. Stop after this
+fixed measurement or baseline failure. No candidate, tuning, new source extraction,
+label update, expansion or held-out access is active.
+
+Next extraction task: quantify the two fixed whitespace discrepancies.
+
+## Completed phase: merchant geometry spacing comparison
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 v3 error analysis's recommendation under the
@@ -37,13 +52,8 @@ three source slices. Eighteen focused tests and all 3,766 repository tests pass
 alongside Ruff and mypy. Baseline outputs, v3 references and the frozen checkout
 remain unchanged. No production code changed.
 
-The recommended next task is to quantify within-atom versus between-atom
-whitespace discrepancies in the two remaining spacing-only digital cases, using
-saved text and atom boundaries, before choosing a further spacing rule. It has
-not been authorized or started. No tuning, second candidate, additional diagnosis,
-label update, expansion or held-out access is active.
-
-Next extraction task: STOP.
+This spacing comparison is complete. Its separately approved whitespace-location
+recommendation is the sole active phase above.
 
 ## Completed phase: merchant v3 residual error analysis
 

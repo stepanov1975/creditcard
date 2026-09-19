@@ -1464,3 +1464,24 @@ digital/OCR slices. Stop after comparison or baseline failure. No threshold
 tuning, second candidate, new OCR/models/source extraction, label changes,
 review, expansion, held-out access, reusable infrastructure, frozen-branch edits
 or production integration is authorized. All private data stays local.
+
+## Approved amendment: merchant whitespace location measurement
+
+**Disposition:** APPROVED — preparing the fixed two-case measurement.
+
+**Approval date:** 2026-09-19. The user's “proceed” approves the completed spacing
+experiment's concrete recommendation to locate its two remaining whitespace errors.
+
+**Immediate shared-evaluation allowance:** Execute the
+[design](2026-09-19-merchant-spacing-location-design.md). Reproduce the 48 saved
+baseline/candidate scores, then map whitespace gaps to source-atom occurrences
+and recorded separators for exactly two spacing-only digital cases. Use a small
+disposable diagnostic, with no corrected output or new extraction candidate.
+
+**Authorized measurement and stop boundary:** Count within-atom, between-atom,
+mixed and unresolved errors and separator-only repairability, including whitespace
+origin and the fixed before/after gap comparison. Private writes are limited to
+ignored `artifacts/merchant-spacing-location-v1/`. Stop after the count or baseline
+failure. No tuning, second candidate, new source extraction/OCR/models, label
+changes, review, expansion, held-out access, reusable infrastructure or production
+integration is authorized. All private data stays local.
