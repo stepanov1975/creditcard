@@ -13,19 +13,37 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant geometry spacing candidate
+## Current disposition: STOP — merchant geometry spacing comparison complete
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 v3 error analysis's recommendation under the
 [design](../superpowers/specs/2026-09-19-merchant-spacing-design.md).
 
-Test one row-profiles merchant spacing rule using recorded atom selections and
-order. Fix the geometry thresholds before private generation; save outputs before
-reading labels. Reproduce the 17/24 baseline, then score all 24 v3 cases for exact
-gains/losses, coverage and spacing-only signatures. Stop after the comparison or
-baseline failure. No tuning, label changes, expansion or production work is active.
+Authority was committed at `eb2d3c9` before private generation. The fixed
+row-profiles spacing rule removes only inserted separators across narrow gaps
+between selected atoms, preserving source text and recorded order. Outputs for
+all 113 saved owner groups were generated before labels entered scoring.
 
-Next extraction task: generate and score the one fixed merchant spacing candidate.
+The [report](row-extraction-merchant-spacing-report.md) records **17/24 exact
+before and after**, with **zero gains and zero losses**. Two reviewed digital
+outputs change by one separator each; neither becomes exact. Both spacing-only
+errors remain. Digital stays 11/16 exact and OCR 6/8; all 24 cases retain aligned
+unique outputs. The gain-without-loss hypothesis is falsified, and the candidate
+is not recommended for adoption.
+
+All 24 baseline scores reproduce. Independent checks agree on 260 boundary
+decisions, 113 output groups, 373 selected atom occurrences, 48 scores and all
+three source slices. Eighteen focused tests and all 3,766 repository tests pass
+alongside Ruff and mypy. Baseline outputs, v3 references and the frozen checkout
+remain unchanged. No production code changed.
+
+The recommended next task is to quantify within-atom versus between-atom
+whitespace discrepancies in the two remaining spacing-only digital cases, using
+saved text and atom boundaries, before choosing a further spacing rule. It has
+not been authorized or started. No tuning, second candidate, additional diagnosis,
+label update, expansion or held-out access is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant v3 residual error analysis
 

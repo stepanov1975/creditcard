@@ -1,6 +1,7 @@
 # Merchant Geometry Spacing Experiment
 
-**Status:** APPROVED — preparing one fixed candidate.
+**Status:** COMPLETE — STOP. The single candidate and fixed comparison are
+recorded in the [report](../../experiments/row-extraction-merchant-spacing-report.md).
 
 The user's “proceed” approves the completed v3 error analysis's recommendation
 to test one general merchant spacing rule on all 24 fixed training cases.

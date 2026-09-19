@@ -1439,7 +1439,11 @@ promotion or production integration is authorized. All private data stays local.
 
 ## Approved amendment: merchant geometry spacing candidate
 
-**Disposition:** APPROVED — preparing one fixed candidate.
+**Disposition:** COMPLETE — STOP. The
+[report](../../experiments/row-extraction-merchant-spacing-report.md) records
+17/24 exact before and after, zero gains/losses and two changed reviewed outputs.
+Both spacing-only errors remain; the hypothesis is falsified. The allowance
+below is exhausted.
 
 **Approval date:** 2026-09-19. The user's “proceed” approves the completed v3
 error report's recommendation to test a general geometry-based merchant spacing
