@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-09-13
+**Updated:** 2026-09-19
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -13,9 +13,18 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Active phase: six-case merchant source adjudication
+## Active phase: STOP
 
-**Status:** `AWAITING_HUMAN_ADJUDICATION`. The user's “proceed” separately
+No extraction task is active. The six-case source adjudication is complete. Its
+recommendation to create a separate adjudicated 24-case reference version and
+re-score the saved outputs has not begun and is not authorized by this completed
+measurement.
+
+Next extraction task: STOP.
+
+## Completed phase: six-case merchant source adjudication
+
+**Status:** `COMPLETE — STOP`. The user's “proceed” separately
 approves source adjudication of the six cases with changed text or regions in
 the completed repeat audit. The
 [design](../superpowers/specs/2026-09-13-merchant-adjudication-design.md) fixes
@@ -27,14 +36,20 @@ contains six blank final decisions and both prior human readings/region sets
 for each case, reusing three source-page images. No prior version is selected
 as final; copying creates only an editable draft. A source-check confirmation
 and a reason are required before confirming a decision. The
-[handoff report](row-extraction-merchant-adjudication-report.md) records the checks.
+[report](row-extraction-merchant-adjudication-report.md) records the checks.
 
-Pause for six human decisions. Resolved-reference and uncertainty counts remain
-**NOT MEASURED**. All existing labels and the 13/24 extraction score are preserved;
-no reference promotion, expansion, or other extraction experiment is active.
+On 2026-09-19 the user submitted **6/6 confirmed present merchants**, each with a
+source check and reason. There are **zero** unresolved ambiguities, absences,
+missing targets, unreviewed cases, or declared source issues. All six adjudications
+match the second reading's merchant text and both region sets. Relative to the
+first reading, they select four changed texts and five changed merchant and
+transaction region sets; no third text or region version is introduced.
 
-Next extraction task: complete this fixed human adjudication and resolution
-measurement, then STOP.
+The all-six-resolution hypothesis is supported by the human decisions. This is
+same-reviewer adjudication, not independent semantic certification. All three
+submissions and the original reference remain preserved. The extraction score
+stays **13/24 against the original labels**; no new reference version, reference
+promotion, prediction rescoring, expansion, or production integration occurred.
 
 ## Completed phase: blind merchant repeat-transcription audit
 

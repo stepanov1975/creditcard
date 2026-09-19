@@ -1,6 +1,10 @@
 # Merchant Source-Adjudication Design
 
-**Status:** AWAITING_HUMAN_ADJUDICATION — private worksheet prepared; decisions pending.
+**Status:** COMPLETE — STOP. On 2026-09-19, all six confirmed source adjudications
+were submitted and measured. All six resolve a present merchant and match the
+second reading's text and regions. The all-six-resolution hypothesis is supported;
+the original reference remains unchanged. See the
+[report](../../experiments/row-extraction-merchant-adjudication-report.md).
 
 The user's “proceed” approves the preceding recommendation to adjudicate the six
 cases with changed merchant text or source regions in the completed repeat-reading

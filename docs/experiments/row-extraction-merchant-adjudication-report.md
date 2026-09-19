@@ -1,11 +1,45 @@
-# Merchant Source-Adjudication Handoff
+# Merchant Source-Adjudication Report
 
-**Status:** AWAITING_HUMAN_ADJUDICATION — no adjudicated result has been submitted.
+**Status:** COMPLETE — STOP. Human decisions received and measured on 2026-09-19.
 
 **Authority:** The user's “proceed” approves the preceding six-case source
 adjudication recommendation. The
 [design](../superpowers/specs/2026-09-13-merchant-adjudication-design.md) and
 charter allowance were committed at `309da14` before private preparation.
+
+## Result
+
+All **six adjudications resolve a present merchant and transaction owner** under
+the submitted human decisions. Each has an explicit source-check confirmation
+and a reason. There are zero reported ambiguities, absences, missing targets,
+unreviewed cases, or declared source issues. The predeclared all-six-resolution
+hypothesis is **supported** by the human source review.
+
+All six adjudications match the **second reading** for merchant text, merchant
+regions, and transaction regions. No third text or region version was introduced.
+
+| Component | Matches first reading | Matches second reading | Matches neither |
+| --- | ---: | ---: | ---: |
+| Merchant text | 2/6 | 6/6 | 0/6 |
+| Merchant region set | 1/6 | 6/6 | 0/6 |
+| Transaction region set | 1/6 | 6/6 | 0/6 |
+
+Agreement columns overlap where the two prior readings already matched. Text
+uses the unchanged NFC plus collapsed-whitespace equality. Region comparisons
+ignore rectangle list order and preserve duplicate multiplicity; merchant and
+transaction regions are compared separately.
+
+Compared with the first submission, the final decisions select **four changed
+merchant strings**: one digital case and three OCR cases. They select changed
+merchant and transaction region sets in **all five OCR cases**; the digital
+case's regions match both earlier readings. All five OCR cases and the one
+digital case are resolved; their decisions introduce no third variant.
+
+Resolution reflects the user's source adjudication, not independent reviewer
+agreement or independently measured semantic accuracy. Region changes alone are
+not counted as proven ownership errors. The decisions are retained separately;
+the original 24-reference dataset and its **13/24** extraction score are unchanged.
+No prediction was rescored against the adjudications.
 
 ## Prepared review
 
@@ -23,7 +57,7 @@ regions have shaded fills and thicker borders; prior transaction regions are
 unfilled outlines. Hover and accessibility labels identify each box's reading and
 role. Final draft transaction and merchant regions use blue and amber.
 
-All six final decisions start blank, with no regions selected, unreviewed status,
+At handoff all six final decisions started blank, with no regions selected, unreviewed status,
 no source-check confirmation, and no case confirmation. Either human reading
 can be explicitly copied into an editable draft; this never confirms a result.
 The reviewer can choose a different reading, redraw regions, or retain unresolved
@@ -33,11 +67,11 @@ and requires a new source check.
 
 The worksheet retains local draft save/load and exports
 `merchant-adjudication-answers.json`. Old seed or blind-review answer files are
-rejected. The final submission will be retained separately. Both previous
+rejected. The final submission is retained separately. Both previous
 submissions, the original reference, and the **13/24** extraction score remain
 unchanged. No automatic reference promotion occurs.
 
-## Verification
+## Handoff verification
 
 - All six selected cases agree with the saved union of text and region changes.
 - All 12 displayed human readings and 12 corresponding region sets match their
@@ -78,18 +112,61 @@ context links refer to the existing local workspace copies.
 All human readings, source pixels, geometry, mappings, and eventual decisions
 remain under ignored local paths. Only aggregate documentation is tracked.
 
-## Pending measurement
+## Submitted-decision measurement and verification
 
-**Zero adjudications have been submitted.** Resolved-reference count, unresolved
-ambiguity, agreement with each earlier version, and the all-six-resolution
-hypothesis remain **NOT MEASURED**. Preparation is a handoff within this authorized
-measurement, not an extraction improvement or a completed gold dataset.
+The existing worksheet validator accepts all six submitted records against the
+fixed target identities, statuses, regions, and confirmation requirements. The
+uploaded file is preserved byte for byte under the ignored adjudication directory.
+All 12 displayed prior readings and region sets are rechecked against their
+preserved source submissions before comparison. Selection still agrees with the
+six-case union from the repeat audit; there is no resampling.
 
-After the six decisions arrive, retain them separately, validate the fixed case
-coverage and confirmations, and measure the predeclared resolution categories
-and agreement with each earlier reading. Missing or ambiguous decisions remain
-explicit. A same-reviewer adjudication is not independent semantic certification.
+Nine protected inputs, including all three answer files, the original reference,
+worksheet, target mapping, and repeat-audit selection, remain unchanged during
+measurement. No source rendering, OCR, model call, prediction access, extraction,
+or label overwrite occurs. The reason text is retained as human annotation data.
 
-The sole active phase is paused for these human decisions. No label replacement,
-prediction rescoring, extractor change, expansion, validation/test access, or
-production integration is authorized by this handoff.
+Seventeen focused invented-input tests failed at the unimplemented helpers and
+then passed. They cover shared/first/second/new agreement categories, preserved
+absence and uncertainty categories, draft exclusion, and the fixed all-six
+hypothesis. All five private Python files pass Ruff formatting/lint and strict
+mypy checks.
+
+A separate computation using independently expressed normalization and region
+multisets agrees with all **12 text-pair and 24 region-pair comparisons**, all
+aggregate agreement categories, and the six resolved-present outcomes. It also
+checks that the stored submission matches the uploaded bytes.
+
+Required repository gates pass: Ruff format (195 files), Ruff lint, mypy (48
+source files), and **3,766 tests in 99.63 seconds**. No tracked production code
+changed; this is not private-corpus acceptance. No merge or push was performed.
+Private case results and aggregate measurement artifacts remain under ignored
+`artifacts/merchant-adjudication-v1/`; only aggregate documentation is tracked.
+
+## Golden-dataset implication and next recommendation
+
+The six measured disagreements now have explicit, source-checked human decisions.
+The existing seed remains training-only: 13 cases have one source reading, five
+have matching repeat readings with unchanged regions, and six have this
+adjudication. Those different review depths must remain visible; the 24 cases
+are not an independently certified or held-out gold benchmark.
+
+The next recommended task is to **create a separate version of the 24-case
+training reference using the six adjudications and re-score the same saved
+extraction outputs**. Preserve the original version, carry forward the other
+18 cases, and report changes caused by corrected text and regions as a reference
+update, not an extractor improvement. No new review worksheet is needed for the
+six resolved disagreements. This recommendation has not been executed: no new
+24-case reference or score has been created.
+
+The authorized adjudication measurement is complete. **STOP**. Reference
+promotion, prediction rescoring, extractor changes, expansion, validation/test
+access, and production integration remain outside this completed task.
+
+```text
+Scope: YES — resolves measured merchant-reference text and region disagreements
+Experiment: shared evaluation
+Measurement: resolved-reference count, unresolved ambiguity count, and adjudicated text/region agreement with each prior reading
+Result: 6/6 resolved-present references; zero unresolved cases; all six match the second reading's text and regions; all-six-resolution hypothesis supported
+Next extraction task: STOP
+```
