@@ -15,17 +15,28 @@ derived financial value is recorded here.
 
 ## Current phase: merchant corrected-output spacing diagnostic
 
-**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed tolerance report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-corrected-spacing-design.md).
 
-Measure whitespace-only differences and whether the unique saved corrected-block
-witness equals recorded order in exactly two changed reviewed digital outputs.
-Reproduce all 144 saved scores. Use saved text and indices only; no native pages,
-PDFs, new predictions or labels. Commit authority before measurement and stop
-after reporting counts and the hypothesis result.
+Authority was committed at `6bda406` before measurement. The
+[report](row-extraction-merchant-corrected-spacing-report.md) records **2/2
+whitespace-only errors and 2/2 unique identity-order witnesses**, with zero
+unresolved cases. The hypothesis is supported. No block reordering is needed
+for these two corrected outputs to match after whitespace removal.
 
-Next extraction task: execute this two-case diagnostic, then STOP.
+All 144 saved scores and both saved witnesses reproduce. Independent projection,
+subset counting, normalization and scoring checks agree. Twenty-nine focused
+tests and all 3,766 repository tests pass alongside Ruff and mypy. Twenty-one
+saved inputs and the frozen checkout remain unchanged. No source/native pages,
+predictions or labels are changed.
+
+Accuracy remains **19/24 exact** with 24/24 coverage. The unexecuted recommendation
+is one spacing candidate that applies the existing tolerance-aware renderer to
+eligible groups even when recorded order is unchanged. No follow-on phase is
+active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant LTR tolerance candidate
 

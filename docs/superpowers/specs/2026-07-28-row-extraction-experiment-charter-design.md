@@ -1773,7 +1773,10 @@ held-out access, reusable infrastructure or production integration is authorized
 
 ## Approved amendment: merchant corrected-output spacing diagnostic
 
-**Disposition:** APPROVED — measurement pending.
+**Disposition:** COMPLETE — STOP. Both cases are whitespace-only errors with
+unique identity-order witnesses; none is unresolved. The hypothesis is supported
+and exact accuracy remains 19/24. See the
+[report](../../experiments/row-extraction-merchant-corrected-spacing-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the completed
 tolerance report's recommendation to classify the two corrected digital errors.

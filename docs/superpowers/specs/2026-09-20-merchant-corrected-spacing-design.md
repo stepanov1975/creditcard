@@ -1,6 +1,9 @@
 # Merchant Corrected-Output Spacing Diagnostic
 
-**Status:** APPROVED — measurement pending.
+**Status:** COMPLETE — STOP. Both cases are whitespace-only errors with unique
+identity-order witnesses and no unresolved cases. The hypothesis is supported;
+exact accuracy remains 19/24. See the
+[report](../../experiments/row-extraction-merchant-corrected-spacing-report.md).
 
 The user's “proceed” approves the completed tolerance report's recommendation
 to classify whitespace differences and compare saved witnesses with recorded order.
