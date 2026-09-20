@@ -1,6 +1,11 @@
 # Remaining Digital Merchant Character-Error Measurement
 
-**Status:** APPROVED — preparing the fixed three-case classification.
+**Status:** COMPLETE — STOP; the order-only-signature hypothesis is supported.
+
+Authority was committed at `c238a9c` before measurement. Two cases have equal
+non-whitespace inventories with different sequences; one lacks four occurrences
+(three letters and one punctuation mark), with no extras. See the
+[report](../../experiments/row-extraction-merchant-character-errors-report.md).
 
 The user's “proceed” approves the completed punctuation-spacing report's
 recommendation to classify character-order versus missing/extra-character errors.

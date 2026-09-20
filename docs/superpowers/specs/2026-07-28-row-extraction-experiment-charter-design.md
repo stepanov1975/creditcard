@@ -1568,7 +1568,12 @@ infrastructure or production integration is authorized.
 
 ## Approved amendment: remaining digital merchant character-error measurement
 
-**Disposition:** APPROVED — preparing the fixed three-case classification.
+**Disposition:** COMPLETE — STOP. Authority was committed at `c238a9c` before
+measurement. Two order-only signatures and one missing-only inventory case
+support the hypothesis. Four occurrences are missing and none extra; the
+candidate remains 19/24 exact. See the
+[report](../../experiments/row-extraction-merchant-character-errors-report.md).
+No follow-on phase is active.
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the completed
 punctuation-spacing report's character-order versus inventory recommendation.

@@ -15,16 +15,30 @@ derived financial value is recorded here.
 
 ## Current phase: remaining digital merchant character-error measurement
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 punctuation-spacing report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-character-errors-design.md).
 
-Reproduce the 72 saved scores and classify only the three remaining digital
-errors by character sequence, inventory deficits/surpluses and subsequence
-signatures. Existing labels, source atoms, outputs and the 19/24 candidate score
-remain fixed. No candidate, source access, review or broader selection is active.
+Authority was committed at `c238a9c` before measurement. The
+[report](row-extraction-merchant-character-errors-report.md) records **two
+order-only signatures and one missing-only inventory case** among the three
+remaining digital errors. Four occurrences are missing (three letters and one
+punctuation mark); none is extra. The missing-only prediction preserves reference
+order as a subsequence. The order-only-signature hypothesis is supported.
 
-Next extraction task: quantify the three digital character-error signatures.
+All 72 saved scores reproduce, and three selected candidate/original string
+pairs reconstruct from saved evidence and order. Independent sorted-inventory
+and longest-common-subsequence checks agree on all classifications and counts.
+Sixteen focused tests and all 3,766 repository tests pass alongside Ruff and
+mypy. Thirteen saved inputs and the frozen checkout remain unchanged.
+
+Accuracy remains **19/24 exact**, with 24 aligned unique outputs. No source
+documents, new extraction or models were used; labels and predictions stayed fixed. The
+unexecuted recommendation is to test whether reordering intact selected atoms
+provides a non-whitespace witness for either order-only case. No follow-on phase,
+repair, wider selection, held-out access or production integration is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant punctuation-aware spacing candidate
 
@@ -51,7 +65,7 @@ three source slices. Nineteen focused tests and all 3,766 repository tests pass
 alongside Ruff and mypy. No source PDFs, pixels, new extraction or models were used.
 
 The candidate remains experimental. Its separately approved character-error
-measurement is the sole active phase above.
+measurement is complete, and the latest phase above is stopped.
 
 ## Completed phase: merchant punctuation attachment and geometry measurement
 
