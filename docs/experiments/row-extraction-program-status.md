@@ -15,21 +15,28 @@ derived financial value is recorded here.
 
 ## Current phase: merchant corrected-block ordering witness measurement
 
-**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed LTR glyph candidate report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-corrected-order-witness-design.md).
 
-Reproduce the 96 saved scores and reconstruct the saved candidate from its atom
-decisions. Test only the two changed reviewed digital training outputs using
-the existing intact-block query, unchanged nine-occurrence cap and normalization
-guards. Preserve every corrected block; report matching identity-order counts
-and unresolved limits. Keep all private work in
-`artifacts/merchant-corrected-order-witness-v1/`.
+Authority was committed at `aea3b3f` before measurement. The
+[report](row-extraction-merchant-corrected-order-witness-report.md) records
+**2/2 cases with one matching corrected-block order each**, across all 30 identity
+orders. All seven occurrences remain intact; no size or normalization limit is
+reached. The predeclared hypothesis is supported.
 
-Commit authority before measurement, then stop after the two-case result or a
-saved-result reproduction failure. No new candidate or source access is active.
+All 96 saved scores reproduce, and all 113 candidate outputs reconstruct from
+373 saved atom decisions. Independent subset counts and normalization checks
+agree. Thirteen focused tests and all 3,766 repository tests pass alongside Ruff
+and mypy. Sixteen saved inputs and the frozen checkout remain unchanged.
 
-Next extraction task: measure the two corrected-block ordering witness counts.
+Accuracy remains **19/24 exact**: this is a whitespace-free, reference-guided
+diagnostic. The unexecuted recommendation is to test a source-only horizontal
+ordering candidate for unambiguously LTR blocks, preserving glyph correction,
+across all 113 saved groups and score all 24 reviewed cases. No candidate or
+follow-on phase is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant LTR glyph reconstruction candidate
 

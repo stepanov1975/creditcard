@@ -1684,7 +1684,10 @@ held-out access, reusable infrastructure or production integration is authorized
 
 ## Approved amendment: merchant corrected-block ordering witnesses
 
-**Disposition:** APPROVED — measurement pending.
+**Disposition:** COMPLETE — STOP. Both cases have exactly one matching
+corrected-block order across 30 identity permutations, with no unresolved
+cases. The hypothesis is supported; exact accuracy stays 19/24. See the
+[report](../../experiments/row-extraction-merchant-corrected-order-witness-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the completed LTR
 glyph candidate report's recommendation to test corrected-block ordering.

@@ -1,6 +1,8 @@
 # Merchant Corrected-Block Ordering Witness Measurement
 
-**Status:** APPROVED — measurement pending.
+**Status:** COMPLETE — STOP. Both cases have one matching identity order; the
+hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-corrected-order-witness-report.md).
 
 The user's “proceed” approves the completed LTR glyph candidate report's
 recommendation to test intact corrected-block ordering in its two changed
