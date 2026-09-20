@@ -10,7 +10,7 @@ Start here instead of reading the experiment diary. Updated 2026-09-20 from
 3. [Experiment findings](experiment-findings.md): what worked, what failed, and
    what the measurements cannot establish, including branch-only Round 2 results.
 4. [Live experiment status](../experiments/row-extraction-program-status.md): the
-   sole authority for the active phase and next allowed task. Currently **STOP**.
+   sole authority for the active phase and next allowed task. See that record for current dependencies.
 5. [Evidence index](evidence-index.md): original reports, designs, research, and
    historical plans when detailed evidence is needed.
 

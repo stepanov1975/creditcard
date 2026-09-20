@@ -15,24 +15,21 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** AWAITING_HUMAN_REVIEW — execution remains approved end to end under
-`0ce4346`. The user authorized full-task execution and confirmed two independent
-human reviewers. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
-and [task-level policy](../../AGENTS.md#task-level-authorization-and-persistence).
+**Status:** ACTIVE — the user requested AI source review and prefilled answers,
+then their own corrections, replacing the two-independent-human blank-packet
+workflow. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
+
+Read the six frozen census pages, prepare source-grounded merchant suggestions
+and editable result files, and flag uncertainty. Do not consult the saved model
+predictions to draft references. Keep every suggestion and page census pending
+human confirmation. The frozen sample and three prediction views are unchanged.
 
 The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
-records old-seed reproduction, the frozen six-document selection, separate blank
-review packets and 114 frozen row proposals across three views. Each view has
-104 output owners; these are not reference counts or measured coverage. Each reviewer must independently
-complete all six page censuses and return their own saved answer JSON. Source
-packets include context from the same six documents; there are no suggested cases
-or predictions in them.
-
-Accuracy is NOT MEASURED. Await both independent readings, adjudicate references
-without predictions, then complete reference eligibility checks, the ownership
-audit and fixed three-view scoring. Resume this same objective when answers arrive
-without another approval. Protected validation/held-out data and production
-integration remain outside scope.
+records preparation: 114 row proposals and 104 output owners per view. These are
+not reference counts or measured coverage. Accuracy is NOT MEASURED. After the
+user reviews the prefilled census, continue reference freezing, ownership review
+and paired scoring in the same approved task. Report AI-assisted,
+single-human-reviewed pilot results, not independent human certification.
 
 ## Latest measured extraction result
 

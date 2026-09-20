@@ -6,7 +6,9 @@ The user explicitly authorized full-task execution and removal of per-subtask
 approval gates. This supersedes the previous design-only disposition. Follow the
 updated AGENTS task-level policy; complete preparation, generation, review,
 adjudication, scoring and reporting as one objective. Two independent human
-reviewers are available. Human answers remain a genuine dependency.
+reviewers were available under the original protocol. The user subsequently
+authorized AI-prefilled source readings followed by their own corrections; the
+amendment below governs reference preparation. Human confirmation remains required.
 
 ```text
 Scope answer: YES — evaluates the frozen merchant candidate on document-disjoint training pages
@@ -14,7 +16,7 @@ Experiment: shared evaluation
 Extraction hypothesis: The frozen spacing candidate improves exact merchant extraction without losses, ownership regressions, or reduced coverage
 Measurement: reference eligibility, exact-match delta, coverage, discovery omissions, and ownership errors
 Fixed inputs: frozen candidate and comparators; six documents selected under these committed rules; existing training membership only
-Smallest allowed files: AGENTS.md; docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md; artifacts/merchant-document-disjoint-v1/**
+Smallest allowed files: docs/knowledge/README.md; AGENTS.md; docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md; artifacts/merchant-document-disjoint-v1/**
 Required output: completed fixed comparison, or a prepared human-review packet with quantified eligibility and a clear outstanding dependency
 Stop condition: finish the evaluation; pause only for human reference review, unavailable inputs, or a substantive change to the frozen experiment
 ```
@@ -111,28 +113,34 @@ If the review burden is unacceptable, stop with the unreviewed census count;
 do not truncate or replace the sample after seeing outputs. The resulting pilot
 may be uninformative because of empty pages or insufficient digital/OCR cases.
 
-## Blinded reference review
+## AI-assisted reference review — user-authorized amendment
 
-Reuse a local full-page worksheet and source context. Initial answers are blank;
-show no parser/OCR text, predicted boxes, old gold or candidate suggestions.
-Review every transaction start using the existing merchant definition in
-[CONTEXT](../../../CONTEXT.md). Record exact printed merchant text, owner region,
-merchant regions, billed/future section, and present / absent / ambiguous status.
-Retain punctuation and case; no alias matching, correction or transliteration.
+The user requested that the assistant read the source documents, prefill reference
+answers and return editable result files for the user to correct. This explicitly
+replaces the original two-independent-human, blank-first workflow. Record the tier
+as **AI-assisted, single-human-reviewed pilot**, never independent certification.
+Preserve the earlier blank packets as history; do not alter frozen selection,
+extractors, predictions, matching or metrics.
 
-Prefer two independent human reviewers. Declare the available reviewer tier
-before selection: two reviewers provide separate blinded readings; if only one
-is available, use a second blinded pass and describe the outcome as a
-same-reviewer pilot, never independent certification. Do not replace a second
-human with model agreement. Source-adjudicate text, ownership, census and region
-disagreements before revealing any predictions. Preserve unresolved cases and
-all original answers. Freeze the complete reference and its denominator before
-scoring. Do not revise it in response to extraction disagreements during this run.
+Read source page images to enumerate every transaction start and transcribe its
+merchant under [CONTEXT](../../../CONTEXT.md). Do not use the saved prediction
+strings or boxes to generate references. Native PDF text may assist transcription
+only after visual inspection, with every proposed reading checked against the
+source image. Record transaction/merchant regions, billed/future section and
+present / absent / ambiguous status. Preserve punctuation and case. Mark uncertain
+readings and boundaries explicitly; do not guess missing characters.
 
-A human must also confirm that each selected page's transaction census is complete.
-An uncompleted census or unresolved transaction ownership makes the evaluation
+Provide a prefilled local worksheet, editable JSON and readable tabular draft.
+Label every case as an AI suggestion awaiting human confirmation and leave every
+page census unconfirmed. The user can correct/add/remove cases and must confirm
+all six page censuses, including omissions and empty pages. Preserve the initial
+AI draft separately from human corrections. AI agreement is not human agreement.
+
+Freeze the human-corrected reference and denominator before revealing prediction
+differences or scoring. Do not revise references to agree with extraction output.
+Unreviewed cases, incomplete census or unresolved ownership make the evaluation
 inconclusive. Merchant absence is distinct from illegibility/ambiguity. No global
-gold promotion occurs.
+gold promotion occurs. Report the AI-assisted tier and anchoring risk with results.
 
 ## Generation, alignment and ownership audit
 
@@ -212,7 +220,8 @@ rule change needs another separately approved evaluation.
 The current task authorizes the concrete sample/review run and its smallest
 immediate adapter. Keep private outputs in `artifacts/merchant-document-disjoint-v1/`.
 Commit this initial authority before new page access. Human review is a real
-handoff; do not fill answers automatically. Routine subtasks need no new approval.
+handoff; prefill AI suggestions under the amendment above, but never mark them
+human-confirmed automatically. Routine subtasks need no new approval.
 
 Required output is one aggregate report with selection/exposure limits,
 reference-review tier, census/ambiguity counts, three fixed-view results, paired
