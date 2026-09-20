@@ -13,7 +13,25 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant LTR glyph reconstruction candidate
+## Current phase: merchant corrected-block ordering witness measurement
+
+**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+the completed LTR glyph candidate report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-corrected-order-witness-design.md).
+
+Reproduce the 96 saved scores and reconstruct the saved candidate from its atom
+decisions. Test only the two changed reviewed digital training outputs using
+the existing intact-block query, unchanged nine-occurrence cap and normalization
+guards. Preserve every corrected block; report matching identity-order counts
+and unresolved limits. Keep all private work in
+`artifacts/merchant-corrected-order-witness-v1/`.
+
+Commit authority before measurement, then stop after the two-case result or a
+saved-result reproduction failure. No new candidate or source access is active.
+
+Next extraction task: measure the two corrected-block ordering witness counts.
+
+## Completed phase: merchant LTR glyph reconstruction candidate
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 source-order trace report's recommendation under the
@@ -35,9 +53,9 @@ Fourteen focused tests and all 3,766 repository tests pass alongside Ruff and
 mypy. Eighteen combined inputs and the frozen checkout remain unchanged.
 
 The punctuation-spacing baseline remains the current best measured view. The
-unexecuted recommendation is to test intact corrected-block ordering witnesses
-for the two changed reviewed cases while preserving this glyph reconstruction.
-No post-score tuning, second candidate or follow-on phase is active.
+recommendation to test intact corrected-block ordering witnesses for the two
+changed reviewed cases is separately approved above. No post-score tuning or
+second candidate is active.
 
 Next extraction task: STOP.
 

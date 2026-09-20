@@ -5,7 +5,7 @@ program.
 
 **Authority date:** 2026-07-28
 
-**Last amended:** 2026-09-19
+**Last amended:** 2026-09-20
 
 **Accepted comparison anchor:**
 `dee4b071ad65231da13825f2f7c74a488ca96c7c`
@@ -1681,3 +1681,24 @@ results stay in `artifacts/merchant-ltr-glyph-v1/`.
 **Stop boundary:** Stop after one generation/score or reproduction failure. No
 post-score tuning, second candidate, OCR/models, label changes, broader selection,
 held-out access, reusable infrastructure or production integration is authorized.
+
+## Approved amendment: merchant corrected-block ordering witnesses
+
+**Disposition:** APPROVED — measurement pending.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the completed LTR
+glyph candidate report's recommendation to test corrected-block ordering.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-corrected-order-witness-design.md). Reproduce 96
+saved scores and reconstruct the saved candidate's 113 outputs from its 373
+atom decisions. Query only the two changed reviewed digital training cases with
+the existing intact-block permutation test, nine-occurrence cap and normalization
+guards. Preserve corrected block contents and all occurrence identities. Publish
+witness counts and unresolved limits. Private glue and results stay in
+`artifacts/merchant-corrected-order-witness-v1/`.
+
+**Stop boundary:** Stop after this measurement or saved-result reproduction
+failure. No new source access, candidate, label edits, larger search, broader
+selection, held-out access, reusable infrastructure or production integration
+is authorized.
