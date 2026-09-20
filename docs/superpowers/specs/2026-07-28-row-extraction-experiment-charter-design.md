@@ -1657,3 +1657,24 @@ and glyph-order counts. Private scripts/results stay in
 No extraction fix, new merchant predictions, models/OCR, label edits, broader
 selection, held-out access, reusable infrastructure or production integration
 is authorized.
+
+
+## Approved amendment: merchant LTR glyph reconstruction candidate
+
+**Disposition:** APPROVED — preparing one fixed experimental candidate.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the source-order trace
+report's recommendation to test guarded LTR glyph reconstruction.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-ltr-glyph-candidate-design.md). Apply the fixed
+source-geometry rule to all 373 selected atom occurrences in 113 saved owner
+outputs. Preserve ownership, order and spacing. Read only the four existing
+seed digital source pages; save predictions before loading reference labels.
+Reproduce prior scores and compare all 24 reviewed cases against the 19/24
+punctuation baseline, including gains, losses and coverage. Private scripts and
+results stay in `artifacts/merchant-ltr-glyph-v1/`.
+
+**Stop boundary:** Stop after one generation/score or reproduction failure. No
+post-score tuning, second candidate, OCR/models, label changes, broader selection,
+held-out access, reusable infrastructure or production integration is authorized.

@@ -13,7 +13,20 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant source-order trace
+## Current phase: merchant LTR glyph reconstruction candidate
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+source-order trace report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-ltr-glyph-candidate-design.md).
+
+Generate one guarded LTR reconstruction candidate from glyph positions for all
+113 saved owner outputs, preserving ownership, atom order and spacing. Extract
+only the four digital pages of the existing seed. Save predictions before reading
+labels, then compare all 24 reviewed cases with the 19/24 punctuation baseline.
+
+Next extraction task: generate and score the single fixed LTR glyph candidate.
+
+## Completed phase: merchant source-order trace
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 directional-signature report's recommendation under the
@@ -35,12 +48,8 @@ All prior results reproduce. Independent checks agree on 18 boundary comparisons
 repository tests pass alongside Ruff and mypy. Seventeen protected inputs and
 the frozen checkout remain unchanged.
 
-Accuracy remains **19/24 exact**. The unexecuted recommendation is to test a
-lossless glyph-position reconstruction candidate for LTR digital words on the
-reviewed 24-case seed, measuring exact merchant gains and regressions. No
-candidate, broader selection or production integration is active.
-
-Next extraction task: STOP.
+Accuracy remains **19/24 exact**. This diagnosis is complete; its separately
+approved LTR glyph candidate is the sole active phase above.
 
 ## Completed phase: merchant within-atom directional signatures
 
