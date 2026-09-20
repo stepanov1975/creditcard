@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-09-19
+**Updated:** 2026-09-20
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -13,7 +13,20 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant punctuation-aware spacing candidate
+## Current phase: remaining digital merchant character-error measurement
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+punctuation-spacing report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-character-errors-design.md).
+
+Reproduce the 72 saved scores and classify only the three remaining digital
+errors by character sequence, inventory deficits/surpluses and subsequence
+signatures. Existing labels, source atoms, outputs and the 19/24 candidate score
+remain fixed. No candidate, source access, review or broader selection is active.
+
+Next extraction task: quantify the three digital character-error signatures.
+
+## Completed phase: merchant punctuation-aware spacing candidate
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 punctuation-geometry report's recommendation under the
@@ -37,12 +50,8 @@ decisions, 113 output groups, 373 source-atom occurrences, 72 scores and all
 three source slices. Nineteen focused tests and all 3,766 repository tests pass
 alongside Ruff and mypy. No source PDFs, pixels, new extraction or models were used.
 
-The unexecuted recommendation is to quantify character-order versus missing/
-extra-character mismatches in the three remaining digital cases. No follow-on
-phase, tuning, wider sample, new labels, held-out access or production integration
-is active. The candidate remains experimental.
-
-Next extraction task: STOP.
+The candidate remains experimental. Its separately approved character-error
+measurement is the sole active phase above.
 
 ## Completed phase: merchant punctuation attachment and geometry measurement
 

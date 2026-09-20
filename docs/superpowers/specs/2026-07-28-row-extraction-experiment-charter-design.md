@@ -1565,3 +1565,22 @@ spacing-error counts and the declared hypothesis result.
 result reproduction failure. No tuning, second candidate, new source extraction,
 OCR/model access, label changes, review, expansion, held-out access, reusable
 infrastructure or production integration is authorized.
+
+## Approved amendment: remaining digital merchant character-error measurement
+
+**Disposition:** APPROVED — preparing the fixed three-case classification.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the completed
+punctuation-spacing report's character-order versus inventory recommendation.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-20-merchant-character-errors-design.md). Reproduce all 72 saved
+scores and classify the three remaining digital mismatches using NFC,
+non-whitespace code-point inventories and subsequence signatures. Publish
+category/occurrence counts and the declared hypothesis result. Keep private
+scripts/results only in `artifacts/merchant-character-errors-v1/`.
+
+**Stop boundary:** Stop after this classification or saved-result reproduction
+failure. No candidate, new extraction/OCR/models, source documents, label changes,
+new review, broader selection, held-out access, reusable infrastructure or
+production integration is authorized.
