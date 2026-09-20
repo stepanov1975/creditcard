@@ -1727,3 +1727,21 @@ Keep private work in `artifacts/merchant-ltr-block-order-v1/`.
 No post-score tuning, second candidate, new source access, labels, OCR/models,
 broader selection, held-out access, reusable infrastructure or production
 integration is authorized.
+
+## Approved amendment: merchant block-overlap measurement
+
+**Disposition:** APPROVED — measurement pending.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the block-order
+candidate report's recommendation to quantify the seven rejected groups.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-block-overlap-design.md). Reproduce 120 scores and
+saved candidate decisions. Measure normalized overlap, interval categories,
+strict edge/center ordering and native-word/glyph attribution in exactly seven
+saved groups. Use saved native pages only; keep private work in
+`artifacts/merchant-block-overlap-v1/`.
+
+**Stop boundary:** Stop after measurement or reproduction failure. No guard
+changes, new predictions, source extraction, labels, broader selection, held-out
+access, reusable infrastructure or production integration is authorized.

@@ -13,7 +13,24 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant LTR block-ordering candidate
+## Current phase: merchant block-overlap measurement
+
+**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+the completed block-order candidate report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-block-overlap-design.md).
+
+Measure exactly seven saved overlap-rejected groups: normalized overlap,
+coincident/nested/crossing intervals, agreement of three geometric orders and
+native-word/glyph attribution. Use saved evidence only. Reproduce the saved
+decisions and 120 scores; commit authority before measurement. Private work stays
+in `artifacts/merchant-block-overlap-v1/`.
+
+Stop after the seven-group result or reproduction failure. No guard relaxation,
+new predictions, source extraction or second candidate is active.
+
+Next extraction task: quantify the seven rejected groups' overlap and ambiguity.
+
+## Completed phase: merchant LTR block-ordering candidate
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed corrected-block witness report's recommendation under the
@@ -34,9 +51,8 @@ All 96 previous scores reproduce. Independent replay agrees on 113 decisions,
 all 3,766 repository tests pass alongside Ruff and mypy. Protected saved inputs
 and the frozen checkout remain unchanged.
 
-The unexecuted recommendation is to quantify block-box overlap in the seven
-rejected groups before considering any relaxed ordering rule. No post-score
-tuning, second candidate or follow-on phase is active.
+Its recommendation to quantify block-box overlap in the seven rejected groups
+is separately approved above. No post-score tuning or second candidate is active.
 
 Next extraction task: STOP.
 
