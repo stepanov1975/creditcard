@@ -1633,3 +1633,24 @@ and results stay in `artifacts/merchant-atom-direction-v1/`.
 transformed merchant assembly, candidate scoring, new source access,
 extraction/OCR/models, label changes, broader selection, held-out access,
 reusable infrastructure or production integration is authorized.
+
+
+## Approved amendment: merchant source-order trace
+
+**Disposition:** APPROVED — preparing the three-atom trace.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the directional-signature
+report's recommendation to locate the source of the reversed LTR atom ordering.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-20-merchant-source-order-trace-design.md). Trace only the three
+reverse-only atoms in the same two cases through frozen native word extraction,
+layout and evidence projection. Read only their local source pages; use declared
+geometry and glyph guards and retain unresolved cases. Publish stage-attribution
+and glyph-order counts. Private scripts/results stay in
+`artifacts/merchant-source-order-trace-v1/`.
+
+**Stop boundary:** Stop after the trace or saved-result reproduction failure.
+No extraction fix, new merchant predictions, models/OCR, label edits, broader
+selection, held-out access, reusable infrastructure or production integration
+is authorized.

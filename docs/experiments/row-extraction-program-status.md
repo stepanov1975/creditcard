@@ -13,7 +13,20 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant within-atom directional signatures
+## Current phase: merchant source-order trace
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+directional-signature report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-source-order-trace-design.md).
+
+Trace the three reverse-only LTR atoms in the same two training cases through
+native words, layout and frozen evidence. Read only the associated source pages
+locally, match geometry with fixed guards and retain unresolved traces. No
+correction or new merchant prediction is active.
+
+Next extraction task: quantify the first observed reversal stage for three atoms.
+
+## Completed phase: merchant within-atom directional signatures
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 whole-atom witness report's recommendation under the
@@ -32,12 +45,8 @@ repository tests pass alongside Ruff and mypy. Fifteen saved inputs and the
 frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**. Substring containment does not establish a
-complete merchant correction or a general reversal rule. The unexecuted
-recommendation is a focused source-order trace to measure where the three
-reverse-only LTR atoms acquire their order in the deterministic extractor.
-No follow-on phase, new source access or candidate is active.
-
-Next extraction task: STOP.
+complete merchant correction or a general reversal rule. This measurement is
+complete; its separately approved source-order trace is the sole active phase above.
 
 ## Completed phase: merchant whole-atom ordering witness measurement
 
