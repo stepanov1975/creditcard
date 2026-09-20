@@ -1752,7 +1752,10 @@ access, reusable infrastructure or production integration is authorized.
 
 ## Approved amendment: merchant LTR tolerance candidate
 
-**Disposition:** APPROVED — generation pending.
+**Disposition:** COMPLETE — STOP. Exact matches remain 19/24, with zero gains or
+losses and 24/24 coverage. All seven formerly blocked groups are already ordered;
+no tolerance joins occur. The hypothesis is falsified. See the
+[report](../../experiments/row-extraction-merchant-ltr-tolerance-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the overlap report's
 recommendation to test consistent geometry tolerance in ordering and spacing.

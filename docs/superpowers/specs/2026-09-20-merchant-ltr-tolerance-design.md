@@ -1,6 +1,9 @@
 # Merchant LTR Tolerance Candidate
 
-**Status:** APPROVED — generation pending.
+**Status:** COMPLETE — STOP. Exact matches remain 19/24, with zero gains or
+losses. All seven formerly blocked groups are already ordered, so no tolerance
+joins occur. The hypothesis is falsified. See the
+[report](../../experiments/row-extraction-merchant-ltr-tolerance-report.md).
 
 The user's “proceed” approves the overlap report's recommendation to test the
 existing coordinate tolerance consistently in block ordering and spacing.

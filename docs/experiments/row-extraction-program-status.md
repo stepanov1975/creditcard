@@ -15,21 +15,30 @@ derived financial value is recorded here.
 
 ## Current phase: merchant LTR tolerance candidate
 
-**Status:** `APPROVED — generation pending`. The user's “proceed” approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed overlap report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-ltr-tolerance-design.md).
 
-Test one ordering-and-spacing candidate using the existing 0.0001 coordinate
-tolerance, while retaining strict edge/center agreement and distinct source
-word/glyph evidence. Apply it to all 113 saved groups, preserving glyph correction
-and ownership. Save predictions before loading labels; reproduce 120 prior scores
-and compare all 24 reviewed cases with the three saved baselines.
+Authority was committed at `14b7a80` before implementation. The
+[report](row-extraction-merchant-ltr-tolerance-report.md) records **19/24 to
+19/24 exact**, zero gains/losses against three baselines and unchanged 24/24
+coverage. The hypothesis is falsified.
 
-Commit authority first. Stop after one generation/score or reproduction failure.
-Private work stays in `artifacts/merchant-ltr-tolerance-v1/`. No post-score
-tuning, new extraction, second candidate or held-out access is active.
+All seven formerly overlap-rejected groups already have the proposed horizontal
+order. They now join the 34 previously ordered groups. The fixed rule preserves
+spacing for unchanged orders, producing zero reordered groups, changed outputs
+or tolerance joins. Source evidence, ownership and glyph correction stay fixed.
 
-Next extraction task: generate and score the fixed LTR tolerance candidate.
+All 120 saved scores reproduce. Independent checks agree on 113 decisions and
+outputs, 144 scores and three slices against three baselines. Twenty-four focused
+cases and all 3,766 repository tests pass alongside Ruff and mypy. Protected
+saved inputs and the frozen checkout remain unchanged.
+
+The unexecuted recommendation is to classify whitespace differences and recorded
+versus witness order in the two reviewed outputs changed by glyph correction.
+No post-score tuning, new candidate or follow-on phase is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant block-overlap measurement
 
