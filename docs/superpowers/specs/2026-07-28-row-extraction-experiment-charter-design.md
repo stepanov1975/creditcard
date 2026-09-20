@@ -1792,3 +1792,24 @@ work in `artifacts/merchant-corrected-spacing-v1/`.
 predictions, source/native-page access, label changes, broader selection, larger
 search, held-out access, reusable infrastructure or production integration is
 authorized.
+
+## Approved amendment: merchant unchanged-order spacing candidate
+
+**Disposition:** APPROVED — pending one generation and evaluation.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves only the recommended
+spacing candidate after the completed corrected-output diagnostic.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-unchanged-order-spacing-design.md). Apply the existing
+tolerance-aware renderer to all eligible saved owner groups even when order is
+unchanged, retaining source-evidence and normalization guards, glyph correction
+and ownership. Save the complete source-only candidate before labels; reproduce
+144 saved scores and compare the same 24 v3 training references against four
+saved baselines. Private code/results stay in
+`artifacts/merchant-unchanged-order-spacing-v1/`.
+
+**Stop boundary:** Stop after one generation/score or reproduction failure.
+No post-score tuning, second candidate, new source extraction, label changes,
+sample expansion, validation/held-out access, shared framework or production
+integration is authorized.

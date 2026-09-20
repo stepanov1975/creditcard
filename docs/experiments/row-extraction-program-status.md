@@ -13,30 +13,25 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant corrected-output spacing diagnostic
+## Current phase: merchant unchanged-order spacing candidate
 
-**Status:** `COMPLETE — STOP`. The user's “proceed” approved
-the completed tolerance report's recommendation under the
-[design](../superpowers/specs/2026-09-20-merchant-corrected-spacing-design.md).
+**Status:** APPROVED — pending one generation and evaluation. The user's
+“proceed” authorizes the [fixed design](../superpowers/specs/2026-09-20-merchant-unchanged-order-spacing-design.md).
+Apply the existing tolerance-aware renderer to eligible saved groups even when
+order is unchanged. Preserve glyph correction, ownership and all source guards.
 
-Authority was committed at `6bda406` before measurement. The
-[report](row-extraction-merchant-corrected-spacing-report.md) records **2/2
-whitespace-only errors and 2/2 unique identity-order witnesses**, with zero
-unresolved cases. The hypothesis is supported. No block reordering is needed
-for these two corrected outputs to match after whitespace removal.
+Save the complete source-only candidate before reference access, reproduce all
+144 saved scores, and compare the same 24 v3 training references against the
+four saved 19/24 baselines. Coverage must remain 24/24, with no exact-match losses,
+for a gain above 19/24 to support the hypothesis. No post-score tuning is allowed.
 
-All 144 saved scores and both saved witnesses reproduce. Independent projection,
-subset counting, normalization and scoring checks agree. Twenty-nine focused
-tests and all 3,766 repository tests pass alongside Ruff and mypy. Twenty-one
-saved inputs and the frozen checkout remain unchanged. No source/native pages,
-predictions or labels are changed.
+Next extraction task: execute this one approved candidate, report its result,
+then STOP. No new labels, sample expansion, validation/held-out access, second
+candidate or production integration is active.
 
-Accuracy remains **19/24 exact** with 24/24 coverage. The unexecuted recommendation
-is one spacing candidate that applies the existing tolerance-aware renderer to
-eligible groups even when recorded order is unchanged. No follow-on phase is
-active.
-
-Next extraction task: STOP.
+The preceding [corrected-spacing diagnostic](row-extraction-merchant-corrected-spacing-report.md)
+remains complete: two whitespace-only errors, two unique identity-order witnesses,
+and unchanged accuracy of 19/24. Its full phase record is retained in history.
 
 ## Knowledge and history
 
