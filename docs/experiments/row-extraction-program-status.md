@@ -13,7 +13,25 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant block-overlap measurement
+## Current phase: merchant LTR tolerance candidate
+
+**Status:** `APPROVED — generation pending`. The user's “proceed” approves
+the completed overlap report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-ltr-tolerance-design.md).
+
+Test one ordering-and-spacing candidate using the existing 0.0001 coordinate
+tolerance, while retaining strict edge/center agreement and distinct source
+word/glyph evidence. Apply it to all 113 saved groups, preserving glyph correction
+and ownership. Save predictions before loading labels; reproduce 120 prior scores
+and compare all 24 reviewed cases with the three saved baselines.
+
+Commit authority first. Stop after one generation/score or reproduction failure.
+Private work stays in `artifacts/merchant-ltr-tolerance-v1/`. No post-score
+tuning, new extraction, second candidate or held-out access is active.
+
+Next extraction task: generate and score the fixed LTR tolerance candidate.
+
+## Completed phase: merchant block-overlap measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed block-order candidate report's recommendation under the
@@ -32,9 +50,8 @@ tests and all 3,766 repository tests pass alongside Ruff and mypy. Twenty saved
 inputs and the frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**. No predictions or source evidence changed.
-The unexecuted recommendation is to test one ordering-and-spacing candidate using
-the existing coordinate tolerance consistently, preserving strict order agreement
-and distinct word/glyph evidence. No follow-on candidate is active.
+Its recommendation to test one ordering-and-spacing candidate using the existing
+coordinate tolerance consistently is separately approved above.
 
 Next extraction task: STOP.
 

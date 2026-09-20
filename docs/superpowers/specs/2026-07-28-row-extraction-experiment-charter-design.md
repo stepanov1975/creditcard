@@ -1749,3 +1749,21 @@ saved groups. Use saved native pages only; keep private work in
 **Stop boundary:** Stop after measurement or reproduction failure. No guard
 changes, new predictions, source extraction, labels, broader selection, held-out
 access, reusable infrastructure or production integration is authorized.
+
+## Approved amendment: merchant LTR tolerance candidate
+
+**Disposition:** APPROVED — generation pending.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the overlap report's
+recommendation to test consistent geometry tolerance in ordering and spacing.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-ltr-tolerance-design.md). Apply one predeclared rule
+with the existing coordinate tolerance and distinct source-evidence guards to
+all 113 saved groups. Preserve glyph correction and ownership; save predictions
+before labels, reproduce 120 prior scores and score 24 training references against
+three saved baselines. Private work stays in `artifacts/merchant-ltr-tolerance-v1/`.
+
+**Stop boundary:** Stop after one generation/score or reproduction failure.
+No post-score tuning, second candidate, new source extraction, label changes,
+held-out access, reusable infrastructure or production integration is authorized.
