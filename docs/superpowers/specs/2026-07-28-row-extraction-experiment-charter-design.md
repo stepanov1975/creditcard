@@ -1795,7 +1795,10 @@ authorized.
 
 ## Approved amendment: merchant unchanged-order spacing candidate
 
-**Disposition:** APPROVED — pending one generation and evaluation.
+**Disposition:** COMPLETE — STOP. The candidate increased exact matches from
+19/24 to 21/24 with two gains, zero losses against four baselines and unchanged
+24/24 coverage. The hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-unchanged-order-spacing-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves only the recommended
 spacing candidate after the completed corrected-output diagnostic.

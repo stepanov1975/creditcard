@@ -1,6 +1,9 @@
 # Merchant Unchanged-Order Spacing Candidate
 
-**Status:** APPROVED — pending one candidate generation and evaluation.
+**Status:** COMPLETE — STOP. Exact matches increased from 19/24 to 21/24,
+with two gains, zero losses against four baselines and unchanged 24/24 coverage.
+The hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-unchanged-order-spacing-report.md).
 
 The user's “proceed” approves the latest corrected-spacing diagnostic's
 recommendation: use the existing tolerance-aware renderer for eligible groups

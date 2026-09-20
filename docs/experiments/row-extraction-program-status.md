@@ -15,23 +15,28 @@ derived financial value is recorded here.
 
 ## Current phase: merchant unchanged-order spacing candidate
 
-**Status:** APPROVED — pending one generation and evaluation. The user's
-“proceed” authorizes the [fixed design](../superpowers/specs/2026-09-20-merchant-unchanged-order-spacing-design.md).
-Apply the existing tolerance-aware renderer to eligible saved groups even when
-order is unchanged. Preserve glyph correction, ownership and all source guards.
+**Status:** COMPLETE — STOP. The user's “proceed” authorized the
+[fixed design](../superpowers/specs/2026-09-20-merchant-unchanged-order-spacing-design.md),
+committed at `9246999` before implementation and measurement.
 
-Save the complete source-only candidate before reference access, reproduce all
-144 saved scores, and compare the same 24 v3 training references against the
-four saved 19/24 baselines. Coverage must remain 24/24, with no exact-match losses,
-for a gain above 19/24 to support the hypothesis. No post-score tuning is allowed.
+The [report](row-extraction-merchant-unchanged-order-spacing-report.md) records
+**19/24 to 21/24 exact**, with **two gains and zero losses against four saved
+baselines**, and unchanged **24/24 coverage**. Digital rises from 13/16 to 15/16;
+OCR remains 6/8. The hypothesis is supported on this reviewed training seed.
 
-Next extraction task: execute this one approved candidate, report its result,
-then STOP. No new labels, sample expansion, validation/held-out access, second
-candidate or production integration is active.
+The candidate renders 38 eligible groups without changing order, changes four
+of 113 owner outputs, and makes eight tolerance joins. Both changed reviewed
+outputs become exact. All 144 prior scores reproduce; independent checks agree
+on 113 decisions/outputs and 168 scores. Thirty-six synthetic checks and all
+3,766 repository tests pass alongside Ruff and mypy.
+Source evidence, labels, ownership, financial decisions and the frozen checkout
+remain unchanged. No post-score tuning or production integration occurred.
 
-The preceding [corrected-spacing diagnostic](row-extraction-merchant-corrected-spacing-report.md)
-remains complete: two whitespace-only errors, two unique identity-order witnesses,
-and unchanged accuracy of 19/24. Its full phase record is retained in history.
+This is not validation accuracy or private-corpus acceptance. The recommendation
+is to preserve the candidate and separately design a document-disjoint merchant
+evaluation before further tuning. No new evaluation or follow-on phase is active.
+
+Next extraction task: STOP.
 
 ## Knowledge and history
 
