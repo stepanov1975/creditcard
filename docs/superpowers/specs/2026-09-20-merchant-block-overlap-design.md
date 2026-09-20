@@ -1,6 +1,8 @@
 # Merchant Block-Overlap Measurement
 
-**Status:** APPROVED — measurement pending.
+**Status:** COMPLETE — STOP. All seven groups meet the consistency conditions;
+the hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-block-overlap-report.md).
 
 The user's “proceed” approves the completed block-order candidate report's
 recommendation to quantify its seven overlap-rejected groups.

@@ -1730,7 +1730,11 @@ integration is authorized.
 
 ## Approved amendment: merchant block-overlap measurement
 
-**Disposition:** APPROVED — measurement pending.
+**Disposition:** COMPLETE — STOP. All seven groups have consistent edge/center
+order and distinct source evidence. Twenty-two crossing overlaps are at most
+about 0.00723% of average character width; no group is unresolved. The hypothesis
+is supported. See the
+[report](../../experiments/row-extraction-merchant-block-overlap-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the block-order
 candidate report's recommendation to quantify the seven rejected groups.

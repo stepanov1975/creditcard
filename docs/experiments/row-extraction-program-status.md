@@ -15,20 +15,28 @@ derived financial value is recorded here.
 
 ## Current phase: merchant block-overlap measurement
 
-**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed block-order candidate report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-block-overlap-design.md).
 
-Measure exactly seven saved overlap-rejected groups: normalized overlap,
-coincident/nested/crossing intervals, agreement of three geometric orders and
-native-word/glyph attribution. Use saved evidence only. Reproduce the saved
-decisions and 120 scores; commit authority before measurement. Private work stays
-in `artifacts/merchant-block-overlap-v1/`.
+Authority was committed at `0abe1a4` before measurement. The
+[report](row-extraction-merchant-block-overlap-report.md) records **7/7 groups
+with consistent independent source order**, including both reviewed groups.
+All 22 overlaps are crossing intervals; none is nested or coincident. Maximum
+overlap is about 0.00723% of average character width. The hypothesis is supported.
 
-Stop after the seven-group result or reproduction failure. No guard relaxation,
-new predictions, source extraction or second candidate is active.
+All 45 native-word assignments resolve, with 88 glyph assignments and no repeated
+identities or shared glyphs within a group. All 113 saved decisions and 120 scores
+reproduce. Independent decimal geometry and source checks agree. Eleven focused
+tests and all 3,766 repository tests pass alongside Ruff and mypy. Twenty saved
+inputs and the frozen checkout remain unchanged.
 
-Next extraction task: quantify the seven rejected groups' overlap and ambiguity.
+Accuracy remains **19/24 exact**. No predictions or source evidence changed.
+The unexecuted recommendation is to test one ordering-and-spacing candidate using
+the existing coordinate tolerance consistently, preserving strict order agreement
+and distinct word/glyph evidence. No follow-on candidate is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant LTR block-ordering candidate
 
