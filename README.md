@@ -253,3 +253,13 @@ verification gates are:
 .venv/bin/mypy src
 .venv/bin/pytest -q
 ```
+
+
+## Project knowledge and maintenance
+
+Start with the [knowledge guide](docs/knowledge/README.md) for architecture,
+experiment lessons and original evidence. The
+[live experiment status](docs/experiments/row-extraction-program-status.md)
+determines allowed research work. See the
+[branch inventory](docs/maintenance/branch-inventory.md) and
+[data-retention guide](docs/maintenance/data-retention.md) before cleanup.

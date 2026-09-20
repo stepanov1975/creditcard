@@ -2,6 +2,27 @@
 
 These instructions apply to the entire repository.
 
+
+## Project knowledge and current state
+
+Start with the [knowledge guide](docs/knowledge/README.md), then read only what
+is relevant:
+
+- [Domain vocabulary](CONTEXT.md) and
+  [architecture and engineering lessons](docs/knowledge/architecture.md).
+- [Experiment findings](docs/knowledge/experiment-findings.md), including
+  branch-only results and the distinction between reference and extractor gains.
+- [Live experiment status](docs/experiments/row-extraction-program-status.md)
+  for the sole active phase and next allowed task; summaries do not override it.
+- [Evidence index](docs/knowledge/evidence-index.md) for historical reports,
+  designs, plans, and research. Old unchecked plans are not an active backlog.
+- [Branch inventory](docs/maintenance/branch-inventory.md) and
+  [data retention](docs/maintenance/data-retention.md) before deleting local data
+  or retiring a branch/worktree.
+
+Keep these summaries concise. Record detailed phase evidence in its report and
+update the live status; do not grow another chronological diary in this file.
+
 ## Development workflow
 
 - Use Python 3.13 and the repository virtual environment at `.venv`.

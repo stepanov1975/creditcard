@@ -1,0 +1,178 @@
+# Evidence index
+
+Use [the synthesis](experiment-findings.md) first. This catalog preserves access
+to detailed evidence without turning old plans into current instructions. Original
+paths are retained so historical links and private scripts continue to resolve.
+
+[The status snapshot](../experiments/row-extraction-program-history.md) preserves
+the original phase diary verbatim. [The branch inventory](../maintenance/branch-inventory.md)
+covers branch-only documents and immutable retrieval, including Round 2.
+
+Historical “next recommendation,” approval banners and unchecked tasks apply to
+their original phase. Only the live status and binding authority govern new work.
+Research notes retain their original dates and have not been revalidated against
+current literature during this housekeeping task.
+
+## Authority and current state
+
+- [Row-Extraction Program Status](../experiments/row-extraction-program-status.md)
+- [Row-Extraction Focus Lock Design](../superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md)
+- [Transaction-Row Extraction Experiment Charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md)
+
+## Experiment reports
+
+- [Merchant Source-Adjudication Report](../experiments/row-extraction-merchant-adjudication-report.md)
+- [Merchant Alignment-Error Diagnosis Report](../experiments/row-extraction-merchant-alignment-errors-report.md)
+- [Merchant Within-Atom Directional Signatures](../experiments/row-extraction-merchant-atom-direction-report.md)
+- [Merchant Whole-Atom Ordering Witness Measurement](../experiments/row-extraction-merchant-atom-order-witness-report.md)
+- [Merchant Blind Repeat-Transcription Audit](../experiments/row-extraction-merchant-blind-review-report.md)
+- [Merchant Block-Overlap Report](../experiments/row-extraction-merchant-block-overlap-report.md)
+- [Remaining Digital Merchant Character-Error Results](../experiments/row-extraction-merchant-character-errors-report.md)
+- [Merchant Context Sufficiency Experiment Report](../experiments/row-extraction-merchant-context-report.md)
+- [Merchant Primary/Continuation Assembly Comparison](../experiments/row-extraction-merchant-continuation-assembly-report.md)
+- [Merchant Corrected-Block Ordering Witness Report](../experiments/row-extraction-merchant-corrected-order-witness-report.md)
+- [Merchant Corrected-Output Spacing Diagnostic Report](../experiments/row-extraction-merchant-corrected-spacing-report.md)
+- [Merchant Discovery Coverage Trace Report](../experiments/row-extraction-merchant-discovery-coverage-report.md)
+- [Merchant Discovery Exclusion Trace](../experiments/row-extraction-merchant-discovery-exclusion-report.md)
+- [Merchant Evidence Error Analysis](../experiments/row-extraction-merchant-evidence-error-report.md)
+- [Merchant Gold Seed Report](../experiments/row-extraction-merchant-gold-seed-report.md)
+- [Merchant LTR Block-Ordering Candidate Report](../experiments/row-extraction-merchant-ltr-block-order-report.md)
+- [Merchant LTR Glyph Reconstruction Candidate](../experiments/row-extraction-merchant-ltr-glyph-candidate-report.md)
+- [Merchant LTR Tolerance Candidate Report](../experiments/row-extraction-merchant-ltr-tolerance-report.md)
+- [Merchant Omission Alignment and Evidence-Routing Trace](../experiments/row-extraction-merchant-omission-routing-report.md)
+- [New One-Page Merchant Discovery Diagnostic](../experiments/row-extraction-merchant-page-discovery-report.md)
+- [Merchant Proposals Before Row Rejection: Results](../experiments/row-extraction-merchant-pre-rejection-report.md)
+- [Merchant Comparison Before Future-Billing Exclusion](../experiments/row-extraction-merchant-prefilter-comparison-report.md)
+- [Merchant Punctuation Attachment and Geometry Results](../experiments/row-extraction-merchant-punctuation-geometry-report.md)
+- [Merchant Punctuation-Aware Spacing Results](../experiments/row-extraction-merchant-punctuation-spacing-report.md)
+- [Merchant Reading-Order Experiment Report](../experiments/row-extraction-merchant-reading-order-report.md)
+- [Adjudicated Merchant Reference v2 Report](../experiments/row-extraction-merchant-reference-v2-report.md)
+- [Fully Reviewed Merchant Reference v3 Report](../experiments/row-extraction-merchant-reference-v3-report.md)
+- [Merchant-Region Alignment Comparison](../experiments/row-extraction-merchant-region-alignment-report.md)
+- [Merchant-Region OCR Experiment Report](../experiments/row-extraction-merchant-region-ocr-report.md)
+- [Remaining Merchant Seed Source-Adjudication Report](../experiments/row-extraction-merchant-remaining-adjudication-report.md)
+- [Remaining Merchant Seed Blind Repeat-Reading Report](../experiments/row-extraction-merchant-remaining-blind-review-report.md)
+- [Residual Merchant Error Analysis](../experiments/row-extraction-merchant-residual-errors-report.md)
+- [Merchant Seed Comparison Report](../experiments/row-extraction-merchant-seed-comparison-report.md)
+- [Merchant Source-Order Trace](../experiments/row-extraction-merchant-source-order-trace-report.md)
+- [Merchant Whitespace Location Report](../experiments/row-extraction-merchant-spacing-location-report.md)
+- [Merchant Spacing Retention-Reason Results](../experiments/row-extraction-merchant-spacing-reasons-report.md)
+- [Merchant Geometry Spacing Experiment Report](../experiments/row-extraction-merchant-spacing-report.md)
+- [Merchant v3 Residual Error Analysis Report](../experiments/row-extraction-merchant-v3-error-analysis-report.md)
+- [Visual-Gold v2 100-Row Pilot Report](../experiments/row-extraction-visual-gold-v2-pilot-report.md)
+
+## Historical protocols and runbooks
+
+- [Transaction-Row Annotation Handbook](../experiments/row-extraction-annotation-handbook.md)
+- [Row-extraction comparison report template](../experiments/row-extraction-comparison-report-template.md)
+- [Locked row-extraction comparison runbook](../experiments/row-extraction-comparison-runbook.md)
+- [Row-Extraction Foundation Runbook](../experiments/row-extraction-foundation-runbook.md)
+- [Visual-Gold v2 100-Row Pilot Protocol](../experiments/row-extraction-visual-gold-v2-protocol.md)
+
+## Research
+
+- [Reliable structured extraction from heterogeneous financial statements](../research/2026-07-27-document-extraction-literature.md)
+- [Fixed-row OCR and transaction-field extraction](../research/2026-07-28-row-ocr-table-extraction.md)
+- [Row-text models, calibration, and conservative abstention](../research/2026-07-28-row-text-models-calibration.md)
+- [Lightweight row-vision and multimodal models for transaction-field extraction](../research/2026-07-28-row-vision-multimodal-models.md)
+- [State of the art for fixed transaction-row recognition and field extraction](../research/2026-07-29-row-extraction-state-of-the-art-assessment.md)
+- [Golden dataset assessment and research](../research/2026-09-12-golden-dataset-assessment.md)
+
+## Designs
+
+- [General Credit-Card Statement Parser Design](../superpowers/specs/2026-07-18-credit-card-parser-design.md)
+- [Semantic Evidence Completeness Design](../superpowers/specs/2026-07-20-semantic-evidence-completeness-design.md)
+- [Behavior-Preserving Parser Simplification Design](../superpowers/specs/2026-07-21-parser-simplification-design.md)
+- [Structured FX Transaction Data Design](../superpowers/specs/2026-07-21-structured-fx-transaction-data-design.md)
+- [Corpus Regression Prevention and Strict Recovery Design](../superpowers/specs/2026-07-22-corpus-regression-recovery-design.md)
+- [Bounded Lexical Memoization Design](../superpowers/specs/2026-07-24-bounded-lexical-memoization-design.md)
+- [Bounded-Memory Corpus Verification Design](../superpowers/specs/2026-07-24-streaming-corpus-verification-design.md)
+- [Visual-Gold v2 Candidate Design](../superpowers/specs/2026-08-01-visual-gold-v2-candidate-design.md)
+- [Merchant Context Sufficiency Experiment Design](../superpowers/specs/2026-08-07-merchant-context-sufficiency-design.md)
+- [First Stable Release Design](../superpowers/specs/2026-08-22-first-stable-release-design.md)
+- [Merchant Alignment-Error Diagnosis](../superpowers/specs/2026-09-12-merchant-alignment-errors-design.md)
+- [Merchant Primary/Continuation Assembly Experiment](../superpowers/specs/2026-09-12-merchant-continuation-assembly-design.md)
+- [Merchant Discovery-to-Frozen Coverage Trace](../superpowers/specs/2026-09-12-merchant-discovery-coverage-design.md)
+- [Merchant Discovery Exclusion Trace](../superpowers/specs/2026-09-12-merchant-discovery-exclusion-design.md)
+- [Merchant Evidence Error Measurement](../superpowers/specs/2026-09-12-merchant-evidence-error-design.md)
+- [Merchant Gold Seed Design](../superpowers/specs/2026-09-12-merchant-gold-seed-design.md)
+- [Merchant Omission Alignment and Evidence-Routing Trace](../superpowers/specs/2026-09-12-merchant-omission-routing-design.md)
+- [New One-Page Merchant Discovery Diagnostic](../superpowers/specs/2026-09-12-merchant-page-discovery-design.md)
+- [Merchant Proposals Before Row Rejection](../superpowers/specs/2026-09-12-merchant-pre-rejection-design.md)
+- [Merchant Comparison Before Future-Billing Exclusion](../superpowers/specs/2026-09-12-merchant-prefilter-comparison-design.md)
+- [Merchant Reading-Order Experiment](../superpowers/specs/2026-09-12-merchant-reading-order-design.md)
+- [Merchant-Region Alignment Comparison](../superpowers/specs/2026-09-12-merchant-region-alignment-design.md)
+- [Merchant-Region OCR Experiment](../superpowers/specs/2026-09-12-merchant-region-ocr-design.md)
+- [Residual Merchant Error Analysis](../superpowers/specs/2026-09-12-merchant-residual-errors-design.md)
+- [Merchant Seed Comparison Design](../superpowers/specs/2026-09-12-merchant-seed-comparison-design.md)
+- [Merchant Source-Adjudication Design](../superpowers/specs/2026-09-13-merchant-adjudication-design.md)
+- [Merchant Blind Repeat-Transcription Design](../superpowers/specs/2026-09-13-merchant-blind-review-design.md)
+- [Merchant Punctuation Attachment and Geometry Measurement](../superpowers/specs/2026-09-19-merchant-punctuation-geometry-design.md)
+- [Merchant Punctuation-Aware Spacing Experiment](../superpowers/specs/2026-09-19-merchant-punctuation-spacing-design.md)
+- [Adjudicated Merchant Reference v2 Comparison](../superpowers/specs/2026-09-19-merchant-reference-v2-design.md)
+- [Fully Reviewed Merchant Reference v3 Comparison](../superpowers/specs/2026-09-19-merchant-reference-v3-design.md)
+- [Remaining Merchant Seed Source-Adjudication Design](../superpowers/specs/2026-09-19-merchant-remaining-adjudication-design.md)
+- [Remaining Merchant Seed Blind Repeat-Reading Design](../superpowers/specs/2026-09-19-merchant-remaining-blind-review-design.md)
+- [Merchant Geometry Spacing Experiment](../superpowers/specs/2026-09-19-merchant-spacing-design.md)
+- [Merchant Whitespace Location Measurement](../superpowers/specs/2026-09-19-merchant-spacing-location-design.md)
+- [Merchant Spacing Retention-Reason Measurement](../superpowers/specs/2026-09-19-merchant-spacing-reasons-design.md)
+- [Merchant v3 Residual Error Analysis](../superpowers/specs/2026-09-19-merchant-v3-error-analysis-design.md)
+- [Merchant Within-Atom Directional Signatures](../superpowers/specs/2026-09-20-merchant-atom-direction-design.md)
+- [Merchant Whole-Atom Ordering Witness Measurement](../superpowers/specs/2026-09-20-merchant-atom-order-witness-design.md)
+- [Merchant Block-Overlap Measurement](../superpowers/specs/2026-09-20-merchant-block-overlap-design.md)
+- [Remaining Digital Merchant Character-Error Measurement](../superpowers/specs/2026-09-20-merchant-character-errors-design.md)
+- [Merchant Corrected-Block Ordering Witness Measurement](../superpowers/specs/2026-09-20-merchant-corrected-order-witness-design.md)
+- [Merchant Corrected-Output Spacing Diagnostic](../superpowers/specs/2026-09-20-merchant-corrected-spacing-design.md)
+- [Merchant LTR Block-Ordering Candidate](../superpowers/specs/2026-09-20-merchant-ltr-block-order-design.md)
+- [Merchant LTR Glyph Reconstruction Candidate](../superpowers/specs/2026-09-20-merchant-ltr-glyph-candidate-design.md)
+- [Merchant LTR Tolerance Candidate](../superpowers/specs/2026-09-20-merchant-ltr-tolerance-design.md)
+- [Merchant Source-Order Trace](../superpowers/specs/2026-09-20-merchant-source-order-trace-design.md)
+
+## Historical implementation plans
+
+- [General Credit-Card Statement Parser Implementation Plan](../superpowers/plans/2026-07-18-credit-card-parser.md)
+- [Semantic Evidence Completeness Implementation Plan](../superpowers/plans/2026-07-20-semantic-evidence-completeness.md)
+- [Parser Simplification Foundations Implementation Plan](../superpowers/plans/2026-07-21-parser-simplification-foundations.md)
+- [Parser Structural Simplification Implementation Plan](../superpowers/plans/2026-07-21-parser-simplification-structure.md)
+- [Structured FX Transaction Data Implementation Plan](../superpowers/plans/2026-07-21-structured-fx-transaction-data.md)
+- [Corpus Regression Gate Implementation Plan](../superpowers/plans/2026-07-22-corpus-regression-gate.md)
+- [Strict Extraction Recovery Implementation Plan](../superpowers/plans/2026-07-22-strict-extraction-recovery.md)
+- [Tokenization Performance and Corpus Acceptance Implementation Plan](../superpowers/plans/2026-07-22-tokenization-performance-and-acceptance.md)
+- [Bounded Lexical Memoization Implementation Plan](../superpowers/plans/2026-07-24-bounded-lexical-memoization.md)
+- [Streaming Corpus Verification Implementation Plan](../superpowers/plans/2026-07-24-streaming-corpus-verification.md)
+- [Grounded Merchant Atom Tagger Experiment Implementation Plan](../superpowers/plans/2026-07-27-merchant-atom-tagger-experiment.md)
+- [Row Extraction Experiment Program Implementation Plan](../superpowers/plans/2026-07-27-row-extraction-experiment-program.md)
+- [Deterministic Row Profile Experiment Implementation Plan](../superpowers/plans/2026-07-27-row-profile-experiment.md)
+- [Row-Targeted OCR Experiment Implementation Plan](../superpowers/plans/2026-07-27-row-targeted-ocr-experiment.md)
+- [Deterministic Row-Type Experiment Implementation Plan](../superpowers/plans/2026-07-28-deterministic-row-type-experiment.md)
+- [Row Extraction Comparison and Cascade Implementation Plan](../superpowers/plans/2026-07-28-row-extraction-comparison-cascade.md)
+- [Row Extraction Shared Foundation Implementation Plan](../superpowers/plans/2026-07-28-row-extraction-shared-foundation.md)
+- [Per-Row Targeted OCR Experiment Implementation Plan](../superpowers/plans/2026-07-28-row-targeted-ocr-experiment.md)
+- [Lightweight Row-Text Field Model Experiment Implementation Plan](../superpowers/plans/2026-07-28-row-text-field-model-experiment.md)
+- [Row-Vision Field Model Experiment Implementation Plan](../superpowers/plans/2026-07-28-row-vision-field-model-experiment.md)
+- [Row-Extraction Focus Lock Implementation Plan](../superpowers/plans/2026-07-30-row-extraction-focus-lock.md)
+- [Visual-Gold v2 Pilot Implementation Plan](../superpowers/plans/2026-08-01-visual-gold-v2-pilot.md)
+- [Merchant Context Sufficiency Implementation Plan](../superpowers/plans/2026-08-07-merchant-context-sufficiency.md)
+- [First Stable Release Implementation Plan](../superpowers/plans/2026-08-22-first-stable-release.md)
+- [Merchant Alignment-Error Plan](../superpowers/plans/2026-09-12-merchant-alignment-errors.md)
+- [Merchant Discovery Coverage Trace Plan](../superpowers/plans/2026-09-12-merchant-discovery-coverage.md)
+- [Merchant Discovery Exclusion Trace Plan](../superpowers/plans/2026-09-12-merchant-discovery-exclusion.md)
+- [Merchant Evidence Error Analysis Plan](../superpowers/plans/2026-09-12-merchant-evidence-errors.md)
+- [Merchant Gold Seed Preparation Plan](../superpowers/plans/2026-09-12-merchant-gold-seed.md)
+- [One-Page Merchant Discovery Plan](../superpowers/plans/2026-09-12-merchant-page-discovery.md)
+- [Merchant Pre-Rejection Measurement Plan](../superpowers/plans/2026-09-12-merchant-pre-rejection.md)
+- [Merchant Pre-Filter Comparison Plan](../superpowers/plans/2026-09-12-merchant-prefilter-comparison.md)
+- [Merchant Reading-Order Plan](../superpowers/plans/2026-09-12-merchant-reading-order.md)
+- [Merchant-Region OCR Plan](../superpowers/plans/2026-09-12-merchant-region-ocr.md)
+- [Residual Merchant Error Analysis Plan](../superpowers/plans/2026-09-12-merchant-residual-errors.md)
+- [Merchant Seed Comparison Plan](../superpowers/plans/2026-09-12-merchant-seed-comparison.md)
+
+## Product and agent operations
+
+- [User commands and corpus operating guide](../../README.md)
+- [Compatibility contract](../../SUPPORT.md)
+- [v0.1.0 release evidence](../releases/v0.1.0.md)
+- [Domain vocabulary](../../CONTEXT.md)
+- [Domain documentation convention](../agents/domain.md)
+- [Issue tracker](../agents/issue-tracker.md)
+- [Triage labels](../agents/triage-labels.md)
