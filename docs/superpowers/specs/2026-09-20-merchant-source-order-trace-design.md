@@ -1,6 +1,8 @@
 # Merchant Source-Order Trace
 
-**Status:** APPROVED — preparing the three-atom trace.
+**Status:** COMPLETE — STOP. All three reversals are present in native words and
+persist unchanged downstream. Glyph positions yield the reference substrings for
+all three. See the [report](../../experiments/row-extraction-merchant-source-order-trace-report.md).
 
 The user's “proceed” approves the completed directional-signature report's
 recommendation to trace where the three reverse-only LTR atoms acquire their order.

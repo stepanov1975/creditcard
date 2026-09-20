@@ -1637,7 +1637,10 @@ reusable infrastructure or production integration is authorized.
 
 ## Approved amendment: merchant source-order trace
 
-**Disposition:** APPROVED — preparing the three-atom trace.
+**Disposition:** COMPLETE — STOP. All three reversals are present at native word
+extraction and persist unchanged downstream. Glyph geometry yields the reference
+substrings for all three; the hypothesis is supported. See the
+[report](../../experiments/row-extraction-merchant-source-order-trace-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the directional-signature
 report's recommendation to locate the source of the reversed LTR atom ordering.

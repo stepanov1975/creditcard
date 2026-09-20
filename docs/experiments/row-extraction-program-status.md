@@ -15,16 +15,32 @@ derived financial value is recorded here.
 
 ## Current phase: merchant source-order trace
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 directional-signature report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-source-order-trace-design.md).
 
-Trace the three reverse-only LTR atoms in the same two training cases through
-native words, layout and frozen evidence. Read only the associated source pages
-locally, match geometry with fixed guards and retain unresolved traces. No
-correction or new merchant prediction is active.
+Authority was committed at `6a6d13b` before measurement. The
+[report](row-extraction-merchant-source-order-trace-report.md) records **3/3
+reversals already present in native word extraction and unchanged through all
+six traced boundaries**. Two native replays of the single selected source page
+produce identical evidence. All three traces complete without unresolved matches.
 
-Next extraction task: quantify the first observed reversal stage for three atoms.
+Increasing horizontal-center order of the same 17 glyphs yields the reference
+substring for all three atoms; native glyph order reproduces the reversed words.
+The existing layout correction handles RTL words only, leaving these LTR words
+unchanged. The predeclared hypothesis is supported.
+
+All prior results reproduce. Independent checks agree on 18 boundary comparisons,
+17 glyph positions and all aggregate fields. Ten focused tests and all 3,766
+repository tests pass alongside Ruff and mypy. Seventeen protected inputs and
+the frozen checkout remain unchanged.
+
+Accuracy remains **19/24 exact**. The unexecuted recommendation is to test a
+lossless glyph-position reconstruction candidate for LTR digital words on the
+reviewed 24-case seed, measuring exact merchant gains and regressions. No
+candidate, broader selection or production integration is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant within-atom directional signatures
 
@@ -46,7 +62,7 @@ frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**. Substring containment does not establish a
 complete merchant correction or a general reversal rule. This measurement is
-complete; its separately approved source-order trace is the sole active phase above.
+complete, and its separately approved source-order trace above is complete.
 
 ## Completed phase: merchant whole-atom ordering witness measurement
 
