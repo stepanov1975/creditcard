@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant LTR tolerance candidate
+## Current phase: merchant corrected-output spacing diagnostic
+
+**Status:** `APPROVED — measurement pending`. The user's “proceed” approves
+the completed tolerance report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-corrected-spacing-design.md).
+
+Measure whitespace-only differences and whether the unique saved corrected-block
+witness equals recorded order in exactly two changed reviewed digital outputs.
+Reproduce all 144 saved scores. Use saved text and indices only; no native pages,
+PDFs, new predictions or labels. Commit authority before measurement and stop
+after reporting counts and the hypothesis result.
+
+Next extraction task: execute this two-case diagnostic, then STOP.
+
+## Completed phase: merchant LTR tolerance candidate
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed overlap report's recommendation under the
@@ -34,9 +48,9 @@ outputs, 144 scores and three slices against three baselines. Twenty-four focuse
 cases and all 3,766 repository tests pass alongside Ruff and mypy. Protected
 saved inputs and the frozen checkout remain unchanged.
 
-The unexecuted recommendation is to classify whitespace differences and recorded
-versus witness order in the two reviewed outputs changed by glyph correction.
-No post-score tuning, new candidate or follow-on phase is active.
+Its recommendation to classify whitespace differences and recorded versus witness
+order in the two reviewed outputs changed by glyph correction is separately
+approved above. No post-score tuning or new candidate is active.
 
 Next extraction task: STOP.
 

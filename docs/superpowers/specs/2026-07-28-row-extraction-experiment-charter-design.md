@@ -1770,3 +1770,22 @@ three saved baselines. Private work stays in `artifacts/merchant-ltr-tolerance-v
 **Stop boundary:** Stop after one generation/score or reproduction failure.
 No post-score tuning, second candidate, new source extraction, label changes,
 held-out access, reusable infrastructure or production integration is authorized.
+
+## Approved amendment: merchant corrected-output spacing diagnostic
+
+**Disposition:** APPROVED — measurement pending.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the completed
+tolerance report's recommendation to classify the two corrected digital errors.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-corrected-spacing-design.md). Reproduce 144 saved
+scores and reconstruct saved outputs. Measure whitespace-only differences and
+identity-order witnesses in exactly two changed reviewed digital training cases,
+using existing pure classifiers, saved strings and recorded indices. Keep private
+work in `artifacts/merchant-corrected-spacing-v1/`.
+
+**Stop boundary:** Stop after this diagnostic or reproduction failure. No new
+predictions, source/native-page access, label changes, broader selection, larger
+search, held-out access, reusable infrastructure or production integration is
+authorized.
