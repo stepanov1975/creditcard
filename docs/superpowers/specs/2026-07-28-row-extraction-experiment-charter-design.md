@@ -1857,16 +1857,19 @@ to relax per-subtask approvals and proceed with the current task.
 
 Execute the [evaluation design](2026-09-20-merchant-document-disjoint-evaluation-design.md)
 through the smallest fixed-rule adapter, old-seed reproduction, deterministic
-selection, source preparation, two independent blinded human reviews, source
-adjudication, frozen predictions, ownership audit, scoring and aggregate report.
+selection, source preparation, AI-prefilled source readings, human correction and
+confirmation, frozen predictions, ownership audit, scoring and aggregate report.
 Private work stays in `artifacts/merchant-document-disjoint-v1/`; aggregate results
 belong in `docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md`.
-The user confirmed that two independent reviewers are available.
+The user subsequently replaced the independent-review workflow with AI source
+review followed by their own corrections. The amended design governs this
+AI-assisted, single-human-reviewed tier; suggestions are not confirmed references.
 
 Routine implementation fixes, tests and milestones need no further approval.
-Human answers are a required dependency, not an approval gate; prepare both
-packets and complete independent work before awaiting them. Resume automatically
-when they arrive. Do not fabricate a reference or score without human answers.
+Human corrections and page-census confirmations remain required. Prepare the
+prefilled packet and complete independent work before awaiting them. Resume when
+they arrive without another approval. Never mark AI suggestions human-confirmed
+or score them as accepted references before that review.
 
 The selection, comparison and no-post-score-tuning rules remain fixed. Preserve
 historical artifacts. Validation/held-out inputs, gold promotion, production

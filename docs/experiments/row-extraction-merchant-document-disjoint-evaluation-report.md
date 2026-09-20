@@ -2,9 +2,9 @@
 
 **Updated:** 2026-09-20
 
-**Status:** AWAITING_HUMAN_REVIEW — the objective remains authorized. Two independent
-human reviewers are available; their readings, adjudication and ownership audit
-are required before scoring. Accuracy and paired improvement are **NOT MEASURED**.
+**Status:** AWAITING_HUMAN_REVIEW — the user requested AI-prefilled source readings
+followed by their own corrections. The prefilled result files are ready. Accuracy
+and paired improvement are **NOT MEASURED** until human review and scoring finish.
 
 ## Fixed experiment
 
@@ -49,48 +49,68 @@ These are generated-output counts, **not reference transaction counts or coverag
 No human references were read. Saved proposals, common owners, atom order and all
 three renderings reproduce from saved evidence; private output hashes are intact.
 
-## Independent human review
+## AI-assisted source review and result files
 
-Private artifacts are in ignored `artifacts/merchant-document-disjoint-v1/`.
-`reviewer-A.zip` and `reviewer-B.zip` contain separate blank worksheets, six source
-PDFs and 16 page images at 300 DPI including supporting context. They contain no
-suggested transactions, model predictions, prior merchant labels or answers.
+Amendment `1f90c55`, committed before drafting labels, records the user's change
+from two independent blank-first reviews to AI suggestions followed by their own
+corrections. The tier is **AI-assisted, single-human-reviewed pilot**. The original
+blank packets remain historical artifacts; frozen sampling and predictions are
+unchanged. The assistant did not read saved prediction strings or boxes to draft
+these references.
 
-Each reviewer extracts their ZIP and opens `review.html` locally. Reviewers must
-work independently, enumerate every transaction start on all six census pages
-(including future billing), mark transaction/merchant evidence and confirm each
-page census. Other pages supply context only. An empty census requires explicit
-confirmation; uncertainty must be recorded rather than guessed.
+The assistant visually inspected all six selected source pages, rendered enlarged
+merchant-column details, checked native glyph spelling/geometry after visual
+inspection, and inspected marked transaction/merchant regions on every page.
+There are **89 proposed transaction starts**, distributed 7, 9, 11, 12, 27 and 23
+across the six anonymous sample pages. Draft statuses are 88 present merchants and
+one absence; **22 cases carry attention flags** for reference-code boundaries,
+spelling, mixed direction, a transfer without a visible payee, or wrapped text.
+These are unconfirmed draft counts, not measured accuracy or accepted denominators.
 
-Each reviewer returns their own saved answer JSON privately. The worksheet can
-save and reload drafts and rejects the other reviewer's answer file. Do not share
-answers or predictions until both independent reviews finish. Adjudicate source
-readings without predictions, freeze the reference census, then perform the
-method-blinded ownership audit and paired scoring under the fixed design.
+Private files are under ignored `artifacts/merchant-document-disjoint-v1/assisted-review/`:
 
-No reference census has been returned, so transaction counts, reference
-eligibility, discovery omissions, ownership errors and all accuracy denominators
-remain unknown. Missing discovery must count in the eventual census denominator.
+- `merchant-review-prefilled.zip`: complete local review packet, including sources.
+- `review.html`: worksheet with AI suggestions loaded automatically, editable text
+  and regions, attention flags, next-transaction navigation, and explicit page review.
+- `merchant-review-draft.json`: preserved initial suggestions for this handoff.
+- `merchant-review.csv`: readable table of the same suggestions and review notes.
+
+The user extracts the ZIP and opens `review.html`. They can correct/remove entries,
+add missed transaction starts and adjust evidence regions. After inspecting a
+whole page, **Confirm page review** confirms its valid entries and census in one
+explicit action. It never converts unresolved ambiguity into a clear reference.
+Save answers downloads the corrected JSON; Load answers resumes it. All 89 cases
+and all six page censuses start unconfirmed. The saved human answer file remains
+separate from the preserved AI draft.
+
+Reference-like suffixes were tentatively excluded where separately identifiable;
+those choices are flagged for human review. Second-line billing URLs, locations
+and fee narratives were excluded from merchant spans. Human corrections may alter
+these proposed boundaries before reference freezing. No accepted gold was changed.
+
+The user must still check all six complete pages, including possible omissions.
+AI-prefilling introduces anchoring risk and is not independent human agreement.
+Freeze the corrected reference before revealing method differences, then perform
+the ownership audit and paired comparison. No scores were computed from AI drafts.
 
 ## Verification and continuation
 
-Source packets passed archive integrity and content checks: both expose the same
-source pages, all assets and worksheet controls resolve, and network connections
-are disabled by the worksheet policy. Synthetic checks cover blank/empty census,
-confirmation invalidation, independent draft round-trip, invalid geometry and
-reviewer identity, ambiguity/absence, selection exclusions, fixed rendering and
-native detection retries. A graphical browser check was unavailable in this
-workspace; packet structure and JavaScript syntax/state logic were checked.
+The assisted packet passed ZIP integrity checks; embedded worksheet state, JSON
+and CSV agree on all 89 suggestions, and every source asset and control resolves.
+All confirmations start false. Six focused JavaScript tests check explicit page
+acceptance, invalid-entry rejection, preserved draft state, correction/download
+round-trip, and census invalidation after adding a missed transaction. The tested
+worksheet runs in a DOM test harness; a graphical browser was unavailable.
+Annotated source regions were visually checked on all six pages.
 
-Verification passed: repository Ruff format/lint, mypy and all **3,766 tests**
-(102.49 seconds); private Ruff and strict mypy across 14 Python files; six focused
-Python tests and six JavaScript review-state tests. All 22 local links checked in
-the instructions, live status and this report resolve. Sensitive packet content,
-source evidence and predictions remain ignored and local. This is not a
-private-corpus acceptance attestation.
+Final verification passed: repository Ruff format/lint, mypy and **3,766 tests**
+(100.29 seconds), plus private Ruff and strict mypy for the five assisted-review
+Python scripts. All 13 local links across the current design, live status and
+report resolve. Earlier adapter and blank-packet verification remains preserved
+in local logs. Source contents, annotations and result files remain ignored and
+local. This is not a private-corpus acceptance attestation.
 
-The next dependency is both independent human answer files. Continue adjudication,
-reference eligibility checks, ownership review and three-view scoring within this
-same approved objective when they arrive. No new permission or candidate tuning
-is needed or implied. Production integration and corpus acceptance remain outside
-this evaluation.
+The next dependency is the user's corrected answer JSON and six confirmed page
+censuses. Continue reference freezing, ownership review and fixed three-view
+scoring when they arrive, without another approval. Production integration and
+private-corpus acceptance remain outside this evaluation.

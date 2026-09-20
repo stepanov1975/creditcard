@@ -15,21 +15,22 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** ACTIVE — the user requested AI source review and prefilled answers,
-then their own corrections, replacing the two-independent-human blank-packet
-workflow. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
-
-Read the six frozen census pages, prepare source-grounded merchant suggestions
-and editable result files, and flag uncertainty. Do not consult the saved model
-predictions to draft references. Keep every suggestion and page census pending
-human confirmation. The frozen sample and three prediction views are unchanged.
+**Status:** AWAITING_HUMAN_REVIEW — AI source review and the prefilled packet are
+complete under amendment `1f90c55`. The user requested this workflow in place of
+two independent blank-first reviews. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
 
 The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
-records preparation: 114 row proposals and 104 output owners per view. These are
-not reference counts or measured coverage. Accuracy is NOT MEASURED. After the
-user reviews the prefilled census, continue reference freezing, ownership review
-and paired scoring in the same approved task. Report AI-assisted,
-single-human-reviewed pilot results, not independent human certification.
+records 89 draft transaction entries on all six selected pages: 88 suggested
+present merchants and one suggested absence, with 22 attention flags. Every case
+and page census remains unconfirmed. The editable worksheet, JSON and CSV are in
+ignored `artifacts/merchant-document-disjoint-v1/assisted-review/`.
+
+Next dependency: the user's corrected answer JSON and six page-census
+confirmations. Then freeze references and complete ownership review and paired
+scoring in this same approved objective. The sample and three prediction views
+remain unchanged. Accuracy is NOT MEASURED; draft counts are not accepted metric
+denominators. Report an AI-assisted, single-human-reviewed pilot, not independent
+human certification. Validation/held-out data and integration remain outside scope.
 
 ## Latest measured extraction result
 
