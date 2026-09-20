@@ -13,7 +13,21 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: remaining digital merchant character-error measurement
+## Current phase: merchant whole-atom ordering witness measurement
+
+**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+character-error report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-atom-order-witness-design.md).
+
+Test the two fixed order-only cases for exact non-whitespace reference witnesses
+by permuting intact selected atoms. Use every occurrence once, cap cases at nine
+atoms, and retain unresolved normalization/size limits. Reproduce saved scores
+and classifications first. No candidate, new sources, labels or broader sample
+is active.
+
+Next extraction task: count whole-atom ordering witnesses for the two fixed cases.
+
+## Completed phase: remaining digital merchant character-error measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 punctuation-spacing report's recommendation under the
@@ -33,12 +47,9 @@ Sixteen focused tests and all 3,766 repository tests pass alongside Ruff and
 mypy. Thirteen saved inputs and the frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**, with 24 aligned unique outputs. No source
-documents, new extraction or models were used; labels and predictions stayed fixed. The
-unexecuted recommendation is to test whether reordering intact selected atoms
-provides a non-whitespace witness for either order-only case. No follow-on phase,
-repair, wider selection, held-out access or production integration is active.
-
-Next extraction task: STOP.
+documents, new extraction or models were used; labels and predictions stayed fixed.
+This classification is complete. Its separately approved whole-atom witness
+measurement is the sole active phase above.
 
 ## Completed phase: merchant punctuation-aware spacing candidate
 

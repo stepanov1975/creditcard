@@ -1589,3 +1589,23 @@ scripts/results only in `artifacts/merchant-character-errors-v1/`.
 failure. No candidate, new extraction/OCR/models, source documents, label changes,
 new review, broader selection, held-out access, reusable infrastructure or
 production integration is authorized.
+
+## Approved amendment: merchant whole-atom ordering witness measurement
+
+**Disposition:** APPROVED — preparing the fixed two-case witness measurement.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the character-error
+report's recommendation to test intact-atom reorder witnesses.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-20-merchant-atom-order-witness-design.md). Reproduce saved scores
+and classifications; test only the two order-only digital cases with all selected
+atom occurrences used once. Keep NFC/non-whitespace projections and a fixed
+nine-atom limit; report unresolved normalization or size limits. Publish witness
+case counts, identity-order counts and the declared hypothesis result. Private
+scripts/results stay in `artifacts/merchant-atom-order-witness-v1/`.
+
+**Stop boundary:** Stop after this measurement or saved-result reproduction
+failure. No larger search, second diagnostic, candidate, new source access,
+extraction/OCR/models, label changes, review, broader selection, held-out access,
+reusable infrastructure or production integration is authorized.
