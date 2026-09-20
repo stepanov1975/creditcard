@@ -13,30 +13,37 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant unchanged-order spacing candidate
+## Current phase: document-disjoint merchant evaluation design
 
-**Status:** COMPLETE — STOP. The user's “proceed” authorized the
-[fixed design](../superpowers/specs/2026-09-20-merchant-unchanged-order-spacing-design.md),
-committed at `9246999` before implementation and measurement.
+**Status:** DESIGN COMPLETE — STOP. The user's “proceed” approved the
+[design-only task](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
+It specifies a six-document pilot outside the merchant seed, source-only prediction
+generation, blinded full-page reference review, fixed comparators and paired
+metrics including discovery omissions and ownership errors.
 
-The [report](row-extraction-merchant-unchanged-order-spacing-report.md) records
-**19/24 to 21/24 exact**, with **two gains and zero losses against four saved
-baselines**, and unchanged **24/24 coverage**. Digital rises from 13/16 to 15/16;
-OCR remains 6/8. The hypothesis is supported on this reviewed training seed.
+No new sample, document, reference or prediction was opened or created.
+Evaluation results are **NOT MEASURED**. The design records two execution risks:
+saved loaders are seed-specific, and the old score uses merchant-region-assisted
+alignment. It proposes a minimal fixed-rule input adapter and transaction-only
+primary alignment for a future separately approved run, not production changes.
 
-The candidate renders 38 eligible groups without changing order, changes four
-of 113 owner outputs, and makes eight tolerance joins. Both changed reviewed
-outputs become exact. All 144 prior scores reproduce; independent checks agree
-on 113 decisions/outputs and 168 scores. Thirty-six synthetic checks and all
-3,766 repository tests pass alongside Ruff and mypy.
-Source evidence, labels, ownership, financial decisions and the frozen checkout
-remain unchanged. No post-score tuning or production integration occurred.
-
-This is not validation accuracy or private-corpus acceptance. The recommendation
-is to preserve the candidate and separately design a document-disjoint merchant
-evaluation before further tuning. No new evaluation or follow-on phase is active.
+Execution is not authorized. Existing validation and held-out partitions stay
+closed; the proposed pilot uses other existing training documents and must not
+be described as an untouched project test set. No follow-on support task is active.
 
 Next extraction task: STOP.
+
+## Latest measured extraction result
+
+The [unchanged-order spacing candidate](row-extraction-merchant-unchanged-order-spacing-report.md),
+reported at `2cefcb2`, remains **21/24 exact**, up from 19/24 with two gains and
+zero losses against four baselines, and unchanged 24/24 coverage. Digital is
+15/16 and OCR 6/8. All 144 prior scores reproduce; independent checks agree on
+113 outputs and 168 scores. Thirty-six focused checks and 3,766 repository tests
+passed. The candidate and its inputs are preserved without further tuning.
+
+This reviewed training-seed result is not validation accuracy or private-corpus
+acceptance. The proposed new-document evaluation has not run.
 
 ## Knowledge and history
 

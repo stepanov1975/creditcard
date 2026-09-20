@@ -1816,3 +1816,25 @@ saved baselines. Private code/results stay in
 No post-score tuning, second candidate, new source extraction, label changes,
 sample expansion, validation/held-out access, shared framework or production
 integration is authorized.
+
+## Approved design-only step: document-disjoint merchant evaluation
+
+**Disposition:** DESIGN COMPLETE — STOP; extraction results NOT MEASURED.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the explicitly
+proposed evaluation-design task only. The
+[design](2026-09-20-merchant-document-disjoint-evaluation-design.md) specifies
+frozen comparators, a six-document training-pool pilot outside the merchant seed,
+full-page reference review, source-only generation, paired extraction metrics
+and ownership audit. It distinguishes a pilot on other training documents from
+untouched validation/test data and from production acceptance.
+
+**Bounded documentation allowance:** Only the design, this charter entry and the
+live status are changed. This is not a new measured extraction advance. The
+Metric-or-Stop requirement ends this design step without a support task.
+
+**Stop boundary:** Execution is not authorized. No metadata selection, new-page
+access, adapter, worksheet, human reference, prediction, scorer invocation,
+validation/held-out access, infrastructure or production integration is active.
+Future execution requires direct approval of the concrete evaluation scope and
+committed authority; this design is not that approval.
