@@ -25,7 +25,7 @@ not count as extraction progress.
 
 ## Allowed Work
 
-A row-extraction task may do exactly one of the following:
+An approved row-extraction objective may combine the necessary steps below:
 
 1. change per-row OCR, deterministic extraction, the lightweight text model, or the lightweight
    image/image-plus-text model;
@@ -69,53 +69,30 @@ suite and a fresh formal private-corpus `verify` run before release publication.
 This exception is production release acceptance work. It does not reactivate row-extraction
 experiments, authorize controller redesign, or count as extraction progress.
 
-## Mandatory Task Contract
+## Task-level authorization amendment — 2026-09-20
 
-Before work starts, every root task, plan task, and subagent prompt must record:
+The user explicitly requested full-task execution without approval for each
+small subtask. [AGENTS.md](../../../AGENTS.md#task-level-authorization-and-persistence)
+is the controlling authorization policy. It supersedes the former per-subtask
+contract, one-output-per-subtask and automatic Metric-or-Stop rules.
 
-```text
-Scope answer: YES — <how this changes or measures extraction>
-Experiment: <row-ocr | row-profiles | row-text | row-vision | shared evaluation>
-Extraction hypothesis: <falsifiable statement>
-Measurement: <named metric or predeclared extraction error category>
-Fixed inputs: <rows, split, labels, or frozen artifacts>
-Smallest allowed files: <exact paths>
-Required output: <metric delta, hypothesis result, error count, or runnable extractor>
-Stop condition: <condition that ends this task without adding support work>
-```
+An approved extraction objective may include the smallest required design,
+input adapter, source preparation, human review handoff, generation, scoring,
+verification and reporting. Record the task contract once; its subtasks inherit
+it. Commit the objective's initial experimental authority before new data access;
+do not require a new authority commit at every routine milestone. Keep one
+active objective and continue necessary work autonomously.
 
-`Experimental invariant`, `reproducibility`, `future integration`, or `trust hardening` alone are
-not valid measurements.
+Evaluate metric progress at objective completion. Preparation may be intermediate
+work without a score. If human labels are required, complete independent work,
+record AWAITING_HUMAN_REVIEW and resume on receipt of the answers without new
+approval. Do not replace human decisions with agent guesses. Negative results
+are final results, not permission to tune the same evaluation sample.
 
-## Metric-or-Stop Rule
-
-At task completion, report:
-
-```text
-Scope: YES — <reason>
-Experiment: <arm or shared evaluation>
-Measurement: <metric or error category>
-Result: <delta, supported/falsified hypothesis, quantified finding, or runnable extractor>
-Next extraction task: <one task or STOP>
-```
-
-If one completed task yields none of the required outputs, stop the program task. Do not create a
-second support task to rescue it.
-
-## Active Sequence
-
-Only one program phase and one root task may be active at a time:
-
-1. publish the existing Round 1 validation comparison;
-2. quantify the supervision/overlapping-evidence and merchant-recognition failures;
-3. correct the shared target representation;
-4. compare the four frozen-row approaches on document-disjoint development data;
-5. select and freeze only an approach with a measured validation gain;
-6. request explicit approval for one held-out evaluation;
-7. issue the recommendation; and
-8. request separate approval before any production integration design.
-
-No held-out/controller work begins before a validation gain exists.
+The frozen-work restrictions above remain in force. Protected held-out access,
+accepted-gold/baseline changes, production integration and infrastructure redesign
+still require their separate explicit authorization. No framework, receipt chain,
+new CLI or corpus-controller redesign is part of this amendment.
 
 ## Enforcement in the Repository
 

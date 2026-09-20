@@ -1,22 +1,22 @@
 # Document-Disjoint Merchant Evaluation Design
 
-**Status:** DESIGN COMPLETE — execution not authorized. Updated 2026-09-20.
+**Status:** ACTIVE — execution approved on 2026-09-20.
 
-The user's “proceed” approved designing this evaluation only. No new document,
-reference, split, sample or prediction was opened or created. This document
-specifies a future measurement; it is not an extraction result or permission to
-run it. The [focus lock](2026-07-30-row-extraction-focus-lock-design.md) remains
-binding. No infrastructure exception or production integration is requested.
+The user explicitly authorized full-task execution and removal of per-subtask
+approval gates. This supersedes the previous design-only disposition. Follow the
+updated AGENTS task-level policy; complete preparation, generation, review,
+adjudication, scoring and reporting as one objective. Two independent human
+reviewers are available. Human answers remain a genuine dependency.
 
 ```text
-Scope answer: YES — specifies the next measurement of merchant extraction on documents outside the existing seed; no measurement runs in this task
+Scope answer: YES — evaluates the frozen merchant candidate on document-disjoint training pages
 Experiment: shared evaluation
-Extraction hypothesis: The frozen spacing candidate improves merchant exact match over the frozen comparator on document-disjoint pages without ownership regressions or reduced coverage
-Measurement: planned exact-match delta, paired gains/losses, coverage, discovery omissions, and ownership errors
-Fixed inputs: completed 21/24 candidate, its frozen comparators, existing split rules, and committed aggregate reports; new pages and references remain unopened
-Smallest allowed files: docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/experiments/row-extraction-program-status.md
-Required output: a reviewable evaluation design; extraction results remain NOT MEASURED
-Stop condition: stop after committing the design; no sampling, reference collection, extractor execution, or follow-on support task
+Extraction hypothesis: The frozen spacing candidate improves exact merchant extraction without losses, ownership regressions, or reduced coverage
+Measurement: reference eligibility, exact-match delta, coverage, discovery omissions, and ownership errors
+Fixed inputs: frozen candidate and comparators; six documents selected under these committed rules; existing training membership only
+Smallest allowed files: AGENTS.md; docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md; artifacts/merchant-document-disjoint-v1/**
+Required output: completed fixed comparison, or a prepared human-review packet with quantified eligibility and a clear outstanding dependency
+Stop condition: finish the evaluation; pause only for human reference review, unavailable inputs, or a substantive change to the frozen experiment
 ```
 
 ## Question and limits
@@ -52,7 +52,7 @@ the declared rendering transformations differ. Billing decisions never change.
 
 The saved generation scripts are seed-specific: they assert six pages, 135 rows,
 113 owners and 373 occurrences and consume intermediate saved files. They are
-not a runnable new-document evaluator. A future execution approval may permit
+not a runnable new-document evaluator. The current execution approval permits
 only the immediate, disposable input adapter needed to invoke these existing
 rules on the chosen pages. It must replace input locations/count assertions,
 not infer a new discovery, ownership, ordering or OCR rule. It must reproduce
@@ -67,7 +67,7 @@ sample availability have not been measured by this design.
 
 ## Fixed document and page selection
 
-Future selection uses the existing training-document inventory, metadata and
+Selection uses the existing training-document inventory, metadata and
 source identity checks; never labels, predictions, merchant text or score-based
 filters. Exclude the entire six seed documents, byte-identical copies, and every
 document already used in source-visible merchant reference/glyph/spacing review.
@@ -207,14 +207,14 @@ confidence interval. Do not tune any rule or choose a new candidate on this samp
 After outcomes are inspected it is no longer untouched evaluation data; any later
 rule change needs another separately approved evaluation.
 
-## Proposed execution boundary and deliverable
+## Execution boundary and deliverable
 
-A future explicit approval must authorize the concrete sample/review run and its
-small immediate adapter before private access. It should name the exact private
-output directory and smallest files in its execution contract and commit authority
-first. Human review is a real handoff; do not fill answers automatically.
+The current task authorizes the concrete sample/review run and its smallest
+immediate adapter. Keep private outputs in `artifacts/merchant-document-disjoint-v1/`.
+Commit this initial authority before new page access. Human review is a real
+handoff; do not fill answers automatically. Routine subtasks need no new approval.
 
-Required future output is one aggregate report with selection/exposure limits,
+Required output is one aggregate report with selection/exposure limits,
 reference-review tier, census/ambiguity counts, three fixed-view results, paired
 counts, ownership audit, and supported/falsified/inconclusive disposition. Require
 synthetic tests for normalization, geometry collisions, absent/uncertain references,
@@ -222,12 +222,11 @@ missed-row denominators and ownership failures; independently check aggregation
 and all four repository gates. Preserve source/reference files and frozen code.
 No production merge or corpus acceptance follows from this pilot.
 
-**This task ends with the design only. Result: NOT MEASURED. Next extraction task:
-STOP.** No sample selection, adapter, worksheet, reference, prediction, new
-infrastructure or further design task is authorized by this document.
+Keep the objective ACTIVE through routine milestones and AWAITING_HUMAN_REVIEW
+when answers are needed. Resume the same task when they arrive. No automatic
+follow-on experiment, tuning, validation/test access or integration is authorized.
 
-
-## Design verification
+## Historical design-only verification
 
 Only the three declared Markdown files changed. All 95 local documentation links
 checked across them resolve. Ruff format/lint and mypy pass; all 3,766 repository

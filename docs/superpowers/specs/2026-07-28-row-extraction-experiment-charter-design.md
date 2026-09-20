@@ -41,6 +41,16 @@ or experiment branches. Those artifacts remain preserved as historical material,
 do not authorize work. The research notes cited by this charter provide evidence, not scope.
 Repository instructions in `AGENTS.md` and direct user instructions remain higher authority.
 
+## Task-level execution policy — 2026-09-20
+
+The user's explicit autonomy amendment authorizes completing a named objective
+without per-subtask approval. The current [AGENTS policy](../../../AGENTS.md#task-level-authorization-and-persistence)
+and amended focus design supersede historical per-phase STOP/approval wording
+for necessary subtasks of an approved objective. Existing measurements, frozen
+methods and protected-data boundaries do not change. Historical approved phases
+are not a backlog. The old task-contract/Metric-or-Stop templates below describe
+the earlier workflow; apply their measurement discipline at objective completion.
+
 ## Binding Focus-Lock Authority
 
 The four experiments below remain defined exactly as approved; the focus lock does not add,
@@ -1838,3 +1848,26 @@ access, adapter, worksheet, human reference, prediction, scorer invocation,
 validation/held-out access, infrastructure or production integration is active.
 Future execution requires direct approval of the concrete evaluation scope and
 committed authority; this design is not that approval.
+
+
+## Approved objective: execute document-disjoint merchant evaluation
+
+**Disposition:** ACTIVE — approved end to end by the user's 2026-09-20 request
+to relax per-subtask approvals and proceed with the current task.
+
+Execute the [evaluation design](2026-09-20-merchant-document-disjoint-evaluation-design.md)
+through the smallest fixed-rule adapter, old-seed reproduction, deterministic
+selection, source preparation, two independent blinded human reviews, source
+adjudication, frozen predictions, ownership audit, scoring and aggregate report.
+Private work stays in `artifacts/merchant-document-disjoint-v1/`; aggregate results
+belong in `docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md`.
+The user confirmed that two independent reviewers are available.
+
+Routine implementation fixes, tests and milestones need no further approval.
+Human answers are a required dependency, not an approval gate; prepare both
+packets and complete independent work before awaiting them. Resume automatically
+when they arrive. Do not fabricate a reference or score without human answers.
+
+The selection, comparison and no-post-score-tuning rules remain fixed. Preserve
+historical artifacts. Validation/held-out inputs, gold promotion, production
+integration and reusable infrastructure remain outside this objective.

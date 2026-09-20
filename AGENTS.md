@@ -2,7 +2,6 @@
 
 These instructions apply to the entire repository.
 
-
 ## Project knowledge and current state
 
 Start with the [knowledge guide](docs/knowledge/README.md), then read only what
@@ -55,63 +54,80 @@ Run all of the following before committing changes:
 - Add complete type annotations to public and internal functions. Avoid `Any`
   where a concrete protocol, model, or union can express the contract.
 
-## Row-extraction experiment focus lock
+## Task-level authorization and persistence
 
-The binding scope authority for row-extraction experiment work is
-`docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md`. The
-charter incorporates that authority, and
-`docs/experiments/row-extraction-program-status.md` is authoritative for the
-one active phase and next allowed task.
+User approval covers the full named objective and its necessary, reversible
+subtasks: planning, immediate adapters, synthetic tests, input preparation,
+execution, verification, documentation and local commits. Continue through these
+steps without requesting approval at every phase or ending after each small task.
+A “proceed” applies to the latest concrete objective in context. Do not infer a
+larger objective when the user explicitly limits the request to design or review.
 
-A row-extraction task may only change one of the four approved extractors, run
-or score a named extraction metric on the frozen document-disjoint development
-or validation data, or quantify a predeclared extraction error category. Before
-work starts, every root task, plan task, and subagent prompt must record exactly:
+Maintain one active objective with a short plan and its current dependencies.
+Intermediate milestones do not require new user approval or a new authority
+commit. Update the existing task record rather than creating a chain of tiny
+approval documents. Commit the initial experiment definition before accessing
+new evaluation inputs; amend it before a substantive method/sample change.
+
+Pause only for required human input, missing credentials/data, an unrecoverable
+failure, or a material scope change. Human references must come from the declared
+reviewers; do not fabricate them to avoid a pause. Complete independent work
+while waiting and resume the same approved task when inputs arrive, without
+asking for permission again.
+
+Separate authorization is still required for opening protected held-out data,
+changing accepted gold or protected corpus membership/baselines, destructive
+retirement of unique evidence, external disclosure, production integration or
+merge, and frozen infrastructure redesign. Preserve all privacy, testing and
+private-corpus acceptance requirements below.
+
+## Row-extraction experiment focus
+
+The [focus design](docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md)
+and charter retain the extraction scope. The
+[live status](docs/experiments/row-extraction-program-status.md) records the one
+active objective, progress, dependencies and next action; it is not a new
+permission gate at each subtask. The task-level policy above supersedes old
+“stop after this task” and “separate approval for the next phase” wording when
+those phases are necessary parts of the user's now-approved objective.
+Historical results remain immutable; this policy does not reactivate unrelated
+stopped experiments or authorize post-score tuning on evaluation data.
+
+Work should improve one of the four approved extractors, measure a named
+extraction metric, or quantify an extraction error. The smallest preparation,
+review artifact and adapter needed for that measurement belong to the same task.
+Do not build reusable controllers, CLI/schema families, receipt chains, workflow
+subsystems or unrelated hardening. Preserve frozen comparison/provenance,
+cascade, held-out orchestration and production-integration work as history.
+
+Record once at the start of the experiment objective:
 
 ```text
 Scope answer: YES — <how this changes or measures extraction>
 Experiment: <row-ocr | row-profiles | row-text | row-vision | shared evaluation>
 Extraction hypothesis: <falsifiable statement>
-Measurement: <named metric or predeclared extraction error category>
-Fixed inputs: <rows, split, labels, or frozen artifacts>
-Smallest allowed files: <exact paths>
-Required output: <metric delta, hypothesis result, error count, or runnable extractor>
-Stop condition: <condition that ends this task without adding support work>
+Measurement: <named metric or error category>
+Fixed inputs: <population, split, labels, selection rule or frozen artifacts>
+Smallest allowed files: <bounded implementation and output paths>
+Required output: <metric delta, hypothesis result, error count or runnable extractor>
+Stop condition: <objective completion, real dependency or invalid experiment>
 ```
 
-`Experimental invariant`, `reproducibility`, `future integration`, or
-`trust hardening` alone are not valid measurements.
+Subtasks inherit that contract; do not require a new contract or approval for
+each test, script or report. Freeze sampling, references, candidate rules and
+metrics at their declared boundaries. Fix ordinary implementation defects within
+the approved rules; do not resample difficult cases, weaken thresholds or tune
+extractors after seeing evaluation outcomes.
 
-Preserve but do not continue locked-comparison controller or CLI architecture,
-provenance envelopes, handoff re-freezing, receipts, replay prevention,
-attestations, path/inode/cache-independence machinery, marker-first or other
-locked-input projection features, cascade execution, locked-test orchestration,
-private-corpus controller redesign, or production integration. Existing branches
-and artifacts are read-only historical evidence, not unfinished tasks.
+### Measure at objective completion
 
-Shared evaluation changes are allowed only when a named local extraction
-measurement cannot run without the smallest immediate change. They must not
-create a reusable controller, schema family, CLI, receipt chain, or workflow
-subsystem. Any infrastructure exception requires direct user approval followed
-by a committed charter amendment; a general request to continue the experiment
-program is not approval.
-
-### Metric-or-Stop Rule
-
-At task completion, report exactly:
-
-```text
-Scope: YES — <reason>
-Experiment: <arm or shared evaluation>
-Measurement: <metric or error category>
-Result: <delta, supported/falsified hypothesis, quantified finding, or runnable extractor>
-Next extraction task: <one task or STOP>
-```
-
-If one completed task yields none of those required outputs, stop the program
-task. Do not create a second support task to rescue it. The repository private-
-corpus acceptance policy below is a separate production acceptance gate, not a
-row-extraction experiment task or an allowed substitute for extraction progress.
+Report scope, experiment, measurement, result and the next action at the end of
+the objective. A negative result is valid progress. Intermediate preparation
+need not itself produce an extraction score. If blocked on human review, report
+quantified preparation/eligibility, clearly mark accuracy NOT MEASURED, and keep
+the task AWAITING_HUMAN_REVIEW rather than marking it complete or requiring a
+fresh approval. STOP is for completed objectives, invalid experiments or a user
+stop—not the default after every subtask. Infrastructure alone is not a result.
 
 ## Private corpus acceptance policy
 

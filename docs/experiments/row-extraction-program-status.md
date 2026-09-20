@@ -13,25 +13,23 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: document-disjoint merchant evaluation design
+## Current objective: document-disjoint merchant evaluation
 
-**Status:** DESIGN COMPLETE — STOP. The user's “proceed” approved the
-[design-only task](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
-It specifies a six-document pilot outside the merchant seed, source-only prediction
-generation, blinded full-page reference review, fixed comparators and paired
-metrics including discovery omissions and ownership errors.
+**Status:** ACTIVE — execution approved end to end on 2026-09-20. The user
+requested removal of per-subtask approval gates and authorized proceeding with
+the current evaluation. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
+and [task-level policy](../../AGENTS.md#task-level-authorization-and-persistence).
 
-No new sample, document, reference or prediction was opened or created.
-Evaluation results are **NOT MEASURED**. The design records two execution risks:
-saved loaders are seed-specific, and the old score uses merchant-region-assisted
-alignment. It proposes a minimal fixed-rule input adapter and transaction-only
-primary alignment for a future separately approved run, not production changes.
+Two independent reviewers are available. Complete the smallest fixed-rule adapter,
+old-seed reproduction, six-document selection, blinded source packets, prediction
+generation, human review/adjudication, ownership audit and scoring. No additional
+approval is needed between these steps. Keep references and predictions separate.
 
-Execution is not authorized. Existing validation and held-out partitions stay
-closed; the proposed pilot uses other existing training documents and must not
-be described as an untouched project test set. No follow-on support task is active.
-
-Next extraction task: STOP.
+Next action: prepare and verify the adapter and source-only review packets, then
+complete all work independent of human answers. Accuracy is NOT MEASURED until
+review and scoring finish. Await human answers as a dependency, then resume the
+same objective without another approval. Protected validation/held-out data and
+production integration remain outside scope.
 
 ## Latest measured extraction result
 
