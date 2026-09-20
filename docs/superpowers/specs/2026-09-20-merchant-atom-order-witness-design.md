@@ -1,6 +1,7 @@
 # Merchant Whole-Atom Ordering Witness Measurement
 
-**Status:** APPROVED — preparing the fixed two-case witness measurement.
+**Status:** COMPLETE — STOP. Both cases have zero witnesses; the hypothesis is
+falsified. See the [report](../../experiments/row-extraction-merchant-atom-order-witness-report.md).
 
 The user's “proceed” approves the completed character-error report's
 recommendation to test reordering intact selected atoms in the two order-only cases.

@@ -15,17 +15,27 @@ derived financial value is recorded here.
 
 ## Current phase: merchant whole-atom ordering witness measurement
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 character-error report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-atom-order-witness-design.md).
 
-Test the two fixed order-only cases for exact non-whitespace reference witnesses
-by permuting intact selected atoms. Use every occurrence once, cap cases at nine
-atoms, and retain unresolved normalization/size limits. Reproduce saved scores
-and classifications first. No candidate, new sources, labels or broader sample
-is active.
+Authority was committed at `9d6e29e` before measurement. The
+[report](row-extraction-merchant-atom-order-witness-report.md) records **0/2
+intact-atom witness cases** across all 30 identity orders (24 for four atoms,
+six for three atoms). Every occurrence was retained, with no size or normalization
+limit reached. The predeclared hypothesis is falsified.
 
-Next extraction task: count whole-atom ordering witnesses for the two fixed cases.
+All 72 saved scores and three prior classifications reproduce. Independent
+prefix/subset counts agree; recursive normalization checks cover all 30 orders.
+Thirteen focused tests and all 3,766 repository tests pass alongside Ruff and
+mypy. Fourteen saved inputs and the frozen checkout remain unchanged.
+
+Accuracy remains **19/24 exact**. No new predictions, labels or source access
+occurred. The unexecuted recommendation is to quantify within-atom directional
+ordering signatures in the same two cases before proposing a transformation.
+No follow-on phase, candidate, wider selection or production integration is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: remaining digital merchant character-error measurement
 
@@ -48,8 +58,8 @@ mypy. Thirteen saved inputs and the frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**, with 24 aligned unique outputs. No source
 documents, new extraction or models were used; labels and predictions stayed fixed.
-This classification is complete. Its separately approved whole-atom witness
-measurement is the sole active phase above.
+This classification and its separately approved whole-atom witness measurement
+above are complete.
 
 ## Completed phase: merchant punctuation-aware spacing candidate
 

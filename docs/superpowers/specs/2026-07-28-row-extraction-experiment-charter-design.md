@@ -1592,7 +1592,9 @@ production integration is authorized.
 
 ## Approved amendment: merchant whole-atom ordering witness measurement
 
-**Disposition:** APPROVED — preparing the fixed two-case witness measurement.
+**Disposition:** COMPLETE — STOP. All 30 identity orders across two cases yield
+zero intact-atom witnesses; no case is unresolved. The hypothesis is falsified.
+See the [report](../../experiments/row-extraction-merchant-atom-order-witness-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the character-error
 report's recommendation to test intact-atom reorder witnesses.
