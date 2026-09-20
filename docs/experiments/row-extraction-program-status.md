@@ -15,21 +15,24 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** ACTIVE — execution approved end to end on 2026-09-20. The user
-requested removal of per-subtask approval gates and authorized proceeding with
-the current evaluation. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
+**Status:** AWAITING_HUMAN_REVIEW — execution remains approved end to end under
+`0ce4346`. The user authorized full-task execution and confirmed two independent
+human reviewers. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
 and [task-level policy](../../AGENTS.md#task-level-authorization-and-persistence).
 
-Two independent reviewers are available. Complete the smallest fixed-rule adapter,
-old-seed reproduction, six-document selection, blinded source packets, prediction
-generation, human review/adjudication, ownership audit and scoring. No additional
-approval is needed between these steps. Keep references and predictions separate.
+The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
+records old-seed reproduction, the frozen six-document selection, separate blank
+review packets and 114 frozen row proposals across three views. Each view has
+104 output owners; these are not reference counts or measured coverage. Each reviewer must independently
+complete all six page censuses and return their own saved answer JSON. Source
+packets include context from the same six documents; there are no suggested cases
+or predictions in them.
 
-Next action: prepare and verify the adapter and source-only review packets, then
-complete all work independent of human answers. Accuracy is NOT MEASURED until
-review and scoring finish. Await human answers as a dependency, then resume the
-same objective without another approval. Protected validation/held-out data and
-production integration remain outside scope.
+Accuracy is NOT MEASURED. Await both independent readings, adjudicate references
+without predictions, then complete reference eligibility checks, the ownership
+audit and fixed three-view scoring. Resume this same objective when answers arrive
+without another approval. Protected validation/held-out data and production
+integration remain outside scope.
 
 ## Latest measured extraction result
 
@@ -41,7 +44,7 @@ zero losses against four baselines, and unchanged 24/24 coverage. Digital is
 passed. The candidate and its inputs are preserved without further tuning.
 
 This reviewed training-seed result is not validation accuracy or private-corpus
-acceptance. The proposed new-document evaluation has not run.
+acceptance. The new-document evaluation is awaiting independent human references.
 
 ## Knowledge and history
 
