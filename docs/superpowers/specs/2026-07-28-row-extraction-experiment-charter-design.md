@@ -1658,7 +1658,6 @@ No extraction fix, new merchant predictions, models/OCR, label edits, broader
 selection, held-out access, reusable infrastructure or production integration
 is authorized.
 
-
 ## Approved amendment: merchant LTR glyph reconstruction candidate
 
 **Disposition:** COMPLETE — STOP. Exact matches remain 19/24 with zero gains and
@@ -1705,3 +1704,23 @@ witness counts and unresolved limits. Private glue and results stay in
 failure. No new source access, candidate, label edits, larger search, broader
 selection, held-out access, reusable infrastructure or production integration
 is authorized.
+
+## Approved amendment: merchant LTR block-ordering candidate
+
+**Disposition:** APPROVED — generation pending.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the completed
+corrected-block witness report's recommendation to test geometric LTR ordering.
+
+**Bounded extraction allowance:** Execute the
+[design](2026-09-20-merchant-ltr-block-order-design.md). Apply one predeclared
+source-only ordering rule to all 113 saved groups, preserving glyph correction
+and using the existing spacing rule for new adjacencies. Save all predictions
+before loading labels; reproduce 96 saved scores and score the 24 training
+references against both 19/24 baselines, including gains, losses and coverage.
+Keep private work in `artifacts/merchant-ltr-block-order-v1/`.
+
+**Stop boundary:** Stop after one generation/score or reproduction failure.
+No post-score tuning, second candidate, new source access, labels, OCR/models,
+broader selection, held-out access, reusable infrastructure or production
+integration is authorized.

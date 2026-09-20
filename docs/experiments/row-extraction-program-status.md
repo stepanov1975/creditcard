@@ -13,7 +13,25 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current phase: merchant corrected-block ordering witness measurement
+## Current phase: merchant LTR block-ordering candidate
+
+**Status:** `APPROVED — generation pending`. The user's “proceed” approves
+the completed corrected-block witness report's recommendation under the
+[design](../superpowers/specs/2026-09-20-merchant-ltr-block-order-design.md).
+
+Test one source-only horizontal-order rule for unambiguous digital LTR groups.
+Retain saved glyph correction, use the existing spacing rule for changed
+adjacencies and preserve fallback outputs. Apply the rule to all 113 saved
+groups and save predictions before loading labels. Reproduce 96 previous scores
+and compare all 24 reviewed cases with both saved 19/24 baselines.
+
+Commit authority first, then stop after one generation/score or reproduction
+failure. Private work stays in `artifacts/merchant-ltr-block-order-v1/`.
+No post-score tuning, second candidate or source access is active.
+
+Next extraction task: generate and score the fixed LTR block-order candidate.
+
+## Completed phase: merchant corrected-block ordering witness measurement
 
 **Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed LTR glyph candidate report's recommendation under the
@@ -31,10 +49,8 @@ agree. Thirteen focused tests and all 3,766 repository tests pass alongside Ruff
 and mypy. Sixteen saved inputs and the frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**: this is a whitespace-free, reference-guided
-diagnostic. The unexecuted recommendation is to test a source-only horizontal
-ordering candidate for unambiguously LTR blocks, preserving glyph correction,
-across all 113 saved groups and score all 24 reviewed cases. No candidate or
-follow-on phase is active.
+diagnostic. Its recommendation to test a source-only horizontal ordering
+candidate is separately approved above.
 
 Next extraction task: STOP.
 
