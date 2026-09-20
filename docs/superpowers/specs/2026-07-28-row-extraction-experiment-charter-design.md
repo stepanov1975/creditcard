@@ -1707,7 +1707,10 @@ is authorized.
 
 ## Approved amendment: merchant LTR block-ordering candidate
 
-**Disposition:** APPROVED — generation pending.
+**Disposition:** COMPLETE — STOP. No groups reorder; exact matches remain 19/24
+with zero gains/losses against both baselines and 24/24 coverage. The hypothesis
+is falsified. See the
+[report](../../experiments/row-extraction-merchant-ltr-block-order-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the completed
 corrected-block witness report's recommendation to test geometric LTR ordering.

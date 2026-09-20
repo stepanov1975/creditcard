@@ -1,6 +1,8 @@
 # Merchant LTR Block-Ordering Candidate
 
-**Status:** APPROVED — generation pending.
+**Status:** COMPLETE — STOP. No owner group is reordered; exact matches remain
+19/24 with zero gains or losses. The hypothesis is falsified. See the
+[report](../../experiments/row-extraction-merchant-ltr-block-order-report.md).
 
 The user's “proceed” approves the completed corrected-block witness report's
 recommendation to test source-only horizontal ordering while retaining glyph

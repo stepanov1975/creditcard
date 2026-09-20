@@ -15,21 +15,30 @@ derived financial value is recorded here.
 
 ## Current phase: merchant LTR block-ordering candidate
 
-**Status:** `APPROVED — generation pending`. The user's “proceed” approves
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved
 the completed corrected-block witness report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-ltr-block-order-design.md).
 
-Test one source-only horizontal-order rule for unambiguous digital LTR groups.
-Retain saved glyph correction, use the existing spacing rule for changed
-adjacencies and preserve fallback outputs. Apply the rule to all 113 saved
-groups and save predictions before loading labels. Reproduce 96 previous scores
-and compare all 24 reviewed cases with both saved 19/24 baselines.
+Authority was committed at `d27bf83` before implementation. The
+[report](row-extraction-merchant-ltr-block-order-report.md) records **19/24 to
+19/24 exact**, with zero gains/losses against both saved baselines and unchanged
+24/24 coverage. The hypothesis is falsified.
 
-Commit authority first, then stop after one generation/score or reproduction
-failure. Private work stays in `artifacts/merchant-ltr-block-order-v1/`.
-No post-score tuning, second candidate or source access is active.
+The candidate reorders zero of 113 owner groups. Seven groups fail the horizontal
+non-overlap guard; 34 eligible groups are already ordered. Other groups fail
+direction/source/count eligibility. Saved glyph correction and all 373 occurrences
+are retained. Predictions were saved before loading labels, without source access.
 
-Next extraction task: generate and score the fixed LTR block-order candidate.
+All 96 previous scores reproduce. Independent replay agrees on 113 decisions,
+113 outputs, 120 scores and all three source slices. Thirteen focused tests and
+all 3,766 repository tests pass alongside Ruff and mypy. Protected saved inputs
+and the frozen checkout remain unchanged.
+
+The unexecuted recommendation is to quantify block-box overlap in the seven
+rejected groups before considering any relaxed ordering rule. No post-score
+tuning, second candidate or follow-on phase is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant corrected-block ordering witness measurement
 
