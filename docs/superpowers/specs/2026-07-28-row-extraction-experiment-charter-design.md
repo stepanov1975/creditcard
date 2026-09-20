@@ -1661,7 +1661,10 @@ is authorized.
 
 ## Approved amendment: merchant LTR glyph reconstruction candidate
 
-**Disposition:** APPROVED — preparing one fixed experimental candidate.
+**Disposition:** COMPLETE — STOP. Exact matches remain 19/24 with zero gains and
+zero losses. Two reviewed outputs change without becoming exact; the hypothesis
+is falsified. See the
+[report](../../experiments/row-extraction-merchant-ltr-glyph-candidate-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the source-order trace
 report's recommendation to test guarded LTR glyph reconstruction.

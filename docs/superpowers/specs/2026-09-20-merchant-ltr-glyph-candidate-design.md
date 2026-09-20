@@ -1,6 +1,8 @@
 # Merchant LTR Glyph Reconstruction Candidate
 
-**Status:** APPROVED — preparing one fixed experimental candidate.
+**Status:** COMPLETE — STOP. Exact matches remain 19/24 with zero gains/losses;
+two reviewed outputs change but remain mismatches. The hypothesis is falsified.
+See the [report](../../experiments/row-extraction-merchant-ltr-glyph-candidate-report.md).
 
 The user's “proceed” approves the source-order trace report's recommendation to
 test a guarded LTR reconstruction candidate on the reviewed 24-case training seed.

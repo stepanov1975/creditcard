@@ -15,16 +15,31 @@ derived financial value is recorded here.
 
 ## Current phase: merchant LTR glyph reconstruction candidate
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 source-order trace report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-ltr-glyph-candidate-design.md).
 
-Generate one guarded LTR reconstruction candidate from glyph positions for all
-113 saved owner outputs, preserving ownership, atom order and spacing. Extract
-only the four digital pages of the existing seed. Save predictions before reading
-labels, then compare all 24 reviewed cases with the 19/24 punctuation baseline.
+Authority was committed at `d27f0dc` before generation. The
+[report](row-extraction-merchant-ltr-glyph-candidate-report.md) records **19/24
+to 19/24 exact, zero gains and zero losses**, with unchanged 24/24 coverage.
+Two reviewed outputs change but remain other mismatches. Digital stays 13/16;
+OCR stays 6/8. The predeclared hypothesis is falsified.
 
-Next extraction task: generate and score the single fixed LTR glyph candidate.
+The candidate reconstructs all 113 saved owner outputs and changes 19 of 373
+selected atom occurrences across seven owners. Four digital source pages were
+extracted. Generation read no reference labels and saved predictions before
+scoring. Ownership, atom order and separator decisions remain fixed.
+
+Independent checks agree on all 373 decisions, 113 outputs and 96 scores.
+Fourteen focused tests and all 3,766 repository tests pass alongside Ruff and
+mypy. Eighteen combined inputs and the frozen checkout remain unchanged.
+
+The punctuation-spacing baseline remains the current best measured view. The
+unexecuted recommendation is to test intact corrected-block ordering witnesses
+for the two changed reviewed cases while preserving this glyph reconstruction.
+No post-score tuning, second candidate or follow-on phase is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant source-order trace
 
@@ -48,8 +63,8 @@ All prior results reproduce. Independent checks agree on 18 boundary comparisons
 repository tests pass alongside Ruff and mypy. Seventeen protected inputs and
 the frozen checkout remain unchanged.
 
-Accuracy remains **19/24 exact**. This diagnosis is complete; its separately
-approved LTR glyph candidate is the sole active phase above.
+Accuracy remains **19/24 exact**. This diagnosis and its separately approved
+LTR glyph candidate above are complete.
 
 ## Completed phase: merchant within-atom directional signatures
 
