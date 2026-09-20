@@ -1611,3 +1611,23 @@ scripts/results stay in `artifacts/merchant-atom-order-witness-v1/`.
 failure. No larger search, second diagnostic, candidate, new source access,
 extraction/OCR/models, label changes, review, broader selection, held-out access,
 reusable infrastructure or production integration is authorized.
+
+
+## Approved amendment: merchant within-atom directional signatures
+
+**Disposition:** APPROVED — preparing the fixed two-case measurement.
+
+**Approval date:** 2026-09-20. The user's “proceed” approves the whole-atom witness
+report's recommendation to examine character ordering inside the selected atoms.
+
+**Bounded extraction-error allowance:** Execute the
+[design](2026-09-20-merchant-atom-direction-design.md). Reproduce previous scores,
+classifications and witness results. Measure forward/reversed reference substring
+counts and Unicode direction profiles for the same seven atom occurrences in two
+cases. Retain declared unresolved cases and publish aggregates. Private scripts
+and results stay in `artifacts/merchant-atom-direction-v1/`.
+
+**Stop boundary:** Stop after this measurement or reproduction failure. No
+transformed merchant assembly, candidate scoring, new source access,
+extraction/OCR/models, label changes, broader selection, held-out access,
+reusable infrastructure or production integration is authorized.
