@@ -15,16 +15,29 @@ derived financial value is recorded here.
 
 ## Current phase: merchant within-atom directional signatures
 
-**Status:** `APPROVED — PREPARING`. The user's “proceed” approves the completed
+**Status:** `COMPLETE — STOP`. The user's “proceed” approved the completed
 whole-atom witness report's recommendation under the
 [design](../superpowers/specs/2026-09-20-merchant-atom-direction-design.md).
 
-Measure forward/reversed reference containment and Unicode direction profiles
-for the seven selected atoms in the same two cases. Reproduce prior results;
-retain unresolved normalization, mark and control cases. No corrected prediction
-or broader selection is active.
+Authority was committed at `c6b5cb5` before measurement. The
+[report](row-extraction-merchant-atom-direction-report.md) records **three
+reverse-only atoms across both cases and four palindromic atoms**. All seven
+have only LTR strong characters; none has mixed directions or an unresolved
+reversal query. The predeclared hypothesis is supported.
 
-Next extraction task: quantify the fixed within-atom directional signatures.
+All 72 saved scores, three prior classifications and two prior witness results
+reproduce. Independent substring counting and Unicode profiling agree on seven
+signatures and all aggregate fields. Thirteen focused tests and all 3,766
+repository tests pass alongside Ruff and mypy. Fifteen saved inputs and the
+frozen checkout remain unchanged.
+
+Accuracy remains **19/24 exact**. Substring containment does not establish a
+complete merchant correction or a general reversal rule. The unexecuted
+recommendation is a focused source-order trace to measure where the three
+reverse-only LTR atoms acquire their order in the deterministic extractor.
+No follow-on phase, new source access or candidate is active.
+
+Next extraction task: STOP.
 
 ## Completed phase: merchant whole-atom ordering witness measurement
 
@@ -44,8 +57,8 @@ Thirteen focused tests and all 3,766 repository tests pass alongside Ruff and
 mypy. Fourteen saved inputs and the frozen checkout remain unchanged.
 
 Accuracy remains **19/24 exact**. No new predictions, labels or source access
-occurred. This measurement is complete. Its separately approved within-atom
-directional-signature measurement is the sole active phase above.
+occurred. This measurement and its separately approved within-atom
+directional-signature measurement above are complete.
 
 ## Completed phase: remaining digital merchant character-error measurement
 

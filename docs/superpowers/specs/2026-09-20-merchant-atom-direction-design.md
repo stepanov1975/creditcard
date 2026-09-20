@@ -1,6 +1,8 @@
 # Merchant Within-Atom Directional Signatures
 
-**Status:** APPROVED — preparing the fixed two-case measurement.
+**Status:** COMPLETE — STOP. Three reverse-only LTR atoms occur across both
+cases, supporting the hypothesis. Four other atoms are palindromic; none is
+unresolved. See the [report](../../experiments/row-extraction-merchant-atom-direction-report.md).
 
 The user's “proceed” approves the whole-atom witness report's recommendation to
 examine character ordering inside the selected atoms before proposing a correction.

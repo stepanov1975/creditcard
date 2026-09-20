@@ -1615,7 +1615,9 @@ reusable infrastructure or production integration is authorized.
 
 ## Approved amendment: merchant within-atom directional signatures
 
-**Disposition:** APPROVED — preparing the fixed two-case measurement.
+**Disposition:** COMPLETE — STOP. Three reverse-only LTR atoms occur across both
+cases; four others are palindromic and none is unresolved. The hypothesis is
+supported. See the [report](../../experiments/row-extraction-merchant-atom-direction-report.md).
 
 **Approval date:** 2026-09-20. The user's “proceed” approves the whole-atom witness
 report's recommendation to examine character ordering inside the selected atoms.
