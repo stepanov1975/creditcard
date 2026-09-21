@@ -15,23 +15,33 @@ derived financial value is recorded here.
 
 ## Current objective: fresh-sample continuation evaluation
 
-**Status:** AWAITING_HUMAN_REVIEW — the
+**Status:** AWAITING_HUMAN_REVIEW for output ownership only. All **16 references
+and six page censuses are human-confirmed**, without edits. The
 [fresh-sample report](row-extraction-continuation-fresh-sample-report.md) records
-six frozen training documents outside all 12 earlier merchant selections. Four
-selected pages have no suggested transaction starts; two have **16 AI-drafted
-billed merchant fields** in total. Both frozen parsers completed all six documents
-(**12 saved outputs**), but no comparison or scoring has been performed.
+**16/16 unique transaction matches but 0/16 exact complete merchant fields in both
+versions**. All output strings are identical: zero gains/losses, no omissions,
+ties, collisions or unassigned emissions. The four empty pages stay empty.
 
-The local `artifacts/merchant-continuation-fresh-v1/merchant-continuation-fresh-review.zip`
-contains the prefilled worksheet and source evidence. Next dependency:
-`merchant-continuation-fresh-human-field-v1-answers.json`, with corrections and all
-six censuses confirmed, including the four suggested empty pages. Then freeze the
-references and finish alignment, ownership review and paired scoring in this task.
+AI source review finds **16 separate outside-field indicators and six omitted
+merchant continuations**, with no observed wrong-transaction borrowing. All six
+omissions coincide with subordinate-detail diagnostics; that path is excluded
+from description extraction. The next development priority is geometric field
+boundaries and merchant cells within mixed merchant/detail rows, using synthetic
+inputs and a separate evaluation—not tuning these scored pages.
 
-Accuracy and delta are **NOT MEASURED**. The sampled OCR-backed page has no
-transaction starts on AI review, so the planned two-mode conclusion is
-**INCONCLUSIVE** regardless of any eventual digital gain. No page was replaced;
-validation/test partitions and the earlier 89-case evaluation remain untouched.
+The local `artifacts/merchant-continuation-fresh-v1/evaluation/` directory contains
+comparison CSV/JSON, AI findings and `merchant-continuation-results-review.zip`.
+Next dependency for formal ownership counts:
+`merchant-continuation-fresh-ownership-answers.json`, covering the two pages with
+transactions. Reference transcription and all six censuses are complete; do not
+request them again. The packet prefills AI judgments and labels full transaction
+context separately from merchant evidence.
+
+Text accuracy is **0/16** for each version. Formal human-ownership-verified accuracy
+is **NOT MEASURED**, with an exact numerator bounded above by zero; ownership review
+cannot create a text gain. The two-mode hypothesis remains **INCONCLUSIVE** because
+no OCR transaction references were sampled. No parser was rerun or tuned; frozen
+references, predictions and the earlier 89-case evaluation remain unchanged.
 
 ## Completed implementation: complete merchant-field continuations
 

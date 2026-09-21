@@ -87,10 +87,11 @@ reviewed does not mean independently certified gold. None of these results is
 validation accuracy, a population estimate or private-corpus acceptance.
 
 The [fresh continuation evaluation](../experiments/row-extraction-continuation-fresh-sample-report.md)
-has 16 AI-drafted billed fields across two of six selected pages; four pages are
-suggested empty. Both parser versions ran, but references await human confirmation
-and accuracy is not measured. The OCR-backed selected page has no transaction
-starts, preventing a two-mode conclusion without changing the frozen sample.
+now has 16 human-confirmed fields and six confirmed censuses. Both parsers match
+all 16 transactions but have **0/16 exact merchant fields**, with identical outputs
+and zero gain. AI review finds 16 outside-field indicators and six lost continuations
+routed as subordinate detail. Ownership confirmation remains pending; no OCR
+transaction references were sampled, so the two-mode hypothesis is inconclusive.
 
 ## What the error studies taught us
 

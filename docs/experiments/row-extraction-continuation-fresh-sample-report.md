@@ -1,6 +1,6 @@
 # Fresh-sample continuation evaluation
 
-Status: AWAITING_HUMAN_REVIEW. Authorized by the user's instruction to proceed on 2026-09-21.
+Status: AWAITING_HUMAN_REVIEW for output ownership only; references and text comparison complete. Authorized by the user's instruction to proceed on 2026-09-21.
 
 ```text
 Scope answer: YES — measure complete merchant-field extraction and transaction discovery after the continuation fix
@@ -160,3 +160,70 @@ production merge is claimed.
 Repository Ruff format/lint, mypy and all **3,802 tests** pass (101.01 seconds).
 All changed documentation links resolve; detailed source/reference/output files
 remain ignored and local.
+
+## Returned human references and fixed comparison
+
+The user confirmed **all 16 records and all six page censuses**, without changing
+text, geometry, status or membership. Original answer bytes were frozen privately
+before comparison. All references are billed, present and clear: **N = P = 16,
+A = U = 0**. The four empty censuses are confirmed. This remains an AI-assisted,
+single-human-reviewed pilot; the draft exporter tier label does not override the
+explicit confirmations. No accepted gold was changed.
+
+| Measurement on selected pages | Baseline | Candidate |
+| --- | ---: | ---: |
+| Unique geometric matches and nonempty merchant outputs | 16/16 | 16/16 |
+| Complete merchant text exact | 0/16 | 0/16 |
+| Discovery/output omissions | 0 | 0 |
+| Ties, collisions, multiple outputs | 0 | 0 |
+| Unassigned transaction outputs | 0 | 0 |
+| Text exact on the 11-start / five-start documents | 0/11; 0/5 | 0/11; 0/5 |
+
+All **16 output strings are identical** between versions: **zero gains, zero losses
+and zero net change**. Empty selected pages have no emitted transactions. Both
+versions report all six complete documents financially reconciled, which does not
+establish merchant-field correctness. The candidate shows no text-match improvement
+on this sample. The predeclared two-mode hypothesis remains **INCONCLUSIVE** because
+no OCR transaction references were sampled; no replacement page was selected.
+
+AI visual review of all 16 common outputs against the two full source pages and
+enlarged merchant crops finds **16 outside-field indicators on the same transaction**.
+**Six also omit an owned merchant continuation**, while ten retain that line. No
+wrong-transaction borrowing was observed. These are AI ownership judgments pending
+human correction/confirmation, not independent or human-certified audit results.
+The extra indicators occupy a separate narrow position beside the date, outside
+the human-confirmed field. Codes, prefixes, URLs and location words inside the field
+remain required merchant text; do not infer a shorter business name.
+
+All six missing-continuation cases have saved
+`merged_subordinate_detail_continuation` diagnostics in both versions. The frozen
+description extractor excludes rows tagged as subordinate detail. This identifies
+an ownership path the synthetic continuation fix did not address: merchant content
+within a detail row/block. Future development should test per-cell field boundaries
+and merchant preservation in mixed merchant/detail rows on synthetic inputs, then
+use a separate frozen evaluation. No post-score parser change or rerun occurred.
+
+The ignored `evaluation/` directory now contains `human-answers.json`,
+`reference-freeze.json`, `case-results.csv`/`.json`, `summary.json`, `RESULTS.md`,
+`ai-findings.csv`/`.json`, and `merchant-continuation-results-review.zip`. The packet
+locks reference text and assignment, hides method labels, and prefills every AI
+judgment and explanation. Gray boxes are full transaction evidence (including dates
+and amounts), **not selected merchant atoms**: saved public results do not expose
+per-field atom claims. The source image, locked reference and common output allow
+review of attribution without misrepresenting those context boxes.
+
+The remaining formal ownership dependency is
+`merchant-continuation-fresh-ownership-answers.json`, confirming or correcting the
+16 judgments on the two transaction-bearing pages. Do not ask for field transcription
+or empty-page censuses again. Formal human-ownership-verified accuracy remains
+**NOT MEASURED**; its exact numerator cannot exceed zero because all text comparisons
+already fail. The pending ownership labels cannot restore a gain on these outputs.
+
+Six metric checks and nine ownership worksheet checks pass. Independent native-page
+coordinate matching and separate NFC/whitespace arithmetic reproduce all 32 matches
+and text comparisons, with no unassigned outputs. All six detail-diagnostic links
+were checked separately. Reference/output pins, source trees and CSV/JSON agreement
+pass. The six evaluation Python files pass Ruff and strict mypy; the ZIP is intact.
+Worksheet checks compile scripts and exercise the model; a graphical browser was
+not available. Repository format/lint, mypy and **3,802 tests** pass (104.37 seconds).
+No private-corpus verification or production integration was performed.
