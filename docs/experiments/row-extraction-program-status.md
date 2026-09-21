@@ -15,26 +15,30 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** AWAITING_HUMAN_REVIEW — corrected packet v2 is ready under the user's
-2026-09-21 merchant-field clarification, committed as `bd4910d`. Every printed
-character in the merchant position belongs to the field, including codes and
-owned continuation text. See the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
-and [domain definition](../../CONTEXT.md).
+**Status:** AWAITING_HUMAN_REVIEW — merchant references are now frozen from the
+user's returned v2 answers: all **89 entries and all six page censuses confirmed**,
+with no value, region or membership edits. This is an AI-assisted,
+single-human-reviewed pilot; N = P = 89 and A = U = 0.
 
 The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
-records 89 unconfirmed entries, all with printed field text. Twenty-nine values
-were corrected from the earlier semantic-trimming draft. Nine flags remain for
-transcription or reading order, not business-name/reference-code separation.
-The v2 worksheet, JSON and CSV are in ignored
-`artifacts/merchant-document-disjoint-v1/merchant-field-review/`; the old packet
-is preserved as superseded history. Use `merchant-review-prefilled-v2.zip`.
+records **49/89 text-exact matches in each frozen view**, zero gains/losses and
+identical outputs on every reference case. Geometry aligns 85 references; four
+have no qualifying row overlap. All aligned cases have unique output. Nineteen
+saved output owners remain unassigned. Digital text equality is 39/73; OCR is
+10/16. These results do not measure the later production parser fix.
 
-Next dependency: corrected v2 answers and six confirmed page censuses. Then
-freeze references and complete ownership review and paired scoring. Accuracy is
-NOT MEASURED. Earlier scores retain their historical reference definition and
-are not measurements of this corrected complete-field contract. No parser
-implementation, frozen prediction, validation/held-out input or accepted gold
-was changed by this reference correction.
+Ownership review remains: 62 assigned cases have selected evidence inside the
+reviewed field regions, and 23 have outside-region evidence flagged for inspection.
+The ignored `artifacts/merchant-document-disjoint-v1/evaluation/` directory contains
+complete CSV/JSON results and `merchant-ownership-review.zip`, with locked references,
+anonymous common output and source overlays. Every audit confirmation remains false.
+
+Next dependency: `merchant-ownership-audit-v1-answers.json`, confirming ownership
+judgments and all six pages. Then finish verified scoring and the fixed eligibility
+decision. Ownership-verified accuracy is **NOT MEASURED** and the hypothesis remains
+**INCONCLUSIVE** pending that audit. Human field-transcription review is complete;
+do not request it again. Frozen predictions, source membership and accepted gold
+remain unchanged; no validation or held-out inputs were opened.
 
 The user's subsequent 2026-09-21 production-fix request corrects merchant trimming
 in `normalization_description.py`: preserve all field text and owned continuations,
@@ -43,9 +47,9 @@ uses synthetic regressions and does not alter frozen predictions or accepted gol
 The correction passes 340 focused tests, all 3,766 repository tests, Ruff
 format/lint and mypy. See [current parser behavior](../knowledge/architecture.md).
 The private-corpus gate was not run; new-sample accuracy remains unmeasured.
-Human review is still the evaluation dependency.
+Prediction-evidence ownership review is still the evaluation dependency.
 
-## Latest measured extraction result
+## Earlier completed seed result
 
 The [unchanged-order spacing candidate](row-extraction-merchant-unchanged-order-spacing-report.md),
 reported at `2cefcb2`, remains **21/24 exact**, up from 19/24 with two gains and
@@ -55,7 +59,7 @@ zero losses against four baselines, and unchanged 24/24 coverage. Digital is
 passed. The candidate and its inputs are preserved without further tuning.
 
 This reviewed training-seed result is not validation accuracy or private-corpus
-acceptance. The new-document evaluation is awaiting independent human references.
+acceptance. The new-document evaluation has human-confirmed references and awaits ownership review.
 
 ## Knowledge and history
 

@@ -2,9 +2,11 @@
 
 **Updated:** 2026-09-21
 
-**Status:** AWAITING_HUMAN_REVIEW — the user requested AI-prefilled source readings
-followed by their own corrections. The prefilled result files are ready. Accuracy
-and paired improvement are **NOT MEASURED** until human review and scoring finish.
+**Status:** AWAITING_HUMAN_REVIEW — reference review is complete; the remaining
+step is prediction-evidence ownership review. All three frozen views match
+**49/89 reference strings**, with zero paired gains/losses and identical output
+strings on every reference case. Ownership-verified accuracy remains **NOT MEASURED**;
+the full eligibility decision is **INCONCLUSIVE** pending the required audit.
 
 ## Fixed experiment
 
@@ -49,7 +51,7 @@ These are generated-output counts, **not reference transaction counts or coverag
 No human references were read. Saved proposals, common owners, atom order and all
 three renderings reproduce from saved evidence; private output hashes are intact.
 
-## Corrected merchant-field review — 2026-09-21
+## Corrected merchant-field review — preparation history, 2026-09-21
 
 The user clarified that the task extracts **all printed text in the merchant
 position**, not a true business name separated from reference codes. Authority
@@ -95,7 +97,83 @@ This remains an AI-assisted, single-human-reviewed pilot under amendment
 page, including omissions, before reference freezing, ownership audit and scoring.
 No production parser changes or integration are part of this correction.
 
-## Verification and continuation
+## Returned human references and fixed text comparison
+
+The user returned the v2 answer JSON with all **89 entries and six page censuses
+explicitly confirmed**. No merchant values, source regions, ownership labels or
+case membership changed from the v2 draft. All references are present and marked
+billed, with clear reference ownership: **N = P = 89, A = U = 0**. The nine AI
+attention notes remain provenance, not unresolved human reference statuses.
+
+The worksheet exporter left its old pending-review tier label unchanged. The
+original attachment bytes are preserved; a separate freeze record captures the
+explicit confirmations and the **AI-assisted, single-human-reviewed** tier. This
+is not independent certification or accepted-gold promotion. The reference bytes
+and denominator were frozen before prediction comparison. All nine frozen
+prediction-file hashes remain unchanged; no extractor was rerun or tuned.
+
+The original geometry-only matcher assigns **85/89** references uniquely. Four
+have no qualifying row overlap; there are no ties or duplicate-assignment
+collisions. All 85 assigned cases have one nonempty output in every view. Among
+104 saved output owners, **19 remain unassigned**; 29 of 114 discovered rows are
+unassigned. Unassigned output owners are reported separately, not automatically
+classified as false positives.
+
+| Document alias | Observed evidence | Reference starts | Text exact, each view |
+| --- | --- | ---: | ---: |
+| p01 | OCR | 7 | 6 |
+| p02 | OCR | 9 | 4 |
+| p03 | Digital | 11 | 0 |
+| p04 | Digital | 12 | 0 |
+| p05 | Digital | 27 | 22 |
+| p06 | Digital | 23 | 17 |
+| **All six** | | **89** | **49** |
+
+Digital text equality is **39/73** and OCR **10/16**. Overall text equality is
+**49/89 (55.06%)**, with all four unmatched references retained in the denominator.
+There are 36 aligned text mismatches. Against both comparators the candidate has
+**0 gains, 0 losses and 0 net text-exact change**, including zero changed output
+strings on all 89 reference cases. There are no document-level text gains/losses
+and no coverage differences. The frozen spacing transformation adds no text gain
+on this pilot; these are not measurements of production fix `be8bbe7`.
+
+The source-evidence precheck finds 62 assigned cases whose selected atoms lie
+inside the reviewed merchant regions and 23 with selected evidence outside those
+regions. There are 238 strongly supported selected atoms and 23 outside atoms;
+no boundary-only atoms. These geometry checks are review suggestions, not verified
+ownership judgments. No case has been marked human-audited automatically.
+
+Private outputs under `artifacts/merchant-document-disjoint-v1/evaluation/`:
+
+- `human-answers.json` and `reference-freeze.json`: original uploaded answers and
+  frozen-reference metadata;
+- `alignment.json`, `case-results.json`, `case-results.csv` and
+  `text-comparison-summary.json`: the common assignment, complete comparison and
+  aggregate counts;
+- `ownership-review.html` and `merchant-ownership-review.zip`: source images with
+  locked references, anonymous common output and selected-evidence overlays.
+
+The ownership worksheet includes all 89 references, prioritizes the 23 geometric
+flags visually, and leaves every confirmation false. Four unmatched cases have
+no ownership decision and remain omissions. Correct or accept the suggestions
+only after inspecting the evidence, confirm each page and return
+`merchant-ownership-audit-v1-answers.json`. Per the committed design, reviewers
+must inspect selected evidence with method names hidden and reference text locked.
+The existing field-transcription review did not display that prediction evidence.
+
+An independent calculation in native page coordinates reproduces all 89 geometry
+assignments, while a separate arithmetic check reproduces all 267 text comparisons
+and zero paired changes. Six synthetic checks cover normalization, ties/collisions,
+missed-row denominators, absent/ambiguous fields, ownership failures and multiple or
+empty outputs. Eight worksheet checks cover explicit confirmation, edits, pin
+mismatches, duplicate/incomplete answers, uncertainty, missing outputs and locked
+anonymous packet data. Private Python scripts pass Ruff and strict mypy. A graphical
+browser remains unavailable; worksheet checks use Node and script compilation.
+Repository formatting, lint, mypy and all **3,766 tests** pass (100.40 seconds).
+Only aggregate documentation is tracked; answers, source evidence and results
+remain local and ignored. This is not private-corpus acceptance.
+
+## Earlier preparation verification
 
 V2 passed ZIP integrity checks; worksheet state, JSON and CSV agree on all 89
 entries, including multiline values. All confirmations remain false. The 29
@@ -125,7 +203,7 @@ This separately authorized code correction does not change the frozen experiment
 predictions or references. The fixed experiment must expose any omissions against
 the corrected human-reviewed fields; it must not tune away failures before scoring.
 
-The next dependency is the user's corrected v2 answer JSON and six confirmed page
-censuses. Continue reference freezing, ownership review and fixed three-view
-scoring when they arrive, without another approval. Production integration and
-private-corpus acceptance remain outside this evaluation.
+The next dependency is the completed ownership-audit answer JSON. Resume the same
+fixed comparison when it arrives, without another approval. Reference review is
+complete; do not request it again or change frozen references after seeing scores.
+Production integration and private-corpus acceptance remain outside this evaluation.

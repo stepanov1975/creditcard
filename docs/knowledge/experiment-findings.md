@@ -77,8 +77,10 @@ ordering witnesses are diagnostics, not official exact matches.
 | [Reference v2](../experiments/row-extraction-merchant-reference-v2-report.md) | Same outputs: 13 to 17/24; no alignment changes | Four gains are corrected reference text, not better extraction. |
 | [Reference v3](../experiments/row-extraction-merchant-reference-v3-report.md) | Same outputs: 17/24; no assignment changes | All cases now have second readings/resolution by the same reviewer: 14 agreeing repeats, ten adjudications. |
 | [Geometry spacing](../experiments/row-extraction-merchant-spacing-report.md) | 17/24 unchanged | Changed outputs did not yield an exact-match gain. |
-| [Punctuation spacing](../experiments/row-extraction-merchant-punctuation-spacing-report.md) | 17 to 19/24; two gains, no losses; coverage 24/24 | Best measured merchant view: 13/16 digital, 6/8 OCR. |
+| [Punctuation spacing](../experiments/row-extraction-merchant-punctuation-spacing-report.md) | 17 to 19/24; two gains, no losses; coverage 24/24 | At this stage: 13/16 digital, 6/8 OCR. |
 | [LTR glyph reconstruction](../experiments/row-extraction-merchant-ltr-glyph-candidate-report.md), [block ordering](../experiments/row-extraction-merchant-ltr-block-order-report.md), [tolerance](../experiments/row-extraction-merchant-ltr-tolerance-report.md) | Each remains 19/24 | No measured exact-match gain from these candidates. |
+| [Unchanged-order spacing](../experiments/row-extraction-merchant-unchanged-order-spacing-report.md) | 19 to 21/24, two gains, no losses; coverage 24/24 | Completed seed result under the earlier reference definition. |
+| [Document-disjoint complete-field pilot](../experiments/row-extraction-merchant-document-disjoint-evaluation-report.md) | All three frozen views have identical strings and 49/89 text matches; 85/89 aligned | Six human-confirmed training-page censuses. No text gain; ownership audit pending. This does not measure the later production parser fix. |
 
 The seed is small, repeatedly inspected training data from one reviewer. Fully
 reviewed does not mean independently certified gold. None of these results is
