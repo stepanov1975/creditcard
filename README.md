@@ -37,7 +37,7 @@ python3.13 -m venv .venv
 ```
 
 See [`SUPPORT.md`](SUPPORT.md) for the stable compatibility contract and
-[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) for the v0.1.0 release
+[`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) for the v0.2.0 release
 notes.
 
 ## Parse statements

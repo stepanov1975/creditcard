@@ -1,8 +1,8 @@
 # Support policy
 
-## Supported in v0.1.x
+## Supported in v0.1.x and v0.2.x
 
-`ccparser` v0.1.x supports local Linux execution with Python 3.13 and
+`ccparser` v0.1.x and v0.2.x support local Linux execution with Python 3.13 and
 Tesseract Hebrew and English data. Its bounded domain is Hebrew and mixed
 right-to-left credit-card statements.
 
@@ -21,9 +21,13 @@ unsupported.
 
 ## Versioning
 
-`0.1.x` preserves supported CLI/output contracts. `0.2.0` is reserved for
-additive capabilities or intentional contract revisions. Published tags are
-immutable; corrections receive a new patch version.
+Patch releases preserve the supported CLI/output contracts of their minor version.
+`0.2.0` adds a nullable JSON `merchant` field and a trailing CSV `merchant` column.
+The merchant is the complete printed field, including owned continuation text,
+not a cleaned business name. Existing JSON keys and CSV columns remain available;
+merchant/description text can differ from v0.1.0 because field ownership was corrected.
+Further additive capabilities or intentional contract revisions receive a new minor
+version. Published tags are immutable; corrections receive a new patch version.
 
 ## Reporting defects
 
