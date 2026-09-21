@@ -15,13 +15,23 @@ derived financial value is recorded here.
 
 ## Current objective: fresh-sample continuation evaluation
 
-**Status:** IN_PROGRESS — the user approved measuring the completed fix on a
-fresh reviewed sample. The [frozen plan](row-extraction-continuation-fresh-sample-report.md)
-compares candidate `f6e3e0a` with `aa19181` on one OCR-backed and five digital-only
-training documents outside previous merchant selections. Freeze selection before
-source inspection, prepare AI reference drafts for human corrections, then finish
-the paired comparison after reference and ownership review. No predictions or
-sample difficulty may influence references, selection or code.
+**Status:** AWAITING_HUMAN_REVIEW — the
+[fresh-sample report](row-extraction-continuation-fresh-sample-report.md) records
+six frozen training documents outside all 12 earlier merchant selections. Four
+selected pages have no suggested transaction starts; two have **16 AI-drafted
+billed merchant fields** in total. Both frozen parsers completed all six documents
+(**12 saved outputs**), but no comparison or scoring has been performed.
+
+The local `artifacts/merchant-continuation-fresh-v1/merchant-continuation-fresh-review.zip`
+contains the prefilled worksheet and source evidence. Next dependency:
+`merchant-continuation-fresh-human-field-v1-answers.json`, with corrections and all
+six censuses confirmed, including the four suggested empty pages. Then freeze the
+references and finish alignment, ownership review and paired scoring in this task.
+
+Accuracy and delta are **NOT MEASURED**. The sampled OCR-backed page has no
+transaction starts on AI review, so the planned two-mode conclusion is
+**INCONCLUSIVE** regardless of any eventual digital gain. No page was replaced;
+validation/test partitions and the earlier 89-case evaluation remain untouched.
 
 ## Completed implementation: complete merchant-field continuations
 

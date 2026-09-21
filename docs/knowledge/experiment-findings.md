@@ -86,6 +86,12 @@ The seed is small, repeatedly inspected training data from one reviewer. Fully
 reviewed does not mean independently certified gold. None of these results is
 validation accuracy, a population estimate or private-corpus acceptance.
 
+The [fresh continuation evaluation](../experiments/row-extraction-continuation-fresh-sample-report.md)
+has 16 AI-drafted billed fields across two of six selected pages; four pages are
+suggested empty. Both parser versions ran, but references await human confirmation
+and accuracy is not measured. The OCR-backed selected page has no transaction
+starts, preventing a two-mode conclusion without changing the frozen sample.
+
 ## What the error studies taught us
 
 - **Test continuation loss through discovery as well as normalization.** The

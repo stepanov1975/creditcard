@@ -1,6 +1,6 @@
 # Fresh-sample continuation evaluation
 
-Status: IN_PROGRESS. Authorized by the user's instruction to proceed on 2026-09-21.
+Status: AWAITING_HUMAN_REVIEW. Authorized by the user's instruction to proceed on 2026-09-21.
 
 ```text
 Scope answer: YES — measure complete merchant-field extraction and transaction discovery after the continuation fix
@@ -95,3 +95,68 @@ integrity. Run all repository gates before the result commit. Keep document text
 identities, financial data and detailed results in ignored local files only.
 Resume scoring under this same objective when human answers arrive; no further
 subtask approval is required.
+
+## Preparation and source-review result
+
+The committed rules selected six further documents from 78 training documents.
+All 12 documents exposed in earlier merchant selections were excluded, leaving
+one eligible OCR-backed and 65 digital-only documents. Nine prior selection files
+were checked. The selected one OCR/five digital documents all passed byte-identity
+checks. Selection and both source trees were frozen before rendering; no selected
+page was replaced.
+
+The assistant visually reviewed all six selected pages and a same-document context
+page for billing/continuation scope. **Four pages have no transaction starts**:
+notices, advertising or a fee-invoice summary rather than individual transactions.
+The other two have **11 and five billed starts**, respectively. The AI draft thus
+contains **16 present-field suggestions**, all with digital text and owned second
+lines, and one attention note about an abbreviated printed ending. All 16 readings
+were checked against enlarged source images and native PDF text after visual
+inspection. These counts are suggestions, not a confirmed denominator.
+
+The selected OCR-backed page has no suggested transaction starts. Therefore the
+planned two-mode eligibility is **INCONCLUSIVE** on current source review, even if
+the eventual digital comparison improves. Preserve that limitation; do not choose
+a replacement page or infer an OCR result from the document stratum.
+
+Both pinned parser versions completed all six full-document runs: **12 outputs**
+are saved privately, with separate initially empty OCR caches and unchanged source
+trees. Generation read source PDFs only, never draft references. No paired text
+comparison or scoring has been performed. Outputs are kept outside the review
+packet. Merchant accuracy and metric delta remain **NOT MEASURED**.
+
+Private files under `artifacts/merchant-continuation-fresh-v1/`:
+
+- `selection.json`, `freeze.json` and `versions/`: fixed sample and source trees;
+- `reference-draft.json`, its hash and `merchant-review.csv`: preserved AI readings;
+- `review-assets/review.html` and `merchant-continuation-fresh-review.zip`: editable
+  source-only worksheet, six source PDFs, 14 page images and review instructions;
+- `predictions/`: complete baseline/candidate outputs and their hash manifests;
+- `selection-summary.json`, `packet-summary.json` and `verification-summary.json`:
+  preparation counts and checks, with no claimed extraction accuracy.
+
+The worksheet prefills merchant text, source regions, notes and billed section.
+Every case and all six page censuses remain unconfirmed. The four suggested empty
+pages also need explicit census confirmation. Correct readings or add/remove
+starts as needed, then return
+`merchant-continuation-fresh-human-field-v1-answers.json`. This is the real remaining
+human dependency required by the repository reference policy and the plan above.
+Resume this same evaluation after return; no new subtask approval is needed.
+
+## Preparation verification
+
+Two selection checks pass. Seven JavaScript checks cover pending confirmations,
+explicit page acceptance, invalid suggestions, corrections/download, adding missing
+starts and rejection of answers from the previous experiment. The local worksheet
+runs in a DOM test harness; no graphical browser check was available.
+
+All 16 CSV/JSON readings agree, all confirmations are false, all source and output
+hashes validate, and both pinned source trees are unchanged. The ZIP is intact and
+contains all expected assets without predictions. All seven private Python files
+pass Ruff and strict mypy. No production code, protected membership, accepted gold,
+baseline or historical experiment was changed; no private-corpus acceptance or
+production merge is claimed.
+
+Repository Ruff format/lint, mypy and all **3,802 tests** pass (101.01 seconds).
+All changed documentation links resolve; detailed source/reference/output files
+remain ignored and local.
