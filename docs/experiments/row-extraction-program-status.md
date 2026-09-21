@@ -15,24 +15,27 @@ derived financial value is recorded here.
 
 ## Current objective: main integration and full-corpus evaluation
 
-**Status:** IN_PROGRESS — resolving acceptance failures before merge. The user's integration request
-supersedes the next fresh-sample recommendation. The
-[full evaluation record](../maintenance/2026-09-21-main-integration.md) reports
-two deterministic runs with **94/104 retained documents reconciled**, **5/5
-quarantine classifications correct**, and unchanged **2,231 transactions and
-shared financial fields**. There are 196 changed descriptions across 42 documents;
-merchant accuracy was not adjudicated by this regression check.
+**Status:** AWAITING_BASELINE_PROMOTION_APPROVAL. The existing statement-date
+failures are corrected in `0e3e685`: charge-total dates belong to payment groups,
+not statement identity. All **3,824 tests**, Ruff and mypy pass. The
+[full evaluation record](../maintenance/2026-09-21-main-integration.md) reports a
+fresh-cache diagnostic with **104/104 retained documents reconciled**, **5/5
+quarantine classifications correct**, and unchanged **2,231 transactions**.
 
-All ten statement-date metadata failures reproduce on current main, with all 132
-corresponding CSV rows identical. They predate this branch. VERIFY also rejects
-baseline-output and Python-runtime fingerprint differences; performance acceptance
-was not checked. Candidate `88f500d` and protected inputs stayed unchanged during
-the gate. Main has not been merged or pushed.
+Against the accepted CSV, only the new merchant field and **196 descriptions
+across 42 documents** differ; all shared financial/date/other fields are unchanged.
+The date fix changes no transaction fields relative to the frozen candidate.
+Merchant accuracy was not adjudicated by this regression check. The candidate,
+protected membership and old baseline stayed unchanged during the diagnostic.
 
-Next: resolve the existing metadata failures, review intended output/runtime
-changes for separately authorized baseline promotion, and obtain full VERIFY
-before merging. A new baseline alone cannot accept unreconciled documents. Keep
-merchant experimentation paused and the earlier human-review artifacts frozen.
+This diagnostic is not formal acceptance: the earlier VERIFY rejected the older
+baseline's output and runtime fingerprints, and performance acceptance remains
+unchecked. The concrete promotion plan preserves that baseline, records a new
+candidate with four workers and the existing 20% runtime tolerance, independently
+pins it after review, then requires full clean VERIFY before merging. Explicit
+baseline-promotion authorization is the remaining dependency under AGENTS.md.
+Main has not been merged or pushed. Keep merchant experimentation paused and the
+earlier human-review artifacts frozen.
 
 ## Completed objective: merchant field ownership correction
 

@@ -1,6 +1,7 @@
 # Main integration and full-corpus evaluation
 
-Status: IN_PROGRESS — resolving corpus acceptance failures before merge.
+Status: AWAITING_BASELINE_PROMOTION_APPROVAL — date conflicts fixed; full
+diagnostic passes; formal acceptance and merge remain pending.
 The user requested integration of the accumulated work and
 a full-corpus evaluation before further extractor improvements on 2026-09-21.
 
@@ -167,3 +168,56 @@ Next: freeze the tested correction, run the complete retained/quarantine
 diagnostic with fresh caches, compare all emitted fields and prepare the concrete
 baseline-promotion review. The accepted baseline and its independent pin remain
 unchanged. Formal VERIFY remains required after any approved baseline promotion.
+
+## Corrected full-corpus diagnostic
+
+The clean committed correction `0e3e68520957d07c85df7011fbb222ce97f60025`
+completed a fresh-cache, four-worker diagnostic over the unchanged independently
+pinned membership. All **104 retained documents reconcile**, with **2,231
+transactions**; all **five quarantine documents are `not_statement`**. Retained
+execution took 714.25 seconds and quarantine 26.21 seconds. These diagnostic
+timings are not a formal performance comparison. The exact SHA, clean worktree,
+membership and accepted baseline pins were checked before and after the run.
+
+All 2,233 CSV row identities match both the frozen candidate and the authenticated
+accepted output. Compared with the frozen candidate, only status (132 rows) and
+propagated diagnostics (2,233 rows) change; every transaction field is identical.
+Compared with the accepted baseline, only the added merchant field (2,231 rows)
+and description (196 rows across 42 documents) differ. No financial, transaction
+date, installment, FX, category, row identity or status difference remains.
+
+The streaming JSON comparison confirms that only the ten documents' status and
+diagnostics, batch status/diagnostics, and 30 statement-date metadata values
+change. Those 30 values were all supported by charge-total labels; the other
+56 statement dates remain unchanged. Transaction objects, normalization rows,
+groups, geometry, printed totals and date-year context are identical to the
+frozen candidate. Quarantine JSON and CSV are byte-identical to that candidate.
+An independent streaming count confirms the diagnostic CSV counts.
+
+The 196 description changes comprise 20 extensions, 136 shortenings and 40 other
+text/order changes. These are the accumulated field-ownership changes, not the
+date correction. The private before/after review file groups them accordingly;
+this classification does not establish source-adjudicated merchant accuracy.
+
+## Concrete remaining decision
+
+The private `artifacts/main-integration-evaluation/date-fix/` packet contains
+diagnostic results, CSV/JSON comparisons, the description review and the proposed
+promotion procedure. No accepted baseline, membership, gold reference or protected
+evaluation label was changed. Main remains unchanged.
+
+Baseline promotion requires explicit authorization under
+[AGENTS.md](../../AGENTS.md#task-level-authorization-and-persistence): “Separate
+authorization is still required for ... changing accepted gold or protected
+corpus membership/baselines”. This is the remaining policy dependency, not a
+request to approve another implementation subtask.
+
+The prepared action is to RECORD at the new, nonexistent private path
+`.superpowers/private/corpus-baseline-main-integration-date-fix.json`, preserving
+the old baseline and independent membership pin. Retain four workers and the
+existing `0.20` runtime tolerance. Review the repeated recorded output against
+this diagnostic and the preserved baseline, then independently pin the new
+baseline in the private controller. Require full VERIFY on that same clean,
+reviewed revision with repeated fresh caches and `performance_checked=true`.
+Only then fast-forward main. Unexpected output, count or performance differences
+remain failures; no acceptance threshold is weakened.
