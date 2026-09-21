@@ -20,6 +20,7 @@ class RowTag(StrEnum):
 
 
 _LEGACY_DIAGNOSTIC_TAGS: dict[str, RowTag] = {
+    "merchant_prefix_continuation": RowTag.DESCRIPTION_CONTINUATION,
     "subordinate_detail_continuation": RowTag.SUBORDINATE_DETAIL,
     "subordinate_auxiliary_continuation": RowTag.AUXILIARY_CONTINUATION,
     "leading_subordinate_detail_continuation": RowTag.LEADING_SUBORDINATE_DETAIL,

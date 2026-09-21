@@ -392,6 +392,28 @@ def _merchant_punctuation(text: str) -> str:
     return f"({marker.group(1)})" if marker is not None else normalized
 
 
+def _separate_unknown_column_atoms(
+    row: Row, region: TableRegion, ledger: EvidenceLedger
+) -> frozenset[int]:
+    description_columns = _role_columns(region, ColumnRole.DESCRIPTION)
+    return frozenset(
+        atom_id
+        for cell in row.cells
+        for cluster in ledger.clusters_for_cell(cell)
+        if all(horizontal_overlap(cluster.bbox, column.bbox) == 0 for column in description_columns)
+        if len(
+            owners := tuple(
+                column
+                for column in region.table_schema.columns
+                if column.bbox[0] <= cluster.bbox[0] < cluster.bbox[2] <= column.bbox[2]
+            )
+        )
+        == 1
+        and owners[0].role is ColumnRole.UNKNOWN
+        for atom_id in cluster.atom_ids
+    )
+
+
 def _render_selected_description(
     ledger: EvidenceLedger,
     cell: Cell,
@@ -460,7 +482,12 @@ def extract_description(
     claims: list[EvidenceClaim] = []
     texts: list[str] = []
     diagnostics: list[str] = []
-    eligible_rows = tuple(row for row in rows if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL))
+    eligible_rows = tuple(
+        row
+        for row in rows
+        if not has_row_tag(row, RowTag.SUBORDINATE_DETAIL)
+        or has_row_tag(row, RowTag.DESCRIPTION_CONTINUATION)
+    )
     previous_row: Row | None = None
     for index, row in enumerate(eligible_rows):
         row_cells = _role_cells(row, region, ColumnRole.DESCRIPTION)
@@ -539,6 +566,13 @@ def extract_description(
             selected_ids.update(adjacent_ids)
             if ancillary_ids:
                 claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, ancillary_ids))
+        # A clustered cell can straddle columns. Its center must not transfer
+        # independently positioned text from a separate unknown field into the
+        # merchant field. Keep whole clusters; never trim characters by shape.
+        separate_ids = selected_ids & _separate_unknown_column_atoms(row, region, ledger)
+        if separate_ids:
+            selected_ids.difference_update(separate_ids)
+            claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, frozenset(separate_ids)))
         selected_ids.difference_update(excluded_atom_ids)
         selected_frozen = frozenset(selected_ids)
         complete_source_cells = tuple(

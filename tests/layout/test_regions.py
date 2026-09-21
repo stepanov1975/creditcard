@@ -2889,6 +2889,28 @@ def test_bounded_hebrew_note_skips_strictly_outside_punctuation_row() -> None:
     assert "ignored_outside_band_rows:1" in regions[0].diagnostics
 
 
+def test_date_shaped_merchant_is_not_demoted_to_unproven_detail_block() -> None:
+    page = _page(
+        (
+            *_foreign_table_header(10.0),
+            *_foreign_data(30.0, "01/02/2026", "Market", "₪10.00", "₪10.00"),
+            *_foreign_data(50.0, "02/02/2026", "Foreign shop", "$3.00", "₪11.00"),
+            _word("12/03", 32.0, 53.0, 61.0),
+            _word("Fee", 32.0, 53.0, 72.0),
+            *_foreign_data(83.0, "03/02/2026", "Cafe", "₪20.00", "₪20.00"),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert not any(
+        "subordinate_detail_continuation" in row.diagnostics
+        and any(cell.text == "12/03" for cell in row.cells)
+        for region in regions
+        for row in region.rows
+    )
+
+
 def test_detect_table_regions_retains_bounded_foreign_conversion_detail_block() -> None:
     page = _page(
         (

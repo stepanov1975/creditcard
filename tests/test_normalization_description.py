@@ -1138,6 +1138,36 @@ def test_description_recovers_boundary_cluster_from_adjacent_unknown_column() ->
     )
 
 
+@pytest.mark.parametrize("indicator", ("Q", "7", "USD"))
+@pytest.mark.parametrize("inside_field", (False, True))
+def test_description_respects_positioned_indicator_column(
+    indicator: str, inside_field: bool
+) -> None:
+    indicator_x = 52.0 if inside_field else 32.0
+    description = _cell(
+        f"{indicator} North Shop",
+        1,
+        bbox=(indicator_x, 30.0, 90.0, 40.0),
+        words=(
+            _word(indicator, indicator_x, indicator_x + 4.0),
+            _word("North Shop", 60.0, 90.0),
+        ),
+    )
+    row = _row(description, _cell("10.00", 2))
+    region = _region(
+        (ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (row,),
+    )
+    ledger = EvidenceLedger.from_rows((row,))
+
+    result = extract_description((row,), region, None, ledger)
+
+    assert result.value == (f"{indicator} North Shop" if inside_field else "North Shop")
+    indicator_ids = frozenset(atom.atom_id for atom in ledger.atoms if atom.text == indicator)
+    owners = {claim.owner for claim in result.claims if claim.atom_ids & indicator_ids}
+    assert owners == {SemanticOwner.DESCRIPTION if inside_field else SemanticOwner.ANCILLARY}
+
+
 def test_description_preserves_owned_continuation_clusters_in_order() -> None:
     description = _cell("Merchant", 1, 30.0)
     base = _row(_cell("01/02/2026", 0), description, _cell("10.00", 2))

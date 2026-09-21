@@ -1521,6 +1521,8 @@ def _foreign_conversion_detail_block(
     )
     details: list[Row] = []
     has_exact_marker = False
+    in_merchant_prefix = True
+    has_separate_detail_marker = False
     skipped_outside_rows = 0
     preceding = previous
     for index in range(start_index, len(rows)):
@@ -1555,8 +1557,28 @@ def _foreign_conversion_detail_block(
                 and has_exact_marker
                 and (has_distinct_currencies or len(details) >= MIN_ISSUER_CONVERSION_DETAIL_ROWS)
             ):
+                # Date-shaped text was allowed only as a merchant prefix. Do
+                # not demote it to ordinary detail if the later field boundary
+                # did not establish that ownership.
+                if not has_separate_detail_marker and any(
+                    is_date_shaped(cell.text) for detail in details for cell in detail.cells
+                ):
+                    return None
                 return ContinuationMatch(
-                    rows=tuple(details),
+                    rows=tuple(
+                        detail
+                        if has_separate_detail_marker
+                        else detail.model_copy(
+                            update={
+                                "diagnostics": tuple(
+                                    diagnostic
+                                    for diagnostic in detail.diagnostics
+                                    if diagnostic != "merchant_prefix_continuation"
+                                )
+                            }
+                        )
+                        for detail in details
+                    ),
                     consumed_through=index - 1,
                     kind=ContinuationKind.FOREIGN_CONVERSION_BLOCK,
                     detail_policy=DetailContinuationPolicy.DISALLOW,
@@ -1631,6 +1653,35 @@ def _foreign_conversion_detail_block(
                 )
             )
         )
+        # Preserve only the leading merchant-aligned portion of this block.
+        # A later wider detail marker must confirm the transition; otherwise
+        # the existing detail-only interpretation remains unchanged.
+        description_columns = tuple(
+            column for column in schema.columns if column.role is ColumnRole.DESCRIPTION
+        )
+        primary_description_cells = tuple(
+            cell
+            for column in description_columns
+            for cell in cells_in_column(previous.cells, column)
+        )
+        description_boxes = tuple(
+            (
+                *[column.bbox for column in description_columns],
+                *[cell.bbox for cell in primary_description_cells],
+            )
+        )
+        in_merchant_prefix = (
+            in_merchant_prefix
+            and len(description_columns) == 1
+            and all(
+                min(box[0] for box in description_boxes)
+                <= cell.bbox[0]
+                < cell.bbox[2]
+                <= max(box[2] for box in description_boxes)
+                for cell in projected.cells
+            )
+            and _is_description_continuation(projected, preceding, schema, primary=previous)
+        )
         if (
             (
                 len(details) >= maximum_detail_rows
@@ -1639,12 +1690,18 @@ def _foreign_conversion_detail_block(
                 and not allowed_wrapped_identifier_tail
             )
             or billed_cells
-            or any(is_date_shaped(cell.text) for cell in projected.cells)
+            or (
+                not in_merchant_prefix
+                and any(is_date_shaped(cell.text) for cell in projected.cells)
+            )
             or _transaction_shape_count(projected) > 1
             or alignment <= 0
         ):
             return None
         has_exact_marker = has_exact_marker or _has_subordinate_detail_marker(projected)
+        has_separate_detail_marker = has_separate_detail_marker or (
+            not in_merchant_prefix and _has_subordinate_detail_marker(projected)
+        )
         projected = projected.model_copy(
             update={
                 "diagnostics": tuple(
@@ -1653,6 +1710,7 @@ def _foreign_conversion_detail_block(
                             *projected.diagnostics,
                             "subordinate_detail_continuation",
                             "foreign_conversion_detail_block",
+                            *(("merchant_prefix_continuation",) if in_merchant_prefix else ()),
                             *(
                                 (f"ignored_outside_table_band_cells:{outside_table_band_count}",)
                                 if outside_table_band_count

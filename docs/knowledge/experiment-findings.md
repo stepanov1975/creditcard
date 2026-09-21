@@ -1,7 +1,8 @@
 # Experiment findings
 
 This is a synthesis of saved aggregate reports, not a new run. The
-[live status](../experiments/row-extraction-program-status.md) remains **STOP**.
+[live status](../experiments/row-extraction-program-status.md) records the current
+objective and outstanding human dependencies.
 Results below use different populations, targets and reference versions; they
 must not be presented as one continuous accuracy curve.
 
@@ -95,6 +96,12 @@ transaction references were sampled, so the two-mode hypothesis is inconclusive.
 
 ## What the error studies taught us
 
+- **Honor ownership through downstream interpretation.** The bounded
+  [field ownership correction](../experiments/row-extraction-field-ownership-report.md)
+  fixes 11 synthetic failures with six controls preserved. Separate-column text
+  must not enter the merchant via cell clustering, and merchant lines inside a
+  detail block must not disappear or become fee evidence. Generalization to new
+  documents remains unmeasured; the scored evaluations stay frozen.
 - **Test continuation loss through discovery as well as normalization.** The
   [synthetic continuation fix](../experiments/row-extraction-complete-field-continuations-report.md)
   raises complete-field regressions from 9/29 to 29/29 with all nine rejection
@@ -132,11 +139,10 @@ transaction references were sampled, so the two-mode hypothesis is inconclusive.
   were already ordered. The latest corrected-output diagnostic found both selected
   residual cases were whitespace-only and each had one identity-order witness.
 
-The [detailed report index](evidence-index.md) retains every intermediate finding,
-including null and falsified results. The latest unexecuted recommendation is a
-single candidate that applies the existing tolerance-aware renderer to eligible
-groups even when recorded order stays unchanged. It is **not active**; no gain
-from that candidate has been measured.
+The [detailed report index](evidence-index.md) retains intermediate findings,
+including null and falsified results. Historical recommendations are not an active
+backlog. The unchanged-order renderer result is already recorded above; consult
+the live status for the next task rather than restarting an old recommendation.
 
 ## Research conclusions to carry forward
 

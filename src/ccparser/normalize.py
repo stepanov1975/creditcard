@@ -410,7 +410,7 @@ def _normalize_row(
         conversion_resolution_diagnostics.append("invalid_conversion_date")
 
     foreign_exchange_extraction = extract_foreign_exchange(
-        rows=rows,
+        rows=tuple(row for row in rows if not has_row_tag(row, RowTag.DESCRIPTION_CONTINUATION)),
         region=region,
         ledger=ledger,
         original_currency=original_currency,

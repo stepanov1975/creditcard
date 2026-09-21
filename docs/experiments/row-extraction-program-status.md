@@ -15,12 +15,19 @@ derived financial value is recorded here.
 
 ## Current objective: merchant field ownership correction
 
-**Status:** IN_PROGRESS — the user authorized the next bounded implementation.
-The [plan and report](row-extraction-field-ownership-report.md) fixes geometric
-cross-column inclusion and merchant continuations swallowed by conversion-detail
-blocks using invented evidence and existing public parser interfaces. Complete
-the focused corrections, verification, documentation and local commit without
-requiring approval between subtasks. Fresh-document accuracy is NOT MEASURED.
+**Status:** COMPLETE — the [plan and report](row-extraction-field-ownership-report.md)
+records **11/11 corrected synthetic cases and 6/6 preserved controls**, compared
+with 0/11 and 6/6 on the previous source. Whole positioned clusters in a resolved
+separate column retain ancillary ownership; leading merchant continuations before
+a distinct conversion-detail boundary survive description extraction and stay out
+of FX interpretation. The frozen scored documents were not development inputs.
+
+All **3,819 repository tests**, Ruff format/lint and mypy pass. These bounded rules
+do not resolve every indicator band or mixed row. Fresh-document accuracy is
+**NOT MEASURED**, and private-corpus verification was not run. Next: predeclare a
+fresh sample and evaluate this frozen candidate against source-reviewed complete
+fields and ownership. The earlier human-review dependencies below remain pending;
+no ownership confirmations, gold changes, corpus acceptance or merge are implied.
 
 ## Frozen fresh-sample continuation evaluation: human dependency
 

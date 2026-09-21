@@ -6580,6 +6580,81 @@ def test_page_evidence_keeps_complete_merchant_continuation(
     assert result.reconciliation.status is Status.RECONCILED
 
 
+@pytest.mark.parametrize(
+    ("separate_detail", "continuation"),
+    (
+        (True, "BRANCH 84"),
+        (True, "123456"),
+        (True, "12/03"),
+        (True, "Fee Services"),
+        (False, "Fee"),
+    ),
+)
+@pytest.mark.parametrize("wrapped_lines", (1, 2))
+def test_page_evidence_keeps_merchant_before_conversion_detail_block(
+    separate_detail: bool,
+    continuation: str,
+    wrapped_lines: int,
+) -> None:
+    detail_y = 41.0 + 11.0 * wrapped_lines
+    next_y = detail_y + 22.0
+    words = (
+        _word("Date", 0.0, 22.0, 10.0),
+        _word("Description", 35.0, 90.0, 10.0),
+        _word("Original amount", 110.0, 145.0, 10.0),
+        _word("Billed amount", 165.0, 200.0, 10.0),
+        _word("01/02/2026", 0.0, 22.0, 30.0),
+        _word("North Shop", 35.0, 90.0, 30.0),
+        _word("$3.00", 110.0, 145.0, 30.0),
+        _word("₪11.00", 165.0, 200.0, 30.0),
+        _word(continuation if separate_detail else "Fee", 40.0, 90.0, 41.0),
+        *((_word("SECOND", 40.0, 90.0, 52.0),) if wrapped_lines == 2 else ()),
+        _word(
+            "Fee conversion explanation" if separate_detail else "conversion explanation",
+            35.0,
+            145.0 if separate_detail else 90.0,
+            detail_y,
+        ),
+        _word("Note tail", 40.0, 90.0, detail_y + 11.0),
+        _word("02/02/2026", 0.0, 22.0, next_y),
+        _word("South Shop", 35.0, 90.0, next_y),
+        _word("₪20.00", 110.0, 145.0, next_y),
+        _word("₪20.00", 165.0, 200.0, next_y),
+        _word("Total", 35.0, 90.0, next_y + 20.0),
+        _word("₪31.00", 165.0, 200.0, next_y + 20.0),
+    )
+    page = PageEvidence(
+        page_number=1,
+        width=210.0,
+        height=140.0,
+        words=words,
+        quality=ExtractionQuality(
+            character_count=0,
+            usable_character_count=0,
+            word_count=len(words),
+            replacement_character_ratio=0.0,
+            control_character_ratio=0.0,
+            image_area_ratio=0.0,
+            requires_ocr=False,
+        ),
+    )
+
+    result = normalize_statement(
+        discover_statement(DocumentEvidence(source_sha256="e" * 64, pages=(page,)))
+    )
+
+    expected = "North Shop"
+    if separate_detail:
+        expected += f" {continuation}" + (" SECOND" if wrapped_lines == 2 else "")
+    assert tuple(transaction.merchant for transaction in result.transactions) == (
+        expected,
+        "South Shop",
+    )
+    assert result.transactions[0].original_amount == Decimal("3.00")
+    assert result.transactions[0].billed_amount == Decimal("11.00")
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_inferred_specific_foreign_purchase_headers_reconcile_end_to_end() -> None:
     def word(text: str, x0: float, x1: float, y: float) -> Word:
         return Word(text=text, bbox=(x0, y, x1, y + 10.0), source="digital", confidence=1.0)

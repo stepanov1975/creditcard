@@ -46,6 +46,12 @@ row-extraction experiments.
   use the preceding line for adjacency; split continuation cells stay together
   when every cell belongs to the field. See the
   [synthetic continuation results](../experiments/row-extraction-complete-field-continuations-report.md).
+  A cell's center does not override whole positioned clusters in a resolved
+  separate column. Leading merchant lines before a distinct conversion-detail
+  boundary retain description ownership and stay out of FX interpretation;
+  later note tails remain detail. These bounded
+  [ownership corrections](../experiments/row-extraction-field-ownership-report.md)
+  have synthetic verification, not a new-document accuracy estimate.
 - **Evidence survives normalization.** Page, bounding box and raw text support
   financial fields and merchant attribution. Continuations need an owner; nearby
   text alone is not ownership proof. Repeated text can represent distinct source
