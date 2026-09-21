@@ -13,7 +13,19 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current objective: document-disjoint merchant evaluation
+## Current objective: complete merchant-field continuations
+
+**Status:** IN_PROGRESS — the user authorized proceeding with the recommended
+field capture, continuation and discovery improvements. The
+[bounded plan](row-extraction-complete-field-continuations-report.md) uses synthetic
+positioned evidence and existing public interfaces to test complete-field output
+and downstream transaction counts. No scored private cases are development inputs.
+Implement only general defects reproduced with failing tests, then run all gates.
+
+The earlier evaluation below remains frozen with its human dependency outstanding;
+this authorization does not supply ownership confirmations or permit rescoring.
+
+## Frozen document-disjoint evaluation: human dependency
 
 **Status:** AWAITING_HUMAN_REVIEW — merchant references are now frozen from the
 user's returned v2 answers: all **89 entries and all six page censuses confirmed**,
