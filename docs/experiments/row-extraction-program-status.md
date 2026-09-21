@@ -27,11 +27,19 @@ have no qualifying row overlap. All aligned cases have unique output. Nineteen
 saved output owners remain unassigned. Digital text equality is 39/73; OCR is
 10/16. These results do not measure the later production parser fix.
 
-Ownership review remains: 62 assigned cases have selected evidence inside the
-reviewed field regions, and 23 have outside-region evidence flagged for inspection.
-The ignored `artifacts/merchant-document-disjoint-v1/evaluation/` directory contains
-complete CSV/JSON results and `merchant-ownership-review.zip`, with locked references,
-anonymous common output and source overlays. Every audit confirmation remains false.
+AI visual ownership review is complete for all 89 cases: 62 select evidence from
+the correct merchant field, 23 include a same-transaction indicator outside it,
+and four have no matched output. Among the 62, 49 are text exact, 12 omit field
+text and one has an OCR transcription mismatch. Fifteen of the 23 outside-field
+cases also omit a continuation line. No wrong-transaction evidence was observed.
+These are AI findings pending human confirmation, not formal verified scores.
+
+The ignored `artifacts/merchant-document-disjoint-v1/evaluation/ai-ownership-review/`
+directory contains `FINDINGS.md`, per-case CSV/JSON and
+`merchant-ownership-ai-reviewed.zip`. Every case has an AI suggestion and explanation,
+with locked references, anonymous output and source overlays. Human confirmations
+remain false. The user can correct these findings instead of repeating the review
+from an empty worksheet.
 
 Next dependency: `merchant-ownership-audit-v1-answers.json`, confirming ownership
 judgments and all six pages. Then finish verified scoring and the fixed eligibility

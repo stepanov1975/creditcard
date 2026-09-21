@@ -80,7 +80,7 @@ ordering witnesses are diagnostics, not official exact matches.
 | [Punctuation spacing](../experiments/row-extraction-merchant-punctuation-spacing-report.md) | 17 to 19/24; two gains, no losses; coverage 24/24 | At this stage: 13/16 digital, 6/8 OCR. |
 | [LTR glyph reconstruction](../experiments/row-extraction-merchant-ltr-glyph-candidate-report.md), [block ordering](../experiments/row-extraction-merchant-ltr-block-order-report.md), [tolerance](../experiments/row-extraction-merchant-ltr-tolerance-report.md) | Each remains 19/24 | No measured exact-match gain from these candidates. |
 | [Unchanged-order spacing](../experiments/row-extraction-merchant-unchanged-order-spacing-report.md) | 19 to 21/24, two gains, no losses; coverage 24/24 | Completed seed result under the earlier reference definition. |
-| [Document-disjoint complete-field pilot](../experiments/row-extraction-merchant-document-disjoint-evaluation-report.md) | All three frozen views have identical strings and 49/89 text matches; 85/89 aligned | Six human-confirmed training-page censuses. No text gain; ownership audit pending. This does not measure the later production parser fix. |
+| [Document-disjoint complete-field pilot](../experiments/row-extraction-merchant-document-disjoint-evaluation-report.md) | All three frozen views have identical strings and 49/89 text matches; 85/89 aligned | Six human-confirmed training-page censuses. No text gain; AI ownership findings prepared for human confirmation. This does not measure the later production parser fix. |
 
 The seed is small, repeatedly inspected training data from one reviewer. Fully
 reviewed does not mean independently certified gold. None of these results is
@@ -88,6 +88,11 @@ validation accuracy, a population estimate or private-corpus acceptance.
 
 ## What the error studies taught us
 
+- **Preserve the complete merchant field.** The six-document pilot's AI source
+  review finds 23 outside-field indicators, 12 other incomplete fields and four
+  unmatched transactions; 15 of the 23 also miss continuations. These provisional
+  findings favor field selection and discovery work over more spacing changes.
+  Codes and location words inside the merchant field must remain in the output.
 - **Locate missing evidence before changing extraction.** Four seed failures had
   no overlapping frozen atoms. The historical discovery snapshot was unavailable,
   so historical freezing loss was not measurable. A separate fresh diagnostic

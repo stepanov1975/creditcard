@@ -173,6 +173,46 @@ Repository formatting, lint, mypy and all **3,766 tests** pass (100.40 seconds).
 Only aggregate documentation is tracked; answers, source evidence and results
 remain local and ignored. This is not private-corpus acceptance.
 
+## AI visual ownership findings
+
+Following the user's instruction to proceed, the assistant visually inspected all
+89 cases on 17 annotated source sheets, with method names hidden and references
+locked. This source review suggests **62 correct-field selections, 23 selections
+with a same-transaction indicator outside the confirmed merchant field, and four
+unmatched transactions**. No wrong-transaction evidence was observed. The outside
+indicators are identified by field geometry; codes, prefixes and location text
+inside the merchant field remain part of the required output.
+
+The mutually exclusive primary findings are **49 exact text with correct field,
+23 outside-field indicators, 12 incomplete fields, one OCR transcription mismatch
+and four missing matches**. Fifteen of the 23 outside-field cases also omit a
+visible continuation; this is an overlapping finding, not an additional category.
+Correctly owned selected evidence can still omit required field text.
+
+The ignored `evaluation/ai-ownership-review/` directory under the existing private
+artifact root contains `FINDINGS.md`, `ai-ownership-findings.csv`,
+`ai-ownership-answers.json`, annotated sheets and
+`merchant-ownership-ai-reviewed.zip`. The revised worksheet prefills all judgments
+and explanations; all human confirmations remain false. The original packet and
+frozen inputs are preserved. Human review can focus on accepting or correcting
+these suggestions, without repeating field transcription.
+
+The provisional AI-supported exact count is 49/89 and the paired delta remains
+zero. Formal ownership-verified accuracy remains **NOT MEASURED**, with the
+objective **AWAITING_HUMAN_REVIEW** and final hypothesis **INCONCLUSIVE**. These
+findings suggest complete field selection, continuation capture and discovery as
+the next engineering priorities; they do not authorize tuning the frozen sample
+or establish the later production fix's accuracy.
+
+Packet checks confirm 89 prefilled notes, the 62/23/4 decision counts, empty human
+confirmations, anonymous output, valid script compilation and edit/save behavior.
+The existing eight worksheet checks and six metric tests pass; independent
+recalculation still reproduces all 267 comparisons and the frozen hashes.
+Both new private Python scripts pass Ruff and strict mypy. A graphical browser
+remains unavailable; interactive behavior was checked with the JavaScript model.
+Repository format/lint, mypy and all **3,766 tests** pass (99.39 seconds).
+No production code changed; private-corpus verification was not run.
+
 ## Earlier preparation verification
 
 V2 passed ZIP integrity checks; worksheet state, JSON and CSV agree on all 89
