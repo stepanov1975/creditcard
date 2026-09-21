@@ -32,6 +32,9 @@ update the live status; do not grow another chronological diary in this file.
 - Do not add filename-, path-, hash-, date-, merchant-, amount-, total-, or
   document-specific branches to make corpus cases pass. Fix the general
   extraction, geometry, semantic, or reconciliation rule instead.
+- Extract the complete printed merchant field, including reference codes and owned
+  continuation text. Do not infer or clean a true business name; use the field
+  position and transaction ownership defined in `CONTEXT.md`.
 - Use `Decimal` for all financial arithmetic. Never use binary floating point
   for transaction amounts or totals.
 - Keep document contents and derived financial data local and out of Git.

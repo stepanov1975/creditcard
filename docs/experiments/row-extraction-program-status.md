@@ -2,7 +2,7 @@
 
 **Status:** Binding live record for the row-extraction experiment program.
 
-**Updated:** 2026-09-20
+**Updated:** 2026-09-21
 
 **Authority:** [`AGENTS.md`](../../AGENTS.md), the
 [experiment charter](../superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md),
@@ -15,22 +15,17 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** AWAITING_HUMAN_REVIEW — AI source review and the prefilled packet are
-complete under amendment `1f90c55`. The user requested this workflow in place of
-two independent blank-first reviews. Follow the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md).
+**Status:** ACTIVE — correct the unconfirmed AI review packet under the user's
+2026-09-21 merchant-field clarification. Extract every printed character in the
+merchant position, including reference codes and owned continuation text; do not
+separate a true business identity. See the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
+and [domain definition](../../CONTEXT.md).
 
-The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
-records 89 draft transaction entries on all six selected pages: 88 suggested
-present merchants and one suggested absence, with 22 attention flags. Every case
-and page census remains unconfirmed. The editable worksheet, JSON and CSV are in
-ignored `artifacts/merchant-document-disjoint-v1/assisted-review/`.
-
-Next dependency: the user's corrected answer JSON and six page-census
-confirmations. Then freeze references and complete ownership review and paired
-scoring in this same approved objective. The sample and three prediction views
-remain unchanged. Accuracy is NOT MEASURED; draft counts are not accepted metric
-denominators. Report an AI-assisted, single-human-reviewed pilot, not independent
-human certification. Validation/held-out data and integration remain outside scope.
+Preserve the earlier draft as superseded history and publish a corrected packet.
+The six-page census and frozen predictions remain the comparison inputs. Human
+correction and page confirmation still precede reference freezing and scoring.
+Accuracy is NOT MEASURED; prior semantic-trimming draft counts are not accepted
+metric denominators. Continue within the same approved objective.
 
 ## Latest measured extraction result
 

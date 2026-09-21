@@ -16,7 +16,7 @@ Experiment: shared evaluation
 Extraction hypothesis: The frozen spacing candidate improves exact merchant extraction without losses, ownership regressions, or reduced coverage
 Measurement: reference eligibility, exact-match delta, coverage, discovery omissions, and ownership errors
 Fixed inputs: frozen candidate and comparators; six documents selected under these committed rules; existing training membership only
-Smallest allowed files: docs/knowledge/README.md; AGENTS.md; docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md; artifacts/merchant-document-disjoint-v1/**
+Smallest allowed files: CONTEXT.md; docs/knowledge/README.md; AGENTS.md; docs/superpowers/specs/2026-07-30-row-extraction-focus-lock-design.md; docs/superpowers/specs/2026-07-28-row-extraction-experiment-charter-design.md; docs/superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md; docs/experiments/row-extraction-program-status.md; docs/experiments/row-extraction-merchant-document-disjoint-evaluation-report.md; artifacts/merchant-document-disjoint-v1/**
 Required output: completed fixed comparison, or a prepared human-review packet with quantified eligibility and a clear outstanding dependency
 Stop condition: finish the evaluation; pause only for human reference review, unavailable inputs, or a substantive change to the frozen experiment
 ```
@@ -129,6 +129,24 @@ only after visual inspection, with every proposed reading checked against the
 source image. Record transaction/merchant regions, billed/future section and
 present / absent / ambiguous status. Preserve punctuation and case. Mark uncertain
 readings and boundaries explicitly; do not guess missing characters.
+
+### Merchant-field scope correction — 2026-09-21
+
+The user clarified that the deterministic task extracts **all text at the merchant
+position**, not a true business name separated from its reference codes. This
+supersedes the initial draft's semantic trimming. Include suffix codes, prefixes,
+URLs, location text and other content within the merchant field, including owned
+continuation lines. A printed transfer description is present field text even if
+it does not identify a payee. An absent reference means the field is blank, not
+that no recognizable business name can be inferred.
+
+Use field geometry and transaction ownership to separate other columns or distinct
+full-width explanatory rows; do not discard text within the merchant field based
+on its meaning. Repair the unconfirmed AI drafts from source evidence under this
+rule, retaining the earlier packet as superseded history. No human-confirmed gold
+or scored reference has yet been frozen. Do not consult predictions or retune the
+frozen extraction views. Historical scores retain their original reference scope
+and must not be described as measurements of this corrected field contract.
 
 Provide a prefilled local worksheet, editable JSON and readable tabular draft.
 Label every case as an AI suggestion awaiting human confirmation and leave every

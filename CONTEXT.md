@@ -13,17 +13,19 @@ status.
 group, and every other printed financial value required to preserve the transaction's monetary
 identity and exact reconciliation.
 
-**Merchant attribution**: The association of a transaction with the merchant-bearing evidence
-that belongs to that transaction, without borrowing text from another transaction, substituting
-ancillary text for the merchant, or inventing unsupported text.
+**Merchant field**: All printed text in a transaction's merchant/description position,
+including reference codes, prefixes, URLs, location text and owned continuation lines.
+It represents the statement's field value, not a cleaned or inferred business identity.
 
-**Merchant-bearing evidence**: The smallest ordered, source-grounded text span needed to identify
-the merchant for a transaction, assembled across its primary row and owned continuation rows when
-necessary.
+**Merchant attribution**: The association of the complete merchant field with its source
+transaction, without borrowing text from another transaction or inventing unsupported text.
 
-**Ancillary transaction metadata**: Source-grounded category, location, processor/reference,
-exchange-rate narrative, fee narrative, or other text that is not needed for core financial
-identity or merchant attribution.
+**Merchant-bearing evidence**: The ordered, source-grounded text occupying the merchant field
+on the primary row and its owned continuation rows.
+
+**Ancillary transaction metadata**: Information printed in separate category, location,
+reference or explanatory fields outside the merchant field. Text inside the merchant field
+remains merchant text regardless of its apparent meaning.
 
 **Context tier**: One predeclared, nested amount of source evidence shown to the same extraction
 process so that the effect of additional context can be measured without changing the task,
