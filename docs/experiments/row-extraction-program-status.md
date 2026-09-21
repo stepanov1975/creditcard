@@ -15,17 +15,26 @@ derived financial value is recorded here.
 
 ## Current objective: document-disjoint merchant evaluation
 
-**Status:** ACTIVE — correct the unconfirmed AI review packet under the user's
-2026-09-21 merchant-field clarification. Extract every printed character in the
-merchant position, including reference codes and owned continuation text; do not
-separate a true business identity. See the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
+**Status:** AWAITING_HUMAN_REVIEW — corrected packet v2 is ready under the user's
+2026-09-21 merchant-field clarification, committed as `bd4910d`. Every printed
+character in the merchant position belongs to the field, including codes and
+owned continuation text. See the [amended design](../superpowers/specs/2026-09-20-merchant-document-disjoint-evaluation-design.md)
 and [domain definition](../../CONTEXT.md).
 
-Preserve the earlier draft as superseded history and publish a corrected packet.
-The six-page census and frozen predictions remain the comparison inputs. Human
-correction and page confirmation still precede reference freezing and scoring.
-Accuracy is NOT MEASURED; prior semantic-trimming draft counts are not accepted
-metric denominators. Continue within the same approved objective.
+The [evaluation report](row-extraction-merchant-document-disjoint-evaluation-report.md)
+records 89 unconfirmed entries, all with printed field text. Twenty-nine values
+were corrected from the earlier semantic-trimming draft. Nine flags remain for
+transcription or reading order, not business-name/reference-code separation.
+The v2 worksheet, JSON and CSV are in ignored
+`artifacts/merchant-document-disjoint-v1/merchant-field-review/`; the old packet
+is preserved as superseded history. Use `merchant-review-prefilled-v2.zip`.
+
+Next dependency: corrected v2 answers and six confirmed page censuses. Then
+freeze references and complete ownership review and paired scoring. Accuracy is
+NOT MEASURED. Earlier scores retain their historical reference definition and
+are not measurements of this corrected complete-field contract. No parser
+implementation, frozen prediction, validation/held-out input or accepted gold
+was changed by this reference correction.
 
 ## Latest measured extraction result
 
