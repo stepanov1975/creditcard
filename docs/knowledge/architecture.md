@@ -20,6 +20,13 @@ are in [README](../../README.md) and [SUPPORT](../../SUPPORT.md); terminology is
 | Corpus acceptance | [corpus_gate.py](../../src/ccparser/corpus_gate.py), [corpus_spool.py](../../src/ccparser/corpus_spool.py) | Protected membership/baseline verification, repeated runs and bounded-memory output handling. |
 | Research | [experiments/row_extraction](../../experiments/row_extraction) | Frozen evaluation and historical experiments; not a production integration layer. |
 
+On `codex/continuation-ownership`,
+[normalization_continuations.py](../../src/ccparser/normalization_continuations.py)
+assembles transaction-owned row chains, proven cross-page detail handoffs and their
+ownership diagnostics before field normalization. Source geometry, tags and financial
+interpretation remain unchanged. See the [refactor record](../experiments/continuation-ownership-refactor.md)
+for synthetic verification and acceptance limits; this branch is not corpus-verified.
+
 The parser can retry numeric OCR on OCR-required pages after an unsuccessful
 normalization. It adopts the repaired result only if it is exactly reconciled and
 unambiguous. This existing production recovery is distinct from the stopped

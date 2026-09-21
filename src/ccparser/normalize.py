@@ -5,8 +5,6 @@ from __future__ import annotations
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
-from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,13 +15,9 @@ from ccparser.discovery import (
 )
 from ccparser.fx import extract_foreign_exchange
 from ccparser.geometry import BBox
-from ccparser.geometry import (
-    center_inside as _bbox_center_inside,
-)
 from ccparser.layout.columns import (
     cells_in_column,
     columns_for_role,
-    proven_region_billed_amount_column,
 )
 from ccparser.layout.models import Cell, ColumnRole, ColumnSpec, Row, TableRegion
 from ccparser.layout.row_tags import RowTag, has_row_tag
@@ -37,8 +31,11 @@ from ccparser.models import (
 )
 from ccparser.money import (
     AmountParseResult,
-    is_money_shaped,
     parse_amount,
+)
+from ccparser.normalization_continuations import (
+    RowOwnershipKind,
+    assemble_continuation_ownership,
 )
 from ccparser.normalization_dates import (
     ConversionDateExtraction,
@@ -51,7 +48,6 @@ from ccparser.normalization_dates import (
 from ccparser.normalization_description import (
     derive_merchant,
     extract_description,
-    is_description_continuation,
 )
 from ccparser.normalization_fields import (
     FieldDisposition,
@@ -513,125 +509,6 @@ def _printed_total(group: StatementGroupDiscovery) -> tuple[PrintedTotal | None,
     )
 
 
-def _is_printed_total_row(row: Row, group: StatementGroupDiscovery) -> bool:
-    evidence = (
-        group.printed_total.label_evidence,
-        group.printed_total.value_evidence,
-    )
-    return all(
-        item.page_number == row.page_number
-        and any(_bbox_center_inside(item.bbox, cell.bbox) for cell in row.cells)
-        for item in evidence
-    )
-
-
-def _compatible_cross_page_region_geometry(
-    previous: TableRegion,
-    current: TableRegion,
-) -> bool:
-    previous_columns = previous.table_schema.columns
-    current_columns = current.table_schema.columns
-    return (
-        current.page_number == previous.page_number + 1
-        and len(previous_columns) == len(current_columns)
-        and all(
-            previous_column.role is current_column.role
-            and abs(previous_column.relative_x0 - current_column.relative_x0) <= 0.05
-            and abs(previous_column.relative_x1 - current_column.relative_x1) <= 0.05
-            for previous_column, current_column in zip(
-                previous_columns,
-                current_columns,
-                strict=True,
-            )
-        )
-    )
-
-
-def _cross_page_leading_detail_handoffs(
-    regions: Sequence[TableRegion],
-    group: StatementGroupDiscovery,
-) -> tuple[dict[int, tuple[Row, ...]], frozenset[int]]:
-    handoffs: dict[int, tuple[Row, ...]] = {}
-    owned_leading_rows: set[int] = set()
-    for previous_region, current_region in pairwise(regions):
-        if not _compatible_cross_page_region_geometry(previous_region, current_region):
-            continue
-        current_rows = tuple(
-            sorted(current_region.rows, key=lambda item: (item.bbox[1], item.bbox[0]))
-        )
-        leading_rows = tuple(
-            row for row in current_rows if has_row_tag(row, RowTag.LEADING_SUBORDINATE_DETAIL)
-        )
-        if not leading_rows or current_rows[: len(leading_rows)] != leading_rows:
-            continue
-        following_rows = current_rows[len(leading_rows) :]
-        if not following_rows:
-            continue
-        previous_rows = tuple(
-            sorted(previous_region.rows, key=lambda item: (item.bbox[1], item.bbox[0]))
-        )
-        previous_base_rows: list[Row] = []
-        previous_index = 0
-        while previous_index < len(previous_rows):
-            previous_row = previous_rows[previous_index]
-            if _is_printed_total_row(previous_row, group):
-                previous_index += 1
-                continue
-            previous_base_rows.append(previous_row)
-            continuation_index = previous_index + 1
-            continuation_previous = previous_row
-            while continuation_index < len(previous_rows) and is_description_continuation(
-                previous_rows[continuation_index],
-                continuation_previous,
-                previous_region,
-            ):
-                continuation_previous = previous_rows[continuation_index]
-                continuation_index += 1
-            previous_index = continuation_index
-        if not previous_base_rows:
-            continue
-        previous_row = previous_base_rows[-1]
-        following_row = following_rows[0]
-        previous_billed_column = proven_region_billed_amount_column(previous_region)
-        current_billed_column = proven_region_billed_amount_column(current_region)
-        if previous_billed_column is None or current_billed_column is None:
-            continue
-        previous_billed_cells = _cells_for_column(previous_row, previous_billed_column)
-        following_billed_cells = _cells_for_column(following_row, current_billed_column)
-        previous_billed = (
-            parse_amount(
-                previous_billed_cells[0].text,
-                currency_hint=group.printed_total.currency,
-            )
-            if len(previous_billed_cells) == 1
-            else None
-        )
-        if (
-            len(previous_billed_cells) != 1
-            or not is_money_shaped(previous_billed_cells[0].text)
-            or previous_billed is None
-            or previous_billed.amount in {None, Decimal("0")}
-            or len(following_billed_cells) != 1
-            or not is_money_shaped(following_billed_cells[0].text)
-        ):
-            continue
-        handoffs[id(previous_row)] = tuple(
-            row.model_copy(
-                update={
-                    "diagnostics": tuple(
-                        "subordinate_detail_continuation"
-                        if diagnostic == "leading_subordinate_detail_continuation"
-                        else diagnostic
-                        for diagnostic in row.diagnostics
-                    )
-                }
-            )
-            for row in leading_rows
-        )
-        owned_leading_rows.update(id(row) for row in leading_rows)
-    return handoffs, frozenset(owned_leading_rows)
-
-
 def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization:
     """Normalize discovered current-cycle rows and reconcile exact printed totals."""
 
@@ -646,45 +523,16 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
         if total is not None:
             totals.append(total)
         row_ordinal = 0
-        ordered_regions = tuple(
-            sorted(
-                group.table_regions,
-                key=lambda item: (item.page_number, item.bbox[1], item.bbox[0]),
-            )
-        )
-        cross_page_handoffs, owned_leading_rows = _cross_page_leading_detail_handoffs(
-            ordered_regions,
-            group,
-        )
-        for region in ordered_regions:
+        for ownership in assemble_continuation_ownership(group):
+            region = ownership.region
             date_column_kinds = structural_date_column_kinds(
                 region,
                 discovery.date_year_context,
             )
-            rows = tuple(sorted(region.rows, key=lambda item: (item.bbox[1], item.bbox[0])))
-            index = 0
-            while index < len(rows):
-                row = rows[index]
-                if has_row_tag(row, RowTag.LEADING_SUBORDINATE_DETAIL):
-                    if id(row) in owned_leading_rows:
-                        index += 1
-                        continue
-                    row_ordinal += 1
-                    row_results.append(
-                        RowNormalizationResult(
-                            page_number=row.page_number,
-                            bbox=row.bbox,
-                            raw_text=_row_text((row,)),
-                            evidence=_row_evidence((row,)),
-                            confidence=row.confidence,
-                            diagnostics=("unowned_leading_subordinate_detail_continuation",),
-                        )
-                    )
-                    rows_not_emitted += 1
-                    index += 1
-                    continue
+            for owned in ownership.rows:
+                row = owned.row
                 row_ordinal += 1
-                if _is_printed_total_row(row, group):
+                if owned.diagnostic is not None:
                     row_results.append(
                         RowNormalizationResult(
                             page_number=row.page_number,
@@ -692,21 +540,13 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                             raw_text=_row_text((row,)),
                             evidence=_row_evidence((row,)),
                             confidence=row.confidence,
-                            diagnostics=("printed_total_row",),
+                            diagnostics=(owned.diagnostic,),
                         )
                     )
-                    index += 1
+                    if owned.kind is RowOwnershipKind.UNOWNED_DETAIL:
+                        rows_not_emitted += 1
                     continue
-                continuations: list[Row] = []
-                continuation_index = index + 1
-                previous = row
-                while continuation_index < len(rows) and is_description_continuation(
-                    rows[continuation_index], previous, region
-                ):
-                    continuations.append(rows[continuation_index])
-                    previous = rows[continuation_index]
-                    continuation_index += 1
-                continuations.extend(cross_page_handoffs.get(id(row), ()))
+                continuations = tuple(item.row for item in owned.continuations)
                 transaction_id = f"{group.group_id}-p{row.page_number:03d}-r{row_ordinal:04d}"
                 attempt = _normalize_row(
                     row=row,
@@ -724,15 +564,9 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                         rows_not_emitted += 1
                 else:
                     transactions.append(row_result.transaction)
-                for continuation in continuations:
+                for attached in owned.continuations:
+                    continuation = attached.row
                     row_ordinal += 1
-                    continuation_diagnostic = (
-                        "merged_subordinate_detail_continuation"
-                        if has_row_tag(continuation, RowTag.SUBORDINATE_DETAIL)
-                        else "merged_auxiliary_continuation"
-                        if has_row_tag(continuation, RowTag.AUXILIARY_CONTINUATION)
-                        else "merged_description_continuation"
-                    )
                     row_results.append(
                         RowNormalizationResult(
                             page_number=continuation.page_number,
@@ -740,10 +574,9 @@ def normalize_statement(discovery: StatementDiscovery) -> StatementNormalization
                             raw_text=_row_text((continuation,)),
                             evidence=_row_evidence((continuation,)),
                             confidence=continuation.confidence,
-                            diagnostics=(continuation_diagnostic,),
+                            diagnostics=(attached.diagnostic,),
                         )
                     )
-                index = continuation_index
     if rows_not_emitted:
         diagnostics.append(f"rows_not_emitted:{rows_not_emitted}")
     reconciliation = reconciliation_outcome(transactions, totals)

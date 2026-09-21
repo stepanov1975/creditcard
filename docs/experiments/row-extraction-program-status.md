@@ -13,6 +13,20 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
+## Completed objective: continuation ownership deepening
+
+**Status:** COMPLETE — implemented on `codex/continuation-ownership` under the
+user's 2026-09-21 “implement 1” instruction. The [task record](continuation-ownership-refactor.md)
+records one ownership assembly for same-page chains, cross-page handoffs and
+continuation diagnostics: **389 focused tests**, **278 complete synthetic outputs
+matching the original implementation**, and all **3,827 repository tests**, Ruff
+and mypy pass. No private inputs were accessed; this branch is **not corpus-verified**
+and is not merged. Fresh-document accuracy is **NOT MEASURED**.
+
+No experiment is active. Next: predeclare the fresh-document merchant-field ownership
+evaluation; private-corpus VERIFY is required before any later acceptance or merge.
+Existing frozen evaluations and human-review dependencies remain unchanged.
+
 ## Completed objective: main integration and full-corpus evaluation
 
 **Status:** COMPLETE — main fast-forwarded to corpus-verified candidate
@@ -31,7 +45,7 @@ across 42 documents differ; shared financial/date/other fields are unchanged.
 Repeated JSON/CSV match the reviewed diagnostic and promoted baseline exactly.
 
 This completes integration and regression acceptance, not a new merchant accuracy
-measurement. No next experiment is active. Keep prior reference/evaluation
+measurement. At that completion, no next experiment was active. Keep prior reference/evaluation
 artifacts frozen and their remaining human-ownership dependencies unchanged.
 The next improvement should start with a predeclared fresh-document evaluation
 of the integrated parser's complete merchant-field ownership.

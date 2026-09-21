@@ -23,6 +23,10 @@ transaction, without borrowing text from another transaction or inventing unsupp
 **Merchant-bearing evidence**: The ordered, source-grounded text occupying the merchant field
 on the primary row and its owned continuation rows.
 
+**Continuation ownership**: The source-grounded association of a continuation row with its
+transaction, retained through a chain even when adjacency is established by the preceding
+continuation row. Owning a row does not make all of its text merchant-bearing evidence.
+
 **Ancillary transaction metadata**: Information printed in separate category, location,
 reference or explanatory fields outside the merchant field. Text inside the merchant field
 remains merchant text regardless of its apparent meaning.

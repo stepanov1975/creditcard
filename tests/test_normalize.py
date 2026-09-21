@@ -1114,7 +1114,7 @@ def test_normalize_statement_rejects_leading_detail_without_a_proven_previous_ow
     assert result.diagnostics == ("rows_not_emitted:1",)
 
 
-def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_transaction() -> None:
+def _cross_page_detail_discovery(*, wrapped: bool) -> StatementDiscovery:
     roles = (
         ColumnRole.DATE,
         ColumnRole.DESCRIPTION,
@@ -1127,7 +1127,15 @@ def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_tran
         _cell("$3.00", 2, 30.0),
         _cell("10.00", 3, 30.0),
     )
-    previous_region = _region(roles, (previous_transaction,))
+    wrapped_rows = (
+        (
+            _row(_cell("REFERENCE", 1, 41.0)),
+            _row(_cell("SECOND LINE", 1, 52.0)),
+        )
+        if wrapped
+        else ()
+    )
+    previous_region = _region(roles, (previous_transaction, *wrapped_rows))
     leading = _row(
         _cell("conversion detail", 1, 30.0, page=2),
         _cell("USD 3.00", 2, 30.0, page=2),
@@ -1148,10 +1156,34 @@ def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_tran
         }
     )
 
+    return discovery
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_transaction(
+    wrapped: bool,
+) -> None:
+    discovery = _cross_page_detail_discovery(wrapped=wrapped)
     result = normalize_statement(discovery)
 
     assert result.reconciliation.status is Status.RECONCILED
-    assert len(result.transactions) == 2
+    assert tuple(transaction.merchant for transaction in result.transactions) == (
+        "Previous REFERENCE SECOND LINE" if wrapped else "Previous",
+        "Next",
+    )
+    assert tuple(transaction.transaction_id for transaction in result.transactions) == (
+        "group-0001-p001-r0001",
+        "group-0001-p002-r0005" if wrapped else "group-0001-p002-r0003",
+    )
+    assert tuple(evidence.raw_text for evidence in result.transactions[0].evidence) == (
+        "31/01/2026",
+        "Previous",
+        "$3.00",
+        "10.00",
+        *(("REFERENCE", "SECOND LINE") if wrapped else ()),
+        "conversion detail",
+        "USD 3.00",
+    )
     assert any(
         evidence.page_number == 2 and evidence.raw_text == "USD 3.00"
         for evidence in result.transactions[0].evidence
@@ -1159,9 +1191,59 @@ def test_normalize_statement_attaches_cross_page_leading_detail_to_previous_tran
     assert all(evidence.raw_text != "USD 3.00" for evidence in result.transactions[1].evidence)
     assert tuple(row_result.diagnostics for row_result in result.row_results) == (
         (),
+        *(("merged_description_continuation",),) * (2 if wrapped else 0),
         ("merged_subordinate_detail_continuation",),
         (),
     )
+
+
+def test_continuation_ownership_assembles_wrapped_chain_and_cross_page_detail() -> None:
+    from ccparser.normalization_continuations import assemble_continuation_ownership
+
+    discovery = _cross_page_detail_discovery(wrapped=True)
+    group = discovery.groups[0]
+    before = group.model_dump()
+
+    regions = assemble_continuation_ownership(group)
+
+    assert tuple(len(region.rows) for region in regions) == (1, 1)
+    previous = regions[0].rows[0]
+    following = regions[1].rows[0]
+    assert previous.row.cells[1].text == "Previous"
+    assert following.row.cells[1].text == "Next"
+    assert following.continuations == ()
+    assert tuple(item.row.cells[0].text for item in previous.continuations) == (
+        "REFERENCE",
+        "SECOND LINE",
+        "conversion detail",
+    )
+    assert tuple(item.diagnostic for item in previous.continuations) == (
+        "merged_description_continuation",
+        "merged_description_continuation",
+        "merged_subordinate_detail_continuation",
+    )
+    assert previous.continuations[-1].row.diagnostics == ("subordinate_detail_continuation",)
+    assert previous.continuations[-1].row.page_number == 2
+    assert group.model_dump() == before
+
+
+def test_continuation_ownership_rejects_handoff_when_leading_tags_are_not_a_prefix() -> None:
+    from ccparser.normalization_continuations import assemble_continuation_ownership
+
+    discovery = _cross_page_detail_discovery(wrapped=True)
+    group = discovery.groups[0]
+    previous, current = group.table_regions
+    late_detail = _row(_cell("TAIL", 1, 61.0, page=2)).model_copy(
+        update={"diagnostics": ("leading_subordinate_detail_continuation",)}
+    )
+    current = current.model_copy(update={"rows": (*current.rows, late_detail)})
+    group = group.model_copy(update={"table_regions": (previous, current)})
+
+    regions = assemble_continuation_ownership(group)
+
+    assert tuple(len(region.rows) for region in regions) == (1, 2)
+    assert len(regions[0].rows[0].continuations) == 2
+    assert regions[1].rows[0].diagnostic == "unowned_leading_subordinate_detail_continuation"
 
 
 def test_normalize_statement_does_not_attach_leading_detail_to_zero_billed_row() -> None:
