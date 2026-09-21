@@ -987,7 +987,7 @@ def test_normalize_statement_preserves_foreign_installment_and_wrapped_descripti
 
 @pytest.mark.parametrize(
     ("location", "expected_merchant"),
-    (("IRELAND", "Merchant"), ("RUS", "Merchant ל RUS")),
+    (("IRELAND", "Merchant ל IRELAND"), ("RUS", "Merchant ל RUS")),
 )
 def test_normalize_statement_handles_location_without_guessing(
     location: str, expected_merchant: str
@@ -1021,7 +1021,7 @@ def test_normalize_statement_handles_location_without_guessing(
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_normalize_statement_fails_closed_on_ambiguous_merchant_continuation() -> None:
+def test_normalize_statement_preserves_owned_multiword_merchant_continuation() -> None:
     merchant = _cell("Merchant ל", 2, 30.0).model_copy(update={"bbox": (60.0, 30.0, 140.0, 40.0)})
     continuation = _cell("SECOND LINE", 1, 41.0).model_copy(
         update={"bbox": (60.0, 41.0, 108.0, 51.0)}
@@ -1047,10 +1047,10 @@ def test_normalize_statement_fails_closed_on_ambiguous_merchant_continuation() -
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     transaction = result.transactions[0]
-    assert transaction.merchant is None
+    assert transaction.merchant == "Merchant ל SECOND LINE"
     assert transaction.description == "Merchant ל SECOND LINE"
-    assert "ambiguous_merchant_boundary" in transaction.ambiguities
-    assert result.reconciliation.status is Status.UNRECONCILED
+    assert not transaction.ambiguities
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_normalize_statement_rejects_leading_detail_without_a_proven_previous_owner() -> None:
@@ -2369,7 +2369,7 @@ def test_normalize_statement_merges_auxiliary_fragment_without_changing_descript
     assert result.reconciliation.status is Status.RECONCILED
 
 
-def test_separated_description_continuation_clusters_remain_ambiguous() -> None:
+def test_separated_description_continuation_clusters_preserve_owned_field() -> None:
     continuation_cell = _cell("ALPHA BETA", 1, 41.0).model_copy(
         update={
             "words": (
@@ -2396,9 +2396,10 @@ def test_separated_description_continuation_clusters_remain_ambiguous() -> None:
     result = normalize_statement(_discovery(region, "10.00", "ILS"))
 
     assert len(result.transactions) == 1
-    assert "ambiguous_description_continuation" in result.transactions[0].ambiguities
+    assert result.transactions[0].merchant == "Merchant ALPHA BETA"
+    assert not result.transactions[0].ambiguities
     assert result.reconciliation.groups[0].difference == Decimal("0.00")
-    assert result.reconciliation.status is Status.UNRECONCILED
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 def test_normalize_statement_merges_nonmoney_detail_in_empty_secondary_amount_band() -> None:
@@ -3088,7 +3089,7 @@ def test_normalize_statement_rejects_full_year_date_with_material_residual(
     assert result.reconciliation.status is Status.UNRECONCILED
 
 
-def test_normalize_statement_rejects_uncorroborated_whole_unit_processor_candidate() -> None:
+def test_normalize_statement_preserves_numeric_reference_inside_merchant_field() -> None:
     row = _row(
         _cell("01/02/2026", 0, 30.0),
         _cell("Merchant", 1, 30.0),
@@ -3118,9 +3119,25 @@ def test_normalize_statement_rejects_uncorroborated_whole_unit_processor_candida
     result = normalize_statement(_discovery(region, "4.00", "ILS", year_context=2026))
 
     transaction = result.transactions[0]
-    assert transaction.description == "Merchant"
-    assert "unconsumed_transaction_semantic_text" in transaction.ambiguities
-    assert result.reconciliation.status is Status.UNRECONCILED
+    assert transaction.description == "Merchant 123456"
+    assert transaction.merchant == "Merchant 123456"
+    assert not transaction.ambiguities
+    assert result.reconciliation.status is Status.RECONCILED
+
+    statement = StatementResult(
+        status=result.reconciliation.status,
+        transactions=result.transactions,
+        groups=result.reconciliation.groups,
+        source_name="synthetic.pdf",
+        source_sha256="a" * 64,
+        statement_id="a" * 64,
+    )
+    batch = BatchResult(status=statement.status, statements=(statement,))
+    csv_rows = tuple(
+        csv.DictReader(io.StringIO(transactions_csv_bytes(batch).decode("utf-8-sig"), newline=""))
+    )
+    assert csv_rows[0]["merchant"] == "Merchant 123456"
+    assert statement.model_dump(mode="json")["transactions"][0]["merchant"] == "Merchant 123456"
 
 
 def test_normalize_statement_rejects_positioned_date_with_untyped_integer_word() -> None:
@@ -3693,7 +3710,7 @@ def test_normalize_statement_restores_description_space_from_positioned_evidence
     assert result.transactions[0].ambiguities == ()
 
 
-def test_normalize_statement_leaves_distant_whole_unit_numeric_reference_unclaimed() -> None:
+def test_normalize_statement_preserves_distant_numeric_reference_inside_field() -> None:
     original = Cell(
         page_number=1,
         bbox=(50.0, 30.0, 100.0, 40.0),
@@ -3734,13 +3751,14 @@ def test_normalize_statement_leaves_distant_whole_unit_numeric_reference_unclaim
 
     result = normalize_statement(_discovery(region, "170.57", "ILS"))
 
-    assert result.transactions[0].description == "PAYPAL *PRIVATEIN"
-    assert result.transactions[0].ambiguities == ("unconsumed_transaction_semantic_text",)
-    assert result.reconciliation.status is Status.UNRECONCILED
+    assert result.transactions[0].description == "PAYPAL *PRIVATEIN 4029357"
+    assert result.transactions[0].merchant == "PAYPAL *PRIVATEIN 4029357"
+    assert not result.transactions[0].ambiguities
+    assert result.reconciliation.status is Status.RECONCILED
 
 
 @pytest.mark.parametrize("glyph_backed", (False, True))
-def test_normalize_statement_excludes_repeated_processor_cluster_with_row_evidence(
+def test_normalize_statement_preserves_repeated_reference_with_row_evidence(
     glyph_backed: bool,
 ) -> None:
     rows: list[Row] = []
@@ -3790,8 +3808,8 @@ def test_normalize_statement_excludes_repeated_processor_cluster_with_row_eviden
     result = normalize_statement(_discovery(region, "20.00", "ILS"))
 
     assert tuple(transaction.description for transaction in result.transactions) == (
-        "OPENAI *CHATGPT S",
-        "OPENAI *CHATGPT S",
+        "OPENAI *CHATGPT S . OPENAI",
+        "OPENAI *CHATGPT S . OPENAI",
     )
     assert all(not transaction.ambiguities for transaction in result.transactions)
 

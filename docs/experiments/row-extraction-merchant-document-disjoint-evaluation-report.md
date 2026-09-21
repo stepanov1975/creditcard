@@ -116,10 +116,13 @@ All checked local documentation links resolve. Earlier verification
 and the superseded packet remain preserved; no private data is tracked. This is
 not private-corpus acceptance.
 
-A code read also identified existing processor-reference separation in
+A code read at the reference-correction stage identified processor-reference separation in
 [`extract_description`](../../src/ccparser/normalization_description.py) and its
-helpers. This correction does not establish that production behavior satisfies
-the clarified contract. The fixed experiment must expose any omissions against
+helpers. The user subsequently requested a production fix on 2026-09-21. The
+parser now preserves the full field and owned continuations; synthetic tests
+cover codes, repeated references, mixed evidence kinds, output and reconciliation.
+This separately authorized code correction does not change the frozen experiment
+predictions or references. The fixed experiment must expose any omissions against
 the corrected human-reviewed fields; it must not tune away failures before scoring.
 
 The next dependency is the user's corrected v2 answer JSON and six confirmed page

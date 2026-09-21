@@ -1,7 +1,8 @@
 # Architecture and engineering lessons
 
-This describes the merchant-gold-seed checkout at `6c500cc`, not the different
-semantic/observation implementations preserved on side branches. Public contracts
+This describes the merchant-gold-seed checkout, including the 2026-09-21 complete
+merchant-field correction. Different semantic/observation implementations remain
+preserved on side branches. Public contracts
 are in [README](../../README.md) and [SUPPORT](../../SUPPORT.md); terminology is in
 [CONTEXT](../../CONTEXT.md).
 
@@ -32,9 +33,14 @@ row-extraction experiments.
 - **Balanced is insufficient.** `reconciled` requires groups with exact totals and
   no unresolved extraction ambiguity. Unsupported evidence, conflicting dates,
   merchant boundaries and unexplained semantic fragments must remain visible.
-- **Merchant and description differ.** Current output has nullable `merchant`
-  separately from the broader `description`. Do not import a side branch's older
-  merchant-only description terminology as the current JSON contract.
+- **Merchant means the complete printed field.** The nullable `merchant` and
+  `description` output keys remain separate, but the parser now publishes the
+  complete extracted field as `merchant`. Reference-looking tokens, repeated
+  numeric codes, URLs and owned location/other continuations stay in that field.
+  Column geometry and source-backed date/amount ownership establish boundaries;
+  token meaning does not establish a shorter business name. References in
+  separate columns retain their own semantic ownership. Mixed evidence kinds
+  across description cells must not cause one cell's text to disappear.
 - **Evidence survives normalization.** Page, bounding box and raw text support
   financial fields and merchant attribution. Continuations need an owner; nearby
   text alone is not ownership proof. Repeated text can represent distinct source
@@ -54,8 +60,9 @@ row-extraction experiments.
 ## Verification and operational lessons
 
 Use Python 3.13 in `.venv`, synthetic tracked fixtures, focused failing tests
-before production behavior changes, then all four gates in AGENTS.md. This
-housekeeping change modifies documentation only and adds no production behavior.
+before production behavior changes, then all four gates in AGENTS.md. The
+merchant-field correction includes production changes and synthetic regressions;
+it has no private-corpus acceptance attestation.
 
 Tracked tests do not prove private corpus acceptance. For a parsing/evidence/output
 change, acceptance or merge additionally requires the reviewed committed SHA,
@@ -74,5 +81,5 @@ changes, not permission to weaken evidence or acceptance; see the
 [evidence index](evidence-index.md).
 
 The [release notes](../releases/v0.1.0.md) record acceptance for the exact published
-release. They do not attest to the current dirty documentation worktree or to
-experimental merchant outputs.
+release. They do not attest to later production changes or experimental merchant
+outputs.

@@ -459,12 +459,7 @@ def _normalize_row(
     )
     semantic_claims = list(semantic_validation.claims)
     diagnostics.extend(semantic_validation.diagnostics)
-    merchant, merchant_diagnostics = derive_merchant(
-        description=description,
-        rows=rows,
-        ledger=ledger,
-        claims=semantic_claims,
-    )
+    merchant, merchant_diagnostics = derive_merchant(description=description)
     diagnostics.extend(merchant_diagnostics)
 
     kind = TransactionKind.CREDIT if billed.amount < 0 else TransactionKind.CHARGE

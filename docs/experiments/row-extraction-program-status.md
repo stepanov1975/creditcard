@@ -36,6 +36,15 @@ are not measurements of this corrected complete-field contract. No parser
 implementation, frozen prediction, validation/held-out input or accepted gold
 was changed by this reference correction.
 
+The user's subsequent 2026-09-21 production-fix request corrects merchant trimming
+in `normalization_description.py`: preserve all field text and owned continuations,
+including codes, and retain separate date/amount/metadata ownership. This work
+uses synthetic regressions and does not alter frozen predictions or accepted gold.
+The correction passes 340 focused tests, all 3,766 repository tests, Ruff
+format/lint and mypy. See [current parser behavior](../knowledge/architecture.md).
+The private-corpus gate was not run; new-sample accuracy remains unmeasured.
+Human review is still the evaluation dependency.
+
 ## Latest measured extraction result
 
 The [unchanged-order spacing candidate](row-extraction-merchant-unchanged-order-spacing-report.md),

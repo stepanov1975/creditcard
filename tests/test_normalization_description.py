@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-
 import pytest
 
 import ccparser.normalization_description as normalization_description
@@ -11,7 +9,6 @@ from ccparser.evidence import Word
 from ccparser.layout import Cell, ColumnRole, ColumnSpec, Row, TableRegion, TableSchema
 from ccparser.models import EvidenceReference
 from ccparser.normalization_description import (
-    _primary_description_cluster,
     _render_selected_description,
     derive_merchant,
     extract_description,
@@ -20,7 +17,6 @@ from ccparser.normalization_description import (
 from ccparser.semantic_evidence import (
     DescriptionExtraction,
     EvidenceClaim,
-    EvidenceCluster,
     EvidenceLedger,
     SemanticOwner,
 )
@@ -232,38 +228,22 @@ def test_description_uses_complete_digital_cell_text_when_atom_rendering_disagre
     )
 
 
-def test_merchant_uses_trusted_digital_continuation_text(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("description", "expected", "diagnostics"),
+    (
+        ("Merchant ל IRELAND", "Merchant ל IRELAND", ()),
+        (" Merchant  123456 ", "Merchant 123456", ()),
+        (None, None, ()),
+        (" ", None, ("missing_merchant",)),
+    ),
+)
+def test_merchant_publishes_complete_field(
+    description: str | None, expected: str | None, diagnostics: tuple[str, ...]
 ) -> None:
-    base = _cell(
-        "Merchant ל",
-        1,
-        y=30.0,
-        words=(_word("Merchant ל", 50.0, 90.0, y=30.0),),
-    )
-    location = _cell(
-        "IRELAND",
-        1,
-        y=41.0,
-        words=(_word("IRELAND", 50.0, 90.0, y=41.0),),
-    )
-    rows = (_row(base), _row(location))
-    ledger = EvidenceLedger.from_rows(rows)
-    claims = (
-        _claim(SemanticOwner.DESCRIPTION, ledger, base),
-        _claim(SemanticOwner.DESCRIPTION, ledger, location),
-    )
-    monkeypatch.setattr(EvidenceLedger, "render", lambda self, selected: "DNALERI")
-
-    assert derive_merchant(
-        description="Merchant ל IRELAND",
-        rows=rows,
-        ledger=ledger,
-        claims=claims,
-    ) == ("Merchant", ())
+    assert derive_merchant(description=description) == (expected, diagnostics)
 
 
-def test_description_claims_separate_hyphenated_cluster_as_processor_reference() -> None:
+def test_description_preserves_reference_text_inside_merchant_field() -> None:
     reference_text = "123-456"
     reference = _cell(
         reference_text,
@@ -282,16 +262,13 @@ def test_description_claims_separate_hyphenated_cluster_as_processor_reference()
     ledger = EvidenceLedger.from_rows((row,))
 
     assert extract_description((row,), region, None, ledger) == DescriptionExtraction(
-        "Merchant",
-        (
-            _claim(SemanticOwner.DESCRIPTION, ledger, merchant),
-            _claim(SemanticOwner.PROCESSOR_REFERENCE, ledger, reference),
-        ),
+        "Merchant 123-456",
+        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant, reference),),
         (),
     )
 
 
-def test_description_rejects_tiny_processor_shaped_superscript_cell() -> None:
+def test_description_preserves_small_reference_text_in_field() -> None:
     reference_text = "123-456"
     reference = _cell(
         reference_text,
@@ -313,8 +290,8 @@ def test_description_rejects_tiny_processor_shaped_superscript_cell() -> None:
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
     assert (
-        ledger.atoms_for_cell(reference)
-        <= ledger.validate_claims(extraction.claims).unclaimed_atom_ids
+        not ledger.atoms_for_cell(reference)
+        & ledger.validate_claims(extraction.claims).unclaimed_atom_ids
     )
 
 
@@ -333,7 +310,7 @@ def test_description_rejects_tiny_processor_shaped_superscript_cell() -> None:
     ),
     ids=("cell-text-only", "mismatched-word"),
 )
-def test_description_standalone_processor_requires_exact_positioned_source(
+def test_description_preserves_fallback_reference_text_beside_positioned_merchant(
     words: tuple[Word, ...],
 ) -> None:
     reference = _cell(
@@ -348,14 +325,14 @@ def test_description_standalone_processor_requires_exact_positioned_source(
     extraction = extract_description((row,), region, None, ledger)
 
     assert extraction == DescriptionExtraction(
-        "Merchant",
+        "Merchant 123-456",
         (_claim(SemanticOwner.DESCRIPTION, ledger, merchant, reference),),
         (),
     )
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
 
 
-def test_description_leaves_uncorroborated_whole_unit_numeric_cell_unclaimed() -> None:
+def test_description_preserves_numeric_cell_without_corroboration() -> None:
     numeric = _cell(
         "123456",
         2,
@@ -369,14 +346,14 @@ def test_description_leaves_uncorroborated_whole_unit_numeric_cell_unclaimed() -
     validation = ledger.validate_claims(extraction.claims)
 
     assert extraction == DescriptionExtraction(
-        "Merchant",
-        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant),),
+        "Merchant 123456",
+        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant, numeric),),
         (),
     )
-    assert ledger.atoms_for_cell(numeric) <= validation.unclaimed_atom_ids
+    assert not ledger.atoms_for_cell(numeric) & validation.unclaimed_atom_ids
 
 
-def test_description_claims_processor_reference_beside_numeric_primary_cell() -> None:
+def test_description_preserves_reference_beside_numeric_primary_cell() -> None:
     reference = _cell(
         "123-456",
         2,
@@ -390,11 +367,8 @@ def test_description_claims_processor_reference_beside_numeric_primary_cell() ->
     ledger = EvidenceLedger.from_rows((row,))
 
     assert extract_description((row,), region, None, ledger) == DescriptionExtraction(
-        "12",
-        (
-            _claim(SemanticOwner.DESCRIPTION, ledger, primary),
-            _claim(SemanticOwner.PROCESSOR_REFERENCE, ledger, reference),
-        ),
+        "12 123-456",
+        (_claim(SemanticOwner.DESCRIPTION, ledger, primary, reference),),
         (),
     )
 
@@ -450,7 +424,7 @@ def test_description_does_not_claim_dashed_cluster_beside_typed_currency_primary
     )
 
 
-def test_description_leaves_uncorroborated_whole_unit_numeric_cluster_unclaimed() -> None:
+def test_description_preserves_numeric_cluster_without_corroboration() -> None:
     description = _cell(
         "Merchant 123456",
         1,
@@ -471,75 +445,8 @@ def test_description_leaves_uncorroborated_whole_unit_numeric_cluster_unclaimed(
     extraction = extract_description((row,), region, None, ledger)
     validation = ledger.validate_claims(extraction.claims)
 
-    assert extraction.value == "Merchant"
-    assert numeric_ids <= validation.unclaimed_atom_ids
-
-
-def test_processor_occurrence_geometry_is_frozen_and_explicitly_corroborated() -> None:
-    def occurrence(
-        row_index: int,
-        reference: str,
-    ) -> normalization_description._ProcessorOccurrence:
-        cell = _cell(
-            f"Merchant {reference}",
-            1,
-            bbox=(50.0, 30.0, 105.0, 40.0),
-            words=(
-                _word("Merchant", 50.0, 68.0),
-                _word(reference, 78.0, 99.0),
-            ),
-        )
-        ledger = EvidenceLedger.from_rows((_row(cell),))
-        line = normalization_description._cluster_lines(ledger.clusters_for_cell(cell))[0]
-        primary = _primary_description_cluster(line)
-        reference_cluster = next(cluster for cluster in line if cluster is not primary)
-        result = normalization_description._processor_occurrence(
-            row_index,
-            ledger,
-            cell,
-            line,
-            primary,
-            reference_cluster,
-        )
-        assert result is not None
-        return result
-
-    first = occurrence(3, "1234567")
-    matching_numeric = occurrence(4, "1234567")
-    positioned_anchor = occurrence(4, ".PROCESSOR")
-
-    assert tuple(first.__slots__) == (
-        "row_index",
-        "key",
-        "signature",
-        "center",
-        "height",
-        "side",
-    )
-    assert first.key == (
-        1,
-        (50.0, 30.0, 105.0, 40.0),
-        (50.0, 30.0, 68.0, 40.0),
-        (78.0, 30.0, 99.0, 40.0),
-        "1234567",
-    )
-    with pytest.raises(FrozenInstanceError):
-        first.side = -1
-    assert normalization_description._processor_occurrences_corroborate(
-        first,
-        matching_numeric,
-        require_signature_match=True,
-    )
-    assert not normalization_description._processor_occurrences_corroborate(
-        first,
-        positioned_anchor,
-        require_signature_match=True,
-    )
-    assert normalization_description._processor_occurrences_corroborate(
-        first,
-        positioned_anchor,
-        require_signature_match=False,
-    )
+    assert extraction.value == "Merchant 123456"
+    assert not numeric_ids & validation.unclaimed_atom_ids
 
 
 def _repeated_numeric_description_rows(
@@ -580,7 +487,7 @@ def _repeated_numeric_description_rows(
     )
 
 
-def test_description_claims_repeated_aligned_numeric_cluster_as_processor_reference() -> None:
+def test_description_preserves_repeated_aligned_numeric_cluster() -> None:
     first, second, _, _ = _repeated_numeric_description_rows("1234567")
     region = _region(
         (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
@@ -590,22 +497,18 @@ def test_description_claims_repeated_aligned_numeric_cluster_as_processor_refere
     atom_id_by_text = {atom.text: atom.atom_id for atom in ledger.atoms}
 
     assert extract_description((first,), region, None, ledger) == DescriptionExtraction(
-        "Merchant",
+        "Merchant 1234567",
         (
             EvidenceClaim(
                 SemanticOwner.DESCRIPTION,
-                frozenset((atom_id_by_text["Merchant"],)),
-            ),
-            EvidenceClaim(
-                SemanticOwner.PROCESSOR_REFERENCE,
-                frozenset((atom_id_by_text["1234567"],)),
+                frozenset((atom_id_by_text["Merchant"], atom_id_by_text["1234567"])),
             ),
         ),
         (),
     )
 
 
-def test_description_rejects_repeated_numeric_band_with_typed_currency_primary() -> None:
+def test_description_preserves_currency_shaped_primary_and_numeric_text() -> None:
     descriptions: list[Cell] = []
     rows: list[Row] = []
     for y, raw_date in ((30.0, "01/02/2026"), (50.0, "02/02/2026")):
@@ -637,7 +540,8 @@ def test_description_rejects_repeated_numeric_band_with_typed_currency_primary()
     extraction = extract_description((rows[0],), region, None, ledger)
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
-    assert numeric_ids <= ledger.validate_claims(extraction.claims).unclaimed_atom_ids
+    assert extraction.value == "USD 1234567"
+    assert not numeric_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids
 
 
 def _processor_anchor_and_numeric_rows(
@@ -703,7 +607,7 @@ def _processor_anchor_and_numeric_rows(
     )
 
 
-def test_description_claims_numeric_cluster_in_processor_anchored_secondary_band() -> None:
+def test_description_preserves_numeric_cluster_despite_external_reference_anchor() -> None:
     anchor, numeric, numeric_description = _processor_anchor_and_numeric_rows()
     region = _region(
         (
@@ -719,15 +623,15 @@ def test_description_claims_numeric_cluster_in_processor_anchored_secondary_band
 
     extraction = extract_description((numeric,), region, None, ledger)
 
-    assert extraction.value == "Merchant"
-    assert EvidenceClaim(SemanticOwner.PROCESSOR_REFERENCE, numeric_ids) in extraction.claims
+    assert extraction.value == "Merchant 7654321"
+    assert extraction.claims == (_claim(SemanticOwner.DESCRIPTION, ledger, numeric_description),)
     assert not (numeric_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids)
     assert ledger.atoms_for_cell(numeric_description) == frozenset(
         atom_id for claim in extraction.claims for atom_id in claim.atom_ids
     )
 
 
-def test_description_claims_exact_processor_anchor_occurrence_in_proven_band() -> None:
+def test_description_preserves_reference_anchor_inside_field() -> None:
     anchor, numeric, _ = _processor_anchor_and_numeric_rows()
     region = _region(
         (
@@ -743,8 +647,8 @@ def test_description_claims_exact_processor_anchor_occurrence_in_proven_band() -
 
     extraction = extract_description((anchor,), region, None, ledger)
 
-    assert extraction.value == "Market"
-    assert EvidenceClaim(SemanticOwner.PROCESSOR_REFERENCE, anchor_ids) in extraction.claims
+    assert extraction.value == "Market .PROCESSOR"
+    assert extraction.claims == (_claim(SemanticOwner.DESCRIPTION, ledger, anchor.cells[1]),)
     assert not (anchor_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids)
 
 
@@ -791,7 +695,7 @@ def test_description_claims_exact_processor_anchor_occurrence_in_proven_band() -
         "financial-external",
     ),
 )
-def test_description_rejects_unproven_numeric_secondary_band(
+def test_description_preserves_numeric_field_regardless_of_external_anchor(
     anchor_primary: str,
     anchor_reference: str,
     anchor_reference_x: float,
@@ -826,7 +730,8 @@ def test_description_rejects_unproven_numeric_secondary_band(
     extraction = extract_description((numeric,), region, None, ledger)
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
-    assert numeric_ids <= ledger.validate_claims(extraction.claims).unclaimed_atom_ids
+    assert extraction.value == f"{numeric_primary} 7654321"
+    assert not numeric_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids
 
 
 @pytest.mark.parametrize(
@@ -834,7 +739,7 @@ def test_description_rejects_unproven_numeric_secondary_band(
     (("7654321", 78.0), ("1234567", 105.0)),
     ids=("not-repeated", "misaligned"),
 )
-def test_description_does_not_claim_unproven_numeric_cluster_as_processor_reference(
+def test_description_preserves_numeric_cluster_regardless_of_other_rows(
     second_reference: str,
     second_reference_x: float,
 ) -> None:
@@ -851,11 +756,11 @@ def test_description_does_not_claim_unproven_numeric_cluster_as_processor_refere
     numeric_ids = frozenset(atom.atom_id for atom in ledger.atoms if atom.text == "1234567")
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
-    assert numeric_ids <= ledger.validate_claims(extraction.claims).unclaimed_atom_ids
-    assert "1234567" not in (extraction.value or "")
+    assert not numeric_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids
+    assert extraction.value == "Merchant 1234567"
 
 
-def test_description_does_not_apply_repeated_numeric_proof_to_rogue_occurrence() -> None:
+def test_description_preserves_all_numeric_components() -> None:
     first, second, _, _ = _repeated_numeric_description_rows("1234567")
     rogue_description = _cell(
         "Store 42 1234567",
@@ -883,11 +788,11 @@ def test_description_does_not_apply_repeated_numeric_proof_to_rogue_occurrence()
     extraction = extract_description((rogue,), region, None, ledger)
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
-    assert extraction.value == "Store 42"
-    assert numeric_ids <= ledger.validate_claims(extraction.claims).unclaimed_atom_ids
+    assert extraction.value == "Store 42 1234567"
+    assert not numeric_ids & ledger.validate_claims(extraction.claims).unclaimed_atom_ids
 
 
-def test_description_ignores_excluded_numeric_semantics_when_classifying_processor() -> None:
+def test_description_preserves_reference_but_excludes_owned_date_atoms() -> None:
     description = _cell(
         "Merchant 01/02/2026 123-456",
         1,
@@ -910,22 +815,18 @@ def test_description_ignores_excluded_numeric_semantics_when_classifying_process
         ledger,
         excluded_atom_ids=frozenset((atom_id_by_text["01/02/2026"],)),
     ) == DescriptionExtraction(
-        "Merchant",
+        "Merchant 123-456",
         (
             EvidenceClaim(
                 SemanticOwner.DESCRIPTION,
-                frozenset((atom_id_by_text["Merchant"],)),
-            ),
-            EvidenceClaim(
-                SemanticOwner.PROCESSOR_REFERENCE,
-                frozenset((atom_id_by_text["123-456"],)),
+                frozenset((atom_id_by_text["Merchant"], atom_id_by_text["123-456"])),
             ),
         ),
         (),
     )
 
 
-def test_description_rejects_competing_standalone_processor_references() -> None:
+def test_description_preserves_multiple_references_inside_field() -> None:
     references = (
         _cell(
             "123-456",
@@ -947,17 +848,17 @@ def test_description_rejects_competing_standalone_processor_references() -> None
     validation = ledger.validate_claims(extraction.claims)
 
     assert extraction == DescriptionExtraction(
-        "Merchant",
-        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant),),
+        "Merchant 123-456 789-012",
+        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant, *references),),
         (),
     )
     assert all(
-        ledger.atoms_for_cell(reference) <= validation.unclaimed_atom_ids
+        not ledger.atoms_for_cell(reference) & validation.unclaimed_atom_ids
         for reference in references
     )
 
 
-def test_description_rejects_misaligned_standalone_processor_reference() -> None:
+def test_description_preserves_reference_on_second_line() -> None:
     reference = _cell(
         "123-456",
         2,
@@ -969,10 +870,11 @@ def test_description_rejects_misaligned_standalone_processor_reference() -> None
 
     extraction = extract_description((row,), region, None, ledger)
 
+    assert extraction.value == "Merchant 123-456"
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
 
 
-def test_description_rejects_processor_reference_on_structural_continuation() -> None:
+def test_description_preserves_reference_on_structural_continuation() -> None:
     reference = _cell(
         "123-456",
         2,
@@ -991,6 +893,7 @@ def test_description_rejects_processor_reference_on_structural_continuation() ->
 
     extraction = extract_description((row,), region, None, ledger)
 
+    assert extraction.value == "Merchant 123-456"
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
 
 
@@ -998,7 +901,7 @@ def test_description_rejects_processor_reference_on_structural_continuation() ->
     "typed_primary",
     ("99.00", "01/02/2026", "1/3", "USD", "12%", "+123456", "(123456)"),
 )
-def test_description_rejects_processor_reference_beside_only_typed_semantic_cell(
+def test_description_preserves_typed_primary_inside_field(
     typed_primary: str,
 ) -> None:
     reference = _cell(
@@ -1017,7 +920,8 @@ def test_description_rejects_processor_reference_beside_only_typed_semantic_cell
     validation = ledger.validate_claims(extraction.claims)
 
     assert all(claim.owner is not SemanticOwner.PROCESSOR_REFERENCE for claim in extraction.claims)
-    assert ledger.atoms_for_cell(primary) <= validation.unclaimed_atom_ids
+    assert extraction.value == f"{typed_primary} 123-456"
+    assert not ledger.atoms_for_cell(primary) & validation.unclaimed_atom_ids
 
 
 @pytest.mark.parametrize(
@@ -1035,7 +939,7 @@ def test_description_rejects_processor_reference_beside_only_typed_semantic_cell
         "123456-",
     ),
 )
-def test_description_does_not_claim_separate_typed_semantic_cell(
+def test_description_preserves_typed_text_inside_field_without_other_owner(
     semantic_text: str,
 ) -> None:
     semantic = _cell(
@@ -1048,8 +952,8 @@ def test_description_does_not_claim_separate_typed_semantic_cell(
     ledger = EvidenceLedger.from_rows((row,))
 
     assert extract_description((row,), region, None, ledger) == DescriptionExtraction(
-        "Merchant",
-        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant),),
+        f"Merchant {semantic_text}",
+        (_claim(SemanticOwner.DESCRIPTION, ledger, merchant, semantic),),
         (),
     )
 
@@ -1071,32 +975,6 @@ def test_description_keeps_alphabetic_fragment_with_edge_punctuation(fragment: s
     assert extraction.value == f"Merchant {fragment}"
     assert not ledger.atoms_for_cell(merchant) & validation.unclaimed_atom_ids
     assert not ledger.atoms_for_cell(punctuated) & validation.unclaimed_atom_ids
-
-
-@pytest.mark.parametrize(
-    ("clusters", "expected_index"),
-    (
-        (
-            (
-                EvidenceCluster((0.0, 0.0, 10.0, 10.0), frozenset({0}), "ALPHA"),
-                EvidenceCluster((20.0, 0.0, 30.0, 10.0), frozenset({1}), "BETA"),
-            ),
-            0,
-        ),
-        (
-            (
-                EvidenceCluster((0.0, 0.0, 10.0, 10.0), frozenset({0}), "אלפא"),
-                EvidenceCluster((20.0, 0.0, 30.0, 10.0), frozenset({1}), "בטא"),
-            ),
-            1,
-        ),
-    ),
-)
-def test_primary_description_cluster_preserves_ltr_and_rtl_edges(
-    clusters: tuple[EvidenceCluster, EvidenceCluster],
-    expected_index: int,
-) -> None:
-    assert _primary_description_cluster(clusters) is clusters[expected_index]
 
 
 def test_description_splits_date_boundary_and_claims_only_residual_text() -> None:
@@ -1170,7 +1048,7 @@ def test_description_column_only_continuation_is_owned_without_boundary_fallback
 
 
 @pytest.mark.parametrize("merchant_suffix", ("", " 42"))
-def test_description_extracts_processor_reference_as_a_distinct_claim(
+def test_description_preserves_repeated_punctuation_prefixed_reference(
     merchant_suffix: str,
 ) -> None:
     rows: list[Row] = []
@@ -1216,19 +1094,10 @@ def test_description_extracts_processor_reference_as_a_distinct_claim(
     )
     ledger = EvidenceLedger.from_rows((rows[0],))
     description_ids = ledger.atoms_for_cell(descriptions[0])
-    merchant_ids = frozenset(
-        atom_id for atom_id in description_ids if ledger.atoms[atom_id].text in {"*CHATGPT", "42"}
-    )
-    processor_ids = frozenset(
-        atom_id for atom_id in description_ids if ledger.atoms[atom_id].text == ".OPENAI"
-    )
 
     assert extract_description((rows[0],), region, None, ledger) == DescriptionExtraction(
-        f"*CHATGPT{merchant_suffix}",
-        (
-            EvidenceClaim(SemanticOwner.DESCRIPTION, merchant_ids),
-            EvidenceClaim(SemanticOwner.PROCESSOR_REFERENCE, processor_ids),
-        ),
+        f"*CHATGPT{merchant_suffix} .OPENAI",
+        (EvidenceClaim(SemanticOwner.DESCRIPTION, description_ids),),
         (),
     )
 
@@ -1269,7 +1138,7 @@ def test_description_recovers_boundary_cluster_from_adjacent_unknown_column() ->
     )
 
 
-def test_description_marks_competing_continuation_clusters_in_order() -> None:
+def test_description_preserves_owned_continuation_clusters_in_order() -> None:
     description = _cell("Merchant", 1, 30.0)
     base = _row(_cell("01/02/2026", 0), description, _cell("10.00", 2))
     continuation_cell = _cell(
@@ -1298,7 +1167,7 @@ def test_description_marks_competing_continuation_clusters_in_order() -> None:
             _claim(SemanticOwner.DESCRIPTION, ledger, description),
             _claim(SemanticOwner.DESCRIPTION, ledger, continuation_cell),
         ),
-        ("ambiguous_description_continuation",),
+        (),
     )
 
 
