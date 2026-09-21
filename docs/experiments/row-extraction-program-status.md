@@ -13,7 +13,16 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current objective: merchant field ownership correction
+## Current objective: main integration and full-corpus evaluation
+
+**Status:** IN_PROGRESS — the user's 2026-09-21 integration request supersedes
+the next fresh-sample recommendation. Follow the
+[integration plan and evaluation record](../maintenance/2026-09-21-main-integration.md).
+Freeze the candidate, run the protected corpus gate, report aggregate outcomes
+and merge only after acceptance. Further extractor improvements are paused for
+this evaluation. Existing reference/ownership experiments stay frozen.
+
+## Completed objective: merchant field ownership correction
 
 **Status:** COMPLETE — the [plan and report](row-extraction-field-ownership-report.md)
 records **11/11 corrected synthetic cases and 6/6 preserved controls**, compared
