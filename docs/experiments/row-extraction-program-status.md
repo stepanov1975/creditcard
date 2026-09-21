@@ -13,7 +13,16 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current objective: fresh-sample continuation evaluation
+## Current objective: merchant field ownership correction
+
+**Status:** IN_PROGRESS — the user authorized the next bounded implementation.
+The [plan and report](row-extraction-field-ownership-report.md) fixes geometric
+cross-column inclusion and merchant continuations swallowed by conversion-detail
+blocks using invented evidence and existing public parser interfaces. Complete
+the focused corrections, verification, documentation and local commit without
+requiring approval between subtasks. Fresh-document accuracy is NOT MEASURED.
+
+## Frozen fresh-sample continuation evaluation: human dependency
 
 **Status:** AWAITING_HUMAN_REVIEW for output ownership only. All **16 references
 and six page censuses are human-confirmed**, without edits. The
