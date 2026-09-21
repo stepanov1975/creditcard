@@ -1176,7 +1176,9 @@ def _preview_rows(
     return tuple(preview)
 
 
-def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -> bool:
+def _is_description_continuation(
+    row: Row, previous: Row, schema: TableSchema, *, primary: Row
+) -> bool:
     if len(row.cells) != 1 or _is_total_row(row) or _literal_header_role_count(row) >= 2:
         return False
     description_columns = tuple(
@@ -1202,10 +1204,15 @@ def _is_description_continuation(row: Row, previous: Row, schema: TableSchema) -
         or is_money_shaped(normalized_text)
         or is_currency_shaped(cell.text)
         or numeric_only
-    ):
+    ) and not column.bbox[0] <= cell.bbox[0] < cell.bbox[2] <= column.bbox[2]:
+        # Typed-looking text is still merchant text when the whole cell is
+        # inside the description field. Do not extend the alignment tolerance
+        # to numeric fragments that may belong to an adjacent financial column.
         return False
     minimum_alignment = _minimum_row_alignment(schema)
-    if _row_alignment(previous, schema) < minimum_alignment:
+    # Check transaction shape on the primary owner, while measuring adjacency
+    # from the last accepted line. An owned continuation has no date or amount.
+    if _row_alignment(primary, schema) < minimum_alignment:
         return False
     typical_height = statistics.median(
         _height(candidate.bbox) for candidate in (*previous.cells, *row.cells)
@@ -2550,6 +2557,7 @@ def _inherited_region_after_total(
             projected,
             state.previous,
             schema,
+            primary=state.regular_rows[-1],
         ):
             description_match = single_row_match(
                 projected,
@@ -2808,7 +2816,9 @@ def _detect_from_header(
             if auxiliary_fragment is not None:
                 state.accept_continuation(auxiliary_fragment)
                 continue
-        if _is_description_continuation(projected, state.previous, schema):
+        if state.regular_rows and _is_description_continuation(
+            projected, state.previous, schema, primary=state.regular_rows[-1]
+        ):
             description_match = single_row_match(
                 projected,
                 start_index=index,

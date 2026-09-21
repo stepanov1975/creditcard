@@ -4871,3 +4871,50 @@ def test_detect_table_regions_rejects_empty_secondary_without_explicit_billed_he
     )
 
     assert detect_table_regions(page) == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "x0", "x1", "y", "expected_regions"),
+    (
+        ("03/02/2026", 0.0, 22.0, 61.0, 1),
+        ("123.45", 92.0, 120.0, 61.0, 1),
+        ("123456", 25.0, 40.0, 61.0, 1),
+        ("USD", 75.0, 90.0, 61.0, 1),
+        ("123456", 35.0, 72.0, 95.0, 1),
+        ("123456", 35.0, 72.0, 21.0, 0),
+    ),
+    ids=("date-column", "amount-column", "left-boundary", "right-boundary", "distant", "leading"),
+)
+def test_typed_continuation_requires_owned_merchant_field(
+    text: str, x0: float, x1: float, y: float, expected_regions: int
+) -> None:
+    page = _page(
+        (
+            _word("Date", 0.0, 22.0, 10.0),
+            _word("Description", 35.0, 72.0, 10.0),
+            _word("Amount", 92.0, 120.0, 10.0),
+            _word("01/02/2026", 0.0, 22.0, 35.0),
+            _word("Market", 35.0, 72.0, 35.0),
+            _word("10.00", 92.0, 120.0, 35.0),
+            _word("02/02/2026", 0.0, 22.0, 50.0),
+            _word("Cafe", 35.0, 72.0, 50.0),
+            _word("20.00", 92.0, 120.0, 50.0),
+            _word(text, x0, x1, y),
+        )
+    )
+
+    regions = detect_table_regions(page)
+
+    assert len(regions) == expected_regions
+    if not regions:
+        # An unowned leading fragment leaves the table ambiguous.
+        return
+    assert len(regions[0].rows) == 2
+    assert tuple(cell.text for row in regions[0].rows for cell in row.cells) == (
+        "01/02/2026",
+        "Market",
+        "10.00",
+        "02/02/2026",
+        "Cafe",
+        "20.00",
+    )

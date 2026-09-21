@@ -194,7 +194,11 @@ def is_description_continuation(row: Row, previous: Row, region: TableRegion) ->
             ColumnRole.INSTALLMENT,
         )
     )
-    if len(description_cells) != 1 or has_transaction_fields:
+    if not description_cells or has_transaction_fields:
+        return False
+    if len(description_cells) > 1 and len(description_cells) != len(row.cells):
+        # A split field can own every cell in the continuation, but additional
+        # cells outside that field need their own ownership evidence.
         return False
     typical_height = statistics.median(
         bbox_height(candidate.bbox) for candidate in (*previous.cells, *row.cells)

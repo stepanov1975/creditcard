@@ -1,7 +1,7 @@
 # Architecture and engineering lessons
 
 This describes the merchant-gold-seed checkout, including the 2026-09-21 complete
-merchant-field correction. Different semantic/observation implementations remain
+merchant-field and continuation corrections. Different semantic/observation implementations remain
 preserved on side branches. Public contracts
 are in [README](../../README.md) and [SUPPORT](../../SUPPORT.md); terminology is in
 [CONTEXT](../../CONTEXT.md).
@@ -41,6 +41,11 @@ row-extraction experiments.
   token meaning does not establish a shorter business name. References in
   separate columns retain their own semantic ownership. Mixed evidence kinds
   across description cells must not cause one cell's text to disappear.
+  Typed-looking continuation text wholly inside a proven description column stays
+  in the field. Multiple wrapped lines keep their original transaction owner and
+  use the preceding line for adjacency; split continuation cells stay together
+  when every cell belongs to the field. See the
+  [synthetic continuation results](../experiments/row-extraction-complete-field-continuations-report.md).
 - **Evidence survives normalization.** Page, bounding box and raw text support
   financial fields and merchant attribution. Continuations need an owner; nearby
   text alone is not ownership proof. Repeated text can represent distinct source

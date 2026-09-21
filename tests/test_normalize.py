@@ -1053,6 +1053,36 @@ def test_normalize_statement_preserves_owned_multiword_merchant_continuation() -
     assert result.reconciliation.status is Status.RECONCILED
 
 
+def test_normalize_statement_preserves_split_cells_in_merchant_continuation() -> None:
+    region = _region(
+        (ColumnRole.DATE, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT),
+        (
+            _row(
+                _cell("01/02/2026", 0, 30.0),
+                _cell("Merchant", 1, 30.0),
+                _cell("10.00", 2, 30.0),
+            ),
+            _row(
+                _cell("WEST", 1, 41.0).model_copy(update={"bbox": (50.0, 41.0, 62.0, 51.0)}),
+                _cell("123456", 1, 41.0).model_copy(update={"bbox": (75.0, 41.0, 90.0, 51.0)}),
+            ),
+            _row(
+                _cell("02/02/2026", 0, 65.0),
+                _cell("Next merchant", 1, 65.0),
+                _cell("20.00", 2, 65.0),
+            ),
+        ),
+    )
+
+    result = normalize_statement(_discovery(region, "30.00", "ILS"))
+
+    assert tuple(transaction.merchant for transaction in result.transactions) == (
+        "Merchant WEST 123456",
+        "Next merchant",
+    )
+    assert result.reconciliation.status is Status.RECONCILED
+
+
 def test_normalize_statement_rejects_leading_detail_without_a_proven_previous_owner() -> None:
     leading = _row(
         _cell("conversion detail", 1, 30.0),
@@ -6493,9 +6523,15 @@ def test_page_evidence_discovery_and_normalization_merge_wrapped_merchant() -> N
     assert result.reconciliation.status is Status.RECONCILED
 
 
-@pytest.mark.parametrize("continuation", ("Store 24", "7 Eleven"))
-def test_page_evidence_keeps_digit_bearing_merchant_continuation(
+@pytest.mark.parametrize(
+    "continuation", ("Store 24", "7 Eleven", "123456", "USD", "123.45", "12/03", "2/6")
+)
+@pytest.mark.parametrize("split_cells", (False, True))
+@pytest.mark.parametrize("wrapped_lines", (1, 2))
+def test_page_evidence_keeps_complete_merchant_continuation(
     continuation: str,
+    split_cells: bool,
+    wrapped_lines: int,
 ) -> None:
     def word(text: str, x0: float, x1: float, y: float) -> Word:
         return Word(text=text, bbox=(x0, y, x1, y + 10.0), source="digital", confidence=1.0)
@@ -6507,12 +6543,14 @@ def test_page_evidence_keeps_digit_bearing_merchant_continuation(
         word("01/02/2026", 0.0, 22.0, 30.0),
         word("Long merchant", 35.0, 72.0, 30.0),
         word("₪10.00", 92.0, 120.0, 30.0),
-        word(continuation, 35.0, 72.0, 41.0),
-        word("02/02/2026", 0.0, 22.0, 60.0),
-        word("Cafe", 35.0, 72.0, 60.0),
-        word("₪20.00", 92.0, 120.0, 60.0),
-        word("Total", 35.0, 72.0, 80.0),
-        word("₪30.00", 92.0, 120.0, 80.0),
+        word(continuation, 35.0, 45.0 if split_cells else 72.0, 41.0),
+        *((word("TAIL", 55.0, 72.0, 41.0),) if split_cells else ()),
+        *((word("SECOND", 35.0, 72.0, 52.0),) if wrapped_lines == 2 else ()),
+        word("02/02/2026", 0.0, 22.0, 71.0),
+        word("Cafe", 35.0, 72.0, 71.0),
+        word("₪20.00", 92.0, 120.0, 71.0),
+        word("Total", 35.0, 72.0, 91.0),
+        word("₪30.00", 92.0, 120.0, 91.0),
     )
     page = PageEvidence(
         page_number=1,
@@ -6534,7 +6572,10 @@ def test_page_evidence_keeps_digit_bearing_merchant_continuation(
     result = normalize_statement(discovery)
 
     assert len(result.transactions) == 2
-    assert result.transactions[0].description == f"Long merchant {continuation}"
+    expected = f"Long merchant {continuation}" + (" TAIL" if split_cells else "")
+    expected += " SECOND" if wrapped_lines == 2 else ""
+    assert result.transactions[0].description == expected
+    assert result.transactions[0].merchant == expected
     assert result.transactions[1].description == "Cafe"
     assert result.reconciliation.status is Status.RECONCILED
 

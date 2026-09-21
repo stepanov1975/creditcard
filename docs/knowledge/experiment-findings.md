@@ -88,6 +88,12 @@ validation accuracy, a population estimate or private-corpus acceptance.
 
 ## What the error studies taught us
 
+- **Test continuation loss through discovery as well as normalization.** The
+  [synthetic continuation fix](../experiments/row-extraction-complete-field-continuations-report.md)
+  raises complete-field regressions from 9/29 to 29/29 with all nine rejection
+  controls preserved. Token-shaped fields, multiple wrapped lines and split
+  continuation cells are covered. This is development evidence, not new-document
+  accuracy or a rescore of the frozen pilot.
 - **Preserve the complete merchant field.** The six-document pilot's AI source
   review finds 23 outside-field indicators, 12 other incomplete fields and four
   unmatched transactions; 15 of the 23 also miss continuations. These provisional

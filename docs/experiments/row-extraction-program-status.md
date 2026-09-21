@@ -15,15 +15,23 @@ derived financial value is recorded here.
 
 ## Current objective: complete merchant-field continuations
 
-**Status:** IN_PROGRESS — the user authorized proceeding with the recommended
-field capture, continuation and discovery improvements. The
-[bounded plan](row-extraction-complete-field-continuations-report.md) uses synthetic
-positioned evidence and existing public interfaces to test complete-field output
-and downstream transaction counts. No scored private cases are development inputs.
-Implement only general defects reproduced with failing tests, then run all gates.
+**Status:** COMPLETE — the authorized, bounded continuation/discovery fixes are
+implemented and verified. The
+[implementation report](row-extraction-complete-field-continuations-report.md)
+records synthetic complete-field cases improving from **9/29 to 29/29**, with
+**9/9 rejection controls preserved**. Numeric/currency/date-shaped field text,
+multiple wrapped lines and split continuation cells now retain their ownership;
+downstream transaction discovery survives those continuations. No future-billing
+filter changed. All **3,802 repository tests**, Ruff format/lint and mypy pass.
 
-The earlier evaluation below remains frozen with its human dependency outstanding;
-this authorization does not supply ownership confirmations or permit rescoring.
+No scored private cases were development inputs. Fresh-document accuracy is
+**NOT MEASURED** and private-corpus verification was not run. The next measurement
+requires a predeclared fresh sample with source-reviewed references and this
+candidate frozen before scoring. No production merge is authorized by these tests.
+
+The earlier evaluation below remains **AWAITING_HUMAN_REVIEW** with its ownership
+confirmation dependency outstanding. Its sample, predictions and scores remain
+frozen; the implementation authorization did not supply human confirmations.
 
 ## Frozen document-disjoint evaluation: human dependency
 

@@ -1210,3 +1210,19 @@ def test_description_preserves_empty_result_and_ordered_diagnostic() -> None:
         None,
         EvidenceLedger.from_rows((row,)),
     ) == DescriptionExtraction(None, (), ("missing_description_cell",))
+
+
+@pytest.mark.parametrize("extra_role", (ColumnRole.DATE, ColumnRole.AMOUNT, ColumnRole.UNKNOWN))
+def test_split_merchant_continuation_rejects_unowned_extra_column(extra_role: ColumnRole) -> None:
+    base = _row(_cell("Merchant", 0), _cell("10.00", 2))
+    continuation = _row(
+        _cell("WEST", 0, 41.0, bbox=(0.0, 41.0, 12.0, 51.0)),
+        _cell("123456", 0, 41.0, bbox=(25.0, 41.0, 40.0, 51.0)),
+        _cell("extra", 1, 41.0),
+    )
+    region = _region(
+        (ColumnRole.DESCRIPTION, extra_role, ColumnRole.AMOUNT),
+        (base, continuation),
+    )
+
+    assert not is_description_continuation(continuation, base, region)
