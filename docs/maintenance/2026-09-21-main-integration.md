@@ -1,7 +1,7 @@
 # Main integration and full-corpus evaluation
 
-Status: AWAITING_BASELINE_PROMOTION_APPROVAL — date conflicts fixed; full
-diagnostic passes; formal acceptance and merge remain pending.
+Status: COMPLETE — approved baseline promotion and formal VERIFY passed;
+main fast-forwarded to the exact verified candidate `84bee46`.
 The user requested integration of the accumulated work and
 a full-corpus evaluation before further extractor improvements on 2026-09-21.
 
@@ -199,18 +199,18 @@ text/order changes. These are the accumulated field-ownership changes, not the
 date correction. The private before/after review file groups them accordingly;
 this classification does not establish source-adjudicated merchant accuracy.
 
-## Concrete remaining decision
+## Reviewed promotion decision
 
 The private `artifacts/main-integration-evaluation/date-fix/` packet contains
 diagnostic results, CSV/JSON comparisons, the description review and the proposed
 promotion procedure. No accepted baseline, membership, gold reference or protected
 evaluation label was changed. Main remains unchanged.
 
-Baseline promotion requires explicit authorization under
+Baseline promotion required explicit authorization under
 [AGENTS.md](../../AGENTS.md#task-level-authorization-and-persistence): “Separate
 authorization is still required for ... changing accepted gold or protected
-corpus membership/baselines”. This is the remaining policy dependency, not a
-request to approve another implementation subtask.
+corpus membership/baselines”. The user explicitly approved this concrete
+promotion, and execution continued through acceptance and merge.
 
 The prepared action is to RECORD at the new, nonexistent private path
 `.superpowers/private/corpus-baseline-main-integration-date-fix.json`, preserving
@@ -221,3 +221,46 @@ baseline in the private controller. Require full VERIFY on that same clean,
 reviewed revision with repeated fresh caches and `performance_checked=true`.
 Only then fast-forward main. Unexpected output, count or performance differences
 remain failures; no acceptance threshold is weakened.
+
+## Formal acceptance and merge
+
+The exact candidate for both RECORD and VERIFY was
+`84bee46d9ef6f7ee774b70bfa005d5233d51e06c`, which adds only the diagnostic report
+to the tested implementation. Both runs required that SHA and a clean worktree
+before execution, within the gate and immediately after success. Each mode used
+four workers, two independent empty-cache retained runs and two independent
+empty-cache quarantine runs.
+
+RECORD passed in 1,833.56 seconds of controller wall time. Both repeated JSON/CSV
+outputs, for both populations, match the already reviewed diagnostic exactly.
+The recorded structural projections repeat exactly as well. The runtime change
+is limited to the previously reviewed Python runtime fingerprint and its enclosing
+digest. The old baseline file and original controller were preserved. After
+review, the new baseline's full-file SHA-256 was independently pinned in the
+private controller; stale corpus/inventory paths were corrected without changing
+membership or its independent pin. The runtime tolerance remains `0.20`.
+
+VERIFY passed in 1,832.49 seconds of controller wall time and emitted:
+
+```text
+status=passed mode=verify retained=104 reconciled=104 quarantined=5 elapsed_seconds=1591.600264110 performance_checked=true
+```
+
+All four verification JSON/CSV outputs match their corresponding pinned baseline
+runs. Both retained runs reconcile 104/104 statements with 2,231 transactions;
+both quarantine runs classify 5/5 documents as `not_statement`. Membership,
+baseline parity, repeated determinism, toolchain identity, worker count and
+performance all pass. The old baseline and protected membership remain intact.
+
+Local and remote main were checked at `661c200` before integration. Local main
+was then fast-forwarded to the exact accepted candidate `84bee46`. This completion
+record and knowledge/status updates are documentation-only follow-ups; they do
+not change the attested parser or configuration. Detailed receipts and outputs
+remain ignored under `artifacts/main-integration-evaluation/promotion/`.
+
+Scope: shared extraction evaluation and integration. Measurement: complete
+protected-corpus acceptance with exact output/structural parity and performance.
+Result: PASS; no financial or transaction-date regression, and no new merchant
+accuracy estimate. The objective is complete. No new experiment is active;
+future improvement should use a predeclared fresh-document evaluation of the
+integrated parser, preserving the earlier frozen references and human dependencies.

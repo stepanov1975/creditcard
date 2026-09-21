@@ -26,4 +26,5 @@ Repository housekeeping lives separately in the
 Historical instructions and unchecked plan boxes are evidence, not pending work.
 
 The [main integration evaluation](../maintenance/2026-09-21-main-integration.md)
-records the latest full-corpus check and the acceptance failures blocking merge.
+records the completed main integration, approved baseline promotion and passing
+full-corpus verification, including the performance check.

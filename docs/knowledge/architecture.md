@@ -1,6 +1,6 @@
 # Architecture and engineering lessons
 
-This describes the merchant-gold-seed checkout, including the 2026-09-21 complete
+This describes the integrated main parser, including the 2026-09-21 complete
 merchant-field and continuation corrections. Different semantic/observation implementations remain
 preserved on side branches. Public contracts
 are in [README](../../README.md) and [SUPPORT](../../SUPPORT.md); terminology is in
@@ -77,7 +77,11 @@ row-extraction experiments.
 Use Python 3.13 in `.venv`, synthetic tracked fixtures, focused failing tests
 before production behavior changes, then all four gates in AGENTS.md. The
 merchant-field correction includes production changes and synthetic regressions;
-it has no private-corpus acceptance attestation.
+the integrated candidate `84bee46` has a passing private-corpus VERIFY attestation
+with 104 reconciled statements, five quarantine results and checked performance.
+The [integration report](../maintenance/2026-09-21-main-integration.md) identifies
+the exact accepted revision and approved baseline promotion. This regression
+acceptance does not establish new-document merchant accuracy.
 
 Tracked tests do not prove private corpus acceptance. For a parsing/evidence/output
 change, acceptance or merge additionally requires the reviewed committed SHA,

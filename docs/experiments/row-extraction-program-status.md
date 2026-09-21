@@ -13,29 +13,28 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current objective: main integration and full-corpus evaluation
+## Completed objective: main integration and full-corpus evaluation
 
-**Status:** AWAITING_BASELINE_PROMOTION_APPROVAL. The existing statement-date
-failures are corrected in `0e3e685`: charge-total dates belong to payment groups,
-not statement identity. All **3,824 tests**, Ruff and mypy pass. The
-[full evaluation record](../maintenance/2026-09-21-main-integration.md) reports a
-fresh-cache diagnostic with **104/104 retained documents reconciled**, **5/5
-quarantine classifications correct**, and unchanged **2,231 transactions**.
+**Status:** COMPLETE — main fast-forwarded to corpus-verified candidate
+`84bee46d9ef6f7ee774b70bfa005d5233d51e06c`. The user explicitly approved the
+reviewed baseline promotion. RECORD and VERIFY both passed their independent
+fresh-cache repeats with four workers; VERIFY reports **104 retained, 104
+reconciled, five quarantined, and `performance_checked=true`**. All **2,231
+transactions** remain. The old baseline and protected membership are preserved;
+the new baseline is independently pinned. All **3,824 tests**, Ruff and mypy pass.
+See the [full evaluation record](../maintenance/2026-09-21-main-integration.md).
 
-Against the accepted CSV, only the new merchant field and **196 descriptions
-across 42 documents** differ; all shared financial/date/other fields are unchanged.
-The date fix changes no transaction fields relative to the frozen candidate.
-Merchant accuracy was not adjudicated by this regression check. The candidate,
-protected membership and old baseline stayed unchanged during the diagnostic.
+The date correction separates payment-group charge dates from statement identity,
+resolving ten false failures and removing 30 unsupported statement-date values.
+Against the older accepted CSV, only the new merchant field and 196 descriptions
+across 42 documents differ; shared financial/date/other fields are unchanged.
+Repeated JSON/CSV match the reviewed diagnostic and promoted baseline exactly.
 
-This diagnostic is not formal acceptance: the earlier VERIFY rejected the older
-baseline's output and runtime fingerprints, and performance acceptance remains
-unchecked. The concrete promotion plan preserves that baseline, records a new
-candidate with four workers and the existing 20% runtime tolerance, independently
-pins it after review, then requires full clean VERIFY before merging. Explicit
-baseline-promotion authorization is the remaining dependency under AGENTS.md.
-Main has not been merged or pushed. Keep merchant experimentation paused and the
-earlier human-review artifacts frozen.
+This completes integration and regression acceptance, not a new merchant accuracy
+measurement. No next experiment is active. Keep prior reference/evaluation
+artifacts frozen and their remaining human-ownership dependencies unchanged.
+The next improvement should start with a predeclared fresh-document evaluation
+of the integrated parser's complete merchant-field ownership.
 
 ## Completed objective: merchant field ownership correction
 
