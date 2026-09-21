@@ -33,6 +33,10 @@ row-extraction experiments.
 - **Balanced is insufficient.** `reconciled` requires groups with exact totals and
   no unresolved extraction ambiguity. Unsupported evidence, conflicting dates,
   merchant boundaries and unexplained semantic fragments must remain visible.
+- **Payment dates are not statement identity.** A charge-total date belongs to
+  its payment group; several such dates can legitimately occur in one statement.
+  Only statement-level labels supply statement-date metadata. Conflicting
+  explicit statement dates still block reconciliation.
 - **Merchant means the complete printed field.** The nullable `merchant` and
   `description` output keys remain separate, but the parser now publishes the
   complete extracted field as `merchant`. Reference-looking tokens, repeated

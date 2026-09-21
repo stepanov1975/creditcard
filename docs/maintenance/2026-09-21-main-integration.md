@@ -1,6 +1,6 @@
 # Main integration and full-corpus evaluation
 
-Status: EVALUATION_COMPLETE — MERGE_BLOCKED by corpus acceptance failures.
+Status: IN_PROGRESS — resolving corpus acceptance failures before merge.
 The user requested integration of the accumulated work and
 a full-corpus evaluation before further extractor improvements on 2026-09-21.
 
@@ -35,6 +35,16 @@ and five quarantine PDFs; the gate must independently check their identities.
 The protected controller, accepted files and their pins remain unchanged.
 
 ## Interpretation
+
+The user's follow-up “proceed” authorizes resolving the reported date conflicts
+and preparing the concrete output/runtime baseline review within this objective.
+First reproduce and minimize the failure at `discover_statement`, then add
+synthetic regression tests and a general metadata correction. Bounded production
+files are `src/ccparser/discovery.py` and its focused tests; normalization tests
+verify the downstream effect. Run all tracked checks, commit the candidate, and
+measure the ten known failures and the full protected corpus. Preserve the old
+baseline, membership and frozen merchant experiments. Do not promote a baseline
+to conceal an unexplained difference or merge without successful formal VERIFY.
 
 This is the repository acceptance check requested for integration, not a new
 merchant-reference experiment. A balanced statement alone does not establish
@@ -133,3 +143,27 @@ The required tracked checks remain green: Ruff format/lint, mypy and **3,819
 tests** on the unchanged implementation. This task adds only plan/result/status
 documentation to tracked files. Earlier merchant reference and ownership reviews
 remain frozen with their existing human dependencies.
+
+## Date-conflict remediation
+
+The cached discovery reproduction fails in about four seconds. All ten affected
+documents expose two to four distinct charge-total dates under the same label;
+these are payment-group dates, not conflicting statement identities. Remove
+that label from the statement-date vocabulary, preserving explicit statement
+labels and their existing conflict rejection. No date value, document identity,
+geometry exception or reconciliation threshold is special-cased.
+
+Four synthetic combinations (one/multiple charge dates, with/without an explicit
+statement date) fail under the old vocabulary and pass after the correction.
+A contradictory-explicit-date control still fails reconciliation as intended.
+The existing inline metadata example now uses a statement-level label rather
+than asserting the incorrect charge-date interpretation. Cached document
+discovery/normalization now reconciles **10/10 documents and 132 transactions**;
+this diagnostic is not full corpus acceptance.
+
+All **3,824 tests**, Ruff format/lint and mypy pass for this correction.
+
+Next: freeze the tested correction, run the complete retained/quarantine
+diagnostic with fresh caches, compare all emitted fields and prepare the concrete
+baseline-promotion review. The accepted baseline and its independent pin remain
+unchanged. Formal VERIFY remains required after any approved baseline promotion.

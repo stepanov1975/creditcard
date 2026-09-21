@@ -355,7 +355,7 @@ _STATEMENT_DATE_LABELS = frozenset(
         "billing statement for",
         "פירוט החיובים בחשבון לתאריך",
         "דף חיוב חודשי ל",
-        "סה כ חיוב לתאריך",
+        # A charge-total date belongs to a payment group, not statement identity.
     }
 )
 _NORMALIZED_INLINE_DATE_PATTERN = re.compile(

@@ -15,7 +15,7 @@ derived financial value is recorded here.
 
 ## Current objective: main integration and full-corpus evaluation
 
-**Status:** EVALUATION_COMPLETE — MERGE_BLOCKED. The user's integration request
+**Status:** IN_PROGRESS — resolving acceptance failures before merge. The user's integration request
 supersedes the next fresh-sample recommendation. The
 [full evaluation record](../maintenance/2026-09-21-main-integration.md) reports
 two deterministic runs with **94/104 retained documents reconciled**, **5/5

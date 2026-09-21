@@ -1674,7 +1674,7 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
         (
             "American Express",
             "כרטיס שמסתיים בספרות 9012",
-            "סה כ חיוב לתאריך 03/06/2026",
+            "פירוט החיובים בחשבון לתאריך 03/06/2026",
             "amex",
             "9012",
             "2026-06-03",
@@ -1964,6 +1964,61 @@ def test_discover_statement_deduplicates_equivalent_statement_date_formats() -> 
 
     assert result.statement_date is not None
     assert "conflicting_discovered_metadata:statement_date" not in result.diagnostics
+
+
+@pytest.mark.parametrize("statement_date", (None, "2026-03-01"))
+@pytest.mark.parametrize("charge_dates", (("03/03/2026",), ("03/03/2026", "07/03/2026")))
+def test_discover_statement_keeps_charge_total_dates_out_of_statement_identity(
+    statement_date: str | None, charge_dates: tuple[str, ...]
+) -> None:
+    page = _page(
+        1,
+        (
+            *(
+                (_word(f"Statement date {statement_date}", 10.0, 155.0, 2.0),)
+                if statement_date is not None
+                else ()
+            ),
+            *(
+                word
+                for index, charge_date in enumerate(charge_dates)
+                for word in (
+                    _word(f"סה כ חיוב לתאריך {charge_date}", 10.0, 100.0, 17.0 + index * 15.0),
+                    _word("₪30.00", 118.0, 155.0, 17.0 + index * 15.0),
+                )
+            ),
+            *_table(60.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 120.0),
+            _word("₪30.00", 118.0, 155.0, 120.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert (result.statement_date.value if result.statement_date else None) == statement_date
+    assert "conflicting_discovered_metadata:statement_date" not in result.diagnostics
+    normalized = normalize_statement(result)
+    assert normalized.reconciliation.status is Status.RECONCILED
+    assert len(normalized.transactions) == 2
+
+
+def test_discover_statement_rejects_conflicting_explicit_statement_dates() -> None:
+    page = _page(
+        1,
+        (
+            _word("Statement date 02/07/2026", 10.0, 155.0, 2.0),
+            _word("Statement date 03/07/2026", 10.0, 155.0, 17.0),
+            *_table(45.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 105.0),
+            _word("₪30.00", 118.0, 155.0, 105.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.statement_date is None
+    assert "conflicting_discovered_metadata:statement_date" in result.diagnostics
+    assert normalize_statement(result).reconciliation.status is Status.UNRECONCILED
 
 
 def test_discover_statement_retains_unique_full_date_year_with_exact_provenance() -> None:
