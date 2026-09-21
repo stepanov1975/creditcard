@@ -354,6 +354,8 @@ _STATEMENT_DATE_LABELS = frozenset(
         "statement for",
         "billing statement for",
         "פירוט החיובים בחשבון לתאריך",
+        "פירוט פעולותיך לתאריך",
+        "פרוט פעולותיך לתאריך",
         "דף חיוב חודשי ל",
         # A charge-total date belongs to a payment group, not statement identity.
     }

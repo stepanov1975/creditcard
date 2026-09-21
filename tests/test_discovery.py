@@ -1679,6 +1679,22 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
             "9012",
             "2026-06-03",
         ),
+        (
+            "American Express",
+            "כרטיס שמסתיים בספרות 6789",
+            "פרוט פעולותיך לתאריך 05/11/27",
+            "amex",
+            "6789",
+            "2027-11-05",
+        ),
+        (
+            "American Express",
+            "כרטיס שמסתיים בספרות 3456",
+            "פירוט פעולותיך לתאריך 14/03/28",
+            "amex",
+            "3456",
+            "2028-03-14",
+        ),
     ),
 )
 def test_discover_statement_extracts_evidenced_inline_identity_metadata(
