@@ -13,7 +13,17 @@ Round 1 is frozen at the audited branch heads below. The held-out test remains u
 tracked document, crop, label, output, cache, model artifact, private artifact identity, or
 derived financial value is recorded here.
 
-## Current objective: complete merchant-field continuations
+## Current objective: fresh-sample continuation evaluation
+
+**Status:** IN_PROGRESS — the user approved measuring the completed fix on a
+fresh reviewed sample. The [frozen plan](row-extraction-continuation-fresh-sample-report.md)
+compares candidate `f6e3e0a` with `aa19181` on one OCR-backed and five digital-only
+training documents outside previous merchant selections. Freeze selection before
+source inspection, prepare AI reference drafts for human corrections, then finish
+the paired comparison after reference and ownership review. No predictions or
+sample difficulty may influence references, selection or code.
+
+## Completed implementation: complete merchant-field continuations
 
 **Status:** COMPLETE — the authorized, bounded continuation/discovery fixes are
 implemented and verified. The
