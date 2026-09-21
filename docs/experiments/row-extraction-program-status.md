@@ -15,12 +15,24 @@ derived financial value is recorded here.
 
 ## Current objective: main integration and full-corpus evaluation
 
-**Status:** IN_PROGRESS — the user's 2026-09-21 integration request supersedes
-the next fresh-sample recommendation. Follow the
-[integration plan and evaluation record](../maintenance/2026-09-21-main-integration.md).
-Freeze the candidate, run the protected corpus gate, report aggregate outcomes
-and merge only after acceptance. Further extractor improvements are paused for
-this evaluation. Existing reference/ownership experiments stay frozen.
+**Status:** EVALUATION_COMPLETE — MERGE_BLOCKED. The user's integration request
+supersedes the next fresh-sample recommendation. The
+[full evaluation record](../maintenance/2026-09-21-main-integration.md) reports
+two deterministic runs with **94/104 retained documents reconciled**, **5/5
+quarantine classifications correct**, and unchanged **2,231 transactions and
+shared financial fields**. There are 196 changed descriptions across 42 documents;
+merchant accuracy was not adjudicated by this regression check.
+
+All ten statement-date metadata failures reproduce on current main, with all 132
+corresponding CSV rows identical. They predate this branch. VERIFY also rejects
+baseline-output and Python-runtime fingerprint differences; performance acceptance
+was not checked. Candidate `88f500d` and protected inputs stayed unchanged during
+the gate. Main has not been merged or pushed.
+
+Next: resolve the existing metadata failures, review intended output/runtime
+changes for separately authorized baseline promotion, and obtain full VERIFY
+before merging. A new baseline alone cannot accept unreconciled documents. Keep
+merchant experimentation paused and the earlier human-review artifacts frozen.
 
 ## Completed objective: merchant field ownership correction
 

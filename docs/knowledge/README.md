@@ -24,3 +24,6 @@ Repository housekeeping lives separately in the
 [data-retention guide](../maintenance/data-retention.md), and
 [cleanup plan and execution record](../maintenance/2026-09-20-cleanup-plan.md).
 Historical instructions and unchecked plan boxes are evidence, not pending work.
+
+The [main integration evaluation](../maintenance/2026-09-21-main-integration.md)
+records the latest full-corpus check and the acceptance failures blocking merge.

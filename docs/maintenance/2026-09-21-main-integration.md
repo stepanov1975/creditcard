@@ -1,6 +1,7 @@
 # Main integration and full-corpus evaluation
 
-Status: IN_PROGRESS. The user requested integration of the accumulated work and
+Status: EVALUATION_COMPLETE — MERGE_BLOCKED by corpus acceptance failures.
+The user requested integration of the accumulated work and
 a full-corpus evaluation before further extractor improvements on 2026-09-21.
 
 ## Candidate and plan
@@ -42,3 +43,93 @@ remain frozen, human ownership reviews remain pending, and protected evaluation
 labels are not opened. Any intentional output differences still need reviewed
 baseline promotion under the existing acceptance policy before a merge can be
 claimed corpus-verified.
+
+## Completed evaluation
+
+The exact clean candidate was
+`88f500d0bc1ce5f34695914b350958febbb44804`, which adds only this task's plan/status
+to the reviewed implementation. VERIFY completed all four independent runs with
+four workers and fresh caches in **1,900.99 seconds** of controller wall time.
+The candidate SHA/worktree and both independently protected pins were unchanged
+before and after execution. Membership validation succeeded; the accepted
+inventory, baseline and controller configuration were not modified.
+
+| Measurement | Accepted baseline | Candidate run 1 | Candidate run 2 |
+| --- | --- | --- | --- |
+| Retained documents | 104 | 104 | 104 |
+| Reconciled retained documents | 104 | 94 | 94 |
+| Unreconciled retained documents | 0 | 10 | 10 |
+| Emitted transactions | 2,231 | 2,231 | 2,231 |
+| Quarantine classified `not_statement` | 5 | 5 | 5 |
+
+Retained JSON/CSV bytes match between candidate runs, as do quarantine JSON/CSV
+bytes. Neither population matches the accepted baseline bytes. Streaming JSON
+counts independently agree with CSV counts without loading a whole corpus model.
+
+The gate returned exit 2 with these reasons:
+`retained_not_reconciled`, `counts_drift`, `json_drift`, `csv_drift`, `status_drift`,
+`field_presence_drift`, `runtime_context_drift`. The count difference includes
+reconciliation statuses; corpus membership and transaction count did not change.
+
+## What changed, and what predates this branch
+
+All **2,233 CSV row identities** match the accepted output, comprising 2,231
+transactions and two rows for statements without transactions. No output rows
+were added or removed. All shared financial, date, category, installment and FX
+fields are unchanged. **196 descriptions across 42 documents differ**. The
+candidate also has a `merchant` column absent from the accepted CSV; all 2,231
+transactions have a nonempty merchant. These are output differences, not measured
+merchant accuracy gains.
+
+The ten failed documents all report
+`conflicting_discovered_metadata:statement_date`. A separate diagnostic used an
+archived copy of current main (`661c200840fbc1fbcb81385f085073617e73e449`), those
+same ten documents, four workers and a fresh cache after the formal gate ended.
+It reproduced **10/10 failures** in 65.93 seconds. Its **132 transaction CSV rows
+are identical to the candidate's corresponding rows in every field**. Thus these
+failures predate this integration branch; they are differences from the older
+accepted baseline, not new failures caused by the recent merchant corrections.
+This ten-document diagnostic is not a full-main corpus attestation.
+
+Status changes affect 132 CSV rows. Batch diagnostic propagation changes the
+diagnostic column on all 2,233 rows; this does not represent 2,233 independent
+failures. Complete source-level change files remain private.
+
+A diagnostic using the gate's existing isolated inspector finds only
+`python_runtime_digest` differs from the accepted runtime fingerprint. Python and
+dependency versions, dependency byte records, worker count and all other recorded
+fingerprint components match. The accepted digest does not retain its underlying
+runtime payload, so this comparison does not identify the exact changed runtime
+attribute. **Performance acceptance was not checked**, because matching runtime
+context is required. The elapsed wall time is not a valid speed-regression score.
+
+## Result files and integration decision
+
+Ignored `artifacts/main-integration-evaluation/` contains the gate log/result,
+repeatability and CSV comparison JSON, independent JSON count check, isolated
+runtime comparison, archived-main diagnostic, and three focused review files:
+
+- `document-summary.csv`: 104 document statuses and change counts;
+- `failed-documents.csv`: ten statement-date failures, all reproduced on main;
+- `description-changes.csv`: 196 before/after description values.
+
+The detailed private CSV also includes all field differences. Source documents,
+outputs, caches, protected pins and financial values remain outside Git. Local
+and remote main are unchanged; no merge or push was performed.
+
+The [acceptance policy](../../AGENTS.md#private-corpus-acceptance-policy) requires:
+“If the private gate was not run successfully, report the change as not
+corpus-verified and do not merge it.” A reviewed baseline promotion alone cannot
+accept ten unreconciled retained documents.
+
+Next: resolve the pre-existing statement-date metadata conflicts, then review
+the intentional complete-merchant/output-schema changes and the current runtime
+for a separately authorized baseline promotion. Preserve the accepted baseline;
+record any approved replacement at a new path, independently pin it after review,
+and obtain a clean full VERIFY before fast-forwarding main. No parser tuning,
+baseline promotion or new merchant experiment was performed during this task.
+
+The required tracked checks remain green: Ruff format/lint, mypy and **3,819
+tests** on the unchanged implementation. This task adds only plan/result/status
+documentation to tracked files. Earlier merchant reference and ownership reviews
+remain frozen with their existing human dependencies.
