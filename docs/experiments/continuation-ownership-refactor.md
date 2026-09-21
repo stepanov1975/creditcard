@@ -1,7 +1,9 @@
 # Continuation ownership deepening
 
-Status: COMPLETE — implemented and repository-verified on `codex/continuation-ownership`; authorized by the user's “implement 1” instruction on
-2026-09-21, selecting the continuation-ownership architecture recommendation.
+Status: COMPLETE — implemented, reviewed and corpus-verified; merged into local `main`.
+The original refactor was authorized by the user's “implement 1” instruction on
+2026-09-21; the later “run final review and merge if green” instruction authorized
+verification and integration after the original implementation objective.
 
 ```text
 Scope answer: YES — preserve merchant-field extraction while concentrating continuation ownership
@@ -66,3 +68,39 @@ The private corpus gate was not executed by these synthetic tests.
 Fresh-document accuracy is **NOT MEASURED**. Private-corpus VERIFY is not part of this result; this candidate
 must pass that gate before any acceptance claim or later merge. Next: predeclare a fresh-document merchant-field ownership evaluation; before any
 later integration, verify this committed candidate through the private corpus gate.
+
+
+## Final review, acceptance and integration
+
+The final review compared `cb0788acf56ebd46570cbb431cc6131885f194ab` with
+`e7dc34d448e6d92a69956bd5580a695f5c9e2654`. Separate Standards and Spec reviewers
+both reported **zero actionable findings**. The Spec reviewer independently passed
+six focused ownership/handoff tests. The previously completed **3,827-test** full
+suite, Ruff and mypy results apply to the unchanged implementation.
+
+Formal private-corpus **VERIFY passed** for that exact clean reviewed candidate,
+using its own source, four workers, the existing independently pinned membership
+and accepted baseline, two fresh retained runs and two fresh quarantine runs:
+
+```text
+status=passed mode=verify retained=104 reconciled=104 quarantined=5 elapsed_seconds=1615.090111617 performance_checked=true
+```
+
+The reviewed SHA and clean worktree were checked before invocation, within the
+gate and immediately after success. Both protected pins and controller configuration
+remained unchanged. Baseline parity, repeated determinism, complete toolchain and
+worker identity, retained reconciliation, quarantine acceptance and performance
+all passed. No RECORD, baseline promotion, membership change or held-out access
+was performed. Detailed evidence stays in ignored
+`artifacts/continuation-ownership-acceptance/`.
+
+Local `main` was fast-forwarded from `e7dc34d` to the exact verified candidate
+`cb0788a`. This acceptance record and the linked knowledge/status updates are
+subsequent documentation-only changes; no attested parser, test or configuration
+changed. No remote push was performed.
+
+Scope: final review and regression acceptance of continuation-ownership deepening.
+Measurement: protected-corpus parity and performance with deterministic repeats.
+Result: PASS and local merge complete. Fresh-document merchant accuracy remains
+NOT MEASURED. Next: predeclare the fresh-document merchant-field ownership evaluation,
+preserving the existing frozen evaluations and human-review dependencies.

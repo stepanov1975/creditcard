@@ -15,17 +15,20 @@ derived financial value is recorded here.
 
 ## Completed objective: continuation ownership deepening
 
-**Status:** COMPLETE — implemented on `codex/continuation-ownership` under the
-user's 2026-09-21 “implement 1” instruction. The [task record](continuation-ownership-refactor.md)
-records one ownership assembly for same-page chains, cross-page handoffs and
-continuation diagnostics: **389 focused tests**, **278 complete synthetic outputs
-matching the original implementation**, and all **3,827 repository tests**, Ruff
-and mypy pass. No private inputs were accessed; this branch is **not corpus-verified**
-and is not merged. Fresh-document accuracy is **NOT MEASURED**.
+**Status:** COMPLETE — reviewed, corpus-verified and merged into local `main` at
+`cb0788acf56ebd46570cbb431cc6131885f194ab`, following the user's final-review and
+conditional-merge instruction. The [task record](continuation-ownership-refactor.md)
+records zero Standards/Spec findings, **389 focused tests**, **278 complete synthetic
+outputs matching the original**, and all **3,827 repository tests**, Ruff and mypy
+passing. Formal VERIFY passed **104 retained, 104 reconciled, five quarantined**, with
+baseline parity, deterministic repeats and **`performance_checked=true`**. The
+reviewed SHA/worktree, protected membership, baseline and pins were unchanged.
 
 No experiment is active. Next: predeclare the fresh-document merchant-field ownership
-evaluation; private-corpus VERIFY is required before any later acceptance or merge.
-Existing frozen evaluations and human-review dependencies remain unchanged.
+evaluation. Fresh-document accuracy is **NOT MEASURED**; existing frozen evaluations
+and human-review dependencies remain unchanged. No baseline promotion, held-out access
+or remote push occurred. The acceptance record is a documentation-only follow-up to
+the exact attested parser revision.
 
 ## Completed objective: main integration and full-corpus evaluation
 
