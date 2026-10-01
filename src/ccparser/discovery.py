@@ -335,7 +335,7 @@ _ISSUER_DOMAIN_PHRASES: dict[str, frozenset[str]] = {
     "cal": frozenset({"cal co il", "cal online co il"}),
 }
 _ISSUER_CONTEXT_PHRASES: dict[str, frozenset[str]] = {
-    "max": frozenset({"לקוחותינו", "הנפקה"}),
+    "max": frozenset({"לקוחותינו", "הנפקה", "לפנות ל max בבקשה לקבלת פירוט עסקאות"}),
 }
 _CARD_SUFFIX_LABELS = frozenset(
     {

@@ -557,6 +557,7 @@ def extract_description(
             else:
                 fallback_texts.append(residual_text)
                 claims.append(EvidenceClaim(SemanticOwner.DESCRIPTION, split_ids))
+        adjacent_ids: frozenset[int] = frozenset()
         if index == 0:
             adjacent_ids, ancillary_ids = _adjacent_unknown_description_atoms(
                 row,
@@ -569,7 +570,10 @@ def extract_description(
         # A clustered cell can straddle columns. Its center must not transfer
         # independently positioned text from a separate unknown field into the
         # merchant field. Keep whole clusters; never trim characters by shape.
-        separate_ids = selected_ids & _separate_unknown_column_atoms(row, region, ledger)
+        # Explicitly recovered boundary clusters remain owned by the description.
+        separate_ids = (selected_ids - adjacent_ids) & _separate_unknown_column_atoms(
+            row, region, ledger
+        )
         if separate_ids:
             selected_ids.difference_update(separate_ids)
             claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, frozenset(separate_ids)))
