@@ -1138,6 +1138,73 @@ def test_description_recovers_boundary_cluster_from_adjacent_unknown_column() ->
     )
 
 
+def test_description_keeps_transaction_type_boundary_continuation() -> None:
+    unknown = _cell(
+        "רגילה SUFFIX",
+        0,
+        words=(_word("רגילה", 2.0, 20.0), _word("SUFFIX", 33.0, 40.0)),
+    )
+    description = _cell(
+        "Merchant -",
+        1,
+        bbox=(41.0, 30.0, 80.0, 40.0),
+        words=(_word("Merchant -", 41.0, 80.0),),
+    )
+    row = _row(unknown, description, _cell("10.00", 2))
+    region = _region((ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT), (row,))
+    ledger = EvidenceLedger.from_rows((row,))
+    result = extract_description((row,), region, None, ledger)
+    assert result.value == "SUFFIX Merchant -"
+    owners = {
+        atom.text: {claim.owner for claim in result.claims if atom.atom_id in claim.atom_ids}
+        for atom in ledger.atoms
+        if atom.text in {"רגילה", "SUFFIX", "Merchant -"}
+    }
+    assert owners == {
+        "רגילה": {SemanticOwner.ANCILLARY},
+        "SUFFIX": {SemanticOwner.DESCRIPTION},
+        "Merchant -": {SemanticOwner.DESCRIPTION},
+    }
+
+
+def test_description_does_not_take_ancillary_suffix_inside_unknown_column() -> None:
+    unknown = _cell(
+        "Category SUFFIX",
+        0,
+        words=(_word("Category", 2.0, 20.0), _word("SUFFIX", 33.0, 40.0)),
+    )
+    description = _cell(
+        "Merchant -",
+        1,
+        bbox=(41.0, 30.0, 80.0, 40.0),
+        words=(_word("Merchant -", 41.0, 80.0),),
+    )
+    row = _row(unknown, description, _cell("10.00", 2))
+    region = _region((ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT), (row,))
+    ledger = EvidenceLedger.from_rows((row,))
+    result = extract_description((row,), region, None, ledger)
+    assert result.value == "Merchant -"
+    suffix_id = next(atom.atom_id for atom in ledger.atoms if atom.text == "SUFFIX")
+    assert {claim.owner for claim in result.claims if suffix_id in claim.atom_ids} == {
+        SemanticOwner.ANCILLARY
+    }
+
+
+def test_description_does_not_absorb_unsplit_adjacent_unknown_cell() -> None:
+    unknown = _cell("Category", 0, words=(_word("Category", 30.0, 40.0),))
+    description = _cell(
+        "Merchant",
+        1,
+        bbox=(41.0, 30.0, 80.0, 40.0),
+        words=(_word("Merchant", 41.0, 80.0),),
+    )
+    row = _row(unknown, description, _cell("10.00", 2))
+    region = _region((ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT), (row,))
+    ledger = EvidenceLedger.from_rows((row,))
+    result = extract_description((row,), region, None, ledger)
+    assert result.value == "Merchant"
+
+
 @pytest.mark.parametrize("indicator", ("Q", "7", "USD"))
 @pytest.mark.parametrize("inside_field", (False, True))
 def test_description_respects_positioned_indicator_column(

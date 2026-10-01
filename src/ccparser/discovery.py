@@ -335,7 +335,7 @@ _ISSUER_DOMAIN_PHRASES: dict[str, frozenset[str]] = {
     "cal": frozenset({"cal co il", "cal online co il"}),
 }
 _ISSUER_CONTEXT_PHRASES: dict[str, frozenset[str]] = {
-    "max": frozenset({"לקוחותינו", "הנפקה"}),
+    "max": frozenset({"לקוחותינו", "הנפקה", "לפנות ל max בבקשה לקבלת פירוט עסקאות"}),
 }
 _CARD_SUFFIX_LABELS = frozenset(
     {
@@ -354,6 +354,8 @@ _STATEMENT_DATE_LABELS = frozenset(
         "statement for",
         "billing statement for",
         "פירוט החיובים בחשבון לתאריך",
+        "פירוט פעולותיך לתאריך",
+        "פרוט פעולותיך לתאריך",
         "דף חיוב חודשי ל",
         # A charge-total date belongs to a payment group, not statement identity.
     }

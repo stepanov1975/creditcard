@@ -1679,6 +1679,22 @@ def test_discover_statement_retains_labeled_metadata_without_leaking_it_to_diagn
             "9012",
             "2026-06-03",
         ),
+        (
+            "American Express",
+            "כרטיס שמסתיים בספרות 6789",
+            "פרוט פעולותיך לתאריך 05/11/27",
+            "amex",
+            "6789",
+            "2027-11-05",
+        ),
+        (
+            "American Express",
+            "כרטיס שמסתיים בספרות 3456",
+            "פירוט פעולותיך לתאריך 14/03/28",
+            "amex",
+            "3456",
+            "2028-03-14",
+        ),
     ),
 )
 def test_discover_statement_extracts_evidenced_inline_identity_metadata(
@@ -1908,6 +1924,41 @@ def test_discover_statement_accepts_max_legal_issuer_context() -> None:
     assert result.issuer is not None
     assert result.issuer.value == "max"
     assert result.issuer.evidence.raw_text == "מידע על לקוחותינו ב max מכוח צווים שיפוטיים"
+
+
+def test_discover_statement_accepts_max_transaction_detail_service_context() -> None:
+    service_text = "הינכם זכאים לפנות ל-max בבקשה לקבלת פירוט עסקאות אלה"
+    page = _page(
+        1,
+        (
+            _word(service_text, 10.0, 220.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is not None
+    assert result.issuer.value == "max"
+    assert result.issuer.evidence.raw_text == service_text
+
+
+def test_discover_statement_does_not_treat_fibi_domain_as_max_issuer() -> None:
+    page = _page(
+        1,
+        (
+            _word("אתר האינטרנט www.fibi.co.il", 10.0, 220.0, 2.0),
+            *_table(30.0, "₪", "10.00", "20.00"),
+            _word("Total", 50.0, 95.0, 90.0),
+            _word("₪30.00", 118.0, 155.0, 90.0),
+        ),
+    )
+
+    result = discover_statement(_document(page))
+
+    assert result.issuer is None
 
 
 def test_discover_statement_canonicalizes_labeled_issuer_before_deduplication() -> None:

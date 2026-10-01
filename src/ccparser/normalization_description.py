@@ -557,6 +557,8 @@ def extract_description(
             else:
                 fallback_texts.append(residual_text)
                 claims.append(EvidenceClaim(SemanticOwner.DESCRIPTION, split_ids))
+        adjacent_ids: frozenset[int] = frozenset()
+        ancillary_ids: frozenset[int] = frozenset()
         if index == 0:
             adjacent_ids, ancillary_ids = _adjacent_unknown_description_atoms(
                 row,
@@ -569,7 +571,21 @@ def extract_description(
         # A clustered cell can straddle columns. Its center must not transfer
         # independently positioned text from a separate unknown field into the
         # merchant field. Keep whole clusters; never trim characters by shape.
-        separate_ids = selected_ids & _separate_unknown_column_atoms(row, region, ledger)
+        # Retain an inside-UNKNOWN boundary cluster only when the other cluster
+        # is the printed transaction type and the merchant ends in a connector.
+        has_regular_transaction_type = (
+            bool(ancillary_ids) and normalize_text(ledger.render(ancillary_ids)) == "רגילה"
+        )
+        continuation_ids = (
+            adjacent_ids
+            if len(row_cells) == 1
+            and normalize_text(row_cells[0].text).endswith(" -")
+            and has_regular_transaction_type
+            else frozenset()
+        )
+        separate_ids = (selected_ids - continuation_ids) & _separate_unknown_column_atoms(
+            row, region, ledger
+        )
         if separate_ids:
             selected_ids.difference_update(separate_ids)
             claims.append(EvidenceClaim(SemanticOwner.ANCILLARY, frozenset(separate_ids)))
