@@ -1138,7 +1138,36 @@ def test_description_recovers_boundary_cluster_from_adjacent_unknown_column() ->
     )
 
 
-def test_description_keeps_recovered_suffix_inside_adjacent_unknown_column() -> None:
+def test_description_keeps_hyphen_continuation_inside_adjacent_unknown_column() -> None:
+    unknown = _cell(
+        "Category SUFFIX",
+        0,
+        words=(_word("Category", 2.0, 20.0), _word("SUFFIX", 33.0, 40.0)),
+    )
+    description = _cell(
+        "Merchant -",
+        1,
+        bbox=(41.0, 30.0, 80.0, 40.0),
+        words=(_word("Merchant -", 41.0, 80.0),),
+    )
+    row = _row(unknown, description, _cell("10.00", 2))
+    region = _region((ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT), (row,))
+    ledger = EvidenceLedger.from_rows((row,))
+    result = extract_description((row,), region, None, ledger)
+    assert result.value == "SUFFIX Merchant -"
+    owners = {
+        atom.text: {claim.owner for claim in result.claims if atom.atom_id in claim.atom_ids}
+        for atom in ledger.atoms
+        if atom.text in {"Category", "SUFFIX", "Merchant -"}
+    }
+    assert owners == {
+        "Category": {SemanticOwner.ANCILLARY},
+        "SUFFIX": {SemanticOwner.DESCRIPTION},
+        "Merchant -": {SemanticOwner.DESCRIPTION},
+    }
+
+
+def test_description_does_not_take_ancillary_suffix_inside_unknown_column() -> None:
     unknown = _cell(
         "Category SUFFIX",
         0,
@@ -1154,16 +1183,10 @@ def test_description_keeps_recovered_suffix_inside_adjacent_unknown_column() -> 
     region = _region((ColumnRole.UNKNOWN, ColumnRole.DESCRIPTION, ColumnRole.AMOUNT), (row,))
     ledger = EvidenceLedger.from_rows((row,))
     result = extract_description((row,), region, None, ledger)
-    assert result.value == "SUFFIX Merchant"
-    owners = {
-        atom.text: {claim.owner for claim in result.claims if atom.atom_id in claim.atom_ids}
-        for atom in ledger.atoms
-        if atom.text in {"Category", "SUFFIX", "Merchant"}
-    }
-    assert owners == {
-        "Category": {SemanticOwner.ANCILLARY},
-        "SUFFIX": {SemanticOwner.DESCRIPTION},
-        "Merchant": {SemanticOwner.DESCRIPTION},
+    assert result.value == "Merchant"
+    suffix_id = next(atom.atom_id for atom in ledger.atoms if atom.text == "SUFFIX")
+    assert {claim.owner for claim in result.claims if suffix_id in claim.atom_ids} == {
+        SemanticOwner.ANCILLARY
     }
 
 

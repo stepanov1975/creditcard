@@ -570,8 +570,14 @@ def extract_description(
         # A clustered cell can straddle columns. Its center must not transfer
         # independently positioned text from a separate unknown field into the
         # merchant field. Keep whole clusters; never trim characters by shape.
-        # Explicitly recovered boundary clusters remain owned by the description.
-        separate_ids = (selected_ids - adjacent_ids) & _separate_unknown_column_atoms(
+        # An unknown-column cluster belongs to the description only when the
+        # primary field ends with a visible continuation hyphen at that boundary.
+        continuation_ids = (
+            adjacent_ids
+            if len(row_cells) == 1 and normalize_text(row_cells[0].text).endswith(" -")
+            else frozenset()
+        )
+        separate_ids = (selected_ids - continuation_ids) & _separate_unknown_column_atoms(
             row, region, ledger
         )
         if separate_ids:
